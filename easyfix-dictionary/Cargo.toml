@@ -1,0 +1,13 @@
+[package]
+name = "easyfix-dictionary"
+version = "0.1.1"
+authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
+license = "MIT"
+description = "Easy FIX (Financial Information Exchange) toolset - quickfix compatible messages dictionary."
+repository = "https://github.com/ldanko/easyfix"
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+xmltree = "0.10"

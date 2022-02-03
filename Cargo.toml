@@ -1,0 +1,14 @@
+[package]
+name = "easyfix"
+version = "0.1.1"
+authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
+license = "MIT"
+description = "Easy FIX (Financial Information Exchange) engine."
+repository = "https://github.com/ldanko/easyfix"
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+easyfix-dictionary = { version = "0.1.1", path = "easyfix-dictionary" }
+easyfix-messages = { version = "0.1.1", path = "easyfix-messages" }

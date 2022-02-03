@@ -1,0 +1,16 @@
+[package]
+name = "easyfix-messages-gen"
+version = "0.1.1"
+authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
+license = "MIT"
+description = "Easy FIX (Financial Information Exchange) toolset - messages generator."
+repository = "https://github.com/ldanko/easyfix"
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+convert_case = "0.5"
+proc-macro2 = "1.0"
+quote = "1.0"
+easyfix-dictionary = { version = "0.1.1", path = "../../easyfix-dictionary" }
