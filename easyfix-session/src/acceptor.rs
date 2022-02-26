@@ -8,16 +8,17 @@ use std::{
     task::{Context, Poll},
 };
 
-use easyfix_messages::messages::FixtMessage;
+use easyfix_messages::{fields::FixString, messages::FixtMessage};
 use futures::{self, Stream};
 use pin_project::pin_project;
 use tokio::net::TcpListener;
-use tracing::{error, info, info_span, Instrument};
+use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
     connection::new_connection,
     messages_storage::MessagesStorage,
+    session::Session,
     session_id::SessionId,
     session_state::State as SessionState,
     settings::SessionSettings,
@@ -57,24 +58,25 @@ impl<S: MessagesStorage> SessionsMap<S> {
     }
 }
 
+pub(crate) type ActiveSessionsMap<S> = HashMap<SessionId, Rc<Session<S>>>;
+
 #[pin_project]
 pub struct Acceptor<S: MessagesStorage> {
     settings: Settings,
     sessions: Rc<RefCell<SessionsMap<S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
     #[pin]
     event_stream: EventStream,
 }
 
 impl<S: MessagesStorage + 'static> Acceptor<S> {
-    pub fn new(
-        settings: Settings,
-        message_storage_builder: Box<dyn Fn() -> S>,
-    ) -> Acceptor<S> {
+    pub fn new(settings: Settings, message_storage_builder: Box<dyn Fn() -> S>) -> Acceptor<S> {
         let (emitter, event_stream) = events_channel();
         Acceptor {
             settings,
             sessions: Rc::new(RefCell::new(SessionsMap::new(message_storage_builder))),
+            active_sessions: Rc::new(RefCell::new(HashMap::new())),
             emitter,
             event_stream,
         }
@@ -94,6 +96,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         let server_task = tokio::task::spawn_local(Self::server_task(
             self.settings.clone(),
             self.sessions.clone(),
+            self.active_sessions.clone(),
             self.emitter.clone(),
         ));
 
@@ -112,9 +115,36 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         Ok(())
     }
 
+    pub async fn logout(&self, session_id: &SessionId, reason: Option<FixString>) {
+        let session = {
+            let active_sessions = self.active_sessions.borrow();
+            let Some(session) = active_sessions.get(&session_id)  else {
+                warn!("logout: session {session_id} not found");
+                return;
+            };
+            session.clone()
+        };
+
+        session.send_logout(reason).await;
+    }
+
+    pub async fn disconnect(&self, session_id: &SessionId) {
+        let session = {
+            let active_sessions = self.active_sessions.borrow();
+            let Some(session) = active_sessions.get(&session_id)  else {
+                warn!("logout: session {session_id} not found");
+                return;
+            };
+            session.clone()
+        };
+
+        session.disconnect().await;
+    }
+
     async fn server_task(
         settings: Settings,
         sessions: Rc<RefCell<SessionsMap<S>>>,
+        active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
         emitter: Emitter,
     ) -> Result<(), Error> {
         info!("Acceptor started");
@@ -127,10 +157,11 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             info!("New connection from {}", peer_addr);
 
             let sessions = sessions.clone();
+            let active_sessions = active_sessions.clone();
             let settings = settings.clone();
             let emitter = emitter.clone();
             tokio::task::spawn_local(async move {
-                match new_connection(tcp_stream, settings, sessions, emitter)
+                match new_connection(tcp_stream, settings, sessions, active_sessions, emitter)
                     .instrument(info_span!("connection", %peer_addr))
                     .await
                 {

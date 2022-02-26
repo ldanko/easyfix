@@ -18,7 +18,8 @@ use tracing::{error, info, instrument, trace, warn};
 use crate::{
     application::{
         /*events_channel,*/ Emitter, FixEventInternal,
-        Responder, /*, EventStream, Sender */
+        InputResponderMsg, /*, EventStream, Sender */
+        Responder,
     },
     connection::Disconnect,
     messages_storage::MessagesStorage,
@@ -176,13 +177,13 @@ impl<S: MessagesStorage> Session<S> {
         &self.state
     }
 
-    pub fn logon(&mut self) {
+    pub fn logon(&self) {
         let mut state = self.state.borrow_mut();
         state.set_enabled(true);
         state.set_logout_reason(None);
     }
 
-    pub fn logout(&mut self, reason: FixString) {
+    pub fn logout(&self, reason: FixString) {
         let mut state = self.state.borrow_mut();
         state.set_enabled(false);
         state.set_logout_reason(Some(reason));
@@ -554,12 +555,13 @@ impl<S: MessagesStorage> Session<S> {
         let state = self.state.borrow();
 
         if !Self::valid_logon_state(&state, msg.header.msg_type) {
+            error!("Invalid logon state");
             Err(VerifyError::invalid_logon_state())
         } else if !self.is_good_time(sending_time) {
             warn!("SendingTime<52> verification failed");
             Err(VerifyError::invalid_time())
         } else if !self.is_correct_comp_id(sender_comp_id, target_comp_id) {
-            warn!("CompID verification failed");
+            error!("CompID verification failed");
             Err(VerifyError::invalid_comp_id())
         } else if check_too_high && Self::is_target_too_high(&state, msg_seq_num) {
             warn!(
@@ -570,20 +572,21 @@ impl<S: MessagesStorage> Session<S> {
             self.state.borrow_mut().enqueue_msg(msg);
             Err(VerifyError::target_seq_num_too_high(msg_seq_num))
         } else if check_too_low && Self::is_target_too_low(&state, msg_seq_num) {
-            warn!("target too low");
-
             if msg.header.poss_dup_flag.unwrap_or(false) {
                 if msg_type != MsgType::SequenceReset {
-                    let orig_sending_time = msg
-                        .header
-                        .orig_sending_time
-                        .ok_or_else(|| VerifyError::missing_orig_time())?;
+                    let Some(orig_sending_time) = msg.header.orig_sending_time else {
+                        warn!("Target too low (orig sending time missing)");
+                        return Err(VerifyError::missing_orig_time());
+                    };
                     if orig_sending_time.timestamp() > sending_time.timestamp() {
+                        error!("Target too low (invalid orig sending time)");
                         return Err(VerifyError::invalid_orig_time());
                     }
                 }
+                warn!("Target too low (duplicate)");
                 Err(VerifyError::Duplicate)
             } else {
+                error!("Target too low");
                 Err(VerifyError::seq_num_too_low(
                     msg_seq_num,
                     state.next_target_msg_seq_num(),
@@ -591,17 +594,47 @@ impl<S: MessagesStorage> Session<S> {
             }
         } else {
             drop(state);
+
+            let (sender, receiver) = tokio::sync::oneshot::channel();
             match msg.msg_cat() {
                 MsgCat::Admin => {
                     self.emitter
-                        .send(FixEventInternal::AdmMsgIn(Some(msg)))
+                        .send(FixEventInternal::AdmMsgIn(Some(msg), Some(sender)))
                         .await
                 }
                 MsgCat::App => {
                     self.emitter
-                        .send(FixEventInternal::AppMsgIn(Some(msg)))
+                        .send(FixEventInternal::AppMsgIn(Some(msg), Some(sender)))
                         .await
                 }
+            }
+            match receiver.await {
+                Ok(InputResponderMsg::Reject {
+                    ref_msg_type,
+                    ref_seq_num,
+                    reason,
+                    text,
+                    ref_tag_id,
+                }) => {
+                    warn!("User rejected ({reason:?}: {text})");
+                    self.send_reject(ref_msg_type, ref_seq_num, reason, text, ref_tag_id)
+                        .await
+                }
+                Ok(InputResponderMsg::Logout { text, disconnect }) => {
+                    error!(
+                        "User rejected with Logout<5> ({})",
+                        text.as_ref().map(FixString::as_utf8).unwrap_or_default()
+                    );
+                    self.send_logout(text).await;
+                    if disconnect {
+                        self.disconnect().await;
+                    }
+                }
+                Ok(InputResponderMsg::Disconnect { reason }) => {
+                    error!("User disconnected");
+                    self.disconnect().await;
+                }
+                Err(_) => {}
             }
 
             Ok(())
@@ -649,7 +682,7 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         let logon_request = Box::new(FixtMessage {
-            header: self.new_header(MsgType::Logon),
+            header: self.new_header_with_state(MsgType::Logon, &mut state),
             body: Message::Logon(Logon {
                 // encrypt_method: EncryptMethod::None,
                 encrypt_method: EncryptMethod::NoneOther,
@@ -729,7 +762,7 @@ impl<S: MessagesStorage> Session<S> {
         self.send(logon_response).await;
     }
 
-    async fn send_logout(&self, text: Option<FixString>) {
+    pub(crate) async fn send_logout(&self, text: Option<FixString>) {
         let logout_response = Box::new(FixtMessage {
             header: self.new_header(MsgType::Logout),
             body: Message::Logout(Logout {
@@ -1021,7 +1054,7 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.send(msg).await;
     }
 
-    async fn disconnect(&self) {
+    pub(crate) async fn disconnect(&self) {
         info!("disconnecting");
         let mut state = self.state.borrow_mut();
 
@@ -1082,7 +1115,7 @@ impl<S: MessagesStorage> Session<S> {
                 msg.header.orig_sending_time = Some(msg.header.sending_time);
                 msg.header.poss_dup_flag = Some(true);
                 // TODO: emit event!
-                self.send(msg);
+                self.send(msg).await;
             }
         }
         if let Some((begin_seq_no, end_seq_no)) = gap_fill_range {
@@ -1182,7 +1215,8 @@ impl<S: MessagesStorage> Session<S> {
             info!("received logout response");
         } else {
             info!("received logout request");
-            self.send_logout(None).await;
+            self.send_logout(Some(FixString::from_ascii_lossy(b"Responding".to_vec())))
+                .await;
             info!("sending logout response");
         }
 
@@ -1342,16 +1376,20 @@ impl<S: MessagesStorage> Session<S> {
                             "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num}, \
                              TO: {next_sender_msg_num_at_logon_received} will be reset"
                         );
+                        drop(state);
                         self.send_sequence_reset(next_expected_msg_seq_num, end_seq_no)
                             .await;
+                        state = self.state.borrow_mut();
                     } else {
                         // resend missed messages
                         info!(
                             "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num} \
                              TO: {next_sender_msg_num_at_logon_received} will be resent"
                         );
+                        drop(state);
                         self.resend_range(next_expected_msg_seq_num, end_seq_no)
                             .await;
+                        state = self.state.borrow_mut();
                     }
                 }
             }
@@ -1485,7 +1523,7 @@ impl<S: MessagesStorage> Session<S> {
                         Responder::new(sender),
                     ))
                     .await;
-                match dbg!(receiver.await) {
+                match receiver.await {
                     Ok(msg) => Ok(Some(msg)),
                     Err(gap_fill) => {
                         // TODO: GAP FILL!

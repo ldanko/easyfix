@@ -1,13 +1,18 @@
 use std::{
+    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use easyfix_messages::{messages::FixtMessage, deserializer::DeserializeError};
+use easyfix_messages::{
+    deserializer::DeserializeError,
+    fields::{FixString, SeqNum, SessionRejectReason},
+    messages::FixtMessage,
+};
 use futures::Stream;
 use tokio::sync::{mpsc, oneshot};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-use tracing::{error, warn};
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::error;
 
 use crate::{session_id::SessionId, Sender};
 
@@ -16,23 +21,69 @@ pub struct DoNotSend {
 }
 
 #[derive(Debug)]
-pub struct InputResponder {
-    sender: Option<oneshot::Sender<Box<FixtMessage>>>,
+pub(crate) enum InputResponderMsg {
+    // RejectLogon {
+    //     reason: Option<String>,
+    // },
+    Reject {
+        ref_msg_type: FixString,
+        ref_seq_num: SeqNum,
+        reason: SessionRejectReason,
+        text: FixString,
+        ref_tag_id: Option<i64>,
+    },
+    Logout {
+        text: Option<FixString>,
+        disconnect: bool,
+    },
+    Disconnect {
+        reason: Option<String>,
+    },
 }
 
-impl InputResponder {
-    pub(crate) fn new(sender: oneshot::Sender<Box<FixtMessage>>) -> InputResponder {
+#[derive(Debug)]
+pub struct InputResponder<'a> {
+    sender: oneshot::Sender<InputResponderMsg>,
+    phantom_ref: PhantomData<&'a ()>,
+}
+
+impl<'a> InputResponder<'a> {
+    pub(crate) fn new(sender: oneshot::Sender<InputResponderMsg>) -> InputResponder<'a> {
         InputResponder {
-            sender: Some(sender),
+            sender,
+            phantom_ref: PhantomData,
         }
     }
 
-    pub fn reject(&mut self) {
-
+    pub fn reject(
+        self,
+        ref_msg_type: FixString,
+        ref_seq_num: SeqNum,
+        reason: SessionRejectReason,
+        text: FixString,
+        ref_tag_id: Option<i64>,
+    ) {
+        self.sender
+            .send(InputResponderMsg::Reject {
+                ref_msg_type,
+                ref_seq_num,
+                reason,
+                text,
+                ref_tag_id,
+            })
+            .unwrap();
     }
 
-    pub fn reject_logon(&mut self, reason: Option<String>) {
+    pub fn logout(self, text: Option<FixString>, disconnect: bool) {
+        self.sender
+            .send(InputResponderMsg::Logout { text, disconnect })
+            .unwrap();
+    }
 
+    pub fn disconnect(self) {
+        self.sender
+            .send(InputResponderMsg::Disconnect { reason: None })
+            .unwrap();
     }
 }
 
@@ -65,8 +116,14 @@ pub(crate) enum FixEventInternal {
     Created(SessionId),
     Logon(SessionId, Option<Sender>),
     Logout(SessionId),
-    AppMsgIn(Option<Box<FixtMessage>>),
-    AdmMsgIn(Option<Box<FixtMessage>>),
+    AppMsgIn(
+        Option<Box<FixtMessage>>,
+        Option<oneshot::Sender<InputResponderMsg>>,
+    ),
+    AdmMsgIn(
+        Option<Box<FixtMessage>>,
+        Option<oneshot::Sender<InputResponderMsg>>,
+    ),
     AppMsgOut(Option<Box<FixtMessage>>, Responder),
     AdmMsgOut(Option<Box<FixtMessage>>, Responder),
     DeserializeError(SessionId, DeserializeError),
@@ -77,7 +134,6 @@ impl Drop for FixEventInternal {
         if let FixEventInternal::AppMsgOut(ref mut msg, ref mut responder)
         | FixEventInternal::AdmMsgOut(ref mut msg, ref mut responder) = self
         {
-            warn!(?responder.sender, ?msg);
             if let Some(sender) = responder.sender.take() {
                 if responder.change_to_gap_fill {
                     // TODO: GapFill HERE!
@@ -86,7 +142,6 @@ impl Drop for FixEventInternal {
                     sender.send(msg.take().unwrap()).unwrap();
                 }
             }
-            warn!("responder destroyed");
         }
     }
 }
@@ -96,10 +151,11 @@ pub enum FixEvent<'a> {
     Created(&'a SessionId),
     Logon(&'a SessionId, Sender),
     Logout(&'a SessionId),
-    AppMsgIn(Box<FixtMessage>),
-    AdmMsgIn(Box<FixtMessage>),
+    AppMsgIn(Box<FixtMessage>, InputResponder<'a>),
+    AdmMsgIn(Box<FixtMessage>, InputResponder<'a>),
     //
-    AppMsgOut(&'a mut FixtMessage, &'a mut Responder),
+    AppMsgOut(&'a mut FixtMessage, &'a mut Responder), // TODO: Try pass by value but bind named
+    // ref to the struct
     AdmMsgOut(&'a mut FixtMessage),
     //
     DeserializeError(&'a SessionId, &'a DeserializeError),
@@ -159,8 +215,14 @@ impl AsEvent for FixEventInternal {
             FixEventInternal::Created(id) => FixEvent::Created(id),
             FixEventInternal::Logon(id, sender) => FixEvent::Logon(id, sender.take().unwrap()),
             FixEventInternal::Logout(id) => FixEvent::Logout(id),
-            FixEventInternal::AppMsgIn(msg) => FixEvent::AppMsgIn(msg.take().unwrap()),
-            FixEventInternal::AdmMsgIn(msg) => FixEvent::AdmMsgIn(msg.take().unwrap()),
+            FixEventInternal::AppMsgIn(msg, sender) => FixEvent::AppMsgIn(
+                msg.take().unwrap(),
+                InputResponder::new(sender.take().unwrap()),
+            ),
+            FixEventInternal::AdmMsgIn(msg, sender) => FixEvent::AdmMsgIn(
+                msg.take().unwrap(),
+                InputResponder::new(sender.take().unwrap()),
+            ),
             FixEventInternal::AppMsgOut(msg, resp) => {
                 FixEvent::AppMsgOut(msg.as_mut().unwrap(), resp)
             }

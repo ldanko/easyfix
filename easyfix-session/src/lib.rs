@@ -14,21 +14,13 @@ use std::{io, time::Duration};
 
 use easyfix_messages::messages::FixtMessage;
 use settings::Settings;
-use tokio::sync::{
-    broadcast,
-    mpsc,
-};
+use tokio::sync::mpsc;
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
 
 pub use connection::sender;
 use tracing::error;
 
-// TODO:
-// 1. Don't use tokio codec
-// 2. Try tu write messages directly to output stream
-// 3. Examples: FIX Monitor app, logon, maintain session and print incoming
-//    messages
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
     #[error("Never received logon from new connection.")]
@@ -62,51 +54,22 @@ impl Sender {
     }
 
     pub async fn send(&self, msg: Box<FixtMessage>) {
-        if let Err(_) = self.inner.send(SenderMsg::Msg(msg)).await {
-            panic!("Internal error: failed to send message, receiver closed or dropped");
+        if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)).await {
+            match msg.0 {
+                SenderMsg::Msg(msg) => error!(
+                    "failed to send {:?}<{}> message, receiver closed or dropped",
+                    msg.msg_type(),
+                    msg.msg_type().as_fix_str()
+                ),
+                SenderMsg::Disconnect => unreachable!(),
+            }
         }
     }
 
     pub(crate) async fn disconnect(&self) {
         if let Err(_) = self.inner.send(SenderMsg::Disconnect).await {
-            panic!("Internal error: failed to disconnect, receiver closed or dropped");
+            error!("failed to disconnect, receiver closed or dropped");
         }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Shutdown {
-    shutdown: bool,
-    notify: broadcast::Receiver<()>,
-}
-
-impl Shutdown {
-    /// Create a new `Shutdown` backed by the given `broadcast::Receiver`.
-    pub(crate) fn new(notify: broadcast::Receiver<()>) -> Shutdown {
-        Shutdown {
-            shutdown: false,
-            notify,
-        }
-    }
-
-    /// Returns `true` if the shutdown signal has been received.
-    pub(crate) fn is_shutdown(&self) -> bool {
-        self.shutdown
-    }
-
-    /// Receive the shutdown notice, waiting if necessary.
-    pub(crate) async fn recv(&mut self) {
-        // If the shutdown signal has already been received, then return
-        // immediately.
-        if self.shutdown {
-            return;
-        }
-
-        // Cannot receive a "lag error" as only one value is ever sent.
-        let _ = self.notify.recv().await;
-
-        // Remember that the signal has been received.
-        self.shutdown = true;
     }
 }
 

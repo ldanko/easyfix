@@ -5,7 +5,6 @@ use easyfix_messages::{
     messages::{FixtMessage, Header},
 };
 use serde::Deserialize;
-use tracing::trace;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
 pub struct SessionId {
@@ -39,7 +38,6 @@ impl SessionId {
         sender_comp_id: FixString,
         target_comp_id: FixString,
     ) -> SessionId {
-        trace!(%begin_string, %target_comp_id, %sender_comp_id);
         SessionId {
             begin_string,
             sender_comp_id,
@@ -54,7 +52,6 @@ impl SessionId {
         target_comp_id: FixString,
         session_qualifier: String,
     ) -> SessionId {
-        trace!(%begin_string, %target_comp_id, %sender_comp_id, session_qualifier);
         SessionId {
             begin_string,
             sender_comp_id,

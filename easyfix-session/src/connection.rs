@@ -14,10 +14,10 @@ use tokio::{
     time::{timeout, Duration},
 };
 use tokio_stream::StreamExt;
-use tracing::{debug, error, info, info_span, warn, Instrument};
+use tracing::{debug, info, info_span, Instrument};
 
 use crate::{
-    acceptor::SessionsMap,
+    acceptor::{ActiveSessionsMap, SessionsMap},
     application::{Emitter, FixEventInternal},
     messages_storage::MessagesStorage,
     session::Session,
@@ -90,6 +90,7 @@ pub(crate) async fn new_connection<S>(
     tcp_stream: TcpStream,
     settings: Settings,
     sessions: Rc<RefCell<SessionsMap<S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
 ) -> Result<(), Error>
 where
@@ -118,6 +119,9 @@ where
         sender,
         emitter.clone(),
     ));
+    active_sessions
+        .borrow_mut()
+        .insert(session_id.clone(), session.clone());
 
     let session_span = info_span!(
         "session",
@@ -162,6 +166,7 @@ where
     // TODO: error here?
     connection.session.on_disconnect().await;
     unregister_sender(&session_id);
+    active_sessions.borrow_mut().remove(&session_id);
     ret.map(|_| ())
 }
 
@@ -178,7 +183,7 @@ impl<S: MessagesStorage> Connection<S> {
             match event {
                 InputEvent::Message(msg) => {
                     if let Some(Disconnect) = self.session.on_message_in(msg).await {
-                        error!("DISCONNECT");
+                        info!("disconnect, exit input processing");
                         break;
                     }
                 }
@@ -201,12 +206,11 @@ impl<S: MessagesStorage> Connection<S> {
     ) -> Result<(), Error> {
         while let Some(event) = output_stream.next().await {
             match event {
-                OutputEvent::Message(msg) => match sink.write_all(&msg).await {
-                    Ok(_) => {
-                        warn!("msg sent");
+                OutputEvent::Message(msg) => {
+                    if let Err(error) = sink.write_all(&msg).await {
+                        return self.session.on_io_error(error).await;
                     }
-                    Err(error) => return self.session.on_io_error(error).await,
-                },
+                }
                 // TODO: currently this branch is not possible, here will be handled error from
                 //       messages store
                 OutputEvent::Error(OutputError::Io(error)) => {
@@ -215,7 +219,7 @@ impl<S: MessagesStorage> Connection<S> {
                 OutputEvent::Error(OutputError::OutboundMsgSeqNumMaxExceeded) => return Ok(()),
                 OutputEvent::Timeout => self.session.on_out_timeout().await,
                 OutputEvent::Disconnect => {
-                    error!("DISCONNECT");
+                    info!("disconnect, exit output processing");
                     return Ok(());
                 }
             }
