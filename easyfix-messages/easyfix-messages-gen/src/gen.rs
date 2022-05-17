@@ -339,7 +339,7 @@ impl SimpleMember {
                 let #name = {
                     let #name = deserializer.begin_string();
                     if #name != BEGIN_STRING {
-                        return Err(DeserializeError::GarbledMessage);
+                        return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
                     }
                     #name
                 };
@@ -350,11 +350,11 @@ impl SimpleMember {
                 // Check if MsgType(35) is the third tag in a message.
                 let #name = if let Some(35) = deserializer
                     .deserialize_tag_num()
-                    .map_err(|_| DeserializeError::GarbledMessage)?
+                    .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
                 {
                     deserializer.deserialize_string_enum()?
                 } else {
-                    return Err(DeserializeError::GarbledMessage);
+                    return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                 };
             },
             _ => quote! { let mut #name: Option<#type_> = None; },
@@ -1376,7 +1376,7 @@ impl Generator {
         quote! {
             use crate::{
                 deserializer::Deserializer,
-                parser::RawMessage,
+                parser::{raw_message, RawMessage},
                 serializer::Serializer,
                 types::*,
             };
@@ -1455,7 +1455,9 @@ impl Generator {
                 }
 
                 pub fn from_bytes(input: &[u8]) -> Result<FixtMessage, DeserializeError> {
-                    let deserializer = Deserializer::new(input);
+                    let (_, raw_msg) = raw_message(input)
+                        .map_err(|_| DeserializeError::GarbledMessage("Message not well formed".into()))?;
+                    let deserializer = Deserializer::from_raw_message(raw_msg);
                     FixtMessage::deserialize(deserializer)
                 }
 
