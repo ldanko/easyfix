@@ -51,7 +51,8 @@ pub use basic_types::*;
 
 #[derive(Debug)]
 pub enum DeserializeError {
-    GarbledMessage,
+    // TODO: enum maybe?
+    GarbledMessage(String),
     Logout,
     Reject {
         msg_type: Vec<u8>,
@@ -64,7 +65,7 @@ pub enum DeserializeError {
 impl fmt::Display for DeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DeserializeError::GarbledMessage => write!(f, "garbled message"),
+            DeserializeError::GarbledMessage(reason) => write!(f, "garbled message: {}", reason),
             DeserializeError::Logout => write!(f, "MsgSeqNum missing, force logout"),
             DeserializeError::Reject {
                 msg_type,
