@@ -304,23 +304,29 @@ impl SimpleMember {
 
     fn gen_serialize(&self) -> Option<TokenStream> {
         if let Some(serialize_type) = self.type_.gen_serialize() {
-            let name = &self.name;
-            let tag = format!("{}=", self.tag);
-            if self.required {
-                Some(quote! {
-                    //serializer.serialize_tag_num(#tag);
-                    serializer.output_mut().extend_from_slice(#tag.as_bytes());
-                    #serialize_type(&self.#name);
-                    serializer.output_mut().push(b'\x01');
-                })
+            if self.tag == 9 {
+                Some(quote! { serializer.serialize_body_len() })
+            } else if self.tag == 10 {
+                Some(quote! { serializer.serialize_checksum() })
             } else {
-                Some(quote! {
-                    if let Some(#name) = &self.#name {
+                let name = &self.name;
+                let tag = format!("{}=", self.tag);
+                if self.required {
+                    Some(quote! {
+                        //serializer.serialize_tag_num(#tag);
                         serializer.output_mut().extend_from_slice(#tag.as_bytes());
-                        #serialize_type(#name);
+                        #serialize_type(&self.#name);
                         serializer.output_mut().push(b'\x01');
-                    }
-                })
+                    })
+                } else {
+                    Some(quote! {
+                        if let Some(#name) = &self.#name {
+                            serializer.output_mut().extend_from_slice(#tag.as_bytes());
+                            #serialize_type(#name);
+                            serializer.output_mut().push(b'\x01');
+                        }
+                    })
+                }
             }
         } else {
             None

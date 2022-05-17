@@ -1,12 +1,21 @@
 use crate::types::basic_types::*;
 
+// TODO: This should be parametrizable and also used in parser to cut too big messages.
+const MAX_MSG_SIZE: usize = 4096;
+
+// TODO: SerializeError: Empty Vec/Group, `0` on SeqNum,TagNum,NumInGroup,Length
+
 pub struct Serializer {
     output: Vec<u8>,
+    body_start_idx: usize,
 }
 
 impl Serializer {
     pub fn new() -> Serializer {
-        Serializer { output: Vec::new() }
+        Serializer {
+            output: Vec::with_capacity(MAX_MSG_SIZE),
+            body_start_idx: 0,
+        }
     }
 
     pub fn output_mut(&mut self) -> &mut Vec<u8> {
@@ -15,6 +24,44 @@ impl Serializer {
 
     pub fn take(self) -> Vec<u8> {
         self.output
+    }
+
+    pub fn serialize_body_len(&mut self) {
+        if MAX_MSG_SIZE < 10000 {
+            self.output.extend_from_slice(b"9=0000\x01");
+        } else {
+            self.output.extend_from_slice(b"9=00000\x01");
+        }
+        self.body_start_idx = self.output.len();
+    }
+
+    pub fn serialize_checksum(&mut self) {
+        self.output.extend_from_slice(b"10=");
+
+        let body = &self.output[self.body_start_idx..];
+        let body_len = body.len();
+        let checksum = body
+            .iter()
+            .fold(0u8, |acc, byte| u8::wrapping_add(acc, *byte));
+
+        let mut buffer = itoa::Buffer::new();
+        if checksum < 10 {
+            self.output.extend_from_slice(b"00");
+        } else if checksum < 100 {
+            self.output.extend_from_slice(b"0");
+        }
+        self.output
+            .extend_from_slice(buffer.format(checksum).as_bytes());
+        self.output.push(b'\x01');
+
+        let body_len = buffer.format(body_len).as_bytes();
+
+        // TODO: lots of magic values
+        if MAX_MSG_SIZE < 10000 {
+            self.output[self.body_start_idx - 5..self.body_start_idx-2].copy_from_slice(body_len);
+        } else {
+            self.output[self.body_start_idx - 6..self.body_start_idx-2].copy_from_slice(body_len);
+        }
     }
 
     /// Serialize sequence of character digits without commas or decimals.
@@ -326,14 +373,14 @@ impl Serializer {
 
     pub fn serialize_enum<T>(&mut self, value: &T)
     where
-        T: Copy + Into<&'static [u8]>
+        T: Copy + Into<&'static [u8]>,
     {
         self.output.extend_from_slice(value.clone().into());
     }
 
     pub fn serialize_enum_collection<T>(&mut self, values: &[T])
     where
-        T: Copy + Into<&'static [u8]>
+        T: Copy + Into<&'static [u8]>,
     {
         for value in values {
             self.output.extend_from_slice(value.clone().into());
