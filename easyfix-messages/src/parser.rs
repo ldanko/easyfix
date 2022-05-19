@@ -14,6 +14,8 @@ use nom::{
 
 pub use nom::Err;
 
+// TODO: Don't use Nom, no need to use additional dependency for RawMessage processing.
+
 pub fn generic_field<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
     i: &'a [u8],
 ) -> IResult<&'a [u8], (u16, &[u8]), E> {
@@ -73,8 +75,8 @@ pub fn raw_message<'a>(i: &'a [u8]) -> IResult<&'a [u8], RawMessage<'a>> {
 
 #[cfg(test)]
 mod tests {
-    use nom::Err::Incomplete;
     use super::raw_message;
+    use nom::Err::Incomplete;
 
     #[test]
     fn parse_complete_ok() {
