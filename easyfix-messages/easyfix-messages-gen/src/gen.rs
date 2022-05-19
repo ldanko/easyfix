@@ -1320,13 +1320,13 @@ impl Generator {
                         .map(|value| {
                             (
                                 Ident::new(
-                                    &if value.description().as_bytes()[0].is_ascii_digit() {
-                                        format!(
-                                            "_{}",
-                                            value.description().to_case(Case::UpperCamel)
-                                        )
-                                    } else {
-                                        value.description().to_case(Case::UpperCamel)
+                                    &{
+                                        let mut variant_name =
+                                            value.description().to_case(Case::UpperCamel);
+                                        if variant_name.as_bytes()[0].is_ascii_digit() {
+                                            variant_name.insert(0, '_');
+                                        }
+                                        variant_name
                                     },
                                     Span::call_site(),
                                 ),
