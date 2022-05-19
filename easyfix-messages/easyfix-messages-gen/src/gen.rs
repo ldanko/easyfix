@@ -1422,6 +1422,7 @@ impl Generator {
                 fn deserialize(deserializer: &mut Deserializer, msg_type: MsgType) -> Result<Message, DeserializeError> {
                     match msg_type {
                         #(MsgType::#name => Ok(Message::#name(#name::deserialize(deserializer)?)),)*
+                        #[allow(unreachable_patterns)]
                         _ => Err(deserializer.reject(None, RejectReason::InvalidMsgType)),
                     }
                 }
