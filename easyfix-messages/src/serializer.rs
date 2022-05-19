@@ -2,6 +2,7 @@ use crate::types::basic_types::*;
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
 const MAX_MSG_SIZE: usize = 4096;
+const MAX_BODY_LEN_DIGITS: usize = if MAX_MSG_SIZE < 10000 { 4 } else { 5 };
 
 // TODO: SerializeError: Empty Vec/Group, `0` on SeqNum,TagNum,NumInGroup,Length
 
@@ -27,24 +28,31 @@ impl Serializer {
     }
 
     pub fn serialize_body_len(&mut self) {
-        if MAX_MSG_SIZE < 10000 {
-            self.output.extend_from_slice(b"9=0000\x01");
-        } else {
-            self.output.extend_from_slice(b"9=00000\x01");
-        }
+        const BODY_LEN_PLACEHOLDER: &[u8] = match MAX_BODY_LEN_DIGITS {
+            4 => b"9=0000\x01",
+            5 => b"9=00000\x01",
+            _ => panic!("unexpected count of maximum body length digits"),
+        };
+        self.output.extend_from_slice(BODY_LEN_PLACEHOLDER);
         self.body_start_idx = self.output.len();
     }
 
+    // TODO: add test cases for body len and checksum verification
     pub fn serialize_checksum(&mut self) {
-        self.output.extend_from_slice(b"10=");
+        let mut buffer = itoa::Buffer::new();
 
         let body = &self.output[self.body_start_idx..];
         let body_len = body.len();
-        let checksum = body
-            .iter()
-            .fold(0u8, |acc, byte| u8::wrapping_add(acc, *byte));
+        let body_len_slice = buffer.format(body_len).as_bytes();
 
-        let mut buffer = itoa::Buffer::new();
+        self.output[self.body_start_idx - body_len_slice.len() - 1..self.body_start_idx - 1]
+            .copy_from_slice(body_len_slice);
+
+        let checksum = self.output
+            .iter()
+            .fold(0u8, |acc, &byte| u8::wrapping_add(acc, byte));
+
+        self.output.extend_from_slice(b"10=");
         if checksum < 10 {
             self.output.extend_from_slice(b"00");
         } else if checksum < 100 {
@@ -54,14 +62,6 @@ impl Serializer {
             .extend_from_slice(buffer.format(checksum).as_bytes());
         self.output.push(b'\x01');
 
-        let body_len = buffer.format(body_len).as_bytes();
-
-        // TODO: lots of magic values
-        if MAX_MSG_SIZE < 10000 {
-            self.output[self.body_start_idx - 5..self.body_start_idx-2].copy_from_slice(body_len);
-        } else {
-            self.output[self.body_start_idx - 6..self.body_start_idx-2].copy_from_slice(body_len);
-        }
     }
 
     /// Serialize sequence of character digits without commas or decimals.
