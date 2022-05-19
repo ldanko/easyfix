@@ -1425,6 +1425,12 @@ impl Generator {
                         _ => Err(deserializer.reject(None, RejectReason::InvalidMsgType)),
                     }
                 }
+
+                pub fn msg_type(&self) -> MsgType {
+                    match self {
+                        #(Message::#name(_) => MsgType::#name,)*
+                    }
+                }
             }
 
             #[derive(Debug)]
