@@ -5,7 +5,7 @@ pub mod basic_types {
 
     pub type Int = i64;
     pub type TagNum = u16;
-    pub type SeqNum = u64;
+    pub type SeqNum = u32;
     pub type NumInGroup = u8;
     pub type DayOfMonth = u8;
 
