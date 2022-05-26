@@ -86,7 +86,7 @@ impl Type {
             Type::BasicType(BasicType::Char) => Some(quote! { serializer.serialize_char }),
             Type::BasicType(BasicType::Country) => Some(quote! { serializer.serialize_country }),
             Type::BasicType(BasicType::Currency) => Some(quote! { serializer.serialize_currency }),
-            Type::BasicType(BasicType::Data) => Some(quote! { serializer.serialize_data }),
+            Type::BasicType(BasicType::Data) => None,
             Type::BasicType(BasicType::Exchange) => Some(quote! { serializer.serialize_exchange }),
             Type::BasicType(BasicType::Float) => Some(quote! { serializer.serialize_float }),
             Type::BasicType(BasicType::Int) => Some(quote! { serializer.serialize_int }),
@@ -132,7 +132,7 @@ impl Type {
             Type::BasicType(BasicType::UtcTimestamp) => {
                 Some(quote! { serializer.serialize_utc_timestamp })
             }
-            Type::BasicType(BasicType::XmlData) => Some(quote! { serializer.serialize_xml }),
+            Type::BasicType(BasicType::XmlData) => None,
             Type::Group(_) => None,
             Type::Enum((
                 _,
@@ -546,7 +546,11 @@ impl MemberDesc {
             }) => {
                 let len_tag = format!("{}=", len_tag);
                 let value_tag = format!("{}=", value_tag);
-                let serialize_value = value_type.gen_serialize();
+                let serialize_value = match value_type {
+                    Type::BasicType(BasicType::Data) => quote! { serializer.serialize_data },
+                    Type::BasicType(BasicType::XmlData) => quote! { serializer.serialize_xml },
+                    t => panic!("Unexpected type {:?} after `Length` field", t),
+                };
                 if *required {
                     Some(quote! {
                         serializer.output_mut().extend_from_slice(#len_tag.as_bytes());
