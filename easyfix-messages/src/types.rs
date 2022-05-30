@@ -1,6 +1,7 @@
 use std::{error::Error, fmt};
 
 pub mod basic_types {
+    pub use chrono::NaiveDate;
     pub use rust_decimal::Decimal;
 
     pub type Int = i64;
@@ -32,10 +33,10 @@ pub mod basic_types {
 
     pub type UtcTimestamp = Vec<u8>;
     pub type UtcTimeOnly = Vec<u8>;
-    pub type UtcDateOnly = (u16, u8, u8);
+    pub type UtcDateOnly = NaiveDate;
 
     pub type LocalMktTime = u64;
-    pub type LocalMktDate = (u16, u8, u8);
+    pub type LocalMktDate = NaiveDate;
 
     pub type TzTimestamp = Vec<u8>;
     pub type TzTimeOnly = Vec<u8>;

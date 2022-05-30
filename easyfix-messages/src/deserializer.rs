@@ -868,16 +868,11 @@ impl<'de> Deserializer<'de> {
                     + (y1 - b'0') as u16 * 10
                     + (y0 - b'0') as u16;
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
-                if !(1..31).contains(&month) {
-                    return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
-                }
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
-                if !(1..12).contains(&day) {
-                    return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
-                }
                 self.buf = &self.buf[8..];
-                Ok((year, month, day))
-            }
+                UtcDateOnly::from_ymd_opt(year as i32, month as u32, day as u32)
+                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))
+            },
             _ => Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)),
         }
     }
@@ -953,15 +948,10 @@ impl<'de> Deserializer<'de> {
                     + (y1 - b'0') as u16 * 10
                     + (y0 - b'0') as u16;
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
-                if !(1..31).contains(&month) {
-                    return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
-                }
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
-                if !(1..12).contains(&day) {
-                    return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
-                }
                 self.buf = &self.buf[8..];
-                Ok((year, month, day))
+                LocalMktDate::from_ymd_opt(year as i32, month as u32, day as u32)
+                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))
             }
             _ => Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)),
         }

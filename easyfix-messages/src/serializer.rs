@@ -1,4 +1,5 @@
 use crate::types::basic_types::*;
+use std::io::Write;
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
 const MAX_MSG_SIZE: usize = 4096;
@@ -48,7 +49,8 @@ impl Serializer {
         self.output[self.body_start_idx - body_len_slice.len() - 1..self.body_start_idx - 1]
             .copy_from_slice(body_len_slice);
 
-        let checksum = self.output
+        let checksum = self
+            .output
             .iter()
             .fold(0u8, |acc, &byte| u8::wrapping_add(acc, byte));
 
@@ -61,7 +63,6 @@ impl Serializer {
         self.output
             .extend_from_slice(buffer.format(checksum).as_bytes());
         self.output.push(b'\x01');
-
     }
 
     /// Serialize sequence of character digits without commas or decimals.
@@ -270,14 +271,7 @@ impl Serializer {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn serialize_utc_date_only(&mut self, input: &UtcDateOnly) {
-        let (y, m, d) = *input;
-
-        let mut buffer = itoa::Buffer::new();
-        self.output.extend_from_slice(buffer.format(y).as_bytes());
-        let mut buffer = itoa::Buffer::new();
-        self.output.extend_from_slice(buffer.format(m).as_bytes());
-        let mut buffer = itoa::Buffer::new();
-        self.output.extend_from_slice(buffer.format(d).as_bytes());
+        write!(self.output, "{}", input.format("%Y%m%d")).expect("UtcDateOnly serialization failed")
     }
 
     /// Serialize time local to a market center. Used where offset to UTC
@@ -304,14 +298,8 @@ impl Serializer {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn serialize_local_mkt_date(&mut self, input: &LocalMktDate) {
-        let (y, m, d) = *input;
-
-        let mut buffer = itoa::Buffer::new();
-        self.output.extend_from_slice(buffer.format(y).as_bytes());
-        let mut buffer = itoa::Buffer::new();
-        self.output.extend_from_slice(buffer.format(m).as_bytes());
-        let mut buffer = itoa::Buffer::new();
-        self.output.extend_from_slice(buffer.format(d).as_bytes());
+        write!(self.output, "{}", input.format("%Y%m%d"))
+            .expect("LocalMktDate serialization failed")
     }
 
     /// Serialize string representing a time/date combination representing
