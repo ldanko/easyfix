@@ -287,9 +287,8 @@ impl Serializer {
     ///
     /// In general only the hour token is non-zero.
     pub fn serialize_local_mkt_time(&mut self, input: &LocalMktTime) {
-        let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(*input).as_bytes());
+        write!(self.output, "{}", input.format("%H:%M:%S"))
+            .expect("LocalMktTime serialization failed")
     }
 
     /// Serialize date of local market (as opposed to UTC) in YYYYMMDD

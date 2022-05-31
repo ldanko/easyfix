@@ -1058,7 +1058,7 @@ impl<'de> Deserializer<'de> {
                 // Day
                 d1 @ b'0'..=b'3', d0 @ b'0'..=b'9',
                 // Separator
-                b'\x01',
+                b'\x01', ..
             ] => {
                 let year = (y3 - b'0') as u16 * 1000
                     + (y2 - b'0') as u16 * 100
@@ -1066,8 +1066,8 @@ impl<'de> Deserializer<'de> {
                     + (y0 - b'0') as u16;
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
-                self.buf = &self.buf[8..];
-                LocalMktDate::from_ymd_opt(year as i32, month as u32, day as u32)
+                self.buf = &self.buf[9..];
+                LocalMktDate::from_ymd_opt(year.into(), month.into(), day.into())
                     .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))
             }
             _ => Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)),

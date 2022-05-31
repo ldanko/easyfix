@@ -1,7 +1,7 @@
 use std::{error::Error, fmt};
 
 pub mod basic_types {
-    pub use chrono::{Date, DateTime, NaiveDate, Utc};
+    pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
     pub use rust_decimal::Decimal;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::{
@@ -41,7 +41,7 @@ pub mod basic_types {
     pub type UtcTimeOnly = Vec<u8>;
     pub type UtcDateOnly = Date<Utc>;
 
-    pub type LocalMktTime = u64;
+    pub type LocalMktTime = NaiveTime;
     pub type LocalMktDate = NaiveDate;
 
     pub type TzTimestamp = Vec<u8>;
