@@ -967,9 +967,10 @@ impl<'de> Deserializer<'de> {
                     + (y0 - b'0') as u16;
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
-                self.buf = &self.buf[8..];
-                UtcDateOnly::from_ymd_opt(year as i32, month as u32, day as u32)
-                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))
+                self.buf = &self.buf[9..];
+                let naive_date = NaiveDate::from_ymd_opt(year.into(), month.into(), day.into())
+                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))?;
+                Ok(UtcDateOnly::from_utc(naive_date, Utc))
             },
             _ => Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)),
         }
