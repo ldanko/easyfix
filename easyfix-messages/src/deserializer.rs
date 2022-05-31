@@ -733,6 +733,82 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    // Helper for UTC timestamp deserialization.
+    fn deserialize_fraction_of_secod(&mut self) -> Result<u32, DeserializeError> {
+        match self.buf {
+            [] => {
+                return Err(DeserializeError::GarbledMessage(format!(
+                    "no more data to parse tag {:?}",
+                    self.current_tag
+                )));
+            }
+            [b'\x01', ..] => {
+                self.buf = &self.buf[1..];
+                return Ok(0);
+            }
+            // Do nothing here, fracrtion of second will be deserializede below
+            [b'.', ..] => self.buf = &self.buf[1..],
+            _ => {
+                return Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue));
+            }
+        }
+
+        let mut fraction_of_second: u64 = 0;
+        for i in 0..self.buf.len() {
+            // SAFETY: i is between 0 and buf.len()
+            match unsafe { self.buf.get_unchecked(i) } {
+                n @ b'0'..=b'9' => {
+                    fraction_of_second = fraction_of_second
+                        .checked_mul(10)
+                        .and_then(|v| v.checked_add((n - b'0') as u64))
+                        .ok_or_else(|| {
+                            self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
+                        })?;
+                }
+                b'\x01' => {
+                    self.buf = &self.buf[i + 1..];
+                    match i {
+                        3 => {
+                            return (fraction_of_second * 1_000_000).try_into().map_err(|_| {
+                                self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
+                            });
+                        }
+                        6 => {
+                            return (fraction_of_second * 1_000).try_into().map_err(|_| {
+                                self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
+                            });
+                        }
+                        9 => {
+                            return fraction_of_second.try_into().map_err(|_| {
+                                self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
+                            });
+                        }
+                        12 => {
+                            // XXX: Types from `chrono` crate can't hold
+                            //      time at picosecond resolution
+                            return (fraction_of_second / 1_000).try_into().map_err(|_| {
+                                self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
+                            });
+                        }
+                        _ => {
+                            return Err(self.reject(
+                                self.current_tag,
+                                RejectReason::IncorrectDataFormatForValue,
+                            ))
+                        }
+                    }
+                }
+                _ => {
+                    return Err(
+                        self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)
+                    );
+                }
+            }
+        }
+
+        return Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue));
+    }
+
     /// Deserialize string representing time/date combination represented
     /// in UTC (Universal Time Coordinated) in either YYYYMMDD-HH:MM:SS
     /// (whole seconds) or YYYYMMDD-HH:MM:SS.sss* format, colons, dash,
@@ -743,42 +819,68 @@ impl<'de> Deserializer<'de> {
     /// - MM = 01-12,
     /// - DD = 01-31,
     /// - HH = 00-23,
-    /// - MM = 0059,
+    /// - MM = 00-59,
     /// - SS = 00-60 (60 only if UTC leap second),
     /// - sss* fractions of seconds. The fractions of seconds may be empty when
     ///        no fractions of seconds are conveyed (in such a case the period
     ///        is not conveyed), it may include 3 digits to convey
     ///        milliseconds, 6 digits to convey microseconds, 9 digits
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
-    ///        // TODO: set precision!
     pub fn deserialize_utc_timestamp(&mut self) -> Result<UtcTimestamp, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
+                Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
             }
-            [b'\x01'] => {
-                return Err(self.reject(self.current_tag, RejectReason::TagSpecifiedWithoutAValue))
+            [b'\x01', ..] => {
+                Err(self.reject(self.current_tag, RejectReason::TagSpecifiedWithoutAValue))
             }
-            _ => {}
-        }
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
-                // -1 to drop separator, separator on idx 0 is checked separately
-                let data = &self.buf[0..i];
-                self.buf = &self.buf[i + 1..];
-                // TODO
-                return Ok(data.into());
-            }
-        }
+            // Missing separator at the end
+            [_] => Err(DeserializeError::GarbledMessage(format!(
+                "missing tag ({:?}) separator",
+                self.current_tag
+            ))),
+            [
+                // Year
+                y3 @ b'0'..=b'9', y2 @ b'0'..=b'9', y1 @ b'0'..=b'9', y0 @ b'0'..=b'9',
+                // Month
+                m1 @ b'0'..=b'1', m0 @ b'0'..=b'9',
+                // Day
+                d1 @ b'0'..=b'3', d0 @ b'0'..=b'9',
+                b'-',
+                // Hour
+                h1 @ b'0'..=b'2', h0 @ b'0'..=b'9',
+                b':',
+                // Minute
+                mm1 @ b'0'..=b'5', mm0 @ b'0'..=b'9',
+                b':',
+                // Second
+                s1 @ b'0'..=b'5', s0 @ b'0'..=b'9',
+                ..
+            ] => {
+                self.buf = &self.buf[17..];
+                let year = (y3 - b'0') as i32 * 1000
+                    + (y2 - b'0') as i32 * 100
+                    + (y1 - b'0') as i32 * 10
+                    + (y0 - b'0') as i32;
+                let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
+                let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
+                let naive_date = NaiveDate::from_ymd_opt(year, month, day)
+                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))?;
+                let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
+                let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
+                let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
+                let fraction_of_second = self.deserialize_fraction_of_secod()?;
+                let naive_date_time = naive_date
+                    .and_hms_nano_opt(hour, min, sec, fraction_of_second)
+                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))?;
+                Ok(DateTime::from_utc(naive_date_time, Utc))
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+            }
+            _ => Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)),
+        }
     }
 
     /// Deserialize string representing time-only represented in UTC
@@ -1269,6 +1371,7 @@ impl<'de> Deserializer<'de> {
 mod tests {
     use super::Deserializer;
     use crate::parser::RawMessage;
+    use chrono::{DateTime, NaiveDate, Utc};
 
     fn deserializer(body: &[u8]) -> Deserializer {
         let raw_message = RawMessage {
@@ -1281,7 +1384,7 @@ mod tests {
             raw_message,
             buf: body,
             msg_type: Vec::new(),
-            seq_num: None,
+            seq_num: Some(1),
             current_tag: None,
             tmp_tag: None,
         }
@@ -1289,13 +1392,74 @@ mod tests {
 
     #[test]
     fn deserialize_utc_timestamp_ok() {
-        let input = b"20190605-11:51:27.848\x01";
+        let input = b"20190605-11:51:27\x01\x00";
         let mut deserializer = deserializer(input);
         let utc_timestamp = deserializer
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
-        println!("{deserializer:?}");
-        assert_eq!(utc_timestamp, input[..input.len() - 1]);
-        assert!(deserializer.buf.is_empty());
+        let date_time: DateTime<Utc> =
+            DateTime::from_utc(NaiveDate::from_ymd(2019, 06, 05).and_hms(11, 51, 27), Utc);
+        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_utc_timestamp_with_millis_ok() {
+        let input = b"20190605-11:51:27.848\x01\x00";
+        let mut deserializer = deserializer(input);
+        let utc_timestamp = deserializer
+            .deserialize_utc_timestamp()
+            .expect("failed to deserialize utc timestamp");
+        let date_time: DateTime<Utc> = DateTime::from_utc(
+            NaiveDate::from_ymd(2019, 06, 05).and_hms_milli(11, 51, 27, 848),
+            Utc,
+        );
+        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_utc_timestamp_with_micros_ok() {
+        let input = b"20190605-11:51:27.848757\x01\x00";
+        let mut deserializer = deserializer(input);
+        let utc_timestamp = deserializer
+            .deserialize_utc_timestamp()
+            .expect("failed to deserialize utc timestamp");
+        let date_time: DateTime<Utc> = DateTime::from_utc(
+            NaiveDate::from_ymd(2019, 06, 05).and_hms_micro(11, 51, 27, 848757),
+            Utc,
+        );
+        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_utc_timestamp_with_nanos_ok() {
+        let input = b"20190605-11:51:27.848757123\x01\x00";
+        let mut deserializer = deserializer(input);
+        let utc_timestamp = deserializer
+            .deserialize_utc_timestamp()
+            .expect("failed to deserialize utc timestamp");
+        let date_time: DateTime<Utc> = DateTime::from_utc(
+            NaiveDate::from_ymd(2019, 06, 05).and_hms_nano(11, 51, 27, 848757123),
+            Utc,
+        );
+        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_utc_timestamp_with_picos_ok() {
+        let input = b"20190605-11:51:27.848757123999\x01\x00";
+        let mut deserializer = deserializer(input);
+        let utc_timestamp = deserializer
+            .deserialize_utc_timestamp()
+            .expect("failed to deserialize utc timestamp");
+        let date_time: DateTime<Utc> = DateTime::from_utc(
+            NaiveDate::from_ymd(2019, 06, 05).and_hms_nano(11, 51, 27, 848757123),
+            Utc,
+        );
+        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(deserializer.buf, &[b'\x00']);
     }
 }
