@@ -749,7 +749,9 @@ impl<'de> Deserializer<'de> {
             // Do nothing here, fracrtion of second will be deserializede below
             [b'.', ..] => self.buf = &self.buf[1..],
             _ => {
-                return Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue));
+                return Err(
+                    self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)
+                );
             }
         }
 
