@@ -1002,10 +1002,26 @@ impl<'de> Deserializer<'de> {
                 "missing tag ({:?}) separator",
                 self.current_tag
             ))),
-            [_h1, _h0, b':', _m1, _m0, b':', _s1, _s0] => {
+
+            [
+                // Hour
+                h1 @ b'0'..=b'2', h0 @ b'0'..=b'9',
+                b':',
+                // Minute
+                m1 @ b'0'..=b'5', m0 @ b'0'..=b'0',
+                b':',
+                // Second
+                s1 @ b'0'..=b'5', s0 @ b'0'..=b'9',
+                b'\x01',
+                ..
+            ] =>
+            {
+                let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
+                let minute = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
+                let second = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
                 self.buf = &self.buf[8..];
-                // TODO
-                Ok(0)
+                LocalMktTime::from_hms_opt(hour, minute, second)
+                    .ok_or_else(|| self.reject(self.current_tag, RejectReason::ValueIsIncorrect))
             }
             _ => Err(self.reject(self.current_tag, RejectReason::IncorrectDataFormatForValue)),
         }
@@ -1371,7 +1387,7 @@ impl<'de> Deserializer<'de> {
 #[cfg(test)]
 mod tests {
     use super::Deserializer;
-    use crate::parser::RawMessage;
+    use crate::{parser::RawMessage, types::LocalMktDate};
     use chrono::{DateTime, NaiveDate, Utc};
 
     fn deserializer(body: &[u8]) -> Deserializer {
@@ -1461,6 +1477,17 @@ mod tests {
             Utc,
         );
         assert_eq!(utc_timestamp, date_time);
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_local_mkt_date_ok() {
+        let input = b"20220530\x01\x00";
+        let mut deserializer = deserializer(input);
+        let local_mkt_date = deserializer
+            .deserialize_local_mkt_date()
+            .expect("failed to deserialize utc timestamp");
+        assert_eq!(local_mkt_date, LocalMktDate::from_ymd(2022, 5, 30));
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 }
