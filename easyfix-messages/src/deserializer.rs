@@ -199,11 +199,8 @@ impl<'de> Deserializer<'de> {
                 }
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];
-                    if value == 0 {
-                        return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
-                    } else {
-                        return Ok(value);
-                    }
+                    // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
+                    return Ok(value);
                 }
                 _ => {
                     return Err(
