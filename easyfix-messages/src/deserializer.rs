@@ -30,7 +30,7 @@ impl<'de> Deserializer<'de> {
         }
     }
 
-    pub fn begin_string(&self) -> Str {
+    pub fn begin_string(&self) -> FixString {
         self.raw_message.begin_string.into()
     }
 
@@ -38,8 +38,8 @@ impl<'de> Deserializer<'de> {
         self.raw_message.body.len() as Length
     }
 
-    pub fn check_sum(&self) -> Str {
-        format!("{:03}", self.raw_message.checksum).into_bytes()
+    pub fn check_sum(&self) -> FixString {
+        format!("{:03}", self.raw_message.checksum).into()
     }
 
     pub fn set_seq_num(&mut self, seq_num: SeqNum) {
@@ -516,7 +516,7 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
-    pub fn deserialize_string(&mut self) -> Result<Str, DeserializeError> {
+    pub fn deserialize_string(&mut self) -> Result<FixString, DeserializeError> {
         match self.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -531,19 +531,18 @@ impl<'de> Deserializer<'de> {
         }
 
         const DEFAULT_CAPACITY: usize = 16;
-        let mut result = Str::with_capacity(DEFAULT_CAPACITY);
+        let mut result = Vec::with_capacity(DEFAULT_CAPACITY);
         for i in 0..self.buf.len() {
             // SAFETY: i is between 0 and input.len()
             match unsafe { self.buf.get_unchecked(i) } {
                 // No control character is allowed
                 0x00 | 0x02..=0x1f | 0x80..=0x9f => {
-                    println!("Wrong byte {} at pos {}", self.buf.get(i).unwrap(), i);
                     return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
                 }
                 // Except SOH which marks end of tag
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];
-                    return Ok(result);
+                    return Ok(result.into());
                 }
                 byte => result.push(*byte),
             }
@@ -582,7 +581,7 @@ impl<'de> Deserializer<'de> {
                 const DEFAULT_CAPACITY: usize = 4;
                 let mut result = MultipleStringValue::with_capacity(DEFAULT_CAPACITY);
                 for part in data.split(|p| *p == b' ') {
-                    let mut sub_result = Str::with_capacity(part.len());
+                    let mut sub_result = Vec::with_capacity(part.len());
                     for byte in part {
                         match byte {
                             // ASCII controll characters range
@@ -594,7 +593,7 @@ impl<'de> Deserializer<'de> {
                             n => sub_result.push(*n),
                         }
                     }
-                    result.push(sub_result);
+                    result.push(sub_result.into());
                 }
                 return Ok(result);
             }
@@ -1236,7 +1235,7 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_string_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
-        T: TryFrom<Vec<u8>, Error = RejectReason>,
+        T: TryFrom<FixString, Error = RejectReason>,
     {
         let value = self.deserialize_string()?;
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
@@ -1257,7 +1256,7 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_multiple_string_value_enum<T>(&mut self) -> Result<Vec<T>, DeserializeError>
     where
-        T: TryFrom<Vec<u8>, Error = RejectReason>,
+        T: TryFrom<FixString, Error = RejectReason>,
     {
         let values = self.deserialize_multiple_string_value()?;
         let mut result = Vec::with_capacity(values.len());

@@ -3,6 +3,11 @@ use std::{error::Error, fmt};
 pub mod basic_types {
     pub use chrono::NaiveDate;
     pub use rust_decimal::Decimal;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::{
+        borrow::{self, Cow},
+        fmt, ops,
+    };
 
     pub type Int = i64;
     pub type TagNum = u16;
@@ -22,8 +27,9 @@ pub mod basic_types {
     pub type Char = u8;
     pub type MultipleCharValue = Vec<Char>;
 
-    pub type Str = Vec<u8>;
-    pub type MultipleStringValue = Vec<Vec<u8>>;
+    #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+    pub struct FixString(Vec<u8>);
+    pub type MultipleStringValue = Vec<FixString>;
 
     pub use crate::country::Country;
     pub use crate::currency::Currency;
@@ -46,6 +52,163 @@ pub mod basic_types {
     pub type XmlData = Data;
 
     pub type Tenor = Vec<u8>;
+
+    impl FixString {
+        pub fn new() -> FixString {
+            FixString(Vec::new())
+        }
+
+        pub fn from_vec(buf: Vec<u8>) -> FixString {
+            FixString(buf)
+        }
+
+        pub fn to_utf8_lossy(&self) -> Cow<'_, str> {
+            String::from_utf8_lossy(&self.0)
+        }
+
+        pub fn into_bytes(self) -> Vec<u8> {
+            self.0
+        }
+    }
+
+    impl fmt::Display for FixString {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+            self.to_utf8_lossy().fmt(f)
+        }
+    }
+
+    impl fmt::Debug for FixString {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "FixString({})", self)
+        }
+    }
+
+    impl ops::Deref for FixString {
+        type Target = [u8];
+
+        fn deref(&self) -> &[u8] {
+            self.0.deref()
+        }
+    }
+
+    impl AsRef<[u8]> for FixString {
+        fn as_ref(&self) -> &[u8] {
+            self.0.as_ref()
+        }
+    }
+
+    impl borrow::Borrow<[u8]> for FixString {
+        fn borrow(&self) -> &[u8] {
+            self.0.borrow()
+        }
+    }
+
+    impl From<&[u8]> for FixString {
+        fn from(input: &[u8]) -> FixString {
+            FixString(input.into())
+        }
+    }
+
+    impl From<Vec<u8>> for FixString {
+        fn from(input: Vec<u8>) -> FixString {
+            FixString(input)
+        }
+    }
+
+    impl From<&str> for FixString {
+        fn from(input: &str) -> FixString {
+            // TODO: covert encoding from UTF-8 to 8859-1 (Latin-1)
+            FixString(input.into())
+        }
+    }
+
+    impl From<String> for FixString {
+        fn from(input: String) -> FixString {
+            // TODO: covert encoding from UTF-8 to 8859-1 (Latin-1)
+            FixString(input.into_bytes())
+        }
+    }
+
+    impl<const N: usize> From<[u8; N]> for FixString {
+        fn from(input: [u8; N]) -> FixString {
+            FixString(input.into())
+        }
+    }
+
+    impl<const N: usize> From<&[u8; N]> for FixString {
+        fn from(input: &[u8; N]) -> FixString {
+            FixString(input.as_slice().into())
+        }
+    }
+
+    impl PartialEq<[u8]> for FixString {
+        fn eq(&self, other: &[u8]) -> bool {
+            self.0.eq(other)
+        }
+    }
+
+    impl PartialEq<&[u8]> for FixString {
+        fn eq(&self, other: &&[u8]) -> bool {
+            self.0.eq(other)
+        }
+    }
+
+    impl<const N: usize> PartialEq<[u8; N]> for FixString {
+        fn eq(&self, other: &[u8; N]) -> bool {
+            self.0.eq(other)
+        }
+    }
+
+    impl<const N: usize> PartialEq<&'_ [u8; N]> for FixString {
+        fn eq(&self, other: &&[u8; N]) -> bool {
+            self.0.eq(other)
+        }
+    }
+
+    impl PartialEq<Vec<u8>> for FixString {
+        fn eq(&self, other: &Vec<u8>) -> bool {
+            self.0.eq(other)
+        }
+    }
+
+    use serde::de::{self, Visitor};
+
+    struct FixStringVisitor;
+
+    impl<'de> Visitor<'de> for FixStringVisitor {
+        type Value = FixString;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            // TODO: covert encoding from UTF-8 to 8859-1 (Latin-1)
+            Ok(FixString::from(value))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for FixString {
+        fn deserialize<D>(deserializer: D) -> Result<FixString, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(FixStringVisitor)
+        }
+    }
+
+    impl Serialize for FixString {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            // TODO: covert encoding from 8859-1 (Latin-1) to UTF-8
+            serializer.serialize_str(&self.to_utf8_lossy())
+        }
+    }
 }
 
 pub use basic_types::*;

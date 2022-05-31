@@ -53,7 +53,7 @@ impl Type {
             Type::BasicType(BasicType::PriceOffset) => quote! { PriceOffset },
             Type::BasicType(BasicType::Qty) => quote! { Qty },
             Type::BasicType(BasicType::SeqNum) => quote! { SeqNum },
-            Type::BasicType(BasicType::String) => quote! { Str },
+            Type::BasicType(BasicType::String) => quote! { FixString },
             Type::BasicType(BasicType::TzTimeOnly) => quote! { TzTimeOnly },
             Type::BasicType(BasicType::TzTimestamp) => quote! { TzTimestamp },
             Type::BasicType(BasicType::UtcDateOnly) => quote! { UtcDateOnly },
@@ -1051,7 +1051,7 @@ impl EnumDesc {
             self.type_,
             BasicType::String | BasicType::MultipleStringValue
         ) {
-            quote! { match input.as_slice() }
+            quote! { match input.as_ref() }
         } else {
             quote! { match input }
         };

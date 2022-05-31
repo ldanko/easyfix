@@ -167,7 +167,7 @@ impl Serializer {
 
     /// Serialize alphanumeric free-format strings can include any character
     /// except control characters.
-    pub fn serialize_string(&mut self, input: &Str) {
+    pub fn serialize_string(&mut self, input: &FixString) {
         self.output.extend_from_slice(&input);
     }
 
