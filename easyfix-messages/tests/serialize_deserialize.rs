@@ -133,3 +133,71 @@ fn known_msg_type() {
     let msg = Message::from_bytes(msg_str.replace("|", "\x01").as_bytes()).unwrap();
     assert_eq!(msg.body.msg_type(), MsgType::Heartbeat);
 }
+
+/// Build a properly-framed FIXT.1.1 message from the `(tag, value)` pairs
+/// that follow BodyLength(9) — i.e. starting at MsgType(35) and ending
+/// before CheckSum(10). Computes BodyLength and CheckSum so the framing
+/// layer accepts the message and parsing reaches the field-level checks.
+fn build_fix(body_fields: &[(&str, &str)]) -> Vec<u8> {
+    let mut body = String::new();
+    for (tag, value) in body_fields {
+        body.push_str(tag);
+        body.push('=');
+        body.push_str(value);
+        body.push('\x01');
+    }
+    let without_checksum = format!("8=FIXT.1.1\x019={}\x01{body}", body.len());
+    let checksum = without_checksum.bytes().map(u32::from).sum::<u32>() % 256;
+    format!("{without_checksum}10={checksum:03}\x01").into_bytes()
+}
+
+/// Scenario 14a (`FIX_Session_Testcases`): a well-formed but
+/// spec-undefined tag must be rejected with `SessionRejectReason=0`
+/// (Invalid tag number), NOT `=3` (Undefined Tag). Tag 9999 is defined in
+/// no dictionary; here it follows a body field (TestReqID 112), so it
+/// surfaces through the body deserializer's catch-all.
+#[test]
+fn undefined_tag_in_body_rejected_with_invalid_tag_number() {
+    let bytes = build_fix(&[
+        ("35", "0"), // Heartbeat
+        ("49", "test_sender"),
+        ("56", "test_target"),
+        ("34", "1"),
+        ("52", "20230713-21:55:13.436187000"),
+        ("112", "ABC"), // TestReqID — a body field, hands off header → body
+        ("9999", "X"),  // undefined tag, reaches the body catch-all
+    ]);
+
+    assert_matches!(
+        Message::from_bytes(&bytes),
+        Err(DeserializeError::Reject {
+            tag: Some(9999),
+            reason,
+            ..
+        }) if reason == SessionRejectReasonBase::InvalidTagNumber
+    );
+}
+
+/// Same mandate, header section: an undefined tag among the header fields
+/// surfaces through the header deserializer's catch-all and must likewise
+/// map to `InvalidTagNumber=0` (Scenario 14a).
+#[test]
+fn undefined_tag_in_header_rejected_with_invalid_tag_number() {
+    let bytes = build_fix(&[
+        ("35", "0"),
+        ("49", "test_sender"),
+        ("56", "test_target"),
+        ("34", "1"),
+        ("9999", "X"), // undefined tag, still in the header section
+        ("52", "20230713-21:55:13.436187000"),
+    ]);
+
+    assert_matches!(
+        Message::from_bytes(&bytes),
+        Err(DeserializeError::Reject {
+            tag: Some(9999),
+            reason,
+            ..
+        }) if reason == SessionRejectReasonBase::InvalidTagNumber
+    );
+}

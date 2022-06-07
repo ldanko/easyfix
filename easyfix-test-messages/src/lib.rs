@@ -1496,9 +1496,8 @@ impl Header {
                         deserializer.put_tag(tag);
                         break;
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -1755,9 +1754,8 @@ impl Trailer {
                             SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -1805,9 +1803,8 @@ impl Heartbeat {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -1858,9 +1855,8 @@ impl TestRequest {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -1926,9 +1922,8 @@ impl ResendRequest {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -2050,9 +2045,8 @@ impl Reject {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -2126,9 +2120,8 @@ impl SequenceReset {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -2218,9 +2211,8 @@ impl Logout {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -2458,9 +2450,8 @@ impl Logon {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -2605,9 +2596,8 @@ impl NewOrderSingle {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
@@ -2831,9 +2821,8 @@ impl ExecutionReport {
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
                         ));
                     } else {
-                        return Err(
-                            deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag)
-                        );
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }
             }
