@@ -39,7 +39,7 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn check_sum(&self) -> FixString {
-        format!("{:03}", self.raw_message.checksum).into()
+        FixString::from_ascii_lossy(format!("{:03}", self.raw_message.checksum).into_bytes())
     }
 
     pub fn set_seq_num(&mut self, seq_num: SeqNum) {
@@ -427,7 +427,8 @@ impl<'de> Deserializer<'de> {
         }
     }
 
-    /// Dese any ISO/IEC 8859-1 (Latin-1) character except control characters.
+    /// Deserialize any ASCII character except control characters.
+    // TODO: [Feature]: Deserialize any ISO/IEC 8859-1 (Latin-1) character except control characters.
     pub fn deserialize_char(&mut self) -> Result<Char, DeserializeError> {
         match self.buf {
             [] => {
@@ -439,8 +440,10 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 Err(self.reject(self.current_tag, RejectReason::TagSpecifiedWithoutAValue))
             }
-            // ASCII controll characters range
-            [0..=31, ..] => Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect)),
+            // ASCII controll characters range + unused range
+            [0x00..=0x1f | 0x80..=0xff, ..] => {
+                Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect))
+            }
             [n, b'\x01', buf @ ..] => {
                 self.buf = buf;
                 Ok(*n)
@@ -487,7 +490,10 @@ impl<'de> Deserializer<'de> {
                             ))
                         }
                         // Latin-1 controll characters ranges
-                        [0x00..=0x1f] | [0x80..=0x9f] | [0x00..=0x1f, _] | [0x80..=0x9f, _] => {
+                        // [0x00..=0x1f] | [0x80..=0x9f] | [0x00..=0x1f, _] | [0x80..=0x9f, _] => {
+
+                        // ASCII controll character range + unused range
+                        [0x00..=0x1f] | [0x80..=0xff] => {
                             return Err(
                                 self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
                             );
@@ -533,13 +539,14 @@ impl<'de> Deserializer<'de> {
             // SAFETY: i is between 0 and input.len()
             match unsafe { self.buf.get_unchecked(i) } {
                 // No control character is allowed
-                0x00 | 0x02..=0x1f | 0x80..=0x9f => {
+                0x00 | 0x02..=0x1f | 0x80..=0xff => {
                     return Err(self.reject(self.current_tag, RejectReason::ValueIsIncorrect));
                 }
                 // Except SOH which marks end of tag
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];
-                    return Ok(result.into());
+                    // SAFETY: Check for valid ASCII values just above
+                    return Ok(unsafe { FixString::from_ascii_unchecked(result.into()) });
                 }
                 byte => result.push(*byte),
             }
@@ -582,7 +589,7 @@ impl<'de> Deserializer<'de> {
                     for byte in part {
                         match byte {
                             // ASCII controll characters range
-                            0..=31 => {
+                            0x00..=0x1f | 0x80..=0xff => {
                                 return Err(
                                     self.reject(self.current_tag, RejectReason::ValueIsIncorrect)
                                 );
@@ -590,7 +597,8 @@ impl<'de> Deserializer<'de> {
                             n => sub_result.push(*n),
                         }
                     }
-                    result.push(sub_result.into());
+                    // SAFETY: string validity checked above
+                    result.push(unsafe { FixString::from_ascii_unchecked(sub_result) });
                 }
                 return Ok(result);
             }

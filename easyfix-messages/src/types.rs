@@ -4,10 +4,7 @@ pub mod basic_types {
     pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
     pub use rust_decimal::Decimal;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use std::{
-        borrow::{self, Cow},
-        fmt, ops,
-    };
+    use std::{borrow, fmt, ops};
 
     pub type Int = i64;
     pub type TagNum = u16;
@@ -53,17 +50,64 @@ pub mod basic_types {
 
     pub type Tenor = Vec<u8>;
 
+    #[derive(Debug)]
+    pub struct FixStringError {
+        idx: usize,
+        value: u8,
+    }
+
+    impl fmt::Display for FixStringError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                f,
+                "Unexpected character '{:#04x}' at idx {}",
+                self.value, self.idx
+            )
+        }
+    }
+
+    impl std::error::Error for FixStringError {}
+
+    // TODO: Optional feature for ISO 8859-1 encoded strings
     impl FixString {
         pub fn new() -> FixString {
             FixString(Vec::new())
         }
 
-        pub fn from_vec(buf: Vec<u8>) -> FixString {
+        pub fn from_ascii(buf: Vec<u8>) -> Result<FixString, FixStringError> {
+            for i in 0..buf.len() {
+                // SAFETY: `i` never exceeds buf.len()
+                let c = unsafe { *buf.get_unchecked(i) };
+                if c < 0x20 || c > 0x7f {
+                    return Err(FixStringError { idx: i, value: c });
+                }
+            }
+            Ok(FixString(buf))
+        }
+
+        pub unsafe fn from_ascii_unchecked(buf: Vec<u8>) -> FixString {
             FixString(buf)
         }
 
-        pub fn to_utf8_lossy(&self) -> Cow<'_, str> {
-            String::from_utf8_lossy(&self.0)
+        pub fn from_ascii_lossy(mut buf: Vec<u8>) -> FixString {
+            for i in 0..buf.len() {
+                // SAFETY: `i` never exceeds buf.len()
+                let c = unsafe { buf.get_unchecked_mut(i) };
+                if *c < 0x20 || *c > 0x7f {
+                    *c = b'?';
+                }
+            }
+            FixString(buf)
+        }
+
+        pub fn as_utf8(&self) -> &str {
+            // SAFETY: ASCII is always valid UTF-8
+            unsafe { std::str::from_utf8_unchecked(&self.0) }
+        }
+
+        pub fn into_utf8(self) -> String {
+            // SAFETY: ASCII is always valid UTF-8
+            unsafe { String::from_utf8_unchecked(self.0) }
         }
 
         pub fn into_bytes(self) -> Vec<u8> {
@@ -73,7 +117,7 @@ pub mod basic_types {
 
     impl fmt::Display for FixString {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-            self.to_utf8_lossy().fmt(f)
+            self.as_utf8().fmt(f)
         }
     }
 
@@ -109,29 +153,35 @@ pub mod basic_types {
         }
     }
 
-    impl From<Vec<u8>> for FixString {
-        fn from(input: Vec<u8>) -> FixString {
-            FixString(input)
+    impl TryFrom<Vec<u8>> for FixString {
+        type Error = FixStringError;
+
+        fn try_from(buf: Vec<u8>) -> Result<FixString, Self::Error> {
+            FixString::from_ascii(buf)
         }
     }
 
-    impl From<&str> for FixString {
-        fn from(input: &str) -> FixString {
-            // TODO: covert encoding from UTF-8 to 8859-1 (Latin-1)
-            FixString(input.into())
+    impl TryFrom<&str> for FixString {
+        type Error = FixStringError;
+
+        fn try_from(buf: &str) -> Result<FixString, Self::Error> {
+            FixString::from_ascii(buf.as_bytes().to_owned())
         }
     }
 
-    impl From<String> for FixString {
-        fn from(input: String) -> FixString {
-            // TODO: covert encoding from UTF-8 to 8859-1 (Latin-1)
-            FixString(input.into_bytes())
+    impl TryFrom<String> for FixString {
+        type Error = FixStringError;
+
+        fn try_from(buf: String) -> Result<FixString, Self::Error> {
+            FixString::from_ascii(buf.into_bytes())
         }
     }
 
-    impl<const N: usize> From<[u8; N]> for FixString {
-        fn from(input: [u8; N]) -> FixString {
-            FixString(input.into())
+    impl<const N: usize> TryFrom<[u8; N]> for FixString {
+        type Error = FixStringError;
+
+        fn try_from(buf: [u8; N]) -> Result<FixString, Self::Error> {
+            FixString::from_ascii(buf.to_vec())
         }
     }
 
@@ -171,6 +221,24 @@ pub mod basic_types {
         }
     }
 
+    impl PartialEq<&str> for FixString {
+        fn eq(&self, other: &&str) -> bool {
+            self.0.eq(other.as_bytes())
+        }
+    }
+
+    impl PartialEq<str> for FixString {
+        fn eq(&self, other: &str) -> bool {
+            self.0.eq(other.as_bytes())
+        }
+    }
+
+    impl PartialEq<String> for FixString {
+        fn eq(&self, other: &String) -> bool {
+            self.0.eq(other.as_bytes())
+        }
+    }
+
     use serde::de::{self, Visitor};
 
     struct FixStringVisitor;
@@ -186,8 +254,7 @@ pub mod basic_types {
         where
             E: de::Error,
         {
-            // TODO: covert encoding from UTF-8 to 8859-1 (Latin-1)
-            Ok(FixString::from(value))
+            value.try_into().map_err(de::Error::custom)
         }
     }
 
@@ -205,8 +272,36 @@ pub mod basic_types {
         where
             S: Serializer,
         {
-            // TODO: covert encoding from 8859-1 (Latin-1) to UTF-8
-            serializer.serialize_str(&self.to_utf8_lossy())
+            serializer.serialize_str(&self.as_utf8())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn fix_string_fail_on_ctrl_character() {
+            let buf = b"Hello\x01world!".to_vec();
+            assert!(FixString::from_ascii(buf).is_err());
+        }
+
+        #[test]
+        fn fix_string_fail_on_out_of_range_character() {
+            let buf = b"Hello\x85world!".to_vec();
+            assert!(FixString::from_ascii(buf).is_err());
+        }
+
+        #[test]
+        fn fix_string_replacemen_character_on_ctrl() {
+            let buf = b"Hello\x01world!".to_vec();
+            assert_eq!(FixString::from_ascii_lossy(buf), "Hello?world!");
+        }
+
+        #[test]
+        fn fix_string_replacemen_character_on_out_of_range() {
+            let buf = b"Hello\x85world!".to_vec();
+            assert_eq!(FixString::from_ascii_lossy(buf), "Hello?world!");
         }
     }
 }
