@@ -272,8 +272,7 @@ impl Serializer {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn serialize_utc_date_only(&mut self, input: &UtcDateOnly) {
-        write!(self.output, "{}", input.format("%Y%m%d"))
-            .expect("UtcDateOnly serialization failed")
+        write!(self.output, "{}", input.format("%Y%m%d")).expect("UtcDateOnly serialization failed")
     }
 
     /// Serialize time local to a market center. Used where offset to UTC
