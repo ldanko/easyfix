@@ -307,6 +307,7 @@ impl Generator {
 
         let begin_string = Literal::byte_string(&self.begin_string);
         let fields_names = &self.fields_names;
+        let fields_names_as_str: Vec<_> = self.fields_names.iter().map(|f| f.to_string()).collect();
         let fields_numbers = &self.fields_numbers;
 
         quote! {
@@ -316,13 +317,21 @@ impl Generator {
                 serializer::Serializer,
                 types::*,
             };
-            use std::fmt::Display;
+            use std::fmt;
 
             pub const BEGIN_STRING: &[u8] = #begin_string;
 
             #[repr(u16)]
             pub enum FieldTag {
                 #(#fields_names = #fields_numbers,)*
+            }
+
+            impl fmt::Display for FieldTag {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    match self {
+                        #(FieldTag::#fields_names => write!(f, #fields_names_as_str),)*
+                    }
+                }
             }
 
             pub mod fields {
@@ -405,7 +414,7 @@ impl Generator {
                 }
 
                 // TODO: Like chrono::Format::DelayedFormat
-                pub fn dbg_fix_str(&self) -> impl Display {
+                pub fn dbg_fix_str(&self) -> impl fmt::Display {
                     let mut output = self.serialize();
                     for i in 0..output.len() {
                         if output[i] == b'\x01' {
