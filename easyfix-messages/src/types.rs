@@ -123,7 +123,7 @@ pub mod basic_types {
 
     impl fmt::Debug for FixString {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "FixString({})", self)
+            write!(f, "FixString(\"{}\")", self)
         }
     }
 
