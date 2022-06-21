@@ -282,8 +282,15 @@ impl SimpleMember {
         SimpleMember::new(name, tag, required, Type::basic_type(BasicType::NumInGroup))
     }
 
-    pub fn group(name: &str, required: bool, type_: &str) -> SimpleMember {
-        SimpleMember::new(name, 0, required, Type::group(type_))
+    /// Create `SimpleMember` object of `Group` type.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - group name
+    /// * `tag` - tag number of NumInGroup associated field
+    /// * `required` - if group presence is required
+    pub fn group(name: &str, tag: u16, required: bool) -> SimpleMember {
+        SimpleMember::new(name, tag, required, Type::group(name))
     }
 
     /// Generate member definition for use in structs definitions.

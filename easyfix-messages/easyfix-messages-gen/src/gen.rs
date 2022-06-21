@@ -39,17 +39,21 @@ fn process_members(
                         .expect("unknown field");
                     let mut group_members = Vec::new();
                     process_members(component.members(), dictionary, &mut group_members, groups);
+                    assert_eq!(component.name(), member.name(), "Componen t name mismatch");
 
                     members_descs.push(MemberDesc::group(
                         SimpleMember::num_in_group(
                             number_of_elements.name(),
                             number_of_elements_field.number(),
-                            number_of_elements.required(),
+                            // When component holding group is required, group is also required, so `num in group` field is also required
+                            member.required(),
+                            // number_of_elements.required(),
                         ),
                         SimpleMember::group(
                             member.name(),
-                            number_of_elements.required(),
-                            component.name(),
+                            number_of_elements_field.number(),
+                            member.required(),
+                            // number_of_elements.required(),
                         ),
                         group_members
                             .iter()
@@ -59,8 +63,9 @@ fn process_members(
                     ));
                     members_descs.push(MemberDesc::Simple(SimpleMember::group(
                         member.name(),
-                        number_of_elements.required(),
-                        component.name(),
+                        number_of_elements_field.number(),
+                        member.required(),
+                        // number_of_elements.required(),
                     )));
 
                     groups
