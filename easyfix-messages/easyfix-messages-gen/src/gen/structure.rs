@@ -227,7 +227,7 @@ impl Struct {
         let serialize = self.generate_serialize();
 
         quote! {
-            #[derive(Debug)]
+            #[derive(Clone, Debug)]
             pub struct #name {
                 #(pub #members_definitions,)*
             }

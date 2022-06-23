@@ -346,7 +346,7 @@ impl Generator {
 
             #(#structs_defs)*
 
-            #[derive(Debug)]
+            #[derive(Clone, Debug)]
             pub enum Message {
                 #(#name(#name),)*
             }
@@ -373,7 +373,7 @@ impl Generator {
                 }
             }
 
-            #[derive(Debug)]
+            #[derive(Clone, Debug)]
             pub struct FixtMessage {
                 pub header: Header,
                 pub body: Message,
