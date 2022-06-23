@@ -45,8 +45,13 @@ impl EnumDesc {
         } else {
             quote! { match input }
         };
+        let derives = if name == "MsgType" {
+            quote! { #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)] }
+        } else {
+            quote! { #[derive(Clone, Copy, Debug, Eq, PartialEq)] }
+        };
         quote! {
-            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            #derives
             pub enum #name {
                 #(#variant_name,)*
             }
