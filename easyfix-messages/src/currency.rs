@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Currency {
     AED, // United Arab Emirates dirham
     AFN, // Afghan afghani

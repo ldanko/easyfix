@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Country {
     AD, // Andorra
     AE, // United Arab Emirates
