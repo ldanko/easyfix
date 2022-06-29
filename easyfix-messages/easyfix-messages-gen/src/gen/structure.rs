@@ -110,7 +110,7 @@ impl Struct {
                     #(#de_match_entries,)*
                     // TODO: This may also be UndefinedTag or TagAppearsMoreThanOnce (in header or
                     // in body) and maybe TagSpecifiedOutOfRequiredOrder (also from header or body)
-                    tag => return Err(deserializer.reject(Some(tag), RejectReason::TagNotDefinedForThisMessageType)),
+                    tag => return Err(deserializer.reject(Some(tag), SessionRejectReason::TagNotDefinedForThisMessageType)),
                 }
             }
             Ok(#name {
@@ -146,7 +146,7 @@ impl Struct {
                                 if expected_tag != tag {
                                     if required {
                                         // Return early, no need to wait for object construction
-                                        return Err(deserializer.reject(Some(expected_tag), RejectReason::RequiredTagMissing));
+                                        return Err(deserializer.reject(Some(expected_tag), SessionRejectReason::RequiredTagMissing));
                                     } else {
                                         *exp_tag = None;
                                         continue;
@@ -157,7 +157,7 @@ impl Struct {
                             } else {
                                 if let Some((expected_tag, _)) = exp_tag {
                                     if *expected_tag != tag {
-                                        return Err(deserializer.reject(Some(*expected_tag), RejectReason::RequiredTagMissing));
+                                        return Err(deserializer.reject(Some(*expected_tag), SessionRejectReason::RequiredTagMissing));
                                     } else {
                                         break;
                                     }
@@ -206,7 +206,7 @@ impl Struct {
 
         let fn_deserialize_definition = if self.is_group() {
             quote! {
-                fn deserialize(
+                pub(crate) fn deserialize(
                     deserializer: &mut Deserializer,
                     first_run: bool,
                     expected_tags: &mut [Option<(TagNum, bool)>],
@@ -233,7 +233,7 @@ impl Struct {
             }
 
             impl #name {
-                fn serialize(&self, serializer: &mut Serializer) {
+                pub(crate) fn serialize(&self, serializer: &mut Serializer) {
                     #(#serialize;)*
                 }
 

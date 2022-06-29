@@ -13,6 +13,8 @@ fn main() {
     generate_fix_messages(
         fixt_xml_path,
         fix_xml_path,
+        out_path.join("generated_fields.rs"),
+        out_path.join("generated_groups.rs"),
         out_path.join("generated_messages.rs"),
     )
     .expect("failed to generate fix messages");

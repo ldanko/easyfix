@@ -1,9 +1,21 @@
-use crate::types::basic_types::*;
+use crate::fields::basic_types::*;
 use std::io::Write;
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
 const MAX_MSG_SIZE: usize = 4096;
-const MAX_BODY_LEN_DIGITS: usize = if MAX_MSG_SIZE < 10000 { 4 } else { 5 };
+const MAX_BODY_LEN_DIGITS: usize = if MAX_MSG_SIZE < 10000 {
+    4
+} else if MAX_MSG_SIZE < 100000 {
+    5
+} else if MAX_MSG_SIZE < 1000000 {
+    6
+} else if MAX_MSG_SIZE < 10000000 {
+    7
+} else if MAX_MSG_SIZE < 100000000 {
+    8
+} else {
+    panic!("MAX_MSG_SIZE too big");
+};
 
 // TODO: SerializeError: Empty Vec/Group, `0` on SeqNum,TagNum,NumInGroup,Length
 

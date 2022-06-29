@@ -207,7 +207,6 @@ impl Type {
             Type::BasicType(BasicType::XmlData) => {
                 quote! { deserializer.deserialize_xml(len as usize) }
             }
-            // TODO
             Type::Group(name) => {
                 quote! { #name::deserialize(deserializer, first_run, expected_tags) }
             }
@@ -380,14 +379,14 @@ impl SimpleMember {
         match (&self.type_, self.tag) {
             (_, 8 | 9 | 10 | 35) => Some(quote! {
                 #tag => {
-                    return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                 }
             }),
             // MsgSeqNum
             (_, 34) => Some(quote! {
                 #tag => {
                     if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                     }
                     let msg_seq_num_value = #deserialize?;
                     deserializer.set_seq_num(msg_seq_num_value);
@@ -397,26 +396,26 @@ impl SimpleMember {
             (Type::BasicType(BasicType::Length), _) => Some(quote! {
                 #tag => {
                     if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                     }
                     #name = Some(#deserialize?);
                 }
             }),
             (Type::BasicType(BasicType::NumInGroup), _) => Some(quote! {
                 #tag => {
-                    return Err(deserializer.reject(Some(tag), RejectReason::TagSpecifiedOutOfRequiredOrder));
+                    return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
                 }
             }),
             (Type::Group(_), _) => None,
             (Type::BasicType(BasicType::Data | BasicType::XmlData), _) => Some(quote! {
                 #tag => {
-                    return Err(deserializer.reject(Some(tag), RejectReason::TagSpecifiedOutOfRequiredOrder));
+                    return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
                 }
             }),
             _ => Some(quote! {
                 #tag => {
                     if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                     }
                     #name = Some(#deserialize?);
                 }
@@ -430,7 +429,7 @@ impl SimpleMember {
         let tag = self.tag;
         if self.required && !matches!(self.tag, 8 | 9 | 10 | 35) {
             quote! {
-                #name: #name.ok_or_else(|| deserializer.reject(Some(#tag), RejectReason::RequiredTagMissing))?
+                #name: #name.ok_or_else(|| deserializer.reject(Some(#tag), SessionRejectReason::RequiredTagMissing))?
             }
         } else {
             quote! {
@@ -635,22 +634,22 @@ impl MemberDesc {
                 Some(quote! {
                     #tag => {
                         if #name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                         }
                         // deserialize_data()/deserialize_xml() expects
                         // the name of variable below is `len`
                         let len = #deserialize?;
                         #name = Some(len);
                         if deserializer.deserialize_tag_num()?.ok_or_else(|| {
-                            deserializer.reject(Some(#next_member_tag), RejectReason::RequiredTagMissing)
+                            deserializer.reject(Some(#next_member_tag), SessionRejectReason::RequiredTagMissing)
                         })? != #next_member_tag
                         {
-                            return Err(deserializer.reject(Some(#tag), RejectReason::TagSpecifiedOutOfRequiredOrder));
+                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
                         }
                         // This should never happen, as error would be
                         // returned in #name.is_some() case.
                         if #next_member_name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                         }
                         #next_member_name = Some(#next_member_deserialize?);
                     }
@@ -680,12 +679,12 @@ impl MemberDesc {
                 Some(quote! {
                     #tag => {
                         if #name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                         }
                         let len = #deserialize?;
                         #name = Some(len);
                         if #group_name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), RejectReason::TagAppearsMoreThanOnce));
+                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                         }
                         let expected_tags = &mut [#(#expected_tags),*];
                         let mut #group_name_local = Vec::with_capacity(len as usize);

@@ -290,19 +290,59 @@ impl Generator {
         }
     }
 
-    pub fn generate(&self) -> TokenStream {
-        let mut structs_defs = Vec::new();
-        let mut name = Vec::new();
-        for struct_ in &self.structs {
-            structs_defs.push(struct_.generate());
-            if let Some(_) = struct_.msg_type() {
-                name.push(struct_.name().clone());
-            }
-        }
-
+    pub fn generate_fields(&self) -> TokenStream {
         let mut enums = Vec::new();
         for enum_ in &self.enums {
             enums.push(enum_.generate());
+        }
+
+        quote! {
+            #(#enums)*
+        }
+    }
+
+    pub fn generate_groups(&self) -> TokenStream {
+        let mut groups_defs = Vec::new();
+
+        for struct_ in &self.structs {
+            if struct_.is_group() {
+                groups_defs.push(struct_.generate());
+            }
+        }
+
+        quote! {
+            use crate::{
+                deserializer::{DeserializeError, Deserializer},
+                fields::{self, basic_types::*, SessionRejectReason},
+                serializer::Serializer,
+            };
+
+            #(#groups_defs)*
+        }
+    }
+
+    pub fn generate_messages(&self) -> TokenStream {
+        let mut structs_defs = Vec::new();
+        let mut name = Vec::new();
+        let mut impl_from_msg = Vec::new();
+        for struct_ in &self.structs {
+            let struct_name = struct_.name();
+
+            if !struct_.is_group() {
+                structs_defs.push(struct_.generate());
+            }
+
+            if struct_.msg_type().is_some() {
+                impl_from_msg.push(quote! {
+                    impl From<#struct_name> for Message {
+                        fn from(msg: #struct_name) -> Message {
+                            Message::#struct_name(msg)
+                        }
+                    }
+                });
+
+                name.push(struct_name);
+            }
         }
 
         let begin_string = Literal::byte_string(&self.begin_string);
@@ -312,15 +352,17 @@ impl Generator {
 
         quote! {
             use crate::{
-                deserializer::Deserializer,
+                deserializer::{DeserializeError, Deserializer},
+                fields::{self, basic_types::*, SessionRejectReason},
+                groups::*,
                 parser::{raw_message, RawMessage},
                 serializer::Serializer,
-                types::*,
             };
             use std::fmt;
 
             pub const BEGIN_STRING: &[u8] = #begin_string;
 
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             #[repr(u16)]
             pub enum FieldTag {
                 #(#fields_names = #fields_numbers,)*
@@ -332,14 +374,6 @@ impl Generator {
                         #(FieldTag::#fields_names => write!(f, #fields_names_as_str),)*
                     }
                 }
-            }
-
-            pub mod fields {
-                use crate::{
-                    types::*,
-                };
-
-                #(#enums)*
             }
 
             use fields::MsgType;
@@ -362,7 +396,7 @@ impl Generator {
                     match msg_type {
                         #(MsgType::#name => Ok(Message::#name(#name::deserialize(deserializer)?)),)*
                         #[allow(unreachable_patterns)]
-                        _ => Err(deserializer.reject(None, RejectReason::InvalidMsgType)),
+                        _ => Err(deserializer.reject(None, SessionRejectReason::InvalidMsgType)),
                     }
                 }
 
@@ -372,6 +406,8 @@ impl Generator {
                     }
                 }
             }
+
+            #(#impl_from_msg)*
 
             #[derive(Clone, Debug)]
             pub struct FixtMessage {

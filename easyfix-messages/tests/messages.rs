@@ -1,9 +1,7 @@
 use easyfix_messages::{
-    messages::{
-        fields::{ApplVerId, EncryptMethod, MsgDirection, MsgType},
-        FixtMessage, Header, Heartbeat, Logon, Message, MsgTypeGrp, Trailer, BEGIN_STRING,
-    },
-    types::{FixString, Utc},
+    fields::{ApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, Utc},
+    groups::MsgTypeGrp,
+    messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
 };
 
 fn begin_string() -> FixString {

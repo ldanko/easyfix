@@ -72,12 +72,12 @@ impl EnumDesc {
             }
 
             impl TryFrom<#type_> for #name {
-                type Error = RejectReason;
+                type Error = SessionRejectReason;
 
-                fn try_from(input: #type_) -> Result<#name, RejectReason> {
+                fn try_from(input: #type_) -> Result<#name, SessionRejectReason> {
                     #try_from_match_input {
                         #(#variant_value => Ok(#name::#variant_name),)*
-                        _ => Err(RejectReason::ValueIsIncorrect),
+                        _ => Err(SessionRejectReason::ValueIsIncorrect),
                     }
                 }
             }
