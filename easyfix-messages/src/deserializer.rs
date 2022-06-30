@@ -608,7 +608,7 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
-    pub fn deserialize_string(&mut self) -> Result<FixString, DeserializeError> {
+    pub fn deserialize_str(&mut self) -> Result<&FixStr, DeserializeError> {
         match self.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -625,8 +625,6 @@ impl<'de> Deserializer<'de> {
             _ => {}
         }
 
-        const DEFAULT_CAPACITY: usize = 16;
-        let mut result = Vec::with_capacity(DEFAULT_CAPACITY);
         for i in 0..self.buf.len() {
             // SAFETY: i is between 0 and input.len()
             match unsafe { self.buf.get_unchecked(i) } {
@@ -638,11 +636,12 @@ impl<'de> Deserializer<'de> {
                 }
                 // Except SOH which marks end of tag
                 b'\x01' => {
+                    let result = &self.buf[..i];
                     self.buf = &self.buf[i + 1..];
                     // SAFETY: Check for valid ASCII values just above
-                    return Ok(unsafe { FixString::from_ascii_unchecked(result.into()) });
+                    return Ok(unsafe { FixStr::from_ascii_unchecked(result) });
                 }
-                byte => result.push(*byte),
+                _ => {}
             }
         }
 
@@ -650,6 +649,12 @@ impl<'de> Deserializer<'de> {
             "no more data to parse tag {:?}",
             self.current_tag
         )))
+    }
+
+    /// Deserialize alphanumeric free-format strings can include any character
+    /// except control characters.
+    pub fn deserialize_string(&mut self) -> Result<FixString, DeserializeError> {
+        self.deserialize_str().map(FixString::from)
     }
 
     /// Deserialize string containing one or more space-delimited multiple
@@ -1508,9 +1513,9 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_string_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
-        T: TryFrom<FixString, Error = SessionRejectReason>,
+        for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReason>,
     {
-        let value = self.deserialize_string()?;
+        let value = self.deserialize_str()?;
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
@@ -1529,13 +1534,13 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_multiple_string_value_enum<T>(&mut self) -> Result<Vec<T>, DeserializeError>
     where
-        T: TryFrom<FixString, Error = SessionRejectReason>,
+        for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReason>,
     {
         let values = self.deserialize_multiple_string_value()?;
         let mut result = Vec::with_capacity(values.len());
         for value in values {
             result
-                .push(T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))?);
+                .push(T::try_from(&value).map_err(|reason| self.reject(self.current_tag, reason))?);
         }
         Ok(result)
     }
@@ -1565,6 +1570,28 @@ mod tests {
             current_tag: None,
             tmp_tag: None,
         }
+    }
+
+    #[test]
+    fn deserialize_str_ok() {
+        let input = b"lorem ipsum\x01\x00";
+        let mut deserializer = deserializer(input);
+        let buf = deserializer
+            .deserialize_str()
+            .expect("failed to deserialize utc timestamp");
+        assert_eq!(buf, "lorem ipsum");
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_string_ok() {
+        let input = b"lorem ipsum\x01\x00";
+        let mut deserializer = deserializer(input);
+        let buf = deserializer
+            .deserialize_string()
+            .expect("failed to deserialize utc timestamp");
+        assert_eq!(buf, "lorem ipsum");
+        assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
     #[test]

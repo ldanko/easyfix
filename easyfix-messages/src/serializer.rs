@@ -179,15 +179,15 @@ impl Serializer {
 
     /// Serialize alphanumeric free-format strings can include any character
     /// except control characters.
-    pub fn serialize_string(&mut self, input: &FixString) {
-        self.output.extend_from_slice(&input);
+    pub fn serialize_string(&mut self, input: &FixStr) {
+        self.output.extend_from_slice(input.as_bytes());
     }
 
     /// Serialize string containing one or more space-delimited multiple
     /// character values, e.g. “AV AN A”.
     pub fn serialize_multiple_string_value(&mut self, input: &MultipleStringValue) {
         for s in input {
-            self.output.extend_from_slice(s);
+            self.output.extend_from_slice(s.as_bytes());
             self.output.push(b' ');
         }
         self.output.pop();

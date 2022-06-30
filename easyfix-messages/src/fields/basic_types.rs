@@ -1,7 +1,7 @@
 pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
 pub use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{borrow, fmt, ops};
+use std::{borrow, fmt, ops, mem};
 
 pub type Int = i64;
 pub type TagNum = u16;
@@ -21,8 +21,11 @@ pub type Boolean = bool;
 pub type Char = u8;
 pub type MultipleCharValue = Vec<Char>;
 
-#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FixString(Vec<u8>);
+#[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct FixStr([u8]);
 pub type MultipleStringValue = Vec<FixString>;
 
 pub use crate::country::Country;
@@ -64,6 +67,133 @@ impl fmt::Display for FixStringError {
 }
 
 impl std::error::Error for FixStringError {}
+
+impl FixStr {
+    pub fn from_ascii(buf: &[u8]) -> Result<&FixStr, FixStringError> {
+        for i in 0..buf.len() {
+            // SAFETY: `i` never exceeds buf.len()
+            let c = unsafe { *buf.get_unchecked(i) };
+            if c < 0x20 || c > 0x7f {
+                return Err(FixStringError { idx: i, value: c });
+            }
+        }
+        unsafe {
+            Ok(FixStr::from_ascii_unchecked(buf))
+        }
+    }
+
+    pub unsafe fn from_ascii_unchecked(buf: &[u8]) -> &FixStr {
+        // SAFETY: the caller must guarantee that the bytes `v` are valid UTF-8.
+        // Also relies on `&FixStr` and `&[u8]` having the same layout.
+        mem::transmute(buf)
+    }
+
+    pub fn as_utf8(&self) -> &str {
+        // SAFETY: ASCII is always valid UTF-8
+        unsafe { std::str::from_utf8_unchecked(&self.0) }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl fmt::Display for FixStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        self.as_utf8().fmt(f)
+    }
+}
+
+impl fmt::Debug for FixStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FixStr(\"{}\")", self)
+    }
+}
+
+impl AsRef<FixStr> for FixStr {
+    fn as_ref(&self) -> &FixStr {
+        self
+    }
+}
+
+impl AsRef<[u8]> for FixStr {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl AsRef<str> for FixStr {
+    fn as_ref(&self) -> &str {
+        self.as_utf8()
+    }
+}
+
+impl ToOwned for FixStr {
+    type Owned = FixString;
+
+    #[inline]
+    fn to_owned(&self) -> FixString {
+        unsafe { FixString::from_ascii_unchecked(self.as_bytes().to_owned()) }
+    }
+
+    fn clone_into(&self, target: &mut FixString) {
+        let mut buf = mem::take(target).into_bytes();
+        self.as_bytes().clone_into(&mut buf);
+        *target = unsafe { FixString::from_ascii_unchecked(buf) }
+    }
+}
+
+impl PartialEq<[u8]> for FixStr {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.0.eq(other)
+    }
+}
+
+impl PartialEq<&[u8]> for FixStr {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.0.eq(*other)
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for FixStr {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.0.eq(other)
+    }
+}
+
+impl<const N: usize> PartialEq<&'_ [u8; N]> for FixStr {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.0.eq(*other)
+    }
+}
+
+impl PartialEq<Vec<u8>> for FixStr {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.0.eq(other)
+    }
+}
+
+impl PartialEq<&str> for FixStr {
+    fn eq(&self, other: &&str) -> bool {
+        self.0.eq(other.as_bytes())
+    }
+}
+
+impl PartialEq<str> for FixStr {
+    fn eq(&self, other: &str) -> bool {
+        self.0.eq(other.as_bytes())
+    }
+}
+
+impl PartialEq<String> for FixStr {
+    fn eq(&self, other: &String) -> bool {
+        self.0.eq(other.as_bytes())
+    }
+}
 
 // TODO: Optional feature for ISO 8859-1 encoded strings
 impl FixString {
@@ -110,6 +240,10 @@ impl FixString {
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 impl fmt::Display for FixString {
@@ -125,22 +259,40 @@ impl fmt::Debug for FixString {
 }
 
 impl ops::Deref for FixString {
-    type Target = [u8];
+    type Target = FixStr;
 
-    fn deref(&self) -> &[u8] {
-        self.0.deref()
+    fn deref(&self) -> &FixStr {
+        unsafe { FixStr::from_ascii_unchecked(&self.0) }
+    }
+}
+
+impl AsRef<FixStr> for FixString {
+    fn as_ref(&self) -> &FixStr {
+        self
     }
 }
 
 impl AsRef<[u8]> for FixString {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
+        self.as_bytes()
     }
 }
 
-impl borrow::Borrow<[u8]> for FixString {
-    fn borrow(&self) -> &[u8] {
-        self.0.borrow()
+impl AsRef<str> for FixString {
+    fn as_ref(&self) -> &str {
+        self.as_utf8()
+    }
+}
+
+impl borrow::Borrow<FixStr> for FixString {
+    fn borrow(&self) -> &FixStr {
+        self
+    }
+}
+
+impl From<&FixStr> for FixString {
+    fn from(input: &FixStr) -> FixString {
+        input.to_owned()
     }
 }
 

@@ -22,11 +22,11 @@ impl EnumDesc {
     pub fn generate(&self) -> TokenStream {
         let name = &self.name;
         let type_ = match self.type_ {
-            t @ (BasicType::Int | BasicType::NumInGroup | BasicType::Char | BasicType::String) => {
+            t @ (BasicType::Int | BasicType::NumInGroup | BasicType::Char) => {
                 Type::basic_type(t).gen_type()
             }
+            BasicType::String | BasicType::MultipleStringValue => quote! { &FixStr },
             BasicType::MultipleCharValue => Type::basic_type(BasicType::Char).gen_type(),
-            BasicType::MultipleStringValue => Type::basic_type(BasicType::String).gen_type(),
             type_ => panic!("type {:?} can not be used as enumeration", type_),
         };
         let mut variant_name = Vec::with_capacity(self.values.len());
@@ -41,7 +41,7 @@ impl EnumDesc {
             self.type_,
             BasicType::String | BasicType::MultipleStringValue
         ) {
-            quote! { match input.as_ref() }
+            quote! { match input.as_bytes() }
         } else {
             quote! { match input }
         };
