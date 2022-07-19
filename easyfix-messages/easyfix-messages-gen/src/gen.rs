@@ -298,8 +298,6 @@ impl Generator {
         }
 
         quote! {
-            use crate::fields::basic_types::ToFixString;
-
             #(#enums)*
         }
     }
