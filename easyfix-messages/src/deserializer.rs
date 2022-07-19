@@ -68,7 +68,7 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn begin_string(&self) -> FixString {
-        self.raw_message.begin_string.into()
+        self.raw_message.begin_string.to_owned()
     }
 
     pub fn body_length(&self) -> Length {

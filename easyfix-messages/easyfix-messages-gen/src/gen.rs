@@ -79,7 +79,8 @@ fn process_members(
                 let field = dictionary
                     .fields_by_name()
                     .get(member.name())
-                    .expect("unknown field");
+                    .ok_or_else(|| format!("unknown field `{}`", member.name()))
+                    .unwrap();
 
                 match field.type_() {
                     BasicType::Length => {
@@ -297,6 +298,8 @@ impl Generator {
         }
 
         quote! {
+            use crate::fields::basic_types::ToFixString;
+
             #(#enums)*
         }
     }
@@ -360,7 +363,7 @@ impl Generator {
             };
             use std::fmt;
 
-            pub const BEGIN_STRING: &[u8] = #begin_string;
+            pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(#begin_string) };
 
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             #[repr(u16)]
@@ -400,7 +403,7 @@ impl Generator {
                     }
                 }
 
-                pub fn msg_type(&self) -> MsgType {
+                pub const fn msg_type(&self) -> MsgType {
                     match self {
                         #(Message::#name(_) => MsgType::#name,)*
                     }

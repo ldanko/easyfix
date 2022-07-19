@@ -64,10 +64,24 @@ impl EnumDesc {
                     }
                 }
 
+                pub fn from_fix_str(input: &FixStr) -> Option<#name> {
+                    #name::from_bytes(input.as_bytes())
+                }
+
                 pub fn as_bytes(&self) -> &'static [u8] {
                     match self {
                         #(#name::#variant_name => #variant_value_as_bytes,)*
                     }
+                }
+
+                pub fn as_fix_str(&self) -> &'static FixStr {
+                    unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+                }
+            }
+
+            impl ToFixString for #name {
+                fn to_fix_string(&self) -> FixString {
+                    self.as_fix_str().to_owned()
                 }
             }
 

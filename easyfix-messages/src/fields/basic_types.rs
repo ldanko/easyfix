@@ -1,7 +1,7 @@
 pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
 pub use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{borrow, fmt, ops, mem};
+use std::{borrow, fmt, mem, ops};
 
 pub type Int = i64;
 pub type TagNum = u16;
@@ -68,37 +68,47 @@ impl fmt::Display for FixStringError {
 
 impl std::error::Error for FixStringError {}
 
+const fn is_non_control_ascii_char(byte: u8) -> bool {
+    if byte > 0x1f && byte < 0x80 {
+        true
+    } else {
+        false
+    }
+}
+
 impl FixStr {
     pub fn from_ascii(buf: &[u8]) -> Result<&FixStr, FixStringError> {
         for i in 0..buf.len() {
             // SAFETY: `i` never exceeds buf.len()
             let c = unsafe { *buf.get_unchecked(i) };
-            if c < 0x20 || c > 0x7f {
+            if !is_non_control_ascii_char(c) {
                 return Err(FixStringError { idx: i, value: c });
             }
         }
-        unsafe {
-            Ok(FixStr::from_ascii_unchecked(buf))
-        }
+        unsafe { Ok(FixStr::from_ascii_unchecked(buf)) }
     }
 
-    pub unsafe fn from_ascii_unchecked(buf: &[u8]) -> &FixStr {
+    pub const unsafe fn from_ascii_unchecked(buf: &[u8]) -> &FixStr {
         // SAFETY: the caller must guarantee that the bytes `v` are valid UTF-8.
         // Also relies on `&FixStr` and `&[u8]` having the same layout.
         mem::transmute(buf)
     }
 
-    pub fn as_utf8(&self) -> &str {
+    pub const fn as_utf8(&self) -> &str {
         // SAFETY: ASCII is always valid UTF-8
         unsafe { std::str::from_utf8_unchecked(&self.0) }
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
+    pub const fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -129,6 +139,12 @@ impl AsRef<[u8]> for FixStr {
 impl AsRef<str> for FixStr {
     fn as_ref(&self) -> &str {
         self.as_utf8()
+    }
+}
+
+impl From<&FixStr> for String {
+    fn from(input: &FixStr) -> String {
+        input.to_owned().into()
     }
 }
 
@@ -205,7 +221,7 @@ impl FixString {
         for i in 0..buf.len() {
             // SAFETY: `i` never exceeds buf.len()
             let c = unsafe { *buf.get_unchecked(i) };
-            if c < 0x20 || c > 0x7f {
+            if !is_non_control_ascii_char(c) {
                 return Err(FixStringError { idx: i, value: c });
             }
         }
@@ -220,7 +236,7 @@ impl FixString {
         for i in 0..buf.len() {
             // SAFETY: `i` never exceeds buf.len()
             let c = unsafe { buf.get_unchecked_mut(i) };
-            if *c < 0x20 || *c > 0x7f {
+            if !is_non_control_ascii_char(*c) {
                 *c = b'?';
             }
         }
@@ -296,9 +312,19 @@ impl From<&FixStr> for FixString {
     }
 }
 
-impl From<&[u8]> for FixString {
-    fn from(input: &[u8]) -> FixString {
-        FixString(input.into())
+impl From<FixString> for String {
+    fn from(input: FixString) -> String {
+        // SAFETY: FixString consists of ASCII characters only thus it's valid UTF-8
+        unsafe { String::from_utf8_unchecked(input.0) }
+    }
+}
+
+impl TryFrom<&[u8]> for FixString {
+    type Error = FixStringError;
+
+    fn try_from(input: &[u8]) -> Result<FixString, Self::Error> {
+        // TODO: check vefore allocation
+        FixString::from_ascii(input.to_vec())
     }
 }
 
@@ -337,6 +363,18 @@ impl<const N: usize> TryFrom<[u8; N]> for FixString {
 impl<const N: usize> From<&[u8; N]> for FixString {
     fn from(input: &[u8; N]) -> FixString {
         FixString(input.as_slice().into())
+    }
+}
+
+impl PartialEq<FixStr> for FixString {
+    fn eq(&self, other: &FixStr) -> bool {
+        self.0.eq(other.as_bytes())
+    }
+}
+
+impl PartialEq<&FixStr> for FixString {
+    fn eq(&self, other: &&FixStr) -> bool {
+        self.0.eq(other.as_bytes())
     }
 }
 
@@ -424,6 +462,43 @@ impl Serialize for FixString {
         serializer.serialize_str(&self.as_utf8())
     }
 }
+
+pub trait ToFixString {
+    fn to_fix_string(&self) -> FixString;
+}
+
+impl ToFixString for FixStr {
+    fn to_fix_string(&self) -> FixString {
+        // SAFETY: FixStr is already checked against invalid characters
+        unsafe { FixString::from_ascii_unchecked(self.as_bytes().to_owned()) }
+    }
+}
+
+macro_rules! impl_to_fix_string_for_integer {
+    ($t:ty) => {
+        impl ToFixString for $t {
+            fn to_fix_string(&self) -> FixString {
+                // SAFETY: integers are always formatted using ASCII characters
+                unsafe {
+                    FixString::from_ascii_unchecked(
+                        itoa::Buffer::new().format(*self).as_bytes().to_vec(),
+                    )
+                }
+            }
+        }
+    };
+}
+
+impl_to_fix_string_for_integer!(i8);
+impl_to_fix_string_for_integer!(i16);
+impl_to_fix_string_for_integer!(i32);
+impl_to_fix_string_for_integer!(i64);
+impl_to_fix_string_for_integer!(isize);
+impl_to_fix_string_for_integer!(u8);
+impl_to_fix_string_for_integer!(u16);
+impl_to_fix_string_for_integer!(u32);
+impl_to_fix_string_for_integer!(u64);
+impl_to_fix_string_for_integer!(usize);
 
 #[cfg(test)]
 mod tests {

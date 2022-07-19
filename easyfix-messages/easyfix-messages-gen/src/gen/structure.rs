@@ -51,6 +51,10 @@ impl Struct {
         self.msg_type().is_none() && self.name != "Header" && self.name != "Trailer"
     }
 
+    pub fn is_message(&self) -> bool {
+        self.msg_type.is_some()
+    }
+
     fn generate_serialize(&self) -> Vec<TokenStream> {
         self.members
             .iter()
@@ -226,6 +230,16 @@ impl Struct {
 
         let serialize = self.generate_serialize();
 
+        let fn_msg_type = if self.is_message() {
+            Some(quote! {
+                pub const fn msg_type(&self) -> MsgType {
+                    MsgType::#name
+                }
+            })
+        } else {
+            None
+        };
+
         quote! {
             #[derive(Clone, Debug)]
             pub struct #name {
@@ -240,6 +254,8 @@ impl Struct {
                 #fn_deserialize_definition {
                     #deserialize_body
                 }
+
+                #fn_msg_type
             }
         }
     }

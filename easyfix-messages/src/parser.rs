@@ -1,3 +1,4 @@
+use crate::fields::FixStr;
 use nom::{
     bytes::streaming::tag,
     bytes::streaming::{take_until, take_while},
@@ -5,7 +6,7 @@ use nom::{
         is_alphanumeric,
         streaming::{u16, u8},
     },
-    combinator::map,
+    combinator::{map, verify},
     error::{context, ContextError, ParseError},
     multi::length_data,
     sequence::{delimited, separated_pair, terminated, tuple},
@@ -25,12 +26,26 @@ pub fn generic_field<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
     )(i)
 }
 
+fn verify_fix_str(bytes: &[u8]) -> bool {
+    for b in bytes {
+        // No control character is allowed
+        if let 0x00..=0x1f | 0x80..=0xff = b {
+            return false;
+        }
+    }
+    true
+}
+
 fn begin_string<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
     i: &'a [u8],
 ) -> IResult<&'a [u8], &[u8], E> {
     context(
         "begin_string",
-        delimited(tag("8="), take_until("\x01"), tag("\x01")),
+        delimited(
+            tag("8="),
+            verify(take_until("\x01"), verify_fix_str),
+            tag("\x01"),
+        ),
     )(i)
 }
 
@@ -57,7 +72,7 @@ fn _message_type<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
 
 #[derive(Debug)]
 pub struct RawMessage<'a> {
-    pub begin_string: &'a [u8],
+    pub begin_string: &'a FixStr,
     pub body: &'a [u8],
     pub checksum: u8,
 }
@@ -66,7 +81,8 @@ pub fn raw_message<'a>(i: &'a [u8]) -> IResult<&'a [u8], RawMessage<'a>> {
     map(
         tuple((begin_string, length_data(body_length), checksum)),
         |(begin_string, body, checksum)| RawMessage {
-            begin_string,
+            // SAFETY: it's already checked
+            begin_string: unsafe { FixStr::from_ascii_unchecked(begin_string) },
             body,
             checksum,
         },
