@@ -93,7 +93,10 @@ pub struct Member {
 
 impl Member {
     fn from_xml(element: &Element) -> Result<Member> {
-        let name = element.get_attribute("name")?.into();
+        let name = element.get_attribute("name")?;
+        if !name.is_ascii() {
+            bail!("Non ASCII characters in member name: {}", name);
+        }
         let required = deserialize_yes_no(element.get_attribute("required")?)?;
         let kind = match element.name.as_ref() {
             "field" => MemberKind::Field,
@@ -101,7 +104,7 @@ impl Member {
             name => bail!("Unexpected member kind `{}`", name),
         };
         Ok(Member {
-            name,
+            name: name.into(),
             required,
             kind,
         })
@@ -209,9 +212,19 @@ impl Value {
             bail!("Expected `value` node, found `{}`", element.name);
         }
 
+        let value = element.get_attribute("enum")?;
+        if !value.is_ascii() {
+            bail!("Non ASCII characters in enum value: {}", value);
+        }
+
+        let description = element.get_attribute("description")?;
+        if !description.is_ascii() {
+            bail!("Non ASCII characters in enum description: {}", description);
+        }
+
         Ok(Value {
-            value: element.get_attribute("enum")?.into(),
-            description: element.get_attribute("description")?.into(),
+            value: value.into(),
+            description: description.into(),
         })
     }
 
@@ -238,8 +251,12 @@ impl Field {
             .get_child_elements()
             .map(Value::from_xml)
             .collect::<Result<Vec<_>, _>>()?;
+        let name = element.get_attribute("name")?;
+        if !name.is_ascii() {
+            bail!("Non ASCII characters in field name: {}", name);
+        }
         Ok(Field {
-            name: element.get_attribute("name")?.to_owned(),
+            name: name.into(),
             number: element.get_attribute("number")?.parse()?,
             type_: element.get_attribute("type")?.parse()?,
             values: if values.is_empty() {
@@ -292,6 +309,9 @@ impl Component {
         }
 
         let name = element.get_attribute("name")?.to_owned();
+        if !name.is_ascii() {
+            bail!("Non ASCII characters in component name: {}", name);
+        }
 
         let mut iter = element.get_child_elements().peekable();
 
@@ -393,8 +413,17 @@ impl Message {
         }
 
         let name = element.get_attribute("name")?.to_owned();
+        if !name.is_ascii() {
+            bail!("Non ASCII characters in message name: {}", name);
+        }
         let msgcat = element.get_attribute("msgcat")?.to_owned();
+        if !msgcat.is_ascii() {
+            bail!("Non ASCII characters in message category: {}", msgcat);
+        }
         let msgtype = element.get_attribute("msgtype")?.to_owned();
+        if !msgtype.is_ascii() {
+            bail!("Non ASCII characters in message type: {}", msgtype);
+        }
 
         let members = element
             .get_child_elements()
