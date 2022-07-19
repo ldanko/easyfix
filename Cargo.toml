@@ -1,6 +1,6 @@
 [package]
 name = "easyfix"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) engine."
