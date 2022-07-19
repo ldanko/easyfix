@@ -129,7 +129,7 @@ pub enum Currency {
     SEK, // Swedish krona (plural: kronor)
     SGD, // Singapore dollar
     SHP, // Saint Helena pound
-    SLL, // Sierra Leonean leone
+    SLE, // Sierra Leonean leone
     SOS, // Somali shilling
     SRD, // Surinamese dollar
     SSP, // South Sudanese pound
@@ -314,7 +314,7 @@ impl Currency {
             b"SEK" => Some(Currency::SEK),
             b"SGD" => Some(Currency::SGD),
             b"SHP" => Some(Currency::SHP),
-            b"SLL" => Some(Currency::SLL),
+            b"SLE" => Some(Currency::SLE),
             b"SOS" => Some(Currency::SOS),
             b"SRD" => Some(Currency::SRD),
             b"SSP" => Some(Currency::SSP),
@@ -500,7 +500,7 @@ impl Currency {
             Currency::SEK => b"SEK",
             Currency::SGD => b"SGD",
             Currency::SHP => b"SHP",
-            Currency::SLL => b"SLL",
+            Currency::SLE => b"SLE",
             Currency::SOS => b"SOS",
             Currency::SRD => b"SRD",
             Currency::SSP => b"SSP",
