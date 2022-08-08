@@ -24,15 +24,13 @@ impl fmt::Display for DeserializeError {
             DeserializeError::GarbledMessage(reason) => write!(f, "garbled message: {}", reason),
             DeserializeError::Logout => write!(f, "MsgSeqNum missing, force logout"),
             DeserializeError::Reject {
-                msg_type,
-                seq_num,
-                tag,
+                tag: Some(tag),
                 reason,
-            } => write!(
-                f,
-                "message {}/{} rejected: {:?} (tag={:?})",
-                msg_type, seq_num, reason, tag
-            ),
+                ..
+            } => write!(f, "{reason:?} (tag={tag})"),
+            DeserializeError::Reject {
+                tag: None, reason, ..
+            } => write!(f, "{reason:?}"),
         }
     }
 }
