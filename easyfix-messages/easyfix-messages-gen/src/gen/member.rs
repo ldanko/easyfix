@@ -367,6 +367,7 @@ impl SimpleMember {
                 } else {
                     return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                 };
+                deserializer.set_msg_type(#name);
             },
             _ => quote! { let mut #name: Option<#type_> = None; },
         }

@@ -1,5 +1,5 @@
 use crate::{
-    fields::{basic_types::*, SessionRejectReason},
+    fields::{basic_types::*, MsgType, SessionRejectReason},
     parser::RawMessage,
 };
 use anyhow::Result;
@@ -44,7 +44,7 @@ impl Error for DeserializeError {}
 pub struct Deserializer<'de> {
     raw_message: RawMessage<'de>,
     buf: &'de [u8],
-    msg_type: FixString,
+    msg_type: Option<MsgType>,
     seq_num: Option<SeqNum>,
     current_tag: Option<TagNum>,
     // Used to put tag back to deserializer, when switching to deserialization
@@ -58,7 +58,7 @@ impl<'de> Deserializer<'de> {
         Deserializer {
             raw_message,
             buf,
-            msg_type: FixString::new(),
+            msg_type: None,
             seq_num: None,
             current_tag: None,
             tmp_tag: None,
@@ -81,10 +81,19 @@ impl<'de> Deserializer<'de> {
         self.seq_num = Some(seq_num);
     }
 
+    pub fn set_msg_type(&mut self, msg_type: MsgType) {
+        self.msg_type = Some(msg_type);
+    }
+
     pub fn reject(&mut self, tag: Option<TagNum>, reason: SessionRejectReason) -> DeserializeError {
         if let Some(seq_num) = self.seq_num {
             DeserializeError::Reject {
-                msg_type: self.msg_type.clone(),
+                msg_type: self
+                    .msg_type
+                    .map(|msg_type| msg_type.to_fix_string())
+                    .unwrap_or_else(|| unsafe {
+                        FixString::from_ascii_unchecked(b"UNKNOWN".to_vec())
+                    }),
                 seq_num,
                 tag,
                 reason,
