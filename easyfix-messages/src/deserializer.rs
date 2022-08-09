@@ -415,9 +415,6 @@ impl<'de> Deserializer<'de> {
         let mut num: i64 = 0;
         let mut scale = None;
         for i in 0..buf.len() {
-            if let Some(scale) = scale.as_mut() {
-                *scale += 1;
-            }
             // SAFETY: i is between 0 and buf.len()
             match unsafe { buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
@@ -427,6 +424,9 @@ impl<'de> Deserializer<'de> {
                         .ok_or(
                             self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect),
                         )?;
+                    if let Some(scale) = scale.as_mut() {
+                        *scale += 1;
+                    }
                 }
                 b'.' => {
                     if scale.is_some() {
@@ -1546,9 +1546,11 @@ impl<'de> Deserializer<'de> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::Deserializer;
     use crate::{
-        fields::{FixString, LocalMktDate},
+        fields::{FixString, LocalMktDate, Price},
         messages::BEGIN_STRING,
         parser::RawMessage,
     };
@@ -1675,5 +1677,28 @@ mod tests {
             .expect("failed to deserialize utc timestamp");
         assert_eq!(local_mkt_date, LocalMktDate::from_ymd(2022, 5, 30));
         assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    #[test]
+    fn deserialize_price_ok() {
+        let values: &[(&[u8], Price)] = &[
+            (b"97\x01\x00", Price::from_str("97").expect("Wrong decimal")),
+            (
+                b"97.\x01\x00",
+                Price::from_str("97.").expect("Wrong decimal"),
+            ),
+            (
+                b"97.0347\x01\x00",
+                Price::from_str("97.0347").expect("Wrong decimal"),
+            ),
+        ];
+        for (input, value) in values {
+            let mut deserializer = deserializer(input);
+            let price = deserializer
+                .deserialize_price()
+                .expect("failed to deserialize price");
+            assert_eq!(price, *value);
+            assert_eq!(deserializer.buf, &[b'\x00']);
+        }
     }
 }
