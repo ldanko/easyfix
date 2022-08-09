@@ -1549,13 +1549,14 @@ mod tests {
     use super::Deserializer;
     use crate::{
         fields::{FixString, LocalMktDate},
+        messages::BEGIN_STRING,
         parser::RawMessage,
     };
     use chrono::{DateTime, NaiveDate, Utc};
 
     fn deserializer(body: &[u8]) -> Deserializer {
         let raw_message = RawMessage {
-            begin_string: &[],
+            begin_string: BEGIN_STRING,
             body,
             checksum: 0,
         };

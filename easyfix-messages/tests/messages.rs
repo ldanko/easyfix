@@ -1,16 +1,12 @@
 use easyfix_messages::{
-    fields::{ApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, Utc},
+    fields::{ApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc},
     groups::MsgTypeGrp,
     messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
 };
 
-fn begin_string() -> FixString {
-    FixString::from_ascii_lossy(BEGIN_STRING.to_vec())
-}
-
 fn header(msg_type: MsgType) -> Header {
     Header {
-        begin_string: begin_string(),
+        begin_string: BEGIN_STRING.to_owned(),
         body_length: 0, // Serializer will overwrite this
         msg_type,
         sender_comp_id: FixString::from_ascii_lossy(b"test_sender".to_vec()),
@@ -75,7 +71,7 @@ fn logon_msg_type_grp_no_present() {
         test_message_indicator: None,
         username: None,
         password: None,
-        default_appl_ver_id: ApplVerId::Fix50Sp2.as_bytes().into(),
+        default_appl_ver_id: ApplVerId::Fix50Sp2.to_fix_string(),
         msg_type_grp: None,
     }));
     let serialized = msg.serialize();
@@ -94,10 +90,10 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
         test_message_indicator: None,
         username: None,
         password: None,
-        default_appl_ver_id: ApplVerId::Fix50Sp2.as_bytes().into(),
+        default_appl_ver_id: ApplVerId::Fix50Sp2.to_fix_string(),
         msg_type_grp: Some(vec![
             MsgTypeGrp {
-                ref_msg_type: Some(MsgType::NewOrderSingle.as_bytes().into()),
+                ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
                 msg_direction: Some(MsgDirection::Send),
                 ref_appl_ver_id: None,
                 ref_appl_ext_id: None,
@@ -105,7 +101,7 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
                 default_ver_indicator: None,
             },
             MsgTypeGrp {
-                ref_msg_type: Some(MsgType::NewOrderSingle.as_bytes().into()),
+                ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
                 msg_direction: Some(MsgDirection::Receive),
                 ref_appl_ver_id: None,
                 ref_appl_ext_id: None,
@@ -130,10 +126,10 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
         test_message_indicator: None,
         username: None,
         password: None,
-        default_appl_ver_id: ApplVerId::Fix50Sp2.as_bytes().into(),
+        default_appl_ver_id: ApplVerId::Fix50Sp2.to_fix_string(),
         msg_type_grp: Some(vec![
             MsgTypeGrp {
-                ref_msg_type: Some(MsgType::NewOrderSingle.as_bytes().into()),
+                ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
                 msg_direction: None,
                 ref_appl_ver_id: None,
                 ref_appl_ext_id: None,
@@ -141,7 +137,7 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
                 default_ver_indicator: Some(true),
             },
             MsgTypeGrp {
-                ref_msg_type: Some(MsgType::NewOrderSingle.as_bytes().into()),
+                ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
                 msg_direction: None,
                 ref_appl_ver_id: None,
                 ref_appl_ext_id: None,
