@@ -2,14 +2,18 @@ mod enumeration;
 mod member;
 mod structure;
 
-use crate::gen::{
-    enumeration::EnumDesc, member::MemberDesc, member::SimpleMember, structure::Struct,
-};
+use std::collections::HashMap;
+
 use convert_case::{Case, Casing};
 use easyfix_dictionary::{BasicType, Dictionary, Member, MemberKind};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use std::collections::HashMap;
+
+use crate::gen::{
+    enumeration::EnumDesc,
+    member::{MemberDesc, SimpleMember},
+    structure::Struct,
+};
 
 pub struct Generator {
     begin_string: Vec<u8>,
@@ -466,8 +470,10 @@ impl Generator {
 }
 
 pub fn _formatted(tokens_stream: &TokenStream) {
-    use std::io::prelude::*;
-    use std::process::{Command, Stdio};
+    use std::{
+        io::prelude::*,
+        process::{Command, Stdio},
+    };
     let mut rustfmt = Command::new("rustfmt")
         .stdin(Stdio::piped())
         .spawn()

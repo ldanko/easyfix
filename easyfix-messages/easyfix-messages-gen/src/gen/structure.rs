@@ -1,7 +1,8 @@
-use crate::gen::member::MemberDesc;
 use convert_case::{Case, Casing};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
+
+use crate::gen::member::MemberDesc;
 
 pub struct Struct {
     name: Ident,

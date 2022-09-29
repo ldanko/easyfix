@@ -1,7 +1,8 @@
 #![feature(type_alias_impl_trait)]
 
-use anyhow::{anyhow, bail, Context as ErrorContext, Result};
 use std::{collections::HashMap, convert::TryFrom, fmt, str::FromStr};
+
+use anyhow::{anyhow, bail, Context as ErrorContext, Result};
 use xmltree::{Element, XMLNode};
 
 type ElementIterator<'a> = impl Iterator<Item = &'a Element>;
@@ -157,6 +158,7 @@ pub enum BasicType {
 
 impl TryFrom<&str> for BasicType {
     type Error = anyhow::Error;
+
     fn try_from(input: &str) -> Result<Self, Self::Error> {
         match input {
             "AMT" => Ok(BasicType::Amt),

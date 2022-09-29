@@ -1,7 +1,8 @@
+use std::{borrow, fmt, mem, ops};
+
 pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
 pub use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{borrow, fmt, mem, ops};
 
 pub type Int = i64;
 pub type TagNum = u16;
@@ -28,8 +29,7 @@ pub struct FixString(Vec<u8>);
 pub struct FixStr([u8]);
 pub type MultipleStringValue = Vec<FixString>;
 
-pub use crate::country::Country;
-pub use crate::currency::Currency;
+pub use crate::{country::Country, currency::Currency};
 pub type Exchange = [u8; 4];
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];

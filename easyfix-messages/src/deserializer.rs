@@ -1,9 +1,11 @@
+use std::{error::Error, fmt};
+
+use anyhow::Result;
+
 use crate::{
     fields::{basic_types::*, MsgType, SessionRejectReason},
     parser::RawMessage,
 };
-use anyhow::Result;
-use std::{error::Error, fmt};
 
 #[derive(Debug)]
 pub enum DeserializeError {
@@ -1557,13 +1559,14 @@ impl<'de> Deserializer<'de> {
 mod tests {
     use std::str::FromStr;
 
+    use chrono::{DateTime, NaiveDate, Utc};
+
     use super::Deserializer;
     use crate::{
         fields::{FixString, LocalMktDate, Price},
         messages::BEGIN_STRING,
         parser::RawMessage,
     };
-    use chrono::{DateTime, NaiveDate, Utc};
 
     fn deserializer(body: &[u8]) -> Deserializer {
         let raw_message = RawMessage {

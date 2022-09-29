@@ -2,9 +2,10 @@
 #![feature(try_blocks)]
 #![feature(type_alias_impl_trait)]
 
+use std::time::Instant;
+
 use anyhow::Result;
 use easyfix::messages::{FixtMessage, Message};
-use std::time::Instant;
 
 fn main() -> Result<()> {
     let input = "8=FIXT.1.1|9=116|35=A|49=BuySide|56=SellSide|34=1|52=20190605-11:51:27.848|1128=9|98=0|108=30|141=Y|553=Username|554=Password|1137=9|10=079|";

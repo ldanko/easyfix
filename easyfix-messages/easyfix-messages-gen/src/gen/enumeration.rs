@@ -1,6 +1,7 @@
-use easyfix_dictionary::{BasicType};
+use easyfix_dictionary::BasicType;
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
+
 use crate::gen::member::Type;
 
 pub struct EnumDesc {
@@ -104,4 +105,3 @@ impl EnumDesc {
         }
     }
 }
-

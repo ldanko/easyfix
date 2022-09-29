@@ -1,5 +1,6 @@
-use easyfix_messages_gen::generate_fix_messages;
 use std::{env, path::PathBuf};
+
+use easyfix_messages_gen::generate_fix_messages;
 
 fn main() {
     let dir = env::var("CARGO_MANIFEST_DIR").unwrap();

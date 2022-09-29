@@ -1,7 +1,6 @@
-use crate::fields::FixStr;
+pub use nom::Err;
 use nom::{
-    bytes::streaming::tag,
-    bytes::streaming::{take_until, take_while},
+    bytes::streaming::{tag, take_until, take_while},
     character::{
         is_alphanumeric,
         streaming::{u16, u8},
@@ -13,7 +12,7 @@ use nom::{
     IResult,
 };
 
-pub use nom::Err;
+use crate::fields::FixStr;
 
 // TODO: Don't use Nom, no need to use additional dependency for RawMessage processing.
 
@@ -91,8 +90,9 @@ pub fn raw_message<'a>(i: &'a [u8]) -> IResult<&'a [u8], RawMessage<'a>> {
 
 #[cfg(test)]
 mod tests {
-    use super::raw_message;
     use nom::Err::Incomplete;
+
+    use super::raw_message;
 
     #[test]
     fn parse_complete_ok() {

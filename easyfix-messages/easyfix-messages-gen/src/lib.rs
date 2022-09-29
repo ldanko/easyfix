@@ -1,8 +1,5 @@
 mod gen;
 
-use crate::gen::Generator;
-use easyfix_dictionary::Dictionary;
-use proc_macro2::TokenStream;
 use std::{
     error::Error,
     fs,
@@ -11,6 +8,11 @@ use std::{
     process::{Command, Stdio},
     time::Instant,
 };
+
+use easyfix_dictionary::Dictionary;
+use proc_macro2::TokenStream;
+
+use crate::gen::Generator;
 
 fn create_source_file(
     tokens_stream: TokenStream,

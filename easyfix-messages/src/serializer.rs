@@ -1,5 +1,6 @@
-use crate::fields::basic_types::*;
 use std::io::Write;
+
+use crate::fields::basic_types::*;
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
 const MAX_MSG_SIZE: usize = 4096;
