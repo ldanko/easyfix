@@ -400,10 +400,28 @@ impl Component {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MsgCat {
+    Admin,
+    App,
+}
+
+impl FromStr for MsgCat {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(MsgCat::Admin),
+            "app" => Ok(MsgCat::App),
+            other => Err(anyhow!("Unknown message category `{}`", other)),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Message {
     name: String,
-    msgcat: String, // TODO: Enum
+    msg_cat: MsgCat,
     msgtype: String,
     members: Vec<Member>,
 }
@@ -418,10 +436,7 @@ impl Message {
         if !name.is_ascii() {
             bail!("Non ASCII characters in message name: {}", name);
         }
-        let msgcat = element.get_attribute("msgcat")?.to_owned();
-        if !msgcat.is_ascii() {
-            bail!("Non ASCII characters in message category: {}", msgcat);
-        }
+        let msg_cat = element.get_attribute("msgcat")?.parse()?;
         let msgtype = element.get_attribute("msgtype")?.to_owned();
         if !msgtype.is_ascii() {
             bail!("Non ASCII characters in message type: {}", msgtype);
@@ -434,7 +449,7 @@ impl Message {
 
         Ok(Message {
             name,
-            msgcat,
+            msg_cat,
             msgtype,
             members,
         })
@@ -444,8 +459,8 @@ impl Message {
         &self.name
     }
 
-    pub fn msgcat(&self) -> &str {
-        &self.msgcat
+    pub fn msg_cat(&self) -> MsgCat {
+        self.msg_cat
     }
 
     pub fn msgtype(&self) -> &str {
