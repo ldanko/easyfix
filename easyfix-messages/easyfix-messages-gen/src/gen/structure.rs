@@ -1,4 +1,5 @@
 use convert_case::{Case, Casing};
+use easyfix_dictionary::MsgType;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
@@ -7,7 +8,7 @@ use crate::gen::member::MemberDesc;
 pub struct Struct {
     name: Ident,
     members: Vec<MemberDesc>,
-    msg_type: Option<Vec<u8>>,
+    msg_type: Option<MsgType>,
 }
 
 /*
@@ -32,7 +33,7 @@ struct MessageStruct {
 */
 
 impl Struct {
-    pub fn new(name: &str, members: Vec<MemberDesc>, msg_type: Option<Vec<u8>>) -> Struct {
+    pub fn new(name: &str, members: Vec<MemberDesc>, msg_type: Option<MsgType>) -> Struct {
         Struct {
             name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
             members,

@@ -1563,7 +1563,7 @@ mod tests {
 
     use super::Deserializer;
     use crate::{
-        fields::{FixString, LocalMktDate, Price},
+        fields::{LocalMktDate, Price},
         messages::BEGIN_STRING,
         parser::RawMessage,
     };
@@ -1578,7 +1578,7 @@ mod tests {
         Deserializer {
             raw_message,
             buf: body,
-            msg_type: FixString::new(),
+            msg_type: None,
             seq_num: Some(1),
             current_tag: None,
             tmp_tag: None,

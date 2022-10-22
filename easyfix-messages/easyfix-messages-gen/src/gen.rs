@@ -218,7 +218,7 @@ impl Generator {
             structs.push(Struct::new(
                 msg.name(),
                 members_descs,
-                Some(msg.msgtype().into()),
+                Some(msg.msg_type()),
             ));
         }
 
