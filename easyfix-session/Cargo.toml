@@ -1,0 +1,29 @@
+[package]
+name = "easyfix-session"
+version = "0.1.0"
+authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
+license = "MIT"
+description = "Easy FIX (Financial Information Exchange) toolset - session."
+repository = "https://github.com/ldanko/easyfix"
+readme = "README.md"
+edition = "2021"
+
+[dependencies]
+async-stream = { workspace = true }
+async-trait = "0.1"
+bytes = "1.2"
+chrono = "0.4"
+easyfix-messages = { version = "0.2.0", path = "../easyfix-messages" }
+futures = "0.3"
+futures-util = "0.3.26"
+once_cell = "1.16"
+pin-project = "1.0"
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1.26", features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1.37"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.16", features = ["env-filter", "json"]}

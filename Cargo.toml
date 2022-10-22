@@ -4,7 +4,7 @@ members = [
     "easyfix",
     "easyfix-dictionary",
     "easyfix-messages",
-#"easyfix-session",
+    "easyfix-session",
 ]
 
 [workspace.dependencies]
