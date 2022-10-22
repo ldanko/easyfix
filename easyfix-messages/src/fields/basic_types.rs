@@ -24,9 +24,11 @@ pub type MultipleCharValue = Vec<Char>;
 
 #[derive(Clone, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FixString(Vec<u8>);
+
 #[derive(Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct FixStr([u8]);
+
 pub type MultipleStringValue = Vec<FixString>;
 
 pub use crate::{country::Country, currency::Currency};
@@ -214,8 +216,12 @@ impl PartialEq<String> for FixStr {
 
 // TODO: Optional feature for ISO 8859-1 encoded strings
 impl FixString {
-    pub fn new() -> FixString {
+    pub const fn new() -> FixString {
         FixString(Vec::new())
+    }
+
+    pub fn with_capacity(capacity: usize) -> FixString {
+        FixString(Vec::with_capacity(capacity))
     }
 
     pub fn from_ascii(buf: Vec<u8>) -> Result<FixString, FixStringError> {
