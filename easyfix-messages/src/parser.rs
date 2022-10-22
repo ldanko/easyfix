@@ -76,7 +76,7 @@ pub struct RawMessage<'a> {
     pub checksum: u8,
 }
 
-pub fn raw_message<'a>(i: &'a [u8]) -> IResult<&'a [u8], RawMessage<'a>> {
+pub fn raw_message(i: &'_ [u8]) -> IResult<&'_ [u8], RawMessage<'_>> {
     map(
         tuple((begin_string, length_data(body_length), checksum)),
         |(begin_string, body, checksum)| RawMessage {

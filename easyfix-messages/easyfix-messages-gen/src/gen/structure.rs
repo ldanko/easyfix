@@ -161,16 +161,14 @@ impl Struct {
                                 } else {
                                     break;
                                 }
-                            } else {
-                                if let Some((expected_tag, _)) = exp_tag {
-                                    if *expected_tag != tag {
-                                        return Err(deserializer.reject(Some(*expected_tag), SessionRejectReason::RequiredTagMissing));
-                                    } else {
-                                        break;
-                                    }
+                            } else if let Some((expected_tag, _)) = exp_tag {
+                                if *expected_tag != tag {
+                                    return Err(deserializer.reject(Some(*expected_tag), SessionRejectReason::RequiredTagMissing));
                                 } else {
-                                    continue;
+                                    break;
                                 }
+                            } else {
+                                continue;
                             }
                         } else {
                             deserializer.put_tag(tag);

@@ -305,9 +305,9 @@ impl<'de> Deserializer<'de> {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as NumInGroup))
-                        .ok_or(
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect),
-                        )?;
+                        .ok_or_else(|| {
+                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                        })?;
                 }
                 b'\x01' => {
                     if value == 0 {
@@ -365,9 +365,9 @@ impl<'de> Deserializer<'de> {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as NumInGroup))
-                        .ok_or(
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect),
-                        )?;
+                        .ok_or_else(|| {
+                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                        })?;
                 }
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];
@@ -432,9 +432,9 @@ impl<'de> Deserializer<'de> {
                     num = num
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as i64))
-                        .ok_or(
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect),
-                        )?;
+                        .ok_or_else(|| {
+                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                        })?;
                     if let Some(scale) = scale.as_mut() {
                         *scale += 1;
                     }
@@ -742,10 +742,12 @@ impl<'de> Deserializer<'de> {
             )),
             bytes @ [_, _, b'\x01', buf @ ..] => {
                 self.buf = buf;
-                Country::from_bytes(&bytes[0..2]).ok_or(self.reject(
-                    self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
-                ))
+                Country::from_bytes(&bytes[0..2]).ok_or_else(|| {
+                    self.reject(
+                        self.current_tag,
+                        SessionRejectReason::IncorrectDataFormatForValue,
+                    )
+                })
             }
             // TODO: add the same for [a, b] and [a] cases
             // TODO: and do it in every deserialize_* function without loop
@@ -779,10 +781,12 @@ impl<'de> Deserializer<'de> {
             )),
             bytes @ [_, _, _, b'\x01', buf @ ..] => {
                 self.buf = buf;
-                Currency::from_bytes(&bytes[0..3]).ok_or(self.reject(
-                    self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
-                ))
+                Currency::from_bytes(&bytes[0..3]).ok_or_else(|| {
+                    self.reject(
+                        self.current_tag,
+                        SessionRejectReason::IncorrectDataFormatForValue,
+                    )
+                })
             }
             _ => Err(self.reject(
                 self.current_tag,
@@ -822,13 +826,15 @@ impl<'de> Deserializer<'de> {
     /// An optional day of the month can be appended or an optional week code.
     ///
     /// # Valid formats:
-    /// YYYYMM
-    /// YYYYMMDD
-    /// YYYYMMWW
+    /// - `YYYYMM
+    /// - `YYYYMMDD
+    /// - `YYYYMMWW
     ///
     /// # Valid values:
-    /// YYYY = 0000-9999; MM = 01-12; DD = 01-31;
-    /// WW = w1, w2, w3, w4, w5.
+    /// - YYYY = 0000-9999
+    /// - MM = 01-12
+    /// - DD = 01-31
+    /// - WW = w1, w2, w3, w4, w5
     pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeError> {
         match self.buf {
             [] => {
@@ -955,10 +961,10 @@ impl<'de> Deserializer<'de> {
             }
         }
 
-        return Err(self.reject(
+        Err(self.reject(
             self.current_tag,
             SessionRejectReason::IncorrectDataFormatForValue,
-        ));
+        ))
     }
 
     /// Deserialize string representing time/date combination represented
@@ -1159,13 +1165,13 @@ impl<'de> Deserializer<'de> {
     pub fn deserialize_local_mkt_time(&mut self) -> Result<LocalMktTime, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
+                Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
             }
             [b'\x01', ..] => {
-                return Err(self.reject(self.current_tag, SessionRejectReason::TagSpecifiedWithoutAValue))
+                Err(self.reject(self.current_tag, SessionRejectReason::TagSpecifiedWithoutAValue))
             }
             // Missing separator at the end
             [_] => Err(DeserializeError::GarbledMessage(format!(
@@ -1248,7 +1254,7 @@ impl<'de> Deserializer<'de> {
     ///
     /// The representation is based on ISO 8601.
     ///
-    /// Format is YYYYMMDD-HH:MM:SS.sss*[Z | [ + | – hh[:mm]]] where:
+    /// Format is `YYYYMMDD-HH:MM:SS.sss*[Z | [ + | – hh[:mm]]]` where:
     /// - YYYY = 0000 to 9999,
     /// - MM = 01-12,
     /// - DD = 01-31 HH = 00-23 hours,
@@ -1305,7 +1311,7 @@ impl<'de> Deserializer<'de> {
     /// ISO 8601. This is the time with a UTC offset to allow identification of
     /// local time and time zone of that time.
     ///
-    /// Format is HH:MM[:SS][Z | [ + | – hh[:mm]]] where:
+    /// Format is `HH:MM[:SS][Z | [ + | – hh[:mm]]]` where:
     /// - HH = 00-23 hours,
     /// - MM = 00-59 minutes,
     /// - SS = 00-59 seconds,
@@ -1358,7 +1364,7 @@ impl<'de> Deserializer<'de> {
     ///
     /// The Length field must specify the number of octets of the value
     /// contained in the associated data field up to but not including
-    /// the terminating <SOH>.
+    /// the terminating `<SOH>`.
     pub fn deserialize_length(&mut self) -> Result<Length, DeserializeError> {
         match self.buf {
             [] => {

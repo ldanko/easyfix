@@ -282,7 +282,7 @@ impl Field {
     }
 
     pub fn values(&self) -> Option<&[Value]> {
-        self.values.as_ref().map(|v| v.as_slice())
+        self.values.as_deref()
     }
 }
 
@@ -352,7 +352,7 @@ impl Component {
         for member_element in element.get_child_elements() {
             if member_element.name == "group" {
                 let group_name = member_element.get_attribute("name")?;
-                let group_name = if group_name.starts_with("No") && group_name.ends_with("s") {
+                let group_name = if group_name.starts_with("No") && group_name.ends_with('s') {
                     format!("{}Grp", &group_name[2..group_name.len() - 1])
                 } else {
                     bail!("Malformed group name `{}`", group_name);
@@ -523,6 +523,12 @@ pub struct Dictionary {
     components_by_name: HashMap<String, Component>,
     fields: HashMap<u16, Field>,
     fields_by_name: HashMap<String, Field>,
+}
+
+impl Default for Dictionary {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Dictionary {

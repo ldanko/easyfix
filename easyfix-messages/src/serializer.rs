@@ -20,6 +20,12 @@ const MAX_BODY_LEN_DIGITS: usize = if MAX_MSG_SIZE < 10000 {
 
 // TODO: SerializeError: Empty Vec/Group, `0` on SeqNum,TagNum,NumInGroup,Length
 
+impl Default for Serializer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Serializer {
     output: Vec<u8>,
     body_start_idx: usize,
@@ -322,7 +328,7 @@ impl Serializer {
     ///
     /// The representation is based on ISO 8601.
     ///
-    /// Format is YYYYMMDD-HH:MM:SS.sss*[Z | [ + | – hh[:mm]]] where:
+    /// Format is `YYYYMMDD-HH:MM:SS.sss*[Z | [ + | – hh[:mm]]]` where:
     /// - YYYY = 0000 to 9999,
     /// - MM = 01-12,
     /// - DD = 01-31 HH = 00-23 hours,
@@ -343,7 +349,7 @@ impl Serializer {
     /// ISO 8601. This is the time with a UTC offset to allow identification of
     /// local time and time zone of that time.
     ///
-    /// Format is HH:MM[:SS][Z | [ + | – hh[:mm]]] where:
+    /// Format is `HH:MM[:SS][Z | [ + | – hh[:mm]]]` where:
     /// - HH = 00-23 hours,
     /// - MM = 00-59 minutes,
     /// - SS = 00-59 seconds,
@@ -363,12 +369,12 @@ impl Serializer {
     /// Serialize raw data with no format or content restrictions,
     /// or a character string encoded as specified by MessageEncoding(347).
     pub fn serialize_data(&mut self, data: &Data) {
-        self.output.extend_from_slice(&data);
+        self.output.extend_from_slice(data);
     }
 
     /// Serialize XML document.
     pub fn serialize_xml(&mut self, xml_data: &XmlData) {
-        self.output.extend_from_slice(&xml_data);
+        self.output.extend_from_slice(xml_data);
     }
 
     // fn serialize_tenor(input: &[u8]) -> Result<Tenor, RejectReason>;
@@ -377,7 +383,7 @@ impl Serializer {
     where
         T: Copy + Into<&'static [u8]>,
     {
-        self.output.extend_from_slice(value.clone().into());
+        self.output.extend_from_slice((*value).into());
     }
 
     pub fn serialize_enum_collection<T>(&mut self, values: &[T])
@@ -385,7 +391,7 @@ impl Serializer {
         T: Copy + Into<&'static [u8]>,
     {
         for value in values {
-            self.output.extend_from_slice(value.clone().into());
+            self.output.extend_from_slice((*value).into());
             self.output.push(b' ');
         }
         // Drop last space

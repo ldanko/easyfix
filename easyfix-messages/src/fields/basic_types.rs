@@ -72,14 +72,38 @@ impl fmt::Display for FixStringError {
 impl std::error::Error for FixStringError {}
 
 const fn is_non_control_ascii_char(byte: u8) -> bool {
-    if byte > 0x1f && byte < 0x80 {
-        true
-    } else {
-        false
-    }
+    byte > 0x1f && byte < 0x80
 }
 
 impl FixStr {
+    /// Converts a slice of bytes to a string slice.
+    ///
+    /// A FIX string slice ([`&FixStr`]) is made of bytes ([`u8`]), and a byte
+    /// slice ([`&[u8]`][slice]) is made of bytes, so this function
+    /// converts between the two. Not all byte slices are valid string slices,
+    /// however: [`&FixStr`] requires that it is valid ASCII.
+    /// `from_ascii()` checks to ensure that the bytes are valid ASCII,
+    /// and then does the conversion.
+    ///
+    /// [`&FixStr`]: FixStr
+    ///
+    /// If you are sure that the byte slice is valid ASCII, and you don't want
+    /// to incur the overhead of the validity check, there is an unsafe version
+    /// of this function, [`from_ascii_unchecked`], which has the same behavior
+    /// but skips the check.
+    ///
+    /// [`from_ascii_unchecked`]: FixStr::from_ascii_unchecked
+    ///
+    /// If you need a `FixString` instead of a `&FixStr`, consider
+    /// [`FixString::from_ascii`].
+    ///
+    /// Because you can stack-allocate a `[u8; N]`, and you can take a
+    /// [`&[u8]`][slice] of it, this function is one way to have a
+    /// stack-allocated string.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the slice is not ASCII.
     pub fn from_ascii(buf: &[u8]) -> Result<&FixStr, FixStringError> {
         for i in 0..buf.len() {
             // SAFETY: `i` never exceeds buf.len()
@@ -91,8 +115,18 @@ impl FixStr {
         unsafe { Ok(FixStr::from_ascii_unchecked(buf)) }
     }
 
+    /// Converts a slice of bytes to a FIX string slice without checking
+    /// that it contains only ASCII characters.
+    ///
+    /// See the safe version, [`from_ascii`], for more information.
+    ///
+    /// [`from_ascii`]: FixStr::from_ascii
+    ///
+    /// # Safety
+    ///
+    /// The bytes passed in must consists from ASCII characters only.
     pub const unsafe fn from_ascii_unchecked(buf: &[u8]) -> &FixStr {
-        // SAFETY: the caller must guarantee that the bytes `v` are valid UTF-8.
+        // SAFETY: the caller must guarantee that the bytes `buf` are valid ASCII.
         // Also relies on `&FixStr` and `&[u8]` having the same layout.
         mem::transmute(buf)
     }
@@ -225,6 +259,37 @@ impl FixString {
         FixString(Vec::with_capacity(capacity))
     }
 
+    /// Converts a vector of bytes to a `FixString`.
+    ///
+    /// A FIX string ([`FixString`]) is made of bytes ([`u8`]),
+    /// and a vector of bytes ([`Vec<u8>`]) is made of bytes, so this function
+    /// converts between the two. Not all byte slices are valid `FixString`s,
+    /// however: `FixString` requires that it is valid ASCII.
+    /// `from_ascii()` checks to ensure that the bytes are valid ASCII,
+    /// and then does the conversion.
+    ///
+    /// If you are sure that the byte slice is valid ASCII, and you don't want
+    /// to incur the overhead of the validity check, there is an unsafe version
+    /// of this function, [`from_ascii_unchecked`], which has the same behavior
+    /// but skips the check.
+    ///
+    /// This method will take care to not copy the vector, for efficiency's
+    /// sake.
+    ///
+    /// If you need a [`&FixStr`] instead of a `FixString`, consider
+    /// [`FixStr::from_ascii`].
+    ///
+    /// The inverse of this method is [`into_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Err`] if the slice is not ASCII with a description as to why
+    /// the provided bytes are not ASCII.
+    ///
+    /// [`from_ascii_unchecked`]: FixString::from_ascii_unchecked
+    /// [`Vec<u8>`]: std::vec::Vec "Vec"
+    /// [`&FixStr`]: FixStr
+    /// [`into_bytes`]: FixString::into_bytes
     pub fn from_ascii(buf: Vec<u8>) -> Result<FixString, FixStringError> {
         for i in 0..buf.len() {
             // SAFETY: `i` never exceeds buf.len()
@@ -236,6 +301,19 @@ impl FixString {
         Ok(FixString(buf))
     }
 
+    /// Converts a vector of bytes to a `FixString` without checking that the
+    /// it contains only ASCII characters.
+    ///
+    /// See the safe version, [`from_ascii`], for more details.
+    ///
+    /// [`from_ascii`]: FixString::from_ascii
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it does not check that the bytes passed
+    /// to it are valid ASCII. If this constraint is violated, it may cause
+    /// memory unsafety issues with future users of the `FixString`,
+    /// as the rest of the library assumes that `FixString`s are valid ASCII.
     pub unsafe fn from_ascii_unchecked(buf: Vec<u8>) -> FixString {
         FixString(buf)
     }
@@ -267,6 +345,10 @@ impl FixString {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -467,7 +549,7 @@ impl Serialize for FixString {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.as_utf8())
+        serializer.serialize_str(self.as_utf8())
     }
 }
 

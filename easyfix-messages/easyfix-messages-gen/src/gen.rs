@@ -463,9 +463,9 @@ impl Generator {
                 // TODO: Like chrono::Format::DelayedFormat
                 pub fn dbg_fix_str(&self) -> impl fmt::Display {
                     let mut output = self.serialize();
-                    for i in 0..output.len() {
-                        if output[i] == b'\x01' {
-                            output[i] = b'|';
+                    for byte in output.iter_mut() {
+                        if *byte == b'\x01' {
+                            *byte = b'|';
                         }
                     }
                     String::from_utf8_lossy(&output).into_owned()

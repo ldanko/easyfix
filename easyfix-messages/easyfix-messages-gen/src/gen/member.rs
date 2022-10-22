@@ -5,14 +5,14 @@ use quote::quote;
 
 #[derive(Debug)]
 pub enum Type {
-    BasicType(BasicType),
+    Basic(BasicType),
     Group(Ident),
     Enum((Ident, BasicType)),
 }
 
 impl Type {
     pub fn basic_type(basic_type: BasicType) -> Type {
-        Type::BasicType(basic_type)
+        Type::Basic(basic_type)
     }
 
     pub fn group(name: &str) -> Type {
@@ -31,34 +31,34 @@ impl Type {
 
     pub fn gen_type(&self) -> TokenStream {
         match self {
-            Type::BasicType(BasicType::Amt) => quote! { Amt },
-            Type::BasicType(BasicType::Boolean) => quote! { Boolean },
-            Type::BasicType(BasicType::Char) => quote! { Char },
-            Type::BasicType(BasicType::Country) => quote! { Country },
-            Type::BasicType(BasicType::Currency) => quote! { Currency },
-            Type::BasicType(BasicType::Data) => quote! { Data },
-            Type::BasicType(BasicType::Exchange) => quote! { Exchange },
-            Type::BasicType(BasicType::Float) => quote! { Float },
-            Type::BasicType(BasicType::Int) => quote! { Int },
-            Type::BasicType(BasicType::Language) => quote! { Language },
-            Type::BasicType(BasicType::Length) => quote! { Length },
-            Type::BasicType(BasicType::LocalMktDate) => quote! { LocalMktDate },
-            Type::BasicType(BasicType::MonthYear) => quote! { MonthYear },
-            Type::BasicType(BasicType::MultipleCharValue) => quote! { MultipleCharValue },
-            Type::BasicType(BasicType::MultipleStringValue) => quote! { MultipleStringValue },
-            Type::BasicType(BasicType::NumInGroup) => quote! { NumInGroup },
-            Type::BasicType(BasicType::Percentage) => quote! { Percentage },
-            Type::BasicType(BasicType::Price) => quote! { Price },
-            Type::BasicType(BasicType::PriceOffset) => quote! { PriceOffset },
-            Type::BasicType(BasicType::Qty) => quote! { Qty },
-            Type::BasicType(BasicType::SeqNum) => quote! { SeqNum },
-            Type::BasicType(BasicType::String) => quote! { FixString },
-            Type::BasicType(BasicType::TzTimeOnly) => quote! { TzTimeOnly },
-            Type::BasicType(BasicType::TzTimestamp) => quote! { TzTimestamp },
-            Type::BasicType(BasicType::UtcDateOnly) => quote! { UtcDateOnly },
-            Type::BasicType(BasicType::UtcTimeOnly) => quote! { UtcTimeOnly },
-            Type::BasicType(BasicType::UtcTimestamp) => quote! { UtcTimestamp },
-            Type::BasicType(BasicType::XmlData) => quote! { XmlData },
+            Type::Basic(BasicType::Amt) => quote! { Amt },
+            Type::Basic(BasicType::Boolean) => quote! { Boolean },
+            Type::Basic(BasicType::Char) => quote! { Char },
+            Type::Basic(BasicType::Country) => quote! { Country },
+            Type::Basic(BasicType::Currency) => quote! { Currency },
+            Type::Basic(BasicType::Data) => quote! { Data },
+            Type::Basic(BasicType::Exchange) => quote! { Exchange },
+            Type::Basic(BasicType::Float) => quote! { Float },
+            Type::Basic(BasicType::Int) => quote! { Int },
+            Type::Basic(BasicType::Language) => quote! { Language },
+            Type::Basic(BasicType::Length) => quote! { Length },
+            Type::Basic(BasicType::LocalMktDate) => quote! { LocalMktDate },
+            Type::Basic(BasicType::MonthYear) => quote! { MonthYear },
+            Type::Basic(BasicType::MultipleCharValue) => quote! { MultipleCharValue },
+            Type::Basic(BasicType::MultipleStringValue) => quote! { MultipleStringValue },
+            Type::Basic(BasicType::NumInGroup) => quote! { NumInGroup },
+            Type::Basic(BasicType::Percentage) => quote! { Percentage },
+            Type::Basic(BasicType::Price) => quote! { Price },
+            Type::Basic(BasicType::PriceOffset) => quote! { PriceOffset },
+            Type::Basic(BasicType::Qty) => quote! { Qty },
+            Type::Basic(BasicType::SeqNum) => quote! { SeqNum },
+            Type::Basic(BasicType::String) => quote! { FixString },
+            Type::Basic(BasicType::TzTimeOnly) => quote! { TzTimeOnly },
+            Type::Basic(BasicType::TzTimestamp) => quote! { TzTimestamp },
+            Type::Basic(BasicType::UtcDateOnly) => quote! { UtcDateOnly },
+            Type::Basic(BasicType::UtcTimeOnly) => quote! { UtcTimeOnly },
+            Type::Basic(BasicType::UtcTimestamp) => quote! { UtcTimestamp },
+            Type::Basic(BasicType::XmlData) => quote! { XmlData },
             Type::Group(name) => quote! { Vec<#name> },
             // TODO: in case of enum based on NumInGroup, it seems that max
             //       group members cound should be limited to max enum value
@@ -80,58 +80,58 @@ impl Type {
 
     fn gen_serialize(&self) -> Option<TokenStream> {
         match self {
-            Type::BasicType(BasicType::Amt) => Some(quote! { serializer.serialize_amt }),
-            Type::BasicType(BasicType::Boolean) => Some(quote! { serializer.serialize_boolean }),
-            Type::BasicType(BasicType::Char) => Some(quote! { serializer.serialize_char }),
-            Type::BasicType(BasicType::Country) => Some(quote! { serializer.serialize_country }),
-            Type::BasicType(BasicType::Currency) => Some(quote! { serializer.serialize_currency }),
-            Type::BasicType(BasicType::Data) => None,
-            Type::BasicType(BasicType::Exchange) => Some(quote! { serializer.serialize_exchange }),
-            Type::BasicType(BasicType::Float) => Some(quote! { serializer.serialize_float }),
-            Type::BasicType(BasicType::Int) => Some(quote! { serializer.serialize_int }),
-            Type::BasicType(BasicType::Language) => Some(quote! { serializer.serialize_language }),
-            Type::BasicType(BasicType::Length) => Some(quote! { serializer.serialize_length }),
-            Type::BasicType(BasicType::LocalMktDate) => {
+            Type::Basic(BasicType::Amt) => Some(quote! { serializer.serialize_amt }),
+            Type::Basic(BasicType::Boolean) => Some(quote! { serializer.serialize_boolean }),
+            Type::Basic(BasicType::Char) => Some(quote! { serializer.serialize_char }),
+            Type::Basic(BasicType::Country) => Some(quote! { serializer.serialize_country }),
+            Type::Basic(BasicType::Currency) => Some(quote! { serializer.serialize_currency }),
+            Type::Basic(BasicType::Data) => None,
+            Type::Basic(BasicType::Exchange) => Some(quote! { serializer.serialize_exchange }),
+            Type::Basic(BasicType::Float) => Some(quote! { serializer.serialize_float }),
+            Type::Basic(BasicType::Int) => Some(quote! { serializer.serialize_int }),
+            Type::Basic(BasicType::Language) => Some(quote! { serializer.serialize_language }),
+            Type::Basic(BasicType::Length) => Some(quote! { serializer.serialize_length }),
+            Type::Basic(BasicType::LocalMktDate) => {
                 Some(quote! { serializer.serialize_local_mkt_date })
             }
-            Type::BasicType(BasicType::MonthYear) => {
+            Type::Basic(BasicType::MonthYear) => {
                 Some(quote! { serializer.serialize_month_year })
             }
-            Type::BasicType(BasicType::MultipleCharValue) => {
+            Type::Basic(BasicType::MultipleCharValue) => {
                 Some(quote! { serializer.serialize_multiple_char_value })
             }
-            Type::BasicType(BasicType::MultipleStringValue) => {
+            Type::Basic(BasicType::MultipleStringValue) => {
                 Some(quote! { serializer.serialize_multiple_string_value })
             }
-            Type::BasicType(BasicType::NumInGroup) => {
+            Type::Basic(BasicType::NumInGroup) => {
                 Some(quote! { serializer.serialize_num_in_group })
             }
-            Type::BasicType(BasicType::Percentage) => {
+            Type::Basic(BasicType::Percentage) => {
                 Some(quote! { serializer.serialize_percentage })
             }
-            Type::BasicType(BasicType::Price) => Some(quote! { serializer.serialize_price }),
-            Type::BasicType(BasicType::PriceOffset) => {
+            Type::Basic(BasicType::Price) => Some(quote! { serializer.serialize_price }),
+            Type::Basic(BasicType::PriceOffset) => {
                 Some(quote! { serializer.serialize_price_offset })
             }
-            Type::BasicType(BasicType::Qty) => Some(quote! { serializer.serialize_qty }),
-            Type::BasicType(BasicType::SeqNum) => Some(quote! { serializer.serialize_seq_num }),
-            Type::BasicType(BasicType::String) => Some(quote! { serializer.serialize_string }),
-            Type::BasicType(BasicType::TzTimeOnly) => {
+            Type::Basic(BasicType::Qty) => Some(quote! { serializer.serialize_qty }),
+            Type::Basic(BasicType::SeqNum) => Some(quote! { serializer.serialize_seq_num }),
+            Type::Basic(BasicType::String) => Some(quote! { serializer.serialize_string }),
+            Type::Basic(BasicType::TzTimeOnly) => {
                 Some(quote! { serializer.serialize_tz_timeonly })
             }
-            Type::BasicType(BasicType::TzTimestamp) => {
+            Type::Basic(BasicType::TzTimestamp) => {
                 Some(quote! { serializer.serialize_tz_timestamp })
             }
-            Type::BasicType(BasicType::UtcDateOnly) => {
+            Type::Basic(BasicType::UtcDateOnly) => {
                 Some(quote! { serializer.serialize_utc_date_only })
             }
-            Type::BasicType(BasicType::UtcTimeOnly) => {
+            Type::Basic(BasicType::UtcTimeOnly) => {
                 Some(quote! { serializer.serialize_utc_time_only })
             }
-            Type::BasicType(BasicType::UtcTimestamp) => {
+            Type::Basic(BasicType::UtcTimestamp) => {
                 Some(quote! { serializer.serialize_utc_timestamp })
             }
-            Type::BasicType(BasicType::XmlData) => None,
+            Type::Basic(BasicType::XmlData) => None,
             Type::Group(_) => None,
             Type::Enum((
                 _,
@@ -149,62 +149,62 @@ impl Type {
 
     fn gen_deserialize(&self) -> TokenStream {
         match self {
-            Type::BasicType(BasicType::Amt) => quote! { deserializer.deserialize_amt() },
-            Type::BasicType(BasicType::Boolean) => quote! { deserializer.deserialize_boolean() },
-            Type::BasicType(BasicType::Char) => quote! { deserializer.deserialize_char() },
-            Type::BasicType(BasicType::Country) => quote! { deserializer.deserialize_country() },
-            Type::BasicType(BasicType::Currency) => quote! { deserializer.deserialize_currency() },
+            Type::Basic(BasicType::Amt) => quote! { deserializer.deserialize_amt() },
+            Type::Basic(BasicType::Boolean) => quote! { deserializer.deserialize_boolean() },
+            Type::Basic(BasicType::Char) => quote! { deserializer.deserialize_char() },
+            Type::Basic(BasicType::Country) => quote! { deserializer.deserialize_country() },
+            Type::Basic(BasicType::Currency) => quote! { deserializer.deserialize_currency() },
             // Note `len` argument for deserializer
-            Type::BasicType(BasicType::Data) => {
+            Type::Basic(BasicType::Data) => {
                 quote! { deserializer.deserialize_data(len as usize) }
             }
-            Type::BasicType(BasicType::Exchange) => quote! { deserializer.deserialize_exchange() },
-            Type::BasicType(BasicType::Float) => quote! { deserializer.deserialize_float() },
-            Type::BasicType(BasicType::Int) => quote! { deserializer.deserialize_int() },
-            Type::BasicType(BasicType::Language) => quote! { deserializer.deserialize_language() },
-            Type::BasicType(BasicType::Length) => quote! { deserializer.deserialize_length() },
-            Type::BasicType(BasicType::LocalMktDate) => {
+            Type::Basic(BasicType::Exchange) => quote! { deserializer.deserialize_exchange() },
+            Type::Basic(BasicType::Float) => quote! { deserializer.deserialize_float() },
+            Type::Basic(BasicType::Int) => quote! { deserializer.deserialize_int() },
+            Type::Basic(BasicType::Language) => quote! { deserializer.deserialize_language() },
+            Type::Basic(BasicType::Length) => quote! { deserializer.deserialize_length() },
+            Type::Basic(BasicType::LocalMktDate) => {
                 quote! { deserializer.deserialize_local_mkt_date() }
             }
-            Type::BasicType(BasicType::MonthYear) => {
+            Type::Basic(BasicType::MonthYear) => {
                 quote! { deserializer.deserialize_month_year() }
             }
-            Type::BasicType(BasicType::MultipleCharValue) => {
+            Type::Basic(BasicType::MultipleCharValue) => {
                 quote! { deserializer.deserialize_multiple_char_value() }
             }
-            Type::BasicType(BasicType::MultipleStringValue) => {
+            Type::Basic(BasicType::MultipleStringValue) => {
                 quote! { deserializer.deserialize_multiple_string_value() }
             }
-            Type::BasicType(BasicType::NumInGroup) => {
+            Type::Basic(BasicType::NumInGroup) => {
                 quote! { deserializer.deserialize_num_in_group() }
             }
-            Type::BasicType(BasicType::Percentage) => {
+            Type::Basic(BasicType::Percentage) => {
                 quote! { deserializer.deserialize_percentage() }
             }
-            Type::BasicType(BasicType::Price) => quote! { deserializer.deserialize_price() },
-            Type::BasicType(BasicType::PriceOffset) => {
+            Type::Basic(BasicType::Price) => quote! { deserializer.deserialize_price() },
+            Type::Basic(BasicType::PriceOffset) => {
                 quote! { deserializer.deserialize_price_offset() }
             }
-            Type::BasicType(BasicType::Qty) => quote! { deserializer.deserialize_qty() },
-            Type::BasicType(BasicType::SeqNum) => quote! { deserializer.deserialize_seq_num() },
-            Type::BasicType(BasicType::String) => quote! { deserializer.deserialize_string() },
-            Type::BasicType(BasicType::TzTimeOnly) => {
+            Type::Basic(BasicType::Qty) => quote! { deserializer.deserialize_qty() },
+            Type::Basic(BasicType::SeqNum) => quote! { deserializer.deserialize_seq_num() },
+            Type::Basic(BasicType::String) => quote! { deserializer.deserialize_string() },
+            Type::Basic(BasicType::TzTimeOnly) => {
                 quote! { deserializer.deserialize_tz_timeonly() }
             }
-            Type::BasicType(BasicType::TzTimestamp) => {
+            Type::Basic(BasicType::TzTimestamp) => {
                 quote! { deserializer.deserialize_tz_timestamp() }
             }
-            Type::BasicType(BasicType::UtcDateOnly) => {
+            Type::Basic(BasicType::UtcDateOnly) => {
                 quote! { deserializer.deserialize_utc_date_only() }
             }
-            Type::BasicType(BasicType::UtcTimeOnly) => {
+            Type::Basic(BasicType::UtcTimeOnly) => {
                 quote! { deserializer.deserialize_utc_time_only() }
             }
-            Type::BasicType(BasicType::UtcTimestamp) => {
+            Type::Basic(BasicType::UtcTimestamp) => {
                 quote! { deserializer.deserialize_utc_timestamp() }
             }
             // Note `len` argument for deserializer
-            Type::BasicType(BasicType::XmlData) => {
+            Type::Basic(BasicType::XmlData) => {
                 quote! { deserializer.deserialize_xml(len as usize) }
             }
             Type::Group(name) => {
@@ -394,7 +394,7 @@ impl SimpleMember {
                     #name = Some(msg_seq_num_value);
                 }
             }),
-            (Type::BasicType(BasicType::Length), _) => Some(quote! {
+            (Type::Basic(BasicType::Length), _) => Some(quote! {
                 #tag => {
                     if #name.is_some() {
                         return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
@@ -402,13 +402,13 @@ impl SimpleMember {
                     #name = Some(#deserialize?);
                 }
             }),
-            (Type::BasicType(BasicType::NumInGroup), _) => Some(quote! {
+            (Type::Basic(BasicType::NumInGroup), _) => Some(quote! {
                 #tag => {
                     return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
                 }
             }),
             (Type::Group(_), _) => None,
-            (Type::BasicType(BasicType::Data | BasicType::XmlData), _) => Some(quote! {
+            (Type::Basic(BasicType::Data | BasicType::XmlData), _) => Some(quote! {
                 #tag => {
                     return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
                 }
@@ -538,8 +538,8 @@ impl MemberDesc {
                 let len_tag = format!("{}=", len_tag);
                 let value_tag = format!("{}=", value_tag);
                 let serialize_value = match value_type {
-                    Type::BasicType(BasicType::Data) => quote! { serializer.serialize_data },
-                    Type::BasicType(BasicType::XmlData) => quote! { serializer.serialize_xml },
+                    Type::Basic(BasicType::Data) => quote! { serializer.serialize_data },
+                    Type::Basic(BasicType::XmlData) => quote! { serializer.serialize_xml },
                     t => panic!("Unexpected type {:?} after `Length` field", t),
                 };
                 if *required {
