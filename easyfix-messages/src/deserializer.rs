@@ -1055,34 +1055,49 @@ impl<'de> Deserializer<'de> {
     pub fn deserialize_utc_time_only(&mut self) -> Result<UtcTimeOnly, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
+                Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
             }
             [b'\x01', ..] => {
-                return Err(self.reject(
+                Err(self.reject(
                     self.current_tag,
                     SessionRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
-            _ => {}
-        }
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
-                // -1 to drop separator, separator on idx 0 is checked separately
-                let data = &self.buf[0..i - 1];
-                self.buf = &self.buf[i + 1..];
-                // TODO
-                return Ok(data.into());
+            [
+                // hours
+                h1 @ b'0'..=b'2', h0 @ b'0'..=b'9', b':',
+                // minutes
+                m1 @ b'0'..=b'5', m0 @ b'0'..=b'9', b':',
+                // seconds
+                s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', b':',
+                ..
+            ] =>
+            {
+                let h = (h1 - b'0') * 10 + (h0 - b'0');
+                let m = (m1 - b'0') * 10 + (m0 - b'0');
+                let s = (s1 - b'0') * 10 + (s0 - b'0');
+                self.buf = &self.buf[9..];
+                let ns = self.deserialize_fraction_of_secod()?;
+                NaiveTime::from_hms_nano_opt(h.into(), m.into(), s.into(), ns)
+                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
             }
-        }
+            // Leap second case
+            [h1 @ b'0'..=b'2', h0 @ b'0'..=b'9', b':', m1 @ b'0'..=b'5', m0 @ b'0'..=b'9', b':', b'6', b'0', b':'] =>
+                {
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+                let h = (h1 - b'0') * 10 + (h0 - b'0');
+                let m = (m1 - b'0') * 10 + (m0 - b'0');
+                let s = 60;
+                self.buf = &self.buf[9..];
+                let ns = self.deserialize_fraction_of_secod()?;
+                NaiveTime::from_hms_nano_opt(h.into(), m.into(), s, ns)
+                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                }
+            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+        }
     }
 
     /// Deserialize date represented in UTC (Universal Time Coordinated)

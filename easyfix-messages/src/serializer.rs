@@ -252,8 +252,8 @@ impl Serializer {
     ///        milliseconds, 6 digits to convey microseconds, 9 digits
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn serialize_utc_timestamp(&mut self, input: &UtcTimestamp) {
-        write!(self.output, "{}", input.format("%Y%m%d-%H:%M:%S.%3f"))
-            .expect("UtcDateOnly serialization failed")
+        write!(self.output, "{}", input.format("%Y%m%d-%H:%M:%S.%f"))
+            .expect("UtcTimestamp serialization failed")
     }
 
     /// Serialize string representing time-only represented in UTC
@@ -274,7 +274,8 @@ impl Serializer {
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
     ///        // TODO: set precision!
     pub fn serialize_utc_time_only(&mut self, input: &UtcTimeOnly) {
-        self.output.extend_from_slice(input)
+        write!(self.output, "{}", input.format("%H:%M:%S.%f"))
+            .expect("UtcTimeOnly serialization failed")
     }
 
     /// Serialize date represented in UTC (Universal Time Coordinated)

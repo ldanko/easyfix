@@ -37,7 +37,8 @@ pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
 pub type UtcTimestamp = DateTime<Utc>;
-pub type UtcTimeOnly = Vec<u8>;
+// TODO: use newtype, to prevent mixing with LocaLMktTime
+pub type UtcTimeOnly = NaiveTime;
 pub type UtcDateOnly = Date<Utc>;
 
 pub type LocalMktTime = NaiveTime;
