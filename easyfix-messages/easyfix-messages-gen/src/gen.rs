@@ -470,6 +470,14 @@ impl Generator {
                     }
                     String::from_utf8_lossy(&output).into_owned()
                 }
+
+                pub const fn msg_type(&self) -> MsgType {
+                    self.body.msg_type()
+                }
+
+                pub const fn msg_cat(&self) -> MsgCat {
+                    self.body.msg_cat()
+                }
             }
         }
     }
