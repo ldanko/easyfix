@@ -1,6 +1,6 @@
 #![feature(type_alias_impl_trait)]
 
-use std::{collections::HashMap, convert::TryFrom, fmt, str::FromStr};
+use std::{collections::HashMap, convert::TryFrom, fmt, ops::Deref, str::FromStr};
 
 use anyhow::{anyhow, bail, Context as ErrorContext, Result};
 use xmltree::{Element, XMLNode};
@@ -406,6 +406,48 @@ pub enum MsgCat {
     App,
 }
 
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+enum MsgTypeBuf {
+    Short([u8; 1]),
+    Long([u8; 2]),
+}
+
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+pub struct MsgType(MsgTypeBuf);
+
+impl Deref for MsgType {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            MsgType(MsgTypeBuf::Short(b)) => b,
+            MsgType(MsgTypeBuf::Long(b)) => b,
+        }
+    }
+}
+
+impl FromStr for MsgType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !s.is_ascii() {
+            bail!("Non ASCII characters in message type: {}", s);
+        }
+
+        match s.as_bytes() {
+            [] => Err(anyhow!("MsgType empty")),
+            [b0 @ b'0'..=b'9' | b0 @ b'A'..=b'Z' | b0 @ b'a'..=b'z'] => {
+                Ok(MsgType(MsgTypeBuf::Short([*b0])))
+            }
+            [b0 @ b'0'..=b'9' | b0 @ b'A'..=b'Z' | b0 @ b'a'..=b'z', b1 @ b'0'..=b'9' | b1 @ b'A'..=b'Z' | b1 @ b'a'..=b'z'] => {
+                Ok(MsgType(MsgTypeBuf::Long([*b0, *b1])))
+            }
+            [_] | [_, _] => Err(anyhow!("Incorrect MsgType value: {}", s)),
+            _ => Err(anyhow!("MsgType (`{}`) too long ({}`", s, s.len())),
+        }
+    }
+}
+
 impl FromStr for MsgCat {
     type Err = anyhow::Error;
 
@@ -422,7 +464,7 @@ impl FromStr for MsgCat {
 pub struct Message {
     name: String,
     msg_cat: MsgCat,
-    msgtype: String,
+    msg_type: MsgType,
     members: Vec<Member>,
 }
 
@@ -437,10 +479,7 @@ impl Message {
             bail!("Non ASCII characters in message name: {}", name);
         }
         let msg_cat = element.get_attribute("msgcat")?.parse()?;
-        let msgtype = element.get_attribute("msgtype")?.to_owned();
-        if !msgtype.is_ascii() {
-            bail!("Non ASCII characters in message type: {}", msgtype);
-        }
+        let msg_type = element.get_attribute("msgtype")?.parse()?;
 
         let members = element
             .get_child_elements()
@@ -450,7 +489,7 @@ impl Message {
         Ok(Message {
             name,
             msg_cat,
-            msgtype,
+            msg_type,
             members,
         })
     }
@@ -463,8 +502,8 @@ impl Message {
         self.msg_cat
     }
 
-    pub fn msgtype(&self) -> &str {
-        &self.msgtype
+    pub fn msg_type(&self) -> MsgType {
+        self.msg_type
     }
 
     pub fn members(&self) -> &[Member] {
@@ -478,7 +517,7 @@ pub struct Dictionary {
     fixt_version: Option<Version>,
     header: Option<Component>,
     trailer: Option<Component>,
-    messages: HashMap<String, Message>,
+    messages: HashMap<MsgType, Message>,
     flat_messages: HashMap<String, Message>,
     components: Vec<Component>,
     components_by_name: HashMap<String, Component>,
@@ -557,7 +596,7 @@ impl Dictionary {
                 .map(Message::from_xml)
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
-                .map(|m| (m.msgtype.clone(), m)),
+                .map(|m| (m.msg_type, m)),
         );
 
         self.components.extend(
@@ -619,11 +658,11 @@ impl Dictionary {
         self.components_by_name.get(name)
     }
 
-    pub fn message(&self, name: &String) -> Option<&Message> {
+    pub fn message(&self, name: &MsgType) -> Option<&Message> {
         self.messages.get(name)
     }
 
-    pub fn messages(&self) -> &HashMap<String, Message> {
+    pub fn messages(&self) -> &HashMap<MsgType, Message> {
         &self.messages
     }
 
@@ -633,5 +672,25 @@ impl Dictionary {
 
     pub fn fields_by_name(&self) -> &HashMap<String, Field> {
         &self.fields_by_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use std::str::FromStr;
+
+    use super::MsgType;
+
+    #[test]
+    fn parse_msg_type() {
+        assert!(MsgType::from_str("").is_err());
+        assert!(MsgType::from_str("\0").is_err());
+        assert!(MsgType::from_str("\0\0").is_err());
+        assert!(MsgType::from_str("\0\0\0").is_err());
+        assert!(MsgType::from_str("A").is_ok());
+        assert!(MsgType::from_str("AA").is_ok());
+        assert!(MsgType::from_str("AAA").is_err());
+        assert!(MsgType::from_str("\0A").is_err());
     }
 }
