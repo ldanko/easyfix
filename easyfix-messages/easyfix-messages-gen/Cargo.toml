@@ -11,6 +11,6 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 convert_case = "0.5"
+easyfix-dictionary = { version = "0.2.0", path = "../../easyfix-dictionary" }
 proc-macro2 = "1.0"
 quote = "1.0"
-easyfix-dictionary = { version = "0.2.0", path = "../../easyfix-dictionary" }
