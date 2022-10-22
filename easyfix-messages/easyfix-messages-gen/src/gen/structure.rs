@@ -1,5 +1,5 @@
 use convert_case::{Case, Casing};
-use easyfix_dictionary::MsgType;
+use easyfix_dictionary::{MsgCat, MsgType};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
@@ -8,7 +8,7 @@ use crate::gen::member::MemberDesc;
 pub struct Struct {
     name: Ident,
     members: Vec<MemberDesc>,
-    msg_type: Option<MsgType>,
+    msg_props: Option<(MsgCat, MsgType)>,
 }
 
 /*
@@ -28,16 +28,21 @@ struct MessageStruct {
     header: HeaderStruct,
     body: Struct,
     trailer: HeaderStruct,
-    msg_type: Vec<u8>,
+    msg_type: MsgType,
+    msg_cat: MsgCat,
 }
 */
 
 impl Struct {
-    pub fn new(name: &str, members: Vec<MemberDesc>, msg_type: Option<MsgType>) -> Struct {
+    pub fn new(
+        name: &str,
+        members: Vec<MemberDesc>,
+        msg_props: Option<(MsgCat, MsgType)>,
+    ) -> Struct {
         Struct {
             name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
             members,
-            msg_type,
+            msg_props,
         }
     }
 
@@ -45,16 +50,12 @@ impl Struct {
         &self.name
     }
 
-    pub fn msg_type(&self) -> Option<&[u8]> {
-        self.msg_type.as_deref()
+    pub fn msg_props(&self) -> Option<(MsgCat, MsgType)> {
+        self.msg_props
     }
 
     pub fn is_group(&self) -> bool {
-        self.msg_type().is_none() && self.name != "Header" && self.name != "Trailer"
-    }
-
-    pub fn is_message(&self) -> bool {
-        self.msg_type.is_some()
+        self.msg_props.is_none() && self.name != "Header" && self.name != "Trailer"
     }
 
     fn generate_serialize(&self) -> Vec<TokenStream> {
@@ -232,10 +233,15 @@ impl Struct {
 
         let serialize = self.generate_serialize();
 
-        let fn_msg_type = if self.is_message() {
+        let fn_msg_type_msg_cat = if let Some((msg_cat, _)) = self.msg_props() {
+            let msg_cat = Ident::new(&format!("{:?}", msg_cat), Span::call_site());
             Some(quote! {
                 pub const fn msg_type(&self) -> MsgType {
                     MsgType::#name
+                }
+
+                pub const fn msg_cat(&self) -> MsgCat {
+                    MsgCat::#msg_cat
                 }
             })
         } else {
@@ -257,7 +263,7 @@ impl Struct {
                     #deserialize_body
                 }
 
-                #fn_msg_type
+                #fn_msg_type_msg_cat
             }
         }
     }

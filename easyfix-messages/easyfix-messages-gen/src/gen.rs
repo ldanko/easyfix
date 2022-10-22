@@ -218,7 +218,7 @@ impl Generator {
             structs.push(Struct::new(
                 msg.name(),
                 members_descs,
-                Some(msg.msg_type()),
+                Some((msg.msg_cat(), msg.msg_type())),
             ));
         }
 
@@ -337,7 +337,7 @@ impl Generator {
                 structs_defs.push(struct_.generate());
             }
 
-            if struct_.msg_type().is_some() {
+            if struct_.msg_props().is_some() {
                 impl_from_msg.push(quote! {
                     impl From<#struct_name> for Message {
                         fn from(msg: #struct_name) -> Message {
@@ -408,6 +408,12 @@ impl Generator {
                 pub const fn msg_type(&self) -> MsgType {
                     match self {
                         #(Message::#name(_) => MsgType::#name,)*
+                    }
+                }
+
+                pub const fn msg_cat(&self) -> MsgCat {
+                    match self {
+                        #(Message::#name(msg) => msg.msg_cat(),)*
                     }
                 }
             }
