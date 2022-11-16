@@ -1,6 +1,6 @@
 use convert_case::{Case, Casing};
 use easyfix_dictionary::BasicType;
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::{Ident, Span, TokenStream, Literal};
 use quote::quote;
 
 #[derive(Debug)]
@@ -315,18 +315,18 @@ impl SimpleMember {
                 Some(quote! { serializer.serialize_checksum() })
             } else {
                 let name = &self.name;
-                let tag = format!("{}=", self.tag);
+                let tag = Literal::byte_string(format!("{}=", self.tag).as_bytes());
                 if self.required {
                     Some(quote! {
                         //serializer.serialize_tag_num(#tag);
-                        serializer.output_mut().extend_from_slice(#tag.as_bytes());
+                        serializer.output_mut().extend_from_slice(#tag);
                         #serialize_type(&self.#name);
                         serializer.output_mut().push(b'\x01');
                     })
                 } else {
                     Some(quote! {
                         if let Some(#name) = &self.#name {
-                            serializer.output_mut().extend_from_slice(#tag.as_bytes());
+                            serializer.output_mut().extend_from_slice(#tag);
                             #serialize_type(#name);
                             serializer.output_mut().push(b'\x01');
                         }
@@ -535,8 +535,9 @@ impl MemberDesc {
                         ..
                     },
             }) => {
-                let len_tag = format!("{}=", len_tag);
-                let value_tag = format!("{}=", value_tag);
+
+                let len_tag = Literal::byte_string(format!("{}=", len_tag).as_bytes());
+                let value_tag = Literal::byte_string(format!("{}=", value_tag).as_bytes());
                 let serialize_value = match value_type {
                     Type::Basic(BasicType::Data) => quote! { serializer.serialize_data },
                     Type::Basic(BasicType::XmlData) => quote! { serializer.serialize_xml },
@@ -544,20 +545,20 @@ impl MemberDesc {
                 };
                 if *required {
                     Some(quote! {
-                        serializer.output_mut().extend_from_slice(#len_tag.as_bytes());
+                        serializer.output_mut().extend_from_slice(#len_tag);
                         serializer.serialize_length(&(self.#value_name.len() as u16));
                         serializer.output_mut().push(b'\x01');
-                        serializer.output_mut().extend_from_slice(#value_tag.as_bytes());
+                        serializer.output_mut().extend_from_slice(#value_tag);
                         #serialize_value(&self.#value_name);
                         serializer.output_mut().push(b'\x01');
                     })
                 } else {
                     Some(quote! {
                         if let Some(#value_name) = &self.#value_name {
-                            serializer.output_mut().extend_from_slice(#len_tag.as_bytes());
+                            serializer.output_mut().extend_from_slice(#len_tag);
                             serializer.serialize_length(&(#value_name.len() as u16));
                             serializer.output_mut().push(b'\x01');
-                            serializer.output_mut().extend_from_slice(#value_tag.as_bytes());
+                            serializer.output_mut().extend_from_slice(#value_tag);
                             #serialize_value(#value_name);
                             serializer.output_mut().push(b'\x01');
                         }
@@ -577,10 +578,10 @@ impl MemberDesc {
                     },
                 ..
             }) => {
-                let num_in_group_tag = format!("{}=", num_in_group_tag);
+                let num_in_group_tag = Literal::byte_string(format!("{}=", num_in_group_tag).as_bytes());
                 if *required {
                     Some(quote! {
-                        serializer.output_mut().extend_from_slice(#num_in_group_tag.as_bytes());
+                        serializer.output_mut().extend_from_slice(#num_in_group_tag);
                         serializer.serialize_num_in_group(&(self.#group_name.len() as NumInGroup));
                         serializer.output_mut().push(b'\x01');
                         for entry in &self.#group_name {
@@ -590,7 +591,7 @@ impl MemberDesc {
                 } else {
                     Some(quote! {
                         if let Some(#group_name) = &self.#group_name {
-                            serializer.output_mut().extend_from_slice(#num_in_group_tag.as_bytes());
+                            serializer.output_mut().extend_from_slice(#num_in_group_tag);
                             serializer.serialize_num_in_group(&(#group_name.len() as NumInGroup));
                             serializer.output_mut().push(b'\x01');
                             for entry in #group_name {
