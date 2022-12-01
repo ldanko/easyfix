@@ -2,13 +2,14 @@ mod enumeration;
 mod member;
 mod structure;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use convert_case::{Case, Casing};
 use easyfix_dictionary::{BasicType, Dictionary, Member, MemberKind};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
+use self::structure::MessageProperties;
 use crate::gen::{
     enumeration::EnumDesc,
     member::{MemberDesc, SimpleMember},
@@ -151,30 +152,23 @@ fn process_members(
 
 impl Generator {
     pub fn new(dictionary: &Dictionary) -> Generator {
-        let begin_string = if let Some(fixt_version) = dictionary.fixt_version() {
-            if fixt_version.service_pack() == 0 {
-                format!("FIXT.{}.{}", fixt_version.major(), fixt_version.minor())
-            } else {
-                format!(
-                    "FIXT.{}.{}SP{}",
-                    fixt_version.major(),
-                    fixt_version.minor(),
-                    fixt_version.service_pack()
-                )
-            }
+        let (protocol, version) = if let Some(fixt_version) = dictionary.fixt_version() {
+            ("FIXT", fixt_version)
         } else if let Some(fix_version) = dictionary.fix_version() {
-            if fix_version.service_pack() == 0 {
-                format!("FIX.{}.{}", fix_version.major(), fix_version.minor())
-            } else {
-                format!(
-                    "FIX.{}.{}SP{}",
-                    fix_version.major(),
-                    fix_version.minor(),
-                    fix_version.service_pack()
-                )
-            }
+            ("FIX", fix_version)
         } else {
             panic!("Neither FIX nor FIXT version defined");
+        };
+        let begin_string = if version.service_pack() == 0 {
+            format!("{}.{}.{}", protocol, version.major(), version.minor())
+        } else {
+            format!(
+                "{}.{}.{}SP{}",
+                protocol,
+                version.major(),
+                version.minor(),
+                version.service_pack()
+            )
         }
         .into_bytes();
 
@@ -182,7 +176,7 @@ impl Generator {
         let mut groups = HashMap::new();
 
         let header = dictionary.header().expect("Missing FIX header definition");
-        {
+        let header_members = {
             let mut header_members = Vec::new();
             process_members(
                 header.members(),
@@ -190,13 +184,14 @@ impl Generator {
                 &mut header_members,
                 &mut groups,
             );
-            structs.push(Struct::new(header.name(), header_members, None));
-        }
+            structs.push(Struct::new(header.name(), header_members.clone(), None));
+            Rc::new(header_members)
+        };
 
         let trailer = dictionary
             .trailer()
             .expect("Missing FIX trailer definition");
-        {
+        let trailer_members = {
             let mut trailer_members = Vec::new();
             process_members(
                 trailer.members(),
@@ -204,8 +199,9 @@ impl Generator {
                 &mut trailer_members,
                 &mut groups,
             );
-            structs.push(Struct::new(trailer.name(), trailer_members, None));
-        }
+            structs.push(Struct::new(trailer.name(), trailer_members.clone(), None));
+            Rc::new(trailer_members)
+        };
 
         for msg in dictionary.messages().values() {
             let mut members_descs = Vec::with_capacity(1 + msg.members().len() + 1);
@@ -218,7 +214,12 @@ impl Generator {
             structs.push(Struct::new(
                 msg.name(),
                 members_descs,
-                Some((msg.msg_cat(), msg.msg_type())),
+                Some(MessageProperties {
+                    msg_cat: msg.msg_cat(),
+                    msg_type: msg.msg_type(),
+                    header_members: header_members.clone(),
+                    trailer_members: trailer_members.clone(),
+                }),
             ));
         }
 
@@ -354,6 +355,7 @@ impl Generator {
         let fields_names = &self.fields_names;
         let fields_names_as_str: Vec<_> = self.fields_names.iter().map(|f| f.to_string()).collect();
         let fields_numbers = &self.fields_numbers;
+        let fields_numbers_literals = self.fields_numbers.iter().map(|num| Literal::u16_suffixed(*num)).collect::<Vec<_>>();
 
         quote! {
             use crate::{
@@ -381,6 +383,15 @@ impl Generator {
                 }
             }
 
+            impl FieldTag {
+                fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
+                    match tag_num {
+                        #(#fields_numbers_literals => Some(FieldTag::#fields_names),)*
+                        _ => None,
+                    }
+                }
+            }
+
             use fields::MsgType;
 
             #(#structs_defs)*
@@ -397,9 +408,16 @@ impl Generator {
                     }
                 }
 
-                fn deserialize(deserializer: &mut Deserializer, msg_type: MsgType) -> Result<Message, DeserializeError> {
+                fn deserialize(
+                    deserializer: &mut Deserializer,
+                    begin_string: FixString,
+                    body_length: Length,
+                    msg_type: MsgType
+                ) -> Result<Box<FixtMessage>, DeserializeError> {
                     match msg_type {
-                        #(MsgType::#name => Ok(Message::#name(#name::deserialize(deserializer)?)),)*
+                        #(
+                            MsgType::#name => Ok(#name::deserialize(deserializer, begin_string, body_length, msg_type)?),
+                        )*
                         #[allow(unreachable_patterns)]
                         _ => Err(deserializer.reject(None, SessionRejectReason::InvalidMsgType)),
                     }
@@ -436,24 +454,34 @@ impl Generator {
                     serializer.take()
                 }
 
-                pub fn deserialize(mut deserializer: Deserializer) -> Result<FixtMessage, DeserializeError> {
-                    let header = Header::deserialize(&mut deserializer)?;
-                    let body = Message::deserialize(&mut deserializer, header.msg_type)?;
-                    let trailer = Trailer::deserialize(&mut deserializer)?;
+                pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<FixtMessage>, DeserializeError> {
+                    let begin_string = deserializer.begin_string();
+                    if begin_string != BEGIN_STRING {
+                        return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
+                    }
 
-                    Ok(FixtMessage {
-                        header,
-                        body,
-                        trailer,
-                    })
+                    let body_length = deserializer.body_length();
+
+                    // Check if MsgType(35) is the third tag in a message.
+                    let msg_type = if let Some(35) = deserializer
+                        .deserialize_tag_num()
+                        .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
+                    {
+                        deserializer.deserialize_string_enum()?
+                    } else {
+                        return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
+                    };
+                    deserializer.set_msg_type(msg_type);
+
+                    Message::deserialize(&mut deserializer, begin_string, body_length, msg_type)
                 }
 
-                pub fn from_raw_message(raw_message: RawMessage) -> Result<FixtMessage, DeserializeError> {
+                pub fn from_raw_message(raw_message: RawMessage) -> Result<Box<FixtMessage>, DeserializeError> {
                     let deserializer = Deserializer::from_raw_message(raw_message);
                     FixtMessage::deserialize(deserializer)
                 }
 
-                pub fn from_bytes(input: &[u8]) -> Result<FixtMessage, DeserializeError> {
+                pub fn from_bytes(input: &[u8]) -> Result<Box<FixtMessage>, DeserializeError> {
                     let (_, raw_msg) = raw_message(input)
                         .map_err(|_| DeserializeError::GarbledMessage("Message not well formed".into()))?;
                     let deserializer = Deserializer::from_raw_message(raw_msg);

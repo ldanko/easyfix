@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use convert_case::{Case, Casing};
 use easyfix_dictionary::{MsgCat, MsgType};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -5,10 +7,17 @@ use quote::quote;
 
 use crate::gen::member::MemberDesc;
 
+pub struct MessageProperties {
+    pub msg_cat: MsgCat,
+    pub msg_type: MsgType,
+    pub header_members: Rc<Vec<MemberDesc>>,
+    pub trailer_members: Rc<Vec<MemberDesc>>,
+}
+
 pub struct Struct {
     name: Ident,
     members: Vec<MemberDesc>,
-    msg_props: Option<(MsgCat, MsgType)>,
+    msg_props: Option<MessageProperties>,
 }
 
 /*
@@ -37,7 +46,7 @@ impl Struct {
     pub fn new(
         name: &str,
         members: Vec<MemberDesc>,
-        msg_props: Option<(MsgCat, MsgType)>,
+        msg_props: Option<MessageProperties>,
     ) -> Struct {
         Struct {
             name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
@@ -50,8 +59,8 @@ impl Struct {
         &self.name
     }
 
-    pub fn msg_props(&self) -> Option<(MsgCat, MsgType)> {
-        self.msg_props
+    pub fn msg_props(&self) -> Option<&MessageProperties> {
+        self.msg_props.as_ref()
     }
 
     pub fn is_group(&self) -> bool {
@@ -65,7 +74,7 @@ impl Struct {
             .collect()
     }
 
-    fn generate_de_header(&self) -> TokenStream {
+    fn generate_de_group(&self) -> TokenStream {
         let name = &self.name;
         let mut variables_definitions = Vec::with_capacity(self.members.len());
         let mut de_struct_entries = Vec::with_capacity(self.members.len());
@@ -79,72 +88,16 @@ impl Struct {
                 de_struct_entries.push(de_struct_entry);
             }
         }
-        quote! {
-            #(#variables_definitions)*
-            while let Some(tag) = deserializer.deserialize_tag_num()? {
-                match tag {
-                    #(#de_match_entries,)*
-                    tag => {
-                        deserializer.put_tag(tag);
-                        break;
-                    },
-                }
-            }
-            Ok(#name {
-                #(#de_struct_entries,)*
-            })
-        }
-    }
 
-    fn generate_de_trailer(&self) -> TokenStream {
-        let name = &self.name;
-        let mut variables_definitions = Vec::with_capacity(self.members.len());
-        let mut de_struct_entries = Vec::with_capacity(self.members.len());
-        let mut de_match_entries = Vec::with_capacity(self.members.len()); //self.generate_de_match_entries();
-        for member in &self.members {
-            variables_definitions.push(member.gen_opt_variables());
-            if let Some(de_match_entry) = member.gen_deserialize_match_entries() {
-                de_match_entries.push(de_match_entry);
-            }
-            if let Some(de_struct_entry) = member.gen_deserialize_struct_entries() {
-                de_struct_entries.push(de_struct_entry);
-            }
-        }
         quote! {
-            #(#variables_definitions)*
-            while let Some(tag) = deserializer.deserialize_tag_num()? {
-                match tag {
-                    #(#de_match_entries,)*
-                    // TODO: This may also be UndefinedTag or TagAppearsMoreThanOnce (in header or
-                    // in body) and maybe TagSpecifiedOutOfRequiredOrder (also from header or body)
-                    tag => return Err(deserializer.reject(Some(tag), SessionRejectReason::TagNotDefinedForThisMessageType)),
-                }
-            }
-            Ok(#name {
-                #(#de_struct_entries,)*
-            })
-        }
-    }
-
-    fn generate_de_message(&self) -> TokenStream {
-        let name = &self.name;
-        let mut variables_definitions = Vec::with_capacity(self.members.len());
-        let mut de_struct_entries = Vec::with_capacity(self.members.len());
-        let mut de_match_entries = Vec::with_capacity(self.members.len()); //self.generate_de_match_entries();
-        for member in &self.members {
-            variables_definitions.push(member.gen_opt_variables());
-            if let Some(de_match_entry) = member.gen_deserialize_match_entries() {
-                de_match_entries.push(de_match_entry);
-            }
-            if let Some(de_struct_entry) = member.gen_deserialize_struct_entries() {
-                de_struct_entries.push(de_struct_entry);
-            }
-        }
-        let (expected_tags_iterator, tag_num_loop_label, group_handling_loop) = if self.is_group() {
-            (
-                Some(quote! { let mut expected_tags = expected_tags.iter_mut(); }),
-                Some(quote! { 'tag_num_loop: }),
-                Some(quote! {
+            pub(crate) fn deserialize(
+                deserializer: &mut Deserializer,
+                first_run: bool,
+                expected_tags: &mut [Option<(TagNum, bool)>],
+            ) -> Result<#name, DeserializeError> {
+                #(#variables_definitions)*
+                let mut expected_tags = expected_tags.iter_mut();
+                'tag_num_loop: while let Some(tag) = deserializer.deserialize_tag_num()? {
                     loop {
                         if let Some(exp_tag) = expected_tags.next() {
                             if first_run {
@@ -175,27 +128,87 @@ impl Struct {
                             break 'tag_num_loop;
                         }
                     }
-                }),
-            )
-        } else {
-            (None, None, None)
-        };
-        quote! {
-            #(#variables_definitions)*
-            #expected_tags_iterator
-            #tag_num_loop_label while let Some(tag) = deserializer.deserialize_tag_num()? {
-                #group_handling_loop
-                match tag {
-                    #(#de_match_entries,)*
-                    tag => {
-                        deserializer.put_tag(tag);
-                        break;
-                    },
+                    match tag {
+                        #(#de_match_entries,)*
+                        tag => {
+                            deserializer.put_tag(tag);
+                            break;
+                        },
+                    }
                 }
+                Ok(#name {
+                    #(#de_struct_entries,)*
+                })
             }
-            Ok(#name {
-                #(#de_struct_entries,)*
-            })
+        }
+    }
+
+    fn generate_de_message(&self) -> TokenStream {
+        let name = &self.name;
+        let mut variables_definitions = Vec::with_capacity(self.members.len());
+        let mut de_header_entries = Vec::with_capacity(self.members.len());
+        let mut de_struct_entries = Vec::with_capacity(self.members.len());
+        let mut de_trailer_entries = Vec::with_capacity(self.members.len());
+        let mut de_match_entries = Vec::with_capacity(self.members.len()); //self.generate_de_match_entries();
+        for member in self.msg_props().unwrap().header_members.iter() {
+            variables_definitions.push(member.gen_opt_variables());
+            if let Some(de_match_entry) = member.gen_deserialize_match_entries() {
+                de_match_entries.push(de_match_entry);
+            }
+            if let Some(de_struct_entry) = member.gen_deserialize_struct_entries() {
+                de_header_entries.push(de_struct_entry);
+            }
+        }
+        for member in &self.members {
+            variables_definitions.push(member.gen_opt_variables());
+            if let Some(de_match_entry) = member.gen_deserialize_match_entries() {
+                de_match_entries.push(de_match_entry);
+            }
+            if let Some(de_struct_entry) = member.gen_deserialize_struct_entries() {
+                de_struct_entries.push(de_struct_entry);
+            }
+        }
+        for member in self.msg_props().unwrap().trailer_members.iter() {
+            variables_definitions.push(member.gen_opt_variables());
+            if let Some(de_match_entry) = member.gen_deserialize_match_entries() {
+                de_match_entries.push(de_match_entry);
+            }
+            if let Some(de_struct_entry) = member.gen_deserialize_struct_entries() {
+                de_trailer_entries.push(de_struct_entry);
+            }
+        }
+        quote! {
+            fn deserialize(
+                deserializer: &mut Deserializer,
+                begin_string: FixString,
+                body_length: Length,
+                msg_type: MsgType
+            ) -> Result<Box<FixtMessage>, DeserializeError> {
+                #(#variables_definitions)*
+                while let Some(tag) = deserializer.deserialize_tag_num()? {
+                    match tag {
+                        #(#de_match_entries,)*
+                        tag => {
+                            if FieldTag::from_tag_num(tag).is_some() {
+                                return Err(deserializer.reject(Some(tag), SessionRejectReason::TagNotDefinedForThisMessageType));
+                            } else {
+                                return Err(deserializer.reject(Some(tag), SessionRejectReason::UndefinedTag));
+                            }
+                        },
+                    }
+                }
+                Ok(Box::new(FixtMessage {
+                    header: Header {
+                        #(#de_header_entries,)*
+                    },
+                    body: Message::#name(#name {
+                        #(#de_struct_entries,)*
+                    }),
+                    trailer: Trailer {
+                        #(#de_trailer_entries,)*
+                    }
+                }))
+            }
         }
     }
 
@@ -209,30 +222,20 @@ impl Struct {
             }
         }
 
-        let fn_deserialize_definition = if self.is_group() {
-            quote! {
-                pub(crate) fn deserialize(
-                    deserializer: &mut Deserializer,
-                    first_run: bool,
-                    expected_tags: &mut [Option<(TagNum, bool)>],
-                ) -> Result<#name, DeserializeError>
-            }
-        } else {
-            quote! { fn deserialize(deserializer: &mut Deserializer) -> Result<#name, DeserializeError> }
-        };
-
-        let deserialize_body = if self.name == "Header" {
-            self.generate_de_header()
+        let fn_deserialize = if self.name == "Header" {
+            None
         } else if self.name == "Trailer" {
-            self.generate_de_trailer()
+            None
+        } else if self.is_group() {
+            Some(self.generate_de_group())
         } else {
-            self.generate_de_message()
+            Some(self.generate_de_message())
         };
 
         let serialize = self.generate_serialize();
 
-        let fn_msg_type_msg_cat = if let Some((msg_cat, _)) = self.msg_props() {
-            let msg_cat = Ident::new(&format!("{:?}", msg_cat), Span::call_site());
+        let fn_msg_type_msg_cat = if let Some(props) = self.msg_props() {
+            let msg_cat = Ident::new(&format!("{:?}", props.msg_cat), Span::call_site());
             Some(quote! {
                 pub const fn msg_type(&self) -> MsgType {
                     MsgType::#name
@@ -257,9 +260,7 @@ impl Struct {
                     #(#serialize;)*
                 }
 
-                #fn_deserialize_definition {
-                    #deserialize_body
-                }
+                #fn_deserialize
 
                 #fn_msg_type_msg_cat
             }

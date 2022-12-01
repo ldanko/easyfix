@@ -3,7 +3,7 @@ use easyfix_dictionary::BasicType;
 use proc_macro2::{Ident, Span, TokenStream, Literal};
 use quote::quote;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Basic(BasicType),
     Group(Ident),
@@ -243,7 +243,7 @@ fn is_reserved(input: &str) -> bool {
     RESERVED.iter().any(|r| r.eq_ignore_ascii_case(input))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SimpleMember {
     name: Ident,
     tag: u16,
@@ -346,29 +346,30 @@ impl SimpleMember {
         let name = &self.name;
         let type_ = self.type_.gen_type();
         match self.tag {
-            8 => quote! {
-                let #name = {
-                    let #name = deserializer.begin_string();
-                    if #name != BEGIN_STRING {
-                        return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
-                    }
-                    #name
-                };
-            },
-            9 => quote! { let #name = deserializer.body_length(); },
+            // 8 => quote! {
+            //     let #name = {
+            //         let #name = deserializer.begin_string();
+            //         if #name != BEGIN_STRING {
+            //             return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
+            //         }
+            //         #name
+            //     };
+            // },
+            // 9 => quote! { let #name = deserializer.body_length(); },
+            8 | 9 | 35 => quote! {},
             10 => quote! { let #name = deserializer.check_sum(); },
-            35 => quote! {
-                // Check if MsgType(35) is the third tag in a message.
-                let #name = if let Some(35) = deserializer
-                    .deserialize_tag_num()
-                    .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
-                {
-                    deserializer.deserialize_string_enum()?
-                } else {
-                    return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
-                };
-                deserializer.set_msg_type(#name);
-            },
+            // 35 => quote! {
+            //     // Check if MsgType(35) is the third tag in a message.
+            //     let #name = if let Some(35) = deserializer
+            //         .deserialize_tag_num()
+            //         .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
+            //     {
+            //         deserializer.deserialize_string_enum()?
+            //     } else {
+            //         return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
+            //     };
+            //     deserializer.set_msg_type(#name);
+            // },
             _ => quote! { let mut #name: Option<#type_> = None; },
         }
     }
@@ -378,6 +379,7 @@ impl SimpleMember {
         let tag = self.tag;
         let deserialize = self.type_.gen_deserialize();
         match (&self.type_, self.tag) {
+            // TODO: is it OK?
             (_, 8 | 9 | 10 | 35) => Some(quote! {
                 #tag => {
                     return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
@@ -440,20 +442,20 @@ impl SimpleMember {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CustomLengthMember {
     len: SimpleMember,
     value: SimpleMember,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GroupMember {
     num_in_group: SimpleMember,
     group_body: SimpleMember,
     expected_tags: Vec<(u16, bool)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MemberDesc {
     Simple(SimpleMember),
     CustomLength(CustomLengthMember),

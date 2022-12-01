@@ -43,12 +43,12 @@ fn trailer() -> Trailer {
     }
 }
 
-fn fixt_message(msg: Message) -> FixtMessage {
-    FixtMessage {
+fn fixt_message(msg: Message) -> Box<FixtMessage> {
+    Box::new(FixtMessage {
         header: header(msg.msg_type()),
         body: msg,
         trailer: trailer(),
-    }
+    })
 }
 
 #[test]

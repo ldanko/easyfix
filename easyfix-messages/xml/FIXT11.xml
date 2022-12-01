@@ -90,7 +90,9 @@
         <field name='RefMsgType' required='N'/>
         <field name='MsgDirection' required='N'/>
         <field name='RefApplVerID' required='N'/>
+        <field name='RefApplExtID' required='N'/>
         <field name='RefCstmApplVerID' required='N'/>
+        <field name='DefaultVerIndicator' required='N'/>
       </group>
     </component>
   </components>
