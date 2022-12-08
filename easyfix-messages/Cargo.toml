@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-messages"
-version = "0.1.14"
+version = "0.2.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - messages."
@@ -20,4 +20,4 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-easyfix-messages-gen = { version = "0.1.11", path = "easyfix-messages-gen" }
+easyfix-messages-gen = { version = "0.2.0", path = "easyfix-messages-gen" }
