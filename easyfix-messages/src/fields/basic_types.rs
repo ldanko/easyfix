@@ -1,6 +1,9 @@
 use std::{borrow, fmt, mem, ops};
 
-pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
+pub use chrono::{
+    format::{DelayedFormat, StrftimeItems},
+    Date, DateTime, NaiveDate, NaiveTime, Utc,
+};
 pub use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -36,9 +39,18 @@ pub type Exchange = [u8; 4];
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
-pub type UtcTimestamp = DateTime<Utc>;
+#[derive(Clone, Debug)]
+pub struct UtcTimestamp {
+    timestamp: DateTime<Utc>,
+    precision: u8,
+}
+
 // TODO: use newtype, to prevent mixing with LocaLMktTime
-pub type UtcTimeOnly = NaiveTime;
+#[derive(Clone, Debug)]
+pub struct UtcTimeOnly {
+    timestamp: NaiveTime,
+    precision: u8,
+}
 pub type UtcDateOnly = Date<Utc>;
 
 pub type LocalMktTime = NaiveTime;
@@ -589,6 +601,48 @@ impl_to_fix_string_for_integer!(u16);
 impl_to_fix_string_for_integer!(u32);
 impl_to_fix_string_for_integer!(u64);
 impl_to_fix_string_for_integer!(usize);
+
+impl UtcTimestamp {
+    pub fn new(timestamp: DateTime<Utc>, precision: u8) -> UtcTimestamp {
+        UtcTimestamp {
+            timestamp,
+            precision,
+        }
+    }
+
+    pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
+        self.timestamp.format(fmt)
+    }
+
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
+
+    pub fn precision(&self) -> u8 {
+        self.precision
+    }
+}
+
+impl UtcTimeOnly {
+    pub fn new(timestamp: NaiveTime, precision: u8) -> UtcTimeOnly {
+        UtcTimeOnly {
+            timestamp,
+            precision,
+        }
+    }
+
+    pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
+        self.timestamp.format(fmt)
+    }
+
+    pub fn timestamp(&self) -> NaiveTime {
+        self.timestamp
+    }
+
+    pub fn precision(&self) -> u8 {
+        self.precision
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -885,7 +885,7 @@ impl<'de> Deserializer<'de> {
     }
 
     // Helper for UTC timestamp deserialization.
-    fn deserialize_fraction_of_secod(&mut self) -> Result<u32, DeserializeError> {
+    fn deserialize_fraction_of_second(&mut self) -> Result<(u32, u8), DeserializeError> {
         match self.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -895,7 +895,7 @@ impl<'de> Deserializer<'de> {
             }
             [b'\x01', ..] => {
                 self.buf = &self.buf[1..];
-                return Ok(0);
+                return Ok((0, 0));
             }
             // Do nothing here, fracrtion of second will be deserializede below
             [b'.', ..] => self.buf = &self.buf[1..],
@@ -921,35 +921,30 @@ impl<'de> Deserializer<'de> {
                 }
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];
-                    match i {
-                        3 => {
-                            return (fraction_of_second * 1_000_000).try_into().map_err(|_| {
-                                self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                            });
-                        }
-                        6 => {
-                            return (fraction_of_second * 1_000).try_into().map_err(|_| {
-                                self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                            });
-                        }
-                        9 => {
-                            return fraction_of_second.try_into().map_err(|_| {
-                                self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                            });
-                        }
-                        12 => {
-                            // XXX: Types from `chrono` crate can't hold
-                            //      time at picosecond resolution
-                            return (fraction_of_second / 1_000).try_into().map_err(|_| {
-                                self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                            });
-                        }
+                    let (multiplier, divider) = match i {
+                        3 => (1_000_000, 1),
+                        6 => (1_000, 1),
+                        9 => (1, 1),
+                        // XXX: Types from `chrono` crate can't hold
+                        //      time at picosecond resolution
+                        12 => (1, 1_000),
                         _ => {
                             return Err(self.reject(
                                 self.current_tag,
                                 SessionRejectReason::IncorrectDataFormatForValue,
                             ))
                         }
+                    };
+                    let adjusted_fraction_of_second = (fraction_of_second * multiplier / divider)
+                        .try_into()
+                        .map_err(|_| {
+                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                        });
+                    match adjusted_fraction_of_second {
+                        Ok(adjusted_fraction_of_second) => {
+                            return Ok((adjusted_fraction_of_second, i as u8))
+                        }
+                        Err(err) => return Err(err),
                     }
                 }
                 _ => {
@@ -1030,11 +1025,13 @@ impl<'de> Deserializer<'de> {
                 let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
                 let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
                 let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                let fraction_of_second = self.deserialize_fraction_of_secod()?;
+                let (fraction_of_second, precision) = self.deserialize_fraction_of_second()?;
                 let naive_date_time = naive_date
                     .and_hms_nano_opt(hour, min, sec, fraction_of_second)
                     .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))?;
-                Ok(DateTime::from_utc(naive_date_time, Utc))
+                let timestamp = DateTime::from_utc(naive_date_time, Utc);
+
+                Ok(UtcTimestamp::new(timestamp, precision))
 
             }
             _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
@@ -1086,22 +1083,29 @@ impl<'de> Deserializer<'de> {
                 let m = (m1 - b'0') * 10 + (m0 - b'0');
                 let s = (s1 - b'0') * 10 + (s0 - b'0');
                 self.buf = &self.buf[9..];
-                let ns = self.deserialize_fraction_of_secod()?;
-                NaiveTime::from_hms_nano_opt(h.into(), m.into(), s.into(), ns)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                let (ns, precision) = self.deserialize_fraction_of_second()?;
+                let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s.into(), ns)
+                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
+                match timestamp {
+                    Ok(timestamp) => Ok(UtcTimeOnly::new(timestamp, precision)),
+                    Err(err) => Err(err)
+                }
             }
             // Leap second case
             [h1 @ b'0'..=b'2', h0 @ b'0'..=b'9', b':', m1 @ b'0'..=b'5', m0 @ b'0'..=b'9', b':', b'6', b'0', b':'] =>
-                {
-
+            {
                 let h = (h1 - b'0') * 10 + (h0 - b'0');
                 let m = (m1 - b'0') * 10 + (m0 - b'0');
                 let s = 60;
                 self.buf = &self.buf[9..];
-                let ns = self.deserialize_fraction_of_secod()?;
-                NaiveTime::from_hms_nano_opt(h.into(), m.into(), s, ns)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                let (ns, precision) = self.deserialize_fraction_of_second()?;
+                let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s, ns)
+                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
+                match timestamp {
+                    Ok(timestamp) => Ok(UtcTimeOnly::new(timestamp, precision)),
+                    Err(err) => Err(err)
                 }
+            }
             _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
         }
     }
@@ -1637,7 +1641,8 @@ mod tests {
             .expect("failed to deserialize utc timestamp");
         let date_time: DateTime<Utc> =
             DateTime::from_utc(NaiveDate::from_ymd(2019, 06, 05).and_hms(11, 51, 27), Utc);
-        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(utc_timestamp.timestamp(), date_time);
+        assert_eq!(utc_timestamp.precision(), 0);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1652,7 +1657,8 @@ mod tests {
             NaiveDate::from_ymd(2019, 06, 05).and_hms_milli(11, 51, 27, 848),
             Utc,
         );
-        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(utc_timestamp.timestamp(), date_time);
+        assert_eq!(utc_timestamp.precision(), 3);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1667,7 +1673,8 @@ mod tests {
             NaiveDate::from_ymd(2019, 06, 05).and_hms_micro(11, 51, 27, 848757),
             Utc,
         );
-        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(utc_timestamp.timestamp(), date_time);
+        assert_eq!(utc_timestamp.precision(), 6);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1682,7 +1689,8 @@ mod tests {
             NaiveDate::from_ymd(2019, 06, 05).and_hms_nano(11, 51, 27, 848757123),
             Utc,
         );
-        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(utc_timestamp.timestamp(), date_time);
+        assert_eq!(utc_timestamp.precision(), 9);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1697,7 +1705,8 @@ mod tests {
             NaiveDate::from_ymd(2019, 06, 05).and_hms_nano(11, 51, 27, 848757123),
             Utc,
         );
-        assert_eq!(utc_timestamp, date_time);
+        assert_eq!(utc_timestamp.timestamp(), date_time);
+        assert_eq!(utc_timestamp.precision(), 12);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
