@@ -618,7 +618,7 @@ impl UtcTimestamp {
     /// input's precision is adjusted to requested one
     pub fn with_millis(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
-        let nsecs = (date_time.timestamp_millis() % 1_000 * 1_000_000) as u32;
+        let nsecs = (date_time.timestamp_subsec_millis() * 1_000_000) as u32;
         UtcTimestamp {
             timestamp: DateTime::from_utc(
                 NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
@@ -632,7 +632,7 @@ impl UtcTimestamp {
     /// input's precision is adjusted to requested one
     pub fn with_micros(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
-        let nsecs = (date_time.timestamp_micros() % 1_000_000 * 1_000) as u32;
+        let nsecs = (date_time.timestamp_subsec_micros() * 1_000) as u32;
         UtcTimestamp {
             timestamp: DateTime::from_utc(
                 NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
@@ -646,7 +646,7 @@ impl UtcTimestamp {
     /// input's precision is adjusted to requested one
     pub fn with_nanos(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
-        let nsecs = (date_time.timestamp_nanos() % 1_000_000_000) as u32;
+        let nsecs = (date_time.timestamp_subsec_nanos()) as u32;
         UtcTimestamp {
             timestamp: DateTime::from_utc(
                 NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
