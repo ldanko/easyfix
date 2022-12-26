@@ -1031,8 +1031,16 @@ impl<'de> Deserializer<'de> {
                     .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))?;
                 let timestamp = DateTime::from_utc(naive_date_time, Utc);
 
-                Ok(UtcTimestamp::new(timestamp, precision))
-
+                match precision {
+                    0 => Ok(UtcTimestamp::with_secs(timestamp)),
+                    3 => Ok(UtcTimestamp::with_millis(timestamp)),
+                    6 => Ok(UtcTimestamp::with_micros(timestamp)),
+                    9 => Ok(UtcTimestamp::with_nanos(timestamp)),
+                    // XXX: Types from `chrono` crate can't hold
+                    //      time at picosecond resolution
+                    12 => Ok(UtcTimestamp::with_nanos(timestamp)),
+                    _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+                }
             }
             _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
         }
@@ -1087,7 +1095,18 @@ impl<'de> Deserializer<'de> {
                 let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s.into(), ns)
                     .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
                 match timestamp {
-                    Ok(timestamp) => Ok(UtcTimeOnly::new(timestamp, precision)),
+                    Ok(timestamp) => {
+                        match precision {
+                            0 => Ok(UtcTimeOnly::with_secs(timestamp)),
+                            3 => Ok(UtcTimeOnly::with_millis(timestamp)),
+                            6 => Ok(UtcTimeOnly::with_micros(timestamp)),
+                            9 => Ok(UtcTimeOnly::with_nanos(timestamp)),
+                            // XXX: Types from `chrono` crate can't hold
+                            //      time at picosecond resolution
+                            12 => Ok(UtcTimeOnly::with_nanos(timestamp)),
+                            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+                        }
+                    },
                     Err(err) => Err(err)
                 }
             }
@@ -1102,7 +1121,18 @@ impl<'de> Deserializer<'de> {
                 let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s, ns)
                     .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
                 match timestamp {
-                    Ok(timestamp) => Ok(UtcTimeOnly::new(timestamp, precision)),
+                    Ok(timestamp) => {
+                        match precision {
+                            0 => Ok(UtcTimeOnly::with_secs(timestamp)),
+                            3 => Ok(UtcTimeOnly::with_millis(timestamp)),
+                            6 => Ok(UtcTimeOnly::with_micros(timestamp)),
+                            9 => Ok(UtcTimeOnly::with_nanos(timestamp)),
+                            // XXX: Types from `chrono` crate can't hold
+                            //      time at picosecond resolution
+                            12 => Ok(UtcTimeOnly::with_nanos(timestamp)),
+                            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+                        }
+                    },
                     Err(err) => Err(err)
                 }
             }
@@ -1584,7 +1614,7 @@ impl<'de> Deserializer<'de> {
 mod tests {
     use std::str::FromStr;
 
-    use chrono::{DateTime, NaiveDate, Utc};
+    use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 
     use super::Deserializer;
     use crate::{
@@ -1706,7 +1736,22 @@ mod tests {
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
-        assert_eq!(utc_timestamp.precision(), 12);
+        assert_eq!(utc_timestamp.precision(), 9);
+        assert_eq!(deserializer.buf, &[b'\x00']);
+    }
+
+    /// FIXME: it seems that timeonly deserialization has not been working for some time now
+    #[ignore]
+    #[test]
+    fn deserialize_utc_timeonly_ok() {
+        let input = b"11:51:27\x01\x00";
+        let mut deserializer = deserializer(input);
+        let utc_timeonly = deserializer
+            .deserialize_utc_time_only()
+            .expect("failed to deserialize utc timeonly");
+        let time: NaiveTime = NaiveTime::from_hms_opt(11, 51, 27).unwrap();
+        assert_eq!(utc_timeonly.timestamp(), time);
+        assert_eq!(utc_timeonly.precision(), 0);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 

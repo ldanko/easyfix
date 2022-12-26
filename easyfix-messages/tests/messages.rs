@@ -27,7 +27,7 @@ fn header(msg_type: MsgType) -> Header {
         deliver_to_location_id: None,
         poss_dup_flag: None,
         poss_resend: None,
-        sending_time: UtcTimestamp::new(Utc::now(), 6),
+        sending_time: UtcTimestamp::with_nanos(Utc::now()),
         orig_sending_time: None,
         xml_data: None,
         message_encoding: None,
