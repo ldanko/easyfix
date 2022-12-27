@@ -1,6 +1,10 @@
 use std::{borrow, fmt, mem, ops};
 
-pub use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
+use chrono::Timelike;
+pub use chrono::{
+    format::{DelayedFormat, StrftimeItems},
+    Date, DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc,
+};
 pub use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -36,9 +40,18 @@ pub type Exchange = [u8; 4];
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
-pub type UtcTimestamp = DateTime<Utc>;
+#[derive(Clone, Debug)]
+pub struct UtcTimestamp {
+    timestamp: DateTime<Utc>,
+    precision: u8,
+}
+
 // TODO: use newtype, to prevent mixing with LocaLMktTime
-pub type UtcTimeOnly = NaiveTime;
+#[derive(Clone, Debug)]
+pub struct UtcTimeOnly {
+    timestamp: NaiveTime,
+    precision: u8,
+}
 pub type UtcDateOnly = Date<Utc>;
 
 pub type LocalMktTime = NaiveTime;
@@ -589,6 +602,122 @@ impl_to_fix_string_for_integer!(u16);
 impl_to_fix_string_for_integer!(u32);
 impl_to_fix_string_for_integer!(u64);
 impl_to_fix_string_for_integer!(usize);
+
+impl UtcTimestamp {
+    /// Creates UtcTimestamp with time precision set to full seconds
+    /// input's precision is adjusted to requested one
+    pub fn with_secs(date_time: DateTime<Utc>) -> UtcTimestamp {
+        let secs = date_time.timestamp();
+        UtcTimestamp {
+            timestamp: DateTime::from_utc(NaiveDateTime::from_timestamp_opt(secs, 0).unwrap(), Utc),
+            precision: 0,
+        }
+    }
+
+    /// Creates UtcTimestamp with time precision set to milliseconds
+    /// input's precision is adjusted to requested one
+    pub fn with_millis(date_time: DateTime<Utc>) -> UtcTimestamp {
+        let secs = date_time.timestamp();
+        let nsecs = (date_time.timestamp_subsec_millis() * 1_000_000) as u32;
+        UtcTimestamp {
+            timestamp: DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
+                Utc,
+            ),
+            precision: 3,
+        }
+    }
+
+    /// Creates UtcTimestamp with time precision set to microseconds
+    /// input's precision is adjusted to requested one
+    pub fn with_micros(date_time: DateTime<Utc>) -> UtcTimestamp {
+        let secs = date_time.timestamp();
+        let nsecs = (date_time.timestamp_subsec_micros() * 1_000) as u32;
+        UtcTimestamp {
+            timestamp: DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
+                Utc,
+            ),
+            precision: 6,
+        }
+    }
+
+    /// Creates UtcTimestamp with time precision set to nanoseconds
+    /// input's precision is adjusted to requested one
+    pub fn with_nanos(date_time: DateTime<Utc>) -> UtcTimestamp {
+        let secs = date_time.timestamp();
+        let nsecs = (date_time.timestamp_subsec_nanos()) as u32;
+        UtcTimestamp {
+            timestamp: DateTime::from_utc(
+                NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
+                Utc,
+            ),
+            precision: 9,
+        }
+    }
+
+    pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
+        self.timestamp.format(fmt)
+    }
+
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
+
+    pub fn precision(&self) -> u8 {
+        self.precision
+    }
+}
+
+impl UtcTimeOnly {
+    /// Creates UtcTimeOnly with time precision set to full seconds
+    /// input's precision is adjusted to requested one
+    pub fn with_secs(time: NaiveTime) -> UtcTimeOnly {
+        UtcTimeOnly {
+            timestamp: time.with_nanosecond(0).unwrap(),
+            precision: 0,
+        }
+    }
+
+    /// Creates UtcTimeOnly with time precision set to full milliseconds
+    /// input's precision is adjusted to requested one
+    pub fn with_millis(time: NaiveTime) -> UtcTimeOnly {
+        UtcTimeOnly {
+            timestamp: time.with_nanosecond(time.nanosecond() / 1_000_000).unwrap(),
+            precision: 3,
+        }
+    }
+
+    /// Creates UtcTimeOnly with time precision set to full microseconds
+    /// input's precision is adjusted to requested one
+    pub fn with_micros(time: NaiveTime) -> UtcTimeOnly {
+        UtcTimeOnly {
+            timestamp: time.with_nanosecond(time.nanosecond() / 1_000).unwrap(),
+            precision: 6,
+        }
+    }
+
+    /// Creates UtcTimeOnly with time precision set to full nanoseconds
+    /// input's precision is adjusted to requested one
+    pub fn with_nanos(time: NaiveTime) -> UtcTimeOnly {
+        UtcTimeOnly {
+            timestamp: time,
+            precision: 9,
+        }
+    }
+
+    pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
+        self.timestamp.format(fmt)
+    }
+
+    pub fn timestamp(&self) -> NaiveTime {
+        self.timestamp
+    }
+
+    pub fn precision(&self) -> u8 {
+        self.precision
+    }
+}
 
 #[cfg(test)]
 mod tests {

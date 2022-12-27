@@ -1,5 +1,7 @@
 use easyfix_messages::{
-    fields::{ApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc},
+    fields::{
+        ApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc, UtcTimestamp,
+    },
     groups::MsgTypeGrp,
     messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
 };
@@ -25,7 +27,7 @@ fn header(msg_type: MsgType) -> Header {
         deliver_to_location_id: None,
         poss_dup_flag: None,
         poss_resend: None,
-        sending_time: Utc::now(),
+        sending_time: UtcTimestamp::with_nanos(Utc::now()),
         orig_sending_time: None,
         xml_data: None,
         message_encoding: None,
