@@ -1618,7 +1618,7 @@ mod tests {
 
     use super::Deserializer;
     use crate::{
-        fields::{LocalMktDate, Price},
+        fields::{LocalMktDate, Price, TimePrecision},
         messages::BEGIN_STRING,
         parser::RawMessage,
     };
@@ -1672,7 +1672,7 @@ mod tests {
         let date_time: DateTime<Utc> =
             DateTime::from_utc(NaiveDate::from_ymd(2019, 06, 05).and_hms(11, 51, 27), Utc);
         assert_eq!(utc_timestamp.timestamp(), date_time);
-        assert_eq!(utc_timestamp.precision(), 0);
+        assert_eq!(utc_timestamp.precision(), TimePrecision::Secs);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1688,7 +1688,7 @@ mod tests {
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
-        assert_eq!(utc_timestamp.precision(), 3);
+        assert_eq!(utc_timestamp.precision(), TimePrecision::Millis);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1704,7 +1704,7 @@ mod tests {
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
-        assert_eq!(utc_timestamp.precision(), 6);
+        assert_eq!(utc_timestamp.precision(), TimePrecision::Micros);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1720,7 +1720,7 @@ mod tests {
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
-        assert_eq!(utc_timestamp.precision(), 9);
+        assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1736,7 +1736,7 @@ mod tests {
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
-        assert_eq!(utc_timestamp.precision(), 9);
+        assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
@@ -1751,7 +1751,7 @@ mod tests {
             .expect("failed to deserialize utc timeonly");
         let time: NaiveTime = NaiveTime::from_hms_opt(11, 51, 27).unwrap();
         assert_eq!(utc_timeonly.timestamp(), time);
-        assert_eq!(utc_timeonly.precision(), 0);
+        assert_eq!(utc_timeonly.precision(), TimePrecision::Secs);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 

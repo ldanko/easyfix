@@ -40,17 +40,25 @@ pub type Exchange = [u8; 4];
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum TimePrecision {
+    Secs = 0,
+    Millis = 3,
+    Micros = 6,
+    #[default]
+    Nanos = 9,
+}
 #[derive(Clone, Debug)]
 pub struct UtcTimestamp {
     timestamp: DateTime<Utc>,
-    precision: u8,
+    precision: TimePrecision,
 }
 
 // TODO: use newtype, to prevent mixing with LocaLMktTime
 #[derive(Clone, Debug)]
 pub struct UtcTimeOnly {
     timestamp: NaiveTime,
-    precision: u8,
+    precision: TimePrecision,
 }
 pub type UtcDateOnly = Date<Utc>;
 
@@ -604,13 +612,29 @@ impl_to_fix_string_for_integer!(u64);
 impl_to_fix_string_for_integer!(usize);
 
 impl UtcTimestamp {
+    /// Creates UtcTimestamp that represents current date and time with default precision
+    pub fn now() -> UtcTimestamp {
+        UtcTimestamp::with_precision(Utc::now(), TimePrecision::default())
+    }
+
+    /// Creates UtcTimestamp with given time precision
+    /// input's precision is adjusted to requested one
+    pub fn with_precision(date_time: DateTime<Utc>, precision: TimePrecision) -> UtcTimestamp {
+        match precision {
+            TimePrecision::Secs => UtcTimestamp::with_secs(date_time),
+            TimePrecision::Millis => UtcTimestamp::with_millis(date_time),
+            TimePrecision::Micros => UtcTimestamp::with_micros(date_time),
+            TimePrecision::Nanos => UtcTimestamp::with_nanos(date_time),
+        }
+    }
+
     /// Creates UtcTimestamp with time precision set to full seconds
     /// input's precision is adjusted to requested one
     pub fn with_secs(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
         UtcTimestamp {
             timestamp: DateTime::from_utc(NaiveDateTime::from_timestamp_opt(secs, 0).unwrap(), Utc),
-            precision: 0,
+            precision: TimePrecision::Secs,
         }
     }
 
@@ -624,7 +648,7 @@ impl UtcTimestamp {
                 NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
                 Utc,
             ),
-            precision: 3,
+            precision: TimePrecision::Millis,
         }
     }
 
@@ -638,7 +662,7 @@ impl UtcTimestamp {
                 NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
                 Utc,
             ),
-            precision: 6,
+            precision: TimePrecision::Micros,
         }
     }
 
@@ -652,7 +676,7 @@ impl UtcTimestamp {
                 NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
                 Utc,
             ),
-            precision: 9,
+            precision: TimePrecision::Nanos,
         }
     }
 
@@ -664,7 +688,7 @@ impl UtcTimestamp {
         self.timestamp
     }
 
-    pub fn precision(&self) -> u8 {
+    pub fn precision(&self) -> TimePrecision {
         self.precision
     }
 }
@@ -675,7 +699,7 @@ impl UtcTimeOnly {
     pub fn with_secs(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
             timestamp: time.with_nanosecond(0).unwrap(),
-            precision: 0,
+            precision: TimePrecision::Secs,
         }
     }
 
@@ -684,7 +708,7 @@ impl UtcTimeOnly {
     pub fn with_millis(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
             timestamp: time.with_nanosecond(time.nanosecond() / 1_000_000).unwrap(),
-            precision: 3,
+            precision: TimePrecision::Millis,
         }
     }
 
@@ -693,7 +717,7 @@ impl UtcTimeOnly {
     pub fn with_micros(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
             timestamp: time.with_nanosecond(time.nanosecond() / 1_000).unwrap(),
-            precision: 6,
+            precision: TimePrecision::Micros,
         }
     }
 
@@ -702,7 +726,7 @@ impl UtcTimeOnly {
     pub fn with_nanos(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
             timestamp: time,
-            precision: 9,
+            precision: TimePrecision::Nanos,
         }
     }
 
@@ -714,7 +738,7 @@ impl UtcTimeOnly {
         self.timestamp
     }
 
-    pub fn precision(&self) -> u8 {
+    pub fn precision(&self) -> TimePrecision {
         self.precision
     }
 }
