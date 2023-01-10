@@ -897,7 +897,7 @@ impl<'de> Deserializer<'de> {
                 self.buf = &self.buf[1..];
                 return Ok((0, 0));
             }
-            // Do nothing here, fracrtion of second will be deserializede below
+            // Do nothing here, fraction of second will be deserializede below
             [b'.', ..] => self.buf = &self.buf[1..],
             _ => {
                 return Err(self.reject(
@@ -1009,6 +1009,7 @@ impl<'de> Deserializer<'de> {
                 // Minute
                 mm1 @ b'0'..=b'5', mm0 @ b'0'..=b'9',
                 b':',
+                // TODO: leap second!
                 // Second
                 s1 @ b'0'..=b'5', s0 @ b'0'..=b'9',
                 ..

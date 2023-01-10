@@ -6,7 +6,10 @@ pub use chrono::{
     Date, DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc,
 };
 pub use rust_decimal::Decimal;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    de::{self, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 
 pub type Int = i64;
 pub type TagNum = u16;
@@ -48,14 +51,15 @@ pub enum TimePrecision {
     #[default]
     Nanos = 9,
 }
-#[derive(Clone, Debug)]
+
+#[derive(Clone, Copy, Debug)]
 pub struct UtcTimestamp {
     timestamp: DateTime<Utc>,
     precision: TimePrecision,
 }
 
 // TODO: use newtype, to prevent mixing with LocaLMktTime
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct UtcTimeOnly {
     timestamp: NaiveTime,
     precision: TimePrecision,
@@ -537,8 +541,6 @@ impl PartialEq<String> for FixString {
     }
 }
 
-use serde::de::{self, Visitor};
-
 struct FixStringVisitor;
 
 impl<'de> Visitor<'de> for FixStringVisitor {
@@ -611,6 +613,162 @@ impl_to_fix_string_for_integer!(u32);
 impl_to_fix_string_for_integer!(u64);
 impl_to_fix_string_for_integer!(usize);
 
+fn deserialize_fraction_of_second<E>(buf: &[u8]) -> Result<(u32, u8), E>
+where
+    E: de::Error,
+{
+    // match buf {
+    //     // Do nothing here, fraction of second will be deserializede below
+    //     [b'.', ..] => buf = &buf[1..],
+    //     _ => {
+    //         return Err(de::Error::custom("incorrecct data format for UtcTimestamp"));
+    //     }
+    // }
+
+    let [b'.', buf@..] = buf else {
+        return Err(de::Error::custom("incorrecct data format for UtcTimestamp"));
+    };
+
+    let mut fraction_of_second: u64 = 0;
+    for i in 0..buf.len() {
+        // SAFETY: i is between 0 and buf.len()
+        match unsafe { buf.get_unchecked(i) } {
+            n @ b'0'..=b'9' => {
+                fraction_of_second = fraction_of_second
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add((n - b'0') as u64))
+                    .ok_or_else(|| de::Error::custom("incorrect fraction of second (overflow)"))?;
+            }
+            _ => {
+                return Err(de::Error::custom(
+                    "incorrecct data format for fraction of second",
+                ));
+            }
+        }
+    }
+    let (multiplier, divider) = match buf.len() {
+        3 => (1_000_000, 1),
+        6 => (1_000, 1),
+        9 => (1, 1),
+        // XXX: Types from `chrono` crate can't hold
+        //      time at picosecond resolution
+        12 => (1, 1_000),
+        _ => {
+            return Err(de::Error::custom(
+                "incorrect fraction of second (wrong precision)",
+            ));
+        }
+    };
+    (fraction_of_second * multiplier / divider)
+        .try_into()
+        .map(|adjusted_fraction_of_second| (adjusted_fraction_of_second, buf.len() as u8))
+        .map_err(|_| de::Error::custom("incorrecct data format for UtcTimestamp"))
+}
+
+struct UtcTimestampVisitor;
+
+impl<'de> Visitor<'de> for UtcTimestampVisitor {
+    type Value = UtcTimestamp;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("string")
+    }
+
+    /// TODO: Same as in Deserializer
+    /// Deserialize string representing time/date combination represented
+    /// in UTC (Universal Time Coordinated) in either YYYYMMDD-HH:MM:SS
+    /// (whole seconds) or YYYYMMDD-HH:MM:SS.sss* format, colons, dash,
+    /// and period required.
+    ///
+    /// # Valid values:
+    /// - YYYY = 0000-9999,
+    /// - MM = 01-12,
+    /// - DD = 01-31,
+    /// - HH = 00-23,
+    /// - MM = 00-59,
+    /// - SS = 00-60 (60 only if UTC leap second),
+    /// - sss* fractions of seconds. The fractions of seconds may be empty when
+    ///        no fractions of seconds are conveyed (in such a case the period
+    ///        is not conveyed), it may include 3 digits to convey
+    ///        milliseconds, 6 digits to convey microseconds, 9 digits
+    ///        to convey nanoseconds, 12 digits to convey picoseconds;
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        match value.as_bytes() {
+            [
+                // Year
+                y3 @ b'0'..=b'9', y2 @ b'0'..=b'9', y1 @ b'0'..=b'9', y0 @ b'0'..=b'9',
+                // Month
+                m1 @ b'0'..=b'1', m0 @ b'0'..=b'9',
+                // Day
+                d1 @ b'0'..=b'3', d0 @ b'0'..=b'9',
+                b'-',
+                // Hour
+                h1 @ b'0'..=b'2', h0 @ b'0'..=b'9',
+                b':',
+                // Minute
+                mm1 @ b'0'..=b'5', mm0 @ b'0'..=b'9',
+                b':',
+                // TODO: leap second!
+                // Second
+                s1 @ b'0'..=b'5', s0 @ b'0'..=b'9',
+                ..
+            ] => {
+                let value = &value[17..];
+                let year = (y3 - b'0') as i32 * 1000
+                    + (y2 - b'0') as i32 * 100
+                    + (y1 - b'0') as i32 * 10
+                    + (y0 - b'0') as i32;
+                let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
+                let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
+                let naive_date = NaiveDate::from_ymd_opt(year, month, day)
+                    .ok_or_else(|| de::Error::custom("incorrecct data format for UtcTimestamp"))?;
+                let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
+                let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
+                let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
+                let (fraction_of_second, precision) = deserialize_fraction_of_second(value.as_bytes())?;
+                let naive_date_time = naive_date
+                    .and_hms_nano_opt(hour, min, sec, fraction_of_second)
+                    .ok_or_else(|| de::Error::custom("incorrecct data format for UtcTimestamp"))?;
+                let timestamp = DateTime::from_utc(naive_date_time, Utc);
+
+                match precision {
+                    0 => Ok(UtcTimestamp::with_secs(timestamp)),
+                    3 => Ok(UtcTimestamp::with_millis(timestamp)),
+                    6 => Ok(UtcTimestamp::with_micros(timestamp)),
+                    9 => Ok(UtcTimestamp::with_nanos(timestamp)),
+                    // XXX: Types from `chrono` crate can't hold
+                    //      time at picosecond resolution
+                    12 => Ok(UtcTimestamp::with_nanos(timestamp)),
+                    _ => Err(de::Error::custom("incorrecct data format for UtcTimestamp")),
+                }
+            }
+            _ => Err(de::Error::custom("incorrecct data format for UtcTimestamp")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UtcTimestamp {
+    fn deserialize<D>(deserializer: D) -> Result<UtcTimestamp, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(UtcTimestampVisitor)
+    }
+}
+
+impl Serialize for UtcTimestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // TODO: make sure proper prcision is used
+        serializer.serialize_str(&self.format("%Y%m%d-%H:%M:%S.%f").to_string())
+    }
+}
+
 impl UtcTimestamp {
     /// Creates UtcTimestamp that represents current date and time with default precision
     pub fn now() -> UtcTimestamp {
@@ -636,6 +794,10 @@ impl UtcTimestamp {
             timestamp: DateTime::from_utc(NaiveDateTime::from_timestamp_opt(secs, 0).unwrap(), Utc),
             precision: TimePrecision::Secs,
         }
+    }
+
+    pub fn now_with_secs() -> UtcTimestamp {
+        UtcTimestamp::with_secs(Utc::now())
     }
 
     /// Creates UtcTimestamp with time precision set to milliseconds
