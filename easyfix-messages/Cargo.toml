@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-messages"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - messages."
