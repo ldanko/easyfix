@@ -1,3 +1,5 @@
+#![feature(let_else)]
+
 pub mod country;
 pub mod currency;
 pub mod deserializer;
