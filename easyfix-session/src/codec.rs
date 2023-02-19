@@ -3,7 +3,7 @@ use std::{io, rc::Rc};
 use bytes::BytesMut;
 use easyfix_messages::{
     deserializer::DeserializeError,
-    fields::{MsgType, SeqNum, UtcTimestamp},
+    fields::{SeqNum, UtcTimestamp},
     messages::FixtMessage,
     parser::{self, raw_message},
 };

@@ -53,8 +53,15 @@ pub struct SessionSettings {
     pub reset_on_logout: bool,
     pub reset_on_disconnect: bool,
 
+    pub refresh_on_logon: bool,
+
     pub sender_default_appl_ver_id: FixString,
     pub target_default_appl_ver_id: FixString,
+
+    ///  Enable the next expected message sequence number (optional tag 789
+    ///  on Logon) on sent Logon message and use value of tag 789 on received
+    ///  Logon message to synchronize session.
+    pub enable_next_expected_msg_seq_num: bool,
 
     pub persist: bool,
 }

@@ -5,7 +5,7 @@ use easyfix_messages::{
     deserializer::DeserializeError,
     fields::{
         DefaultApplVerId, EncryptMethod, FixStr, FixString, Int, MsgType, SeqNum,
-        SessionRejectReason, ToFixString, Utc, UtcTimeOnly, UtcTimestamp,
+        SessionRejectReason, Utc, UtcTimestamp,
     },
     messages::{
         FieldTag, FixtMessage, Header, Heartbeat, Logon, Logout, Message, MsgCat, Reject,
@@ -101,6 +101,20 @@ impl VerifyError {
                 .into_bytes(),
             )),
             disconnect: true,
+        }
+    }
+}
+
+trait MessageExt {
+    fn resend_as_gap_fill(&self) -> bool;
+}
+
+impl MessageExt for FixtMessage {
+    fn resend_as_gap_fill(&self) -> bool {
+        match (self.msg_cat(), self.msg_type()) {
+            (MsgCat::App, _) => false,
+            (MsgCat::Admin, MsgType::Reject) => false,
+            (MsgCat::Admin, _) => true,
         }
     }
 }
@@ -540,20 +554,20 @@ impl<S: MessagesStorage> Session<S> {
         let state = self.state.borrow();
 
         if !Self::valid_logon_state(&state, msg.header.msg_type) {
-            //self.disconnect().await;
-            // throw std::logic_error( "Logon state is not valid for message" );
             Err(VerifyError::invalid_logon_state())
         } else if !self.is_good_time(sending_time) {
             warn!("SendingTime<52> verification failed");
-            //self.do_bad_time(header).await;
             Err(VerifyError::invalid_time())
         } else if !self.is_correct_comp_id(sender_comp_id, target_comp_id) {
             warn!("CompID verification failed");
-            //self.do_bad_comp_id(header).await;
             Err(VerifyError::invalid_comp_id())
         } else if check_too_high && Self::is_target_too_high(&state, msg_seq_num) {
-            warn!("target too high");
-            //self.do_target_too_high(header).await;
+            warn!(
+                "Target MsgSeqNum too high, expected {}, got {msg_seq_num}",
+                state.next_target_msg_seq_num()
+            );
+            drop(state);
+            self.state.borrow_mut().enqueue_msg(msg);
             Err(VerifyError::target_seq_num_too_high(msg_seq_num))
         } else if check_too_low && Self::is_target_too_low(&state, msg_seq_num) {
             warn!("target too low");
@@ -575,8 +589,6 @@ impl<S: MessagesStorage> Session<S> {
                     state.next_target_msg_seq_num(),
                 ))
             }
-
-            //self.do_target_too_low(header).await;
         } else {
             drop(state);
             match msg.msg_cat() {
@@ -626,33 +638,32 @@ impl<S: MessagesStorage> Session<S> {
         */
     }
 
-    async fn send_logon_response(&self) {
-        /*
-          SmartPtr<Message> pMsg(newMessage("A"));
-          Message & logon = *pMsg;
+    async fn send_logon_request(&self) {
+        let mut state = self.state().borrow_mut();
 
-          logon.getHeader().setField( MsgType( "A" ) );
-          logon.setField( EncryptMethod( 0 ) );
-          logon.setField( m_state.heartBtInt() );
-          if( m_refreshOnLogon )
-            refresh();
-          if( m_resetOnLogon )
-            m_state.reset();
-          if( shouldSendReset() )
-            logon.setField( ResetSeqNumFlag(true) );
+        if self.session_settings.refresh_on_logon {
+            state.refresh();
+        }
+        if self.session_settings.reset_on_logon {
+            state.reset();
+        }
 
-          fill( logon.getHeader() );
-        */
-
-        let logon_response = Box::new(FixtMessage {
+        let logon_request = Box::new(FixtMessage {
             header: self.new_header(MsgType::Logon),
             body: Message::Logon(Logon {
                 // encrypt_method: EncryptMethod::None,
                 encrypt_method: EncryptMethod::NoneOther,
-                heart_bt_int: self.state.borrow().heart_bt_int(),
+                heart_bt_int: state.heart_bt_int(),
                 raw_data: None,
-                reset_seq_num_flag: None,
-                next_expected_msg_seq_num: None,
+                reset_seq_num_flag: self.should_send_reset().then_some(true),
+                next_expected_msg_seq_num: if self.session_settings.enable_next_expected_msg_seq_num
+                {
+                    let next_expected_msg_seq_num = state.next_sender_msg_seq_num();
+                    state.set_last_expected_logon_next_seq_num(next_expected_msg_seq_num);
+                    Some(next_expected_msg_seq_num)
+                } else {
+                    None
+                },
                 max_message_size: None,
                 test_message_indicator: None,
                 username: None,
@@ -664,12 +675,57 @@ impl<S: MessagesStorage> Session<S> {
             }),
             trailer: self.new_trailer(),
         });
-        {
-            let mut state = self.state.borrow_mut();
-            state.set_last_received_time(Instant::now());
-            state.set_test_request(0);
-            state.set_logon_sent(true);
+
+        drop(state);
+        self.send(logon_request).await;
+    }
+
+    async fn send_logon_response(&self, expected_target_num: SeqNum) {
+        let mut state = self.state.borrow_mut();
+
+        if self.session_settings.refresh_on_logon {
+            state.refresh();
         }
+        if self.session_settings.reset_on_logon {
+            state.reset();
+        }
+
+        let logon_response = Box::new(FixtMessage {
+            header: self.new_header_with_state(MsgType::Logon, &mut state),
+            body: Message::Logon(Logon {
+                // encrypt_method: EncryptMethod::None,
+                encrypt_method: EncryptMethod::NoneOther,
+                // TODO: option to use predefined OR the value from Logon request
+                heart_bt_int: state.heart_bt_int(),
+                raw_data: None,
+                reset_seq_num_flag: self.should_send_reset().then_some(true),
+                next_expected_msg_seq_num: if self.session_settings.enable_next_expected_msg_seq_num
+                {
+                    info!("Responding to Logon request with tag 789={expected_target_num}");
+                    state.set_last_expected_logon_next_seq_num(expected_target_num);
+                    Some(expected_target_num)
+                } else {
+                    info!("Responding to Logon request");
+                    None
+                },
+                max_message_size: None,
+                test_message_indicator: None,
+                username: None,
+                password: None,
+                // TODO: if self.session_settings.session_id().is_fixt()
+                // default_appl_ver_id: self.sender_default_appl_ver_id().to_owned(),
+                default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
+                msg_type_grp: None,
+            }),
+            trailer: self.new_trailer(),
+        });
+
+        state.set_last_received_time(Instant::now());
+        state.set_test_request(0);
+        state.set_logon_sent(true);
+
+        drop(state);
+
         self.send(logon_response).await;
     }
 
@@ -690,44 +746,61 @@ impl<S: MessagesStorage> Session<S> {
 
     async fn send_reject(
         &self,
-        msg_type: MsgType,
-        msg_seq_num: SeqNum,
+        ref_msg_type: FixString,
+        ref_seq_num: SeqNum,
         reason: SessionRejectReason,
-        tag: Option<FieldTag>,
+        text: FixString,
+        ref_tag_id: Option<i64>,
     ) {
         // reject.reverseRoute( message.getHeader() );
         //fill( reject.getHeader() );
 
-        if msg_type != MsgType::Logon
-            && msg_type != MsgType::SequenceReset
-            && msg_seq_num == self.state.borrow().next_target_msg_seq_num()
+        if !matches!(
+            MsgType::from_fix_str(&ref_msg_type),
+            Some(MsgType::Logon) | Some(MsgType::SequenceReset)
+        ) && ref_seq_num == self.state.borrow().next_target_msg_seq_num()
         {
             self.state.borrow_mut().incr_next_target_msg_seq_num();
         }
 
-        info!(
-            "Message {} Rejected: {:?} (tag={:?})",
-            msg_seq_num, reason, tag
-        );
+        info!("Message {ref_seq_num} Rejected: {reason:?} (tag={ref_tag_id:?})");
 
         if !self.state.borrow().logon_received() {
             //throw std::runtime_error( "Tried to send a reject while not logged on" );
         }
 
-        let reject = Box::new(FixtMessage {
+        self.send(Box::new(FixtMessage {
             header: self.new_header(MsgType::Reject),
             body: Message::Reject(Reject {
-                ref_seq_num: msg_seq_num,
-                ref_tag_id: tag.map(|v| v as Int),
-                ref_msg_type: Some(msg_type.as_fix_str().to_owned()),
+                ref_seq_num,
+                ref_tag_id,
+                ref_msg_type: Some(ref_msg_type),
                 session_reject_reason: Some(reason),
-                text: Some(reason.as_fix_str().to_owned()),
+                text: Some(text),
                 encoded_text: None,
             }),
             trailer: self.new_trailer(),
-        });
+        }))
+        .await;
+    }
 
-        self.send(reject).await;
+    async fn send_sequence_reset(&self, begin_seq_num: SeqNum, end_seq_num: SeqNum) {
+        let mut sequence_reset = Box::new(FixtMessage {
+            header: self.new_header(MsgType::SequenceReset),
+            body: Message::SequenceReset(SequenceReset {
+                gap_fill_flag: Some(true),
+                new_seq_no: end_seq_num,
+            }),
+            trailer: self.new_trailer(),
+        });
+        // TODO: will be overwrited by Encoder to next_seq_num!
+        sequence_reset.header.msg_seq_num = begin_seq_num;
+        sequence_reset.header.poss_dup_flag = Some(true);
+        // TODO: Make sure in GipFill mode OrigSendingTime is same as SendingTime
+        sequence_reset.header.orig_sending_time = Some(sequence_reset.header.sending_time);
+        self.send(sequence_reset).await;
+
+        info!("Sent SequenceReset TO: {end_seq_num}");
     }
 
     async fn send_resend_request(&self, begin_string: &FixStr, msg_seq_num: SeqNum) {
@@ -761,6 +834,47 @@ impl<S: MessagesStorage> Session<S> {
             .set_resend_range(Some(begin_seq_no..=msg_seq_num - 1));
     }
 
+    fn new_header_with_state(&self, msg_type: MsgType, state: &mut State<S>) -> Header {
+        let msg_seq_num = {
+            state.set_last_sent_time(Instant::now());
+            state.next_sender_msg_seq_num()
+        };
+        Header {
+            begin_string: self.session_settings.session_id.begin_string().to_owned(),
+            // Overwriten during serialization
+            body_length: 0,
+            msg_type,
+            sender_comp_id: self.session_settings.session_id.sender_comp_id().to_owned(),
+            target_comp_id: self.session_settings.session_id.target_comp_id().to_owned(),
+            on_behalf_of_comp_id: None,
+            deliver_to_comp_id: None,
+            secure_data: None,
+            msg_seq_num,
+            sender_sub_id: None,
+            sender_location_id: None,
+            target_sub_id: None,
+            target_location_id: None,
+            on_behalf_of_sub_id: None,
+            on_behalf_of_location_id: None,
+            deliver_to_sub_id: None,
+            deliver_to_location_id: None,
+            poss_dup_flag: None,
+            poss_resend: None,
+            sending_time: UtcTimestamp::now_with_secs(),
+            orig_sending_time: None,
+            xml_data: None,
+            message_encoding: None,
+            last_msg_seq_num_processed: None,
+            hop_grp: None,
+            appl_ver_id: None,
+            cstm_appl_ver_id: None,
+        }
+
+        //  header.setField( MsgSeqNum( getExpectedSenderNum() ) );
+        //  insertSendingTime( header );
+    }
+
+    // TODO: Pass `&mut state` as parameter!
     fn new_header(&self, msg_type: MsgType) -> Header {
         let msg_seq_num = {
             let mut state = self.state.borrow_mut();
@@ -944,6 +1058,46 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.disconnect().await;
     }
 
+    async fn resend_range(&self, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
+        let next_sender_msg_seq_num = self.state.borrow().next_sender_msg_seq_num();
+        if end_seq_num == 0 || end_seq_num >= next_sender_msg_seq_num {
+            end_seq_num = next_sender_msg_seq_num - 1;
+        }
+
+        // Just do a gap fill when messages aren't persisted
+        if !self.session_settings.persist {
+            self.send_sequence_reset(begin_seq_num, end_seq_num).await;
+            return;
+        }
+
+        let mut gap_fill_range = None;
+        // for msg in messages {
+        for msg_seq_num in begin_seq_num..=end_seq_num {
+            // TODO: GapFill in case of error
+            let mut msg = {
+                let msg = self.state.borrow_mut().fetch(msg_seq_num).unwrap();
+                FixtMessage::from_bytes(&msg).unwrap()
+            };
+            assert_eq!(msg_seq_num, msg.header.msg_seq_num);
+            if msg.resend_as_gap_fill() {
+                info!("Resending message {msg_seq_num} as gap fill");
+                gap_fill_range.get_or_insert((msg_seq_num, msg_seq_num)).1 += 1;
+            } else {
+                if let Some((begin_seq_no, end_seq_no)) = gap_fill_range.take() {
+                    self.send_sequence_reset(begin_seq_num, end_seq_num).await;
+                }
+                info!("Resending message {msg_seq_num}");
+                msg.header.orig_sending_time = Some(msg.header.sending_time);
+                msg.header.poss_dup_flag = Some(true);
+                // TODO: emit event!
+                self.send(msg);
+            }
+        }
+        if let Some((begin_seq_no, end_seq_no)) = gap_fill_range {
+            self.send_sequence_reset(begin_seq_num, end_seq_num).await;
+        }
+    }
+
     async fn on_heartbeat(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
         // Got Heartbeat, nothing to do.
         // If we would like to check if this is response for specific
@@ -982,11 +1136,31 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_resend_request(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_resend_request(&self, msg: Box<FixtMessage>) -> Result<(), VerifyError> {
         trace!("on_resend_request");
-        todo!();
 
-        self.state.borrow_mut().incr_next_target_msg_seq_num();
+        let (begin_seq_no, end_seq_no) =
+            if let Message::ResendRequest(ref resend_request) = msg.body {
+                (resend_request.begin_seq_no, resend_request.end_seq_no)
+            } else {
+                // Enum is matched in on_message_in_impl
+                unreachable!();
+            };
+
+        let msg_seq_num = msg.header.msg_seq_num;
+
+        self.verify(msg, false, false).await?;
+
+        info!("Received ResendRequest FROM: {begin_seq_no} TO: {end_seq_no}");
+
+        self.resend_range(begin_seq_no, end_seq_no).await;
+
+        {
+            let mut state = self.state.borrow_mut();
+            if state.next_target_msg_seq_num() == msg_seq_num {
+                state.incr_next_target_msg_seq_num();
+            }
+        }
 
         Ok(())
     }
@@ -1030,30 +1204,39 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     async fn on_logon(&self, message: Box<FixtMessage>) -> Result<Option<Disconnect>, VerifyError> {
-        let msg_seq_num = message.header.msg_seq_num;
-
-        let (reset_seq_num_flag, heart_bt_int) = {
-            let Message::Logon(ref logon) = message.body else { unreachable!() };
-            (logon.reset_seq_num_flag, logon.heart_bt_int)
-        };
-
         let mut state = self.state.borrow_mut();
-
-        // if self.refresh_on_logon() {
-        //     self.refresh();
-        // }
 
         if !state.enabled() {
             error!("Session is not enabled for logon");
+            drop(state);
             self.disconnect().await;
             return Ok(Some(Disconnect));
         }
 
         if !self.is_logon_time(message.header.sending_time) {
             error!("Received logon outside of valid logon time");
+            drop(state);
             self.disconnect().await;
             return Ok(Some(Disconnect));
         }
+
+        let msg_seq_num = message.header.msg_seq_num;
+
+        let (reset_seq_num_flag, heart_bt_int, next_expected_msg_seq_num) = {
+            let Message::Logon(ref logon) = message.body else { unreachable!() };
+            (
+                logon.reset_seq_num_flag,
+                logon.heart_bt_int,
+                logon.next_expected_msg_seq_num,
+            )
+        };
+
+        if self.session_settings.refresh_on_logon {
+            state.refresh();
+        }
+
+        // // QFJ-926 - reset session before accepting Logon
+        // resetIfSessionNotCurrent(sessionID, SystemTime.currentTimeMillis());
 
         // TODO: add elese?
         if let Some(true) = reset_seq_num_flag {
@@ -1062,6 +1245,9 @@ impl<S: MessagesStorage> Session<S> {
             if !state.reset_sent() {
                 state.reset();
             }
+        } else if state.reset_sent() && msg_seq_num == 1 {
+            info!("Inferring ResetSeqNumFlag as sequence number is 1 in response to reset request");
+            state.set_reset_received(true);
         }
 
         if state.should_send_logon() && !state.reset_received() {
@@ -1080,12 +1266,50 @@ impl<S: MessagesStorage> Session<S> {
 
         state.set_logon_received(true);
 
+        let next_sender_msg_num_at_logon_received = state.next_sender_msg_seq_num();
+
+        if self.session_settings.enable_next_expected_msg_seq_num {
+            if let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num {
+                let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
+                // Is the 789 we received too high ??
+                if next_expected_msg_seq_num > next_sender_msg_seq_num {
+                    // can't resend what we never sent! something unrecoverable has happened.
+                    let err = FixString::from_ascii_lossy(
+                        format!(
+                            "NextExpectedMsgSeqNum<789> too high \
+                            (expected {next_sender_msg_seq_num}, \
+                             got {next_expected_msg_seq_num})",
+                        )
+                        .into_bytes(),
+                    );
+                    self.send_logout(Some(err)).await;
+                    // TODO: add reason to be logged in `fn disconnect()`
+                    //self.disconnect(err, true).await;
+                    return Ok(Some(Disconnect));
+                }
+            }
+        }
+
+        // We test here that it's not too high (which would result in
+        // a resend) and that we are not resetting on logon 34=1
+        let is_logon_in_normal_sequence = !(Self::is_target_too_high(&state, msg_seq_num)
+            && !self.session_settings.reset_on_logon);
+
         if !state.initiate() || (state.reset_received() && !state.reset_sent()) {
             state.set_heart_bt_int(heart_bt_int);
             info!("Received logon request");
+
+            let mut next_expected_target_num = state.next_target_msg_seq_num();
+            // we increment for the logon later (after Logon response sent) in this method if and only if in sequence
+            if is_logon_in_normal_sequence {
+                // logon was fine take account of it in 789
+                next_expected_target_num += 1;
+            }
+
             drop(state);
-            self.send_logon_response().await;
+            self.send_logon_response(next_expected_target_num).await;
             state = self.state.borrow_mut();
+
             info!("Responding to logon request");
         } else {
             info!("Received logon response");
@@ -1094,12 +1318,51 @@ impl<S: MessagesStorage> Session<S> {
         state.set_reset_sent(false);
         state.set_reset_received(false);
 
-        if Self::is_target_too_high(&state, msg_seq_num) && reset_seq_num_flag.unwrap_or(false) {
+        if Self::is_target_too_high(&state, msg_seq_num) && !reset_seq_num_flag.unwrap_or(false) {
+            // if 789 was sent then we effectively have already sent a resend request
+            if state.is_expected_logon_next_seq_num_sent() {
+                // Mark state as if we have already sent a resend request from the logon's 789 (we sent) to infinity.
+                // This will supress the resend request in doTargetTooHigh ...
+                state.set_reset_range_from_last_expected_logon_next_seq_num();
+                info!("Required resend will be suppressed as we are setting tag 789");
+            }
             // TODO!
             // self.do_target_too_high(logon).await?;
         } else {
             state.incr_next_target_msg_seq_num();
             // nextQueued(timeStamp);
+        }
+
+        if self.session_settings.enable_next_expected_msg_seq_num {
+            if let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num {
+                // is the 789 lower (we checked for higher previously) than our next message after receiving the logon
+                if next_expected_msg_seq_num != next_sender_msg_num_at_logon_received {
+                    let mut end_seq_no = next_sender_msg_num_at_logon_received;
+
+                    // TODO: self.resend_range() will handle this !!!
+                    if !self.session_settings.persist {
+                        end_seq_no += 1;
+                        let next = state.next_sender_msg_seq_num();
+                        if end_seq_no > next {
+                            end_seq_no = next;
+                        }
+                        info!(
+                            "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num}, \
+                             TO: {next_sender_msg_num_at_logon_received} will be reset"
+                        );
+                        self.send_sequence_reset(next_expected_msg_seq_num, end_seq_no)
+                            .await;
+                    } else {
+                        // resend missed messages
+                        info!(
+                            "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num} \
+                             TO: {next_sender_msg_num_at_logon_received} will be resent"
+                        );
+                        self.resend_range(next_expected_msg_seq_num, end_seq_no)
+                            .await;
+                    }
+                }
+            }
         }
 
         if Self::is_logged_on(&state) {
@@ -1115,7 +1378,7 @@ impl<S: MessagesStorage> Session<S> {
         Ok(None)
     }
 
-    pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<Disconnect> {
+    pub async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<Disconnect> {
         let msg_type = msg.header.msg_type;
         let msg_seq_num = msg.header.msg_seq_num;
         trace!(msg_type = format!("{:?}<{}>", msg_type, msg_type.as_fix_str()));
@@ -1156,7 +1419,19 @@ impl<S: MessagesStorage> Session<S> {
                 tag,
                 logout,
             }) => {
-                self.send_reject(msg_type, msg_seq_num, reason, tag).await;
+                let tag = tag.map(|t| t as i64);
+                self.send_reject(
+                    msg_type.as_fix_str().to_owned(),
+                    msg_seq_num,
+                    reason,
+                    if let Some(tag) = tag {
+                        FixString::from_ascii_lossy(format!("{reason:?} (tag={tag})").into_bytes())
+                    } else {
+                        FixString::from_ascii_lossy(format!("{reason:?}").into_bytes())
+                    },
+                    tag,
+                )
+                .await;
                 if logout {
                     self.send_logout(None).await;
                 }
@@ -1177,8 +1452,24 @@ impl<S: MessagesStorage> Session<S> {
         None
     }
 
+    // TODO: Result<(), Disconnect>
+    pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<Disconnect> {
+        if let Some(disconnect) = self.on_message_in_impl(msg).await {
+            return Some(disconnect);
+        }
+        let mut state = self.state.borrow_mut();
+        while let Some(msg) = state.retrieve_msg() {
+            drop(state);
+            if let Some(disconnect) = self.on_message_in_impl(msg).await {
+                return Some(disconnect);
+            }
+            state = self.state.borrow_mut();
+        }
+        None
+    }
+
     pub async fn on_message_out(
-        self: &Rc<Self>,
+        &self,
         msg: Box<FixtMessage>,
     ) -> Result<Option<Box<FixtMessage>>, Disconnect> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -1222,7 +1513,7 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    pub async fn on_deserialize_error(self: &Rc<Self>, error: DeserializeError) {
+    pub async fn on_deserialize_error(&self, error: DeserializeError) {
         trace!("on_deserialize_error");
 
         // TODO: if msg_type is logon, handle missing CompId separately (disconnect)
@@ -1244,19 +1535,14 @@ impl<S: MessagesStorage> Session<S> {
             reason,
         } = &error
         {
-            let reject = Box::new(FixtMessage {
-                header: self.new_header(MsgType::Reject),
-                body: Message::Reject(Reject {
-                    ref_seq_num: *seq_num,
-                    ref_tag_id: tag.map(i64::from),
-                    ref_msg_type: Some(msg_type.to_fix_string()),
-                    session_reject_reason: Some(*reason),
-                    text: Some(text),
-                    encoded_text: None,
-                }),
-                trailer: self.new_trailer(),
-            });
-            self.send(reject).await;
+            self.send_reject(
+                msg_type.clone(),
+                *seq_num,
+                *reason,
+                text,
+                tag.map(Int::from),
+            )
+            .await;
         }
 
         //let id = self.state.borrow().their_comp_id.clone();
@@ -1279,10 +1565,9 @@ impl<S: MessagesStorage> Session<S> {
         //}
     }
 
-    pub async fn on_disconnect(self: &Rc<Self>) -> Result<(), Error> {
+    pub async fn on_disconnect(self: &Rc<Self>) {
         trace!("on_disconnect");
         //self.state.borrow_mut().status = SessionStatus::Disconnected;
-        Ok(())
     }
 
     pub async fn on_io_error(self: &Rc<Self>, _error: io::Error) -> Result<(), Error> {

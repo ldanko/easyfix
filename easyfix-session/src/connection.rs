@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_stream::{wrappers::ReceiverStream, Elapsed, StreamExt};
 use tokio_util::codec::{FramedRead, FramedWrite};
-use tracing::{debug, error, info, info_span, Instrument, warn};
+use tracing::{debug, error, info, info_span, warn, Instrument};
 
 use crate::{
     acceptor::SessionsMap,
@@ -25,8 +25,7 @@ use crate::{
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
-    session_state::State as SessionState,
-    settings::{SessionSettings, Settings},
+    settings::Settings,
     Error, Sender, SenderMsg, SessionError, NO_INBOUND_TIMEOUT_PADDING,
 };
 
@@ -283,7 +282,9 @@ impl<S: MessagesStorage> Connection<S> {
                 OutputEvent::Message(msg) => match self.session.on_message_out(msg).await {
                     // TODO: handle replay msg_seq_num
                     Ok(Some(msg)) => match sink.send(msg.into()).await {
-                        Ok(()) => {warn!("msg sent");}
+                        Ok(()) => {
+                            warn!("msg sent");
+                        }
                         Err(FixEncoderError::Io(error)) => {
                             return self.session.on_io_error(error).await
                         }

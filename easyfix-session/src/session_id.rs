@@ -1,5 +1,4 @@
 use core::fmt;
-use std::{ops, borrow::Borrow};
 
 use easyfix_messages::{
     fields::{FixStr, FixString},

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, convert::Infallible, ops::RangeInclusive};
 
-use easyfix_messages::{fields::SeqNum, messages::FixtMessage};
+use easyfix_messages::fields::SeqNum;
 
 pub trait MessagesStorage {
     type Error: std::error::Error;

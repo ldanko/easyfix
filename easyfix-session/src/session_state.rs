@@ -1,14 +1,34 @@
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
 use easyfix_messages::{
-    fields::{FixString, Int, SeqNum, FixStr},
+    fields::{FixStr, FixString, Int, SeqNum},
     messages::FixtMessage,
 };
 use tokio::time::{Duration, Instant};
+use tracing::info;
 
 use crate::messages_storage::MessagesStorage;
 
-type Messages = BTreeMap<SeqNum, Box<FixtMessage>>;
+#[derive(Debug)]
+struct Messages(BTreeMap<SeqNum, Box<FixtMessage>>);
+
+impl Messages {
+    fn new() -> Messages {
+        Messages(BTreeMap::new())
+    }
+
+    fn enqueue(&mut self, seq_num: SeqNum, msg: Box<FixtMessage>) {
+        self.0.insert(seq_num, msg);
+    }
+
+    fn retrieve(&mut self, seq_num: SeqNum) -> Option<Box<FixtMessage>> {
+        self.0.remove(&seq_num)
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct State<S> {
@@ -28,6 +48,15 @@ pub(crate) struct State<S> {
     last_received_time: Instant,
     // TODO: enum
     logout_reason: Option<FixString>,
+
+    /// If this is anything other than zero it's the value of
+    /// the 789/NextExpectedMsgSeqNum tag in the last Logon message sent.
+    /// It is used to determine if the recipient has enough information
+    /// (assuming they support 789) to avoid the need for a resend request i.e.
+    /// they should be resending any necessary missing messages already.
+    /// This value is used to populate the resendRange if necessary.
+    next_expected_msg_seq_num: SeqNum,
+
     queue: Messages,
     messages_storage: S,
 }
@@ -51,6 +80,7 @@ impl<S: MessagesStorage> State<S> {
             last_received_time: Instant::now(),
             // TODO: enum
             logout_reason: None,
+            next_expected_msg_seq_num: 0,
             queue: Messages::new(),
             messages_storage,
         }
@@ -229,25 +259,46 @@ impl<S: MessagesStorage> State<S> {
         self.logout_reason = logout_reason;
     }
 
-    /*
-      void queue( int msgSeqNum, const Message& message )
-      { Locker l( m_mutex ); m_queue[ msgSeqNum ] = message; }
-      bool retrieve( int msgSeqNum, Message& message )
-      {
-        Locker l( m_mutex );
-        Messages::iterator i = m_queue.find( msgSeqNum );
-        if ( i != m_queue.end() )
-        {
-          message = i->second;
-          m_queue.erase( i );
-          return true;
-        }
-        return false;
-      }
-      void clearQueue()
-      { Locker l( m_mutex ); m_queue.clear(); }
-    */
+    /// No actual resend request has occurred but at logon we populated tag
+    /// 789 so that the other side knows we are missing messages without
+    /// an explicit resend request and should immediately reply with
+    /// the missing messages.
+    ///
+    /// This is expected to be called only in the scenario where target is too
+    /// high on logon and tag 789 is supported.
+    pub fn set_reset_range_from_last_expected_logon_next_seq_num(&mut self) {
+        // we have already requested all msgs from nextExpectedMsgSeqNum to infinity
+        self.set_resend_range(Some(self.next_expected_msg_seq_num..=0));
+        // clean up the variable (not really needed)
+        self.next_expected_msg_seq_num = 0;
+    }
 
+    pub fn set_last_expected_logon_next_seq_num(&mut self, seq_num: SeqNum) {
+        self.next_expected_msg_seq_num = seq_num;
+    }
+
+    pub fn get_last_expected_logon_next_seq_num(&self) -> SeqNum {
+        self.next_expected_msg_seq_num
+    }
+
+    pub fn is_expected_logon_next_seq_num_sent(&self) -> bool {
+        self.next_expected_msg_seq_num != 0
+    }
+
+    pub fn enqueue_msg(&mut self, msg: Box<FixtMessage>) {
+        self.queue.enqueue(msg.header.msg_seq_num, msg);
+    }
+
+    pub fn retrieve_msg(&mut self) -> Option<Box<FixtMessage>> {
+        self.queue.retrieve(self.next_target_msg_seq_num())
+    }
+
+    pub fn clear_queue(&mut self, seq_num: SeqNum) {
+        self.queue.clear();
+    }
+
+    // TODO: change API to retrieve message data as output parameter, to save
+    //       on Vec allocations
     pub fn fetch(&mut self, seq_num: SeqNum) -> Result<Vec<u8>, S::Error> {
         self.messages_storage.fetch(seq_num)
     }
@@ -277,7 +328,15 @@ impl<S: MessagesStorage> State<S> {
     }
 
     pub fn incr_next_target_msg_seq_num(&mut self) {
+        info!(
+            "old target msg seq num: {}",
+            self.messages_storage.next_target_msg_seq_num()
+        );
         self.messages_storage.incr_next_target_msg_seq_num();
+        info!(
+            "current target msg seq num: {}",
+            self.messages_storage.next_target_msg_seq_num()
+        );
     }
 
     //UtcTimeStamp getCreationTime() const EXCEPT ( IOException )
@@ -286,8 +345,11 @@ impl<S: MessagesStorage> State<S> {
     pub fn reset(&mut self) {
         self.messages_storage.reset();
     }
-    //void refresh() EXCEPT ( IOException )
-    //{ Locker l( m_mutex ); m_pStore->refresh(); }
+
+    pub fn refresh(&mut self) {
+        unimplemented!();
+        //{ Locker l( m_mutex ); m_pStore->refresh(); }
+    }
 
     /*
     void clear()
