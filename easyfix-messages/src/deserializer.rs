@@ -94,6 +94,7 @@ impl<'de> Deserializer<'de> {
                     .msg_type
                     .map(|msg_type| msg_type.to_fix_string())
                     .unwrap_or_else(|| unsafe {
+                        // TODO: Panic?
                         FixString::from_ascii_unchecked(b"UNKNOWN".to_vec())
                     }),
                 seq_num,
@@ -107,6 +108,28 @@ impl<'de> Deserializer<'de> {
 
     pub fn put_tag(&mut self, tag: TagNum) {
         self.tmp_tag = Some(tag);
+    }
+
+    /// Deserialize MsgType
+    pub fn deserialize_msg_type(&mut self) -> Result<MsgType, DeserializeError> {
+        let seq_num = self.seq_num;
+        let value = self.deserialize_str()?;
+        if let Ok(msg_type) = MsgType::try_from(value) {
+            // Remember MsgType.
+            self.msg_type = Some(msg_type);
+            Ok(msg_type)
+        } else if let Some(seq_num) = seq_num {
+            // TODO: This won't work, MsgType is deserialized before MsgSeqNum,
+            //       so `Logout` will always be returned
+            Err(DeserializeError::Reject {
+                msg_type: value.to_owned(),
+                seq_num,
+                tag: Some(35),
+                reason: SessionRejectReason::InvalidMsgType,
+            })
+        } else {
+            Err(DeserializeError::Logout)
+        }
     }
 
     /// Deserialize sequence of character digits without commas or decimals.

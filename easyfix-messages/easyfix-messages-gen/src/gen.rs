@@ -355,7 +355,11 @@ impl Generator {
         let fields_names = &self.fields_names;
         let fields_names_as_str: Vec<_> = self.fields_names.iter().map(|f| f.to_string()).collect();
         let fields_numbers = &self.fields_numbers;
-        let fields_numbers_literals = self.fields_numbers.iter().map(|num| Literal::u16_suffixed(*num)).collect::<Vec<_>>();
+        let fields_numbers_literals = self
+            .fields_numbers
+            .iter()
+            .map(|num| Literal::u16_suffixed(*num))
+            .collect::<Vec<_>>();
 
         quote! {
             use crate::{
@@ -418,8 +422,6 @@ impl Generator {
                         #(
                             MsgType::#name => Ok(#name::deserialize(deserializer, begin_string, body_length, msg_type)?),
                         )*
-                        #[allow(unreachable_patterns)]
-                        _ => Err(deserializer.reject(None, SessionRejectReason::InvalidMsgType)),
                     }
                 }
 
@@ -467,7 +469,7 @@ impl Generator {
                         .deserialize_tag_num()
                         .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
                     {
-                        deserializer.deserialize_string_enum()?
+                        deserializer.deserialize_msg_type()?
                     } else {
                         return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                     };

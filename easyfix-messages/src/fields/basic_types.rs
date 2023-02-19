@@ -218,12 +218,11 @@ impl ToOwned for FixStr {
         unsafe { FixString::from_ascii_unchecked(self.as_bytes().to_owned()) }
     }
 
-    // TODO: unstable
-    // fn clone_into(&self, target: &mut FixString) {
-    //     let mut buf = mem::take(target).into_bytes();
-    //     self.as_bytes().clone_into(&mut buf);
-    //     *target = unsafe { FixString::from_ascii_unchecked(buf) }
-    // }
+    fn clone_into(&self, target: &mut FixString) {
+        let mut buf = mem::take(target).into_bytes();
+        self.as_bytes().clone_into(&mut buf);
+        *target = unsafe { FixString::from_ascii_unchecked(buf) }
+    }
 }
 
 impl PartialEq<[u8]> for FixStr {
