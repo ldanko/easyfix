@@ -2,10 +2,7 @@ use std::{error::Error, fmt};
 
 use anyhow::Result;
 
-use crate::{
-    fields::{basic_types::*, MsgType, SessionRejectReason},
-    parser::RawMessage,
-};
+use crate::fields::{basic_types::*, MsgType, SessionRejectReason};
 
 #[derive(Debug)]
 pub enum DeserializeError {
@@ -38,6 +35,177 @@ impl fmt::Display for DeserializeError {
 }
 
 impl Error for DeserializeError {}
+
+#[derive(Debug, thiserror::Error)]
+enum DeserializeErrorInternal {
+    #[error("Incomplete")]
+    Incomplete,
+    #[error("{0:?}")]
+    Error(SessionRejectReason),
+}
+
+// type Result2<'a, T> = std::result::Result<(&'a [u8], T), DeserializeErrorInternal>;
+
+fn deserialize_tag<'a>(bytes: &'a [u8], tag: &'a [u8]) -> Result<&'a [u8], RawMessageError> {
+    if bytes.len() < tag.len() {
+        Err(RawMessageError::Incomplete)
+    } else if bytes.starts_with(tag) {
+        Ok(&bytes[tag.len()..])
+    } else {
+        Err(RawMessageError::Garbled)
+    }
+}
+
+fn deserialize_checksum(bytes: &[u8]) -> Result<(&[u8], u8), RawMessageError> {
+    if bytes.len() < 4 {
+        return Err(RawMessageError::Incomplete);
+    }
+
+    let mut value: u8 = 0;
+    for b in &bytes[0..3] {
+        match b {
+            n @ b'0'..=b'9' => {
+                value = value
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add(n - b'0'))
+                    .ok_or(RawMessageError::Garbled)?;
+            }
+            _ => return Err(RawMessageError::Garbled),
+        }
+    }
+
+    if bytes[3] != b'\x01' {
+        return Err(RawMessageError::Garbled);
+    }
+
+    Ok((&bytes[4..], value))
+}
+
+fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInternal> {
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            // No control character is allowed
+            0x00 | 0x02..=0x1f | 0x80..=0xff => {
+                return Err(DeserializeErrorInternal::Error(
+                    SessionRejectReason::ValueIsIncorrect,
+                ));
+            }
+            // Except SOH which marks end of tag
+            b'\x01' => {
+                if i == 0 {
+                    return Err(DeserializeErrorInternal::Error(
+                        SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ));
+                } else {
+                    // SAFETY: Check for valid ASCII values just above
+                    return Ok((&bytes[i + 1..], unsafe {
+                        FixStr::from_ascii_unchecked(&bytes[..i])
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(DeserializeErrorInternal::Incomplete)
+}
+
+fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorInternal> {
+    let mut value: Length = 0;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            n @ b'0'..=b'9' => {
+                value = value
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add(Length::from(n - b'0')))
+                    .ok_or(DeserializeErrorInternal::Error(
+                        SessionRejectReason::ValueIsIncorrect,
+                    ))?;
+            }
+            b'\x01' => {
+                if i == 0 {
+                    return Err(DeserializeErrorInternal::Error(
+                        SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ));
+                } else if value == 0 {
+                    return Err(DeserializeErrorInternal::Error(
+                        SessionRejectReason::ValueIsIncorrect,
+                    ));
+                } else {
+                    return Ok((&bytes[i + 1..], value));
+                }
+            }
+            _ => {
+                return Err(DeserializeErrorInternal::Error(
+                    SessionRejectReason::IncorrectDataFormatForValue,
+                ))
+            }
+        }
+    }
+
+    Err(DeserializeErrorInternal::Incomplete)
+}
+
+#[derive(Debug)]
+pub struct RawMessage<'a> {
+    pub begin_string: &'a FixStr,
+    pub body: &'a [u8],
+    pub checksum: u8,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RawMessageError {
+    #[error("Incomplete")]
+    Incomplete,
+    #[error("Garbled")]
+    Garbled,
+}
+
+impl From<DeserializeErrorInternal> for RawMessageError {
+    fn from(d: DeserializeErrorInternal) -> RawMessageError {
+        match d {
+            DeserializeErrorInternal::Incomplete => RawMessageError::Incomplete,
+            DeserializeErrorInternal::Error(_) => RawMessageError::Garbled,
+        }
+    }
+}
+
+pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage), RawMessageError> {
+    let orig_bytes = bytes;
+
+    let bytes = deserialize_tag(bytes, b"8=")?;
+    let (bytes, begin_string) = deserialize_str(bytes)?;
+
+    let bytes = deserialize_tag(bytes, b"9=")?;
+    let (bytes, body_length) = deserialize_length(bytes)?;
+    let body_length = usize::from(body_length);
+
+    const CHECKSUM_LEN: usize = 4;
+    if bytes.len() < body_length + CHECKSUM_LEN {
+        return Err(RawMessageError::Incomplete);
+    }
+
+    let body = &bytes[..body_length];
+    let bytes = &bytes[body_length..];
+
+    let calculated_checksum = orig_bytes[0..orig_bytes.len() - bytes.len()]
+        .iter()
+        .fold(0, |acc: u8, x| acc.wrapping_add(*x));
+
+    let bytes = deserialize_tag(bytes, b"10=")?;
+    let (bytes, checksum) = deserialize_checksum(bytes)?;
+    if calculated_checksum != checksum {
+        return Err(RawMessageError::Garbled);
+    }
+    Ok((
+        bytes,
+        RawMessage {
+            begin_string,
+            body,
+            checksum,
+        },
+    ))
+}
 
 // TODO:
 // enum GarbledReason
@@ -641,46 +809,18 @@ impl<'de> Deserializer<'de> {
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
     pub fn deserialize_str(&mut self) -> Result<&FixStr, DeserializeError> {
-        match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
+        match deserialize_str(self.buf) {
+            Ok((leftover, fix_str)) => {
+                self.buf = leftover;
+                Ok(fix_str)
             }
-            [b'\x01', ..] => {
-                return Err(self.reject(
-                    self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
-                ));
-            }
-            _ => {}
-        }
-
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and input.len()
-            match unsafe { self.buf.get_unchecked(i) } {
-                // No control character is allowed
-                0x00 | 0x02..=0x1f | 0x80..=0xff => {
-                    return Err(
-                        self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                    );
-                }
-                // Except SOH which marks end of tag
-                b'\x01' => {
-                    let result = &self.buf[..i];
-                    self.buf = &self.buf[i + 1..];
-                    // SAFETY: Check for valid ASCII values just above
-                    return Ok(unsafe { FixStr::from_ascii_unchecked(result) });
-                }
-                _ => {}
+            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
+                format!("no more data to parse tag {:?}", self.current_tag),
+            )),
+            Err(DeserializeErrorInternal::Error(reason)) => {
+                Err(self.reject(self.current_tag, reason))
             }
         }
-
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
     }
 
     /// Deserialize alphanumeric free-format strings can include any character
@@ -1424,64 +1564,18 @@ impl<'de> Deserializer<'de> {
     /// contained in the associated data field up to but not including
     /// the terminating `<SOH>`.
     pub fn deserialize_length(&mut self) -> Result<Length, DeserializeError> {
-        match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
+        match deserialize_length(self.buf) {
+            Ok((leftover, len)) => {
+                self.buf = leftover;
+                Ok(len)
             }
-            [b'\x01', ..] => {
-                return Err(self.reject(
-                    self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
-                ));
-            }
-            // Leading zero
-            [b'0', n, ..] if *n != b'\x01' => {
-                return Err(self.reject(
-                    self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
-                ));
-            }
-            _ => {}
-        }
-
-        let mut value: Length = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
-                n @ b'0'..=b'9' => {
-                    value = value
-                        .checked_mul(10)
-                        .and_then(|v| v.checked_add((n - b'0') as Length))
-                        .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                        })?;
-                }
-                b'\x01' => {
-                    if value == 0 {
-                        return Err(
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                        );
-                    } else {
-                        self.buf = &self.buf[i + 1..];
-                        return Ok(value);
-                    }
-                }
-                _ => {
-                    return Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
-                    ))
-                }
+            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
+                format!("no more data to parse tag {:?}", self.current_tag),
+            )),
+            Err(DeserializeErrorInternal::Error(reject)) => {
+                Err(self.reject(self.current_tag, reject))
             }
         }
-
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
     }
 
     /// Deserialize raw data with no format or content restrictions,
@@ -1638,14 +1732,120 @@ impl<'de> Deserializer<'de> {
 mod tests {
     use std::str::FromStr;
 
+    use assert_matches::assert_matches;
     use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 
-    use super::Deserializer;
+    use super::{deserialize_tag, raw_message, Deserializer, RawMessage};
     use crate::{
+        deserializer::{deserialize_checksum, RawMessageError},
         fields::{LocalMktDate, Price, TimePrecision},
         messages::BEGIN_STRING,
-        parser::RawMessage,
     };
+
+    #[test]
+    fn deserialize_tag_ok() {
+        assert_matches!(deserialize_tag(b"8=FIXT1.1\x01", b"8="), Ok(b"FIXT1.1\x01"));
+    }
+
+    #[test]
+    fn deserialize_tag_incomplete() {
+        assert_matches!(
+            deserialize_tag(b"", b"8="),
+            Err(RawMessageError::Incomplete)
+        );
+
+        assert_matches!(
+            deserialize_tag(b"8", b"8="),
+            Err(RawMessageError::Incomplete)
+        );
+    }
+
+    #[test]
+    fn deserialize_tag_garbled() {
+        assert_matches!(
+            deserialize_tag(b"89FIXT1.1\x01", b"8="),
+            Err(RawMessageError::Garbled)
+        );
+    }
+
+    #[test]
+    fn deserialize_checksum_ok() {
+        assert_matches!(deserialize_checksum(b"123\x01"), Ok((b"", 123)));
+
+        assert_matches!(
+            deserialize_checksum(b"123\x01more data"),
+            Ok((b"more data", 123))
+        );
+    }
+
+    #[test]
+    fn deserialize_checksum_incomplete() {
+        assert_matches!(deserialize_checksum(b"1"), Err(RawMessageError::Incomplete));
+
+        assert_matches!(
+            deserialize_checksum(b"12"),
+            Err(RawMessageError::Incomplete)
+        );
+
+        assert_matches!(
+            deserialize_checksum(b"123"),
+            Err(RawMessageError::Incomplete)
+        );
+    }
+
+    #[test]
+    fn deserialize_checksum_garbled() {
+        assert_matches!(
+            deserialize_checksum(b"A23\x01"),
+            Err(RawMessageError::Garbled)
+        );
+
+        assert_matches!(deserialize_checksum(b"1234"), Err(RawMessageError::Garbled));
+        assert_matches!(
+            deserialize_checksum(b"1234\x01"),
+            Err(RawMessageError::Garbled)
+        );
+    }
+
+    #[test]
+    fn raw_message_ok() {
+        let input = b"8=MSG_BODY\x019=19\x01<lots of tags here>10=143\x01";
+        assert!(raw_message(input).is_ok());
+    }
+
+    #[test]
+    fn raw_message_from_chunks_ok() {
+        let input = &[
+            b"8=MSG_BOD".as_slice(),
+            b"Y\x019=19\x01<lots".as_slice(),
+            b" of tags here>10=143\x01".as_slice(),
+            b"leftover".as_slice(),
+        ];
+        let mut buf = Vec::new();
+        let mut i = input.iter();
+        {
+            buf.extend_from_slice(i.next().unwrap());
+            assert!(matches!(
+                raw_message(&buf),
+                Err(RawMessageError::Incomplete)
+            ));
+        }
+        {
+            buf.extend_from_slice(i.next().unwrap());
+            assert!(matches!(
+                raw_message(&buf),
+                Err(RawMessageError::Incomplete)
+            ));
+        }
+        {
+            buf.extend_from_slice(i.next().unwrap());
+            assert!(matches!(raw_message(&buf), Ok(([], _))));
+        }
+        {
+            buf.extend_from_slice(i.next().unwrap());
+            assert!(matches!(raw_message(&buf), Ok((b"leftover", _))));
+        }
+    }
 
     fn deserializer(body: &[u8]) -> Deserializer {
         let raw_message = RawMessage {
