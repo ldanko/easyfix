@@ -1,6 +1,7 @@
 use easyfix_messages::{
     fields::{
-        ApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc, UtcTimestamp,
+        DefaultApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc,
+        UtcTimestamp,
     },
     groups::MsgTypeGrp,
     messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
@@ -64,7 +65,7 @@ fn heartbeat_ok() {
 #[test]
 fn logon_msg_type_grp_no_present() {
     let msg = fixt_message(Message::Logon(Logon {
-        encrypt_method: EncryptMethod::None,
+        encrypt_method: EncryptMethod::NoneOther,
         heart_bt_int: 30,
         raw_data: None,
         reset_seq_num_flag: None,
@@ -73,7 +74,7 @@ fn logon_msg_type_grp_no_present() {
         test_message_indicator: None,
         username: None,
         password: None,
-        default_appl_ver_id: ApplVerId::Fix50Sp2.to_fix_string(),
+        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         msg_type_grp: None,
     }));
     let serialized = msg.serialize();
@@ -83,7 +84,7 @@ fn logon_msg_type_grp_no_present() {
 #[test]
 fn logon_msg_type_grp_present_with_two_entries_1() {
     let msg = fixt_message(Message::Logon(Logon {
-        encrypt_method: EncryptMethod::None,
+        encrypt_method: EncryptMethod::NoneOther,
         heart_bt_int: 30,
         raw_data: None,
         reset_seq_num_flag: None,
@@ -92,7 +93,7 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
         test_message_indicator: None,
         username: None,
         password: None,
-        default_appl_ver_id: ApplVerId::Fix50Sp2.to_fix_string(),
+        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         msg_type_grp: Some(vec![
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
@@ -119,7 +120,7 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
 #[test]
 fn logon_msg_type_grp_present_with_two_entries_2() {
     let msg = fixt_message(Message::Logon(Logon {
-        encrypt_method: EncryptMethod::None,
+        encrypt_method: EncryptMethod::NoneOther,
         heart_bt_int: 30,
         raw_data: None,
         reset_seq_num_flag: None,
@@ -128,7 +129,7 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
         test_message_indicator: None,
         username: None,
         password: None,
-        default_appl_ver_id: ApplVerId::Fix50Sp2.to_fix_string(),
+        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         msg_type_grp: Some(vec![
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),

@@ -5863,7 +5863,7 @@
    <value enum='Y' description='YES' />
   </field>
   <field number='98' name='EncryptMethod' type='INT'>
-   <value enum='0' description='NONE' />
+   <value enum='0' description='NONE_OTHER' />
    <value enum='1' description='PKCS_1' />
    <value enum='2' description='DES' />
    <value enum='3' description='PKCS_3' />
@@ -6936,7 +6936,7 @@
    <value enum='7' description='DECRYPTION_PROBLEM' />
    <value enum='8' description='SIGNATURE_PROBLEM' />
    <value enum='9' description='COMP_ID_PROBLEM' />
-   <value enum='10' description='SENDINGTIME_ACCURACY_PROBLEM' />
+   <value enum='10' description='SENDING_TIME_ACCURACY_PROBLEM' />
    <value enum='11' description='INVALID_MSG_TYPE' />
    <value enum='12' description='XML_VALIDATION_ERROR' />
    <value enum='13' description='TAG_APPEARS_MORE_THAN_ONCE' />
@@ -9325,7 +9325,19 @@
   <field number='1134' name='ReportedPxDiff' type='BOOLEAN' />
   <field number='1135' name='RptSys' type='STRING' />
   <field number='1136' name='AllocClearingFeeIndicator' type='STRING' />
-  <field number='1137' name='DefaultApplVerID' type='STRING' />
+  <field name='DefaultApplVerID' number='1137' type='STRING'>
+    <value enum='0' description='FIX27' />
+    <value enum='1' description='FIX30' />
+    <value enum='2' description='FIX40' />
+    <value enum='3' description='FIX41' />
+    <value enum='4' description='FIX42' />
+    <value enum='5' description='FIX43' />
+    <value enum='6' description='FIX44' />
+    <value enum='7' description='FIX50' />
+    <value enum='8' description='FIX50SP1' />
+    <value enum='9' description='FIX50SP2' />
+    <value enum='10' description='FIX_LATEST' />
+  </field>
   <field number='1138' name='DisplayQty' type='QTY' />
   <field number='1139' name='ExchangeSpecialInstructions' type='STRING' />
   <field number='1140' name='MaxTradeVol' type='QTY' />
