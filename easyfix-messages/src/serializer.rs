@@ -34,6 +34,7 @@ pub struct Serializer {
 impl Serializer {
     pub fn new() -> Serializer {
         Serializer {
+            // Allocate for max message size, to prevent vector reallocation.
             output: Vec::with_capacity(MAX_MSG_SIZE),
             body_start_idx: 0,
         }

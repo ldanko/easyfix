@@ -363,10 +363,9 @@ impl Generator {
 
         quote! {
             use crate::{
-                deserializer::{DeserializeError, Deserializer},
+                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
                 fields::{self, basic_types::*, SessionRejectReason},
                 groups::*,
-                parser::{raw_message, RawMessage},
                 serializer::Serializer,
             };
             use std::fmt;
