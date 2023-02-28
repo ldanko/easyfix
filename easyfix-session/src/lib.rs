@@ -3,7 +3,6 @@
 pub mod acceptor;
 pub mod application;
 pub mod async_cell;
-mod codec;
 mod connection;
 pub mod messages_storage;
 mod session;

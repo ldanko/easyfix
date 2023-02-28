@@ -803,19 +803,11 @@ impl<S: MessagesStorage> Session<S> {
         info!("Sent SequenceReset TO: {end_seq_num}");
     }
 
-    async fn send_resend_request(&self, begin_string: &FixStr, msg_seq_num: SeqNum) {
+    async fn send_resend_request(&self, msg_seq_num: SeqNum) {
         //void Session::generateResendRequest( const BeginString& beginString, const MsgSeqNum& msgSeqNum )
 
         let begin_seq_no = self.get_expected_target_num();
         let end_seq_no = msg_seq_num - 1;
-        // BeginSeqNo beginSeqNo( ( int ) getExpectedTargetNum() );
-        // EndSeqNo endSeqNo( msgSeqNum - 1 );
-        /*
-        if ( beginString >= FIX::BeginString_FIX42 )
-          end_seq_no = 0;
-        else if( beginString <= FIX::BeginString_FIX41 )
-          end_seq_no = 999999;
-        */
         let resend_request = Box::new(FixtMessage {
             header: self.new_header(MsgType::ResendRequest),
             body: Message::ResendRequest(ResendRequest {
@@ -1413,7 +1405,9 @@ impl<S: MessagesStorage> Session<S> {
         match result {
             Ok(()) => return None,
             Err(VerifyError::Duplicate) => {}
-            Err(VerifyError::ResendRequest { msg_seq_num }) => todo!(),
+            Err(VerifyError::ResendRequest { msg_seq_num }) => {
+                self.send_resend_request(msg_seq_num).await
+            }
             Err(VerifyError::Reject {
                 reason,
                 tag,

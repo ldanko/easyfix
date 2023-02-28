@@ -57,7 +57,9 @@ async fn acceptor() {
                 reset_on_disconnect: false,
                 sender_default_appl_ver_id: FixString::from_ascii_lossy(b"9".to_vec()),
                 target_default_appl_ver_id: FixString::from_ascii_lossy(b"9".to_vec()),
-                persist: false, // TODO: true
+                persist: false,
+                refresh_on_logon: false,
+                enable_next_expected_msg_seq_num: true,
             },
         );
     };
