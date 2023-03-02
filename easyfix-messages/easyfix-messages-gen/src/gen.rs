@@ -63,7 +63,8 @@ fn process_members(
                         group_members
                             .iter()
                             .filter(|member| matches!(member, MemberDesc::Simple(_)))
-                            .map(|member| (member.tag_num(), member.required()))
+                            //.map(|member| (member.tag_num(), member.required()))
+                            .map(|member| member.tag_num())
                             .collect(),
                     ));
                     members_descs.push(MemberDesc::Simple(SimpleMember::group(

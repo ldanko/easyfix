@@ -78,8 +78,11 @@ impl Struct {
         let name = &self.name;
         let mut variables_definitions = Vec::with_capacity(self.members.len());
         let mut de_struct_entries = Vec::with_capacity(self.members.len());
-        let mut de_match_entries = Vec::with_capacity(self.members.len()); //self.generate_de_match_entries();
-        for member in &self.members {
+        let mut de_match_entries = Vec::with_capacity(self.members.len());
+        let Some((first_member, members)) = self.members.split_first() else {
+            panic!("Empty group {name}");
+        };
+        for member in members {
             variables_definitions.push(member.gen_opt_variables());
             if let Some(de_match_entry) = member.gen_deserialize_match_entries() {
                 de_match_entries.push(de_match_entry);
@@ -89,54 +92,96 @@ impl Struct {
             }
         }
 
-        quote! {
-            pub(crate) fn deserialize(
-                deserializer: &mut Deserializer,
-                first_run: bool,
-                expected_tags: &mut [Option<(TagNum, bool)>],
-            ) -> Result<#name, DeserializeError> {
-                #(#variables_definitions)*
-                let mut expected_tags = expected_tags.iter_mut();
-                'tag_num_loop: while let Some(tag) = deserializer.deserialize_tag_num()? {
-                    loop {
-                        if let Some(exp_tag) = expected_tags.next() {
-                            if first_run {
-                                let (expected_tag, required) = exp_tag
-                                    .expect("internal error - on group member, expected tag can not be `None`");
-                                if expected_tag != tag {
-                                    if required {
-                                        // Return early, no need to wait for object construction
-                                        return Err(deserializer.reject(Some(expected_tag), SessionRejectReason::RequiredTagMissing));
-                                    } else {
-                                        *exp_tag = None;
-                                        continue;
-                                    }
-                                } else {
-                                    break;
-                                }
-                            } else if let Some((expected_tag, _)) = exp_tag {
-                                if *expected_tag != tag {
-                                    return Err(deserializer.reject(Some(*expected_tag), SessionRejectReason::RequiredTagMissing));
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                continue;
-                            }
-                        } else {
-                            deserializer.put_tag(tag);
-                            break 'tag_num_loop;
-                        }
+        //let mut first_member = first_member.clone();
+        //first_member.set_required(true);
+        let first_member_tag = first_member.tag_num();
+        let first_member_deserialize_value = first_member.gen_deserialize_value();
+        let first_member_def = first_member.gen_opt_variables();
+        let first_member_struct_entry = first_member
+            .gen_deserialize_struct_entries()
+            .map(|entry| quote! { #entry, });
+
+        let deserialize_loop = if members.is_empty() {
+            // No members - no loop
+            quote! {
+                if let Some(tag) = deserializer.deserialize_tag_num()? {
+                    if tag == #first_member_tag && last_run || tag != #first_member_tag && !last_run {
+                        return Err(deserializer.reject(
+                            Some(num_in_group_tag),
+                            SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup,
+                        ));
                     }
+                    deserializer.put_tag(tag);
+                }
+            }
+        } else {
+            quote! {
+                while let Some(tag) = deserializer.deserialize_tag_num()? {
                     match tag {
                         #(#de_match_entries,)*
                         tag => {
-                            deserializer.put_tag(tag);
-                            break;
+                            if tag == #first_member_tag && last_run || tag != #first_member_tag && !last_run {
+                                return Err(deserializer.reject(
+                                    Some(num_in_group_tag),
+                                    SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup,
+                                ));
+                            } else {
+                                deserializer.put_tag(tag);
+                                break;
+                            }
                         },
                     }
+                    processed_tags.push(tag);
+                    let mut tag_in_order = false;
+                    for expected_tag in iter.by_ref() {
+                        if *expected_tag == tag {
+                            tag_in_order = true;
+                            break;
+                        }
+                    }
+                    if !tag_in_order {
+                        return Err(deserializer.repeating_group_fields_out_of_order(
+                            expected_tags,
+                            &processed_tags,
+                            tag
+                        ));
+                    }
                 }
+            }
+        };
+
+        quote! {
+            pub(crate) fn deserialize(
+                deserializer: &mut Deserializer,
+                num_in_group_tag: u16,
+                expected_tags: &[u16],
+                last_run: bool,
+            ) -> Result<#name, DeserializeError> {
+                // Check if tag of first group member is present
+                #first_member_def
+                #(#variables_definitions)*
+                if let Some(#first_member_tag) = deserializer.deserialize_tag_num()? {
+                    #first_member_deserialize_value
+                } else {
+                    // if not, return error as first group member is always required (even when
+                    // defined as optional)
+                    return Err(deserializer.reject(
+                        Some(#first_member_tag),
+                        SessionRejectReason::RequiredTagMissing)
+                    )
+                };
+
+                let mut processed_tags = Vec::with_capacity(expected_tags.len());
+
+                let mut iter = expected_tags.iter();
+                // Advance iterator, as first expected tag is alrady processed
+                iter.next();
+                processed_tags.push(#first_member_tag);
+
+                #deserialize_loop
+
                 Ok(#name {
+                    #first_member_struct_entry
                     #(#de_struct_entries,)*
                 })
             }
@@ -222,9 +267,7 @@ impl Struct {
             }
         }
 
-        let fn_deserialize = if self.name == "Header" {
-            None
-        } else if self.name == "Trailer" {
+        let fn_deserialize = if self.name == "Header" || self.name == "Trailer" {
             None
         } else if self.is_group() {
             Some(self.generate_de_group())

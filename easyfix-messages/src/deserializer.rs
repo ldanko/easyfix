@@ -274,6 +274,33 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    pub fn repeating_group_fields_out_of_order(
+        &mut self,
+        expected_tags: &[u16],
+        processed_tags: &[u16],
+        current_tag: u16,
+    ) -> DeserializeError {
+        let mut current_tag_found = false;
+        'outer: for processed_tag in processed_tags {
+            for expected_tag in expected_tags {
+                if expected_tag == processed_tag {
+                    if current_tag_found {
+                        return self.reject(
+                            Some(*processed_tag),
+                            SessionRejectReason::RepeatingGroupFieldsOutOfOrder,
+                        );
+                    } else {
+                        continue 'outer;
+                    }
+                } else if *expected_tag == current_tag {
+                    current_tag_found = true;
+                }
+            }
+        }
+        // This should never happen
+        self.reject(None, SessionRejectReason::RepeatingGroupFieldsOutOfOrder)
+    }
+
     pub fn put_tag(&mut self, tag: TagNum) {
         self.tmp_tag = Some(tag);
     }
