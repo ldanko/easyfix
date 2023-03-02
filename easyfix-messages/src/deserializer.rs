@@ -714,12 +714,10 @@ impl<'de> Deserializer<'de> {
     // TODO: [Feature]: Deserialize any ISO/IEC 8859-1 (Latin-1) character except control characters.
     pub fn deserialize_char(&mut self) -> Result<Char, DeserializeError> {
         match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
-            }
+            [] => Err(DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReason::TagSpecifiedWithoutAValue,
@@ -889,12 +887,10 @@ impl<'de> Deserializer<'de> {
     /// countries and their subdivision (2-character code).
     pub fn deserialize_country(&mut self) -> Result<Country, DeserializeError> {
         match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
-            }
+            [] => Err(DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReason::TagSpecifiedWithoutAValue,
@@ -932,12 +928,10 @@ impl<'de> Deserializer<'de> {
     /// and funds (3-character code).
     pub fn deserialize_currency(&mut self) -> Result<Currency, DeserializeError> {
         match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
-            }
+            [] => Err(DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReason::TagSpecifiedWithoutAValue,
@@ -963,12 +957,10 @@ impl<'de> Deserializer<'de> {
     /// (4-character code).
     pub fn deserialize_exchange(&mut self) -> Result<Exchange, DeserializeError> {
         match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
-            }
+            [] => Err(DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReason::TagSpecifiedWithoutAValue,
@@ -1000,12 +992,10 @@ impl<'de> Deserializer<'de> {
     /// - WW = w1, w2, w3, w4, w5
     pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeError> {
         match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
-            }
+            [] => Err(DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReason::TagSpecifiedWithoutAValue,
@@ -1026,12 +1016,10 @@ impl<'de> Deserializer<'de> {
     /// of languages (2-character code).
     pub fn deserialize_language(&mut self) -> Result<Language, DeserializeError> {
         match self.buf {
-            [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )))
-            }
+            [] => Err(DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReason::TagSpecifiedWithoutAValue,
@@ -1314,7 +1302,7 @@ impl<'de> Deserializer<'de> {
     pub fn deserialize_utc_date_only(&mut self) -> Result<UtcDateOnly, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
+                Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
@@ -1411,7 +1399,7 @@ impl<'de> Deserializer<'de> {
     pub fn deserialize_local_mkt_date(&mut self) -> Result<LocalMktDate, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
+                Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
