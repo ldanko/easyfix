@@ -1,6 +1,6 @@
 use convert_case::{Case, Casing};
 use easyfix_dictionary::BasicType;
-use proc_macro2::{Ident, Span, TokenStream, Literal};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
 #[derive(Debug, Clone)]
@@ -94,9 +94,7 @@ impl Type {
             Type::Basic(BasicType::LocalMktDate) => {
                 Some(quote! { serializer.serialize_local_mkt_date })
             }
-            Type::Basic(BasicType::MonthYear) => {
-                Some(quote! { serializer.serialize_month_year })
-            }
+            Type::Basic(BasicType::MonthYear) => Some(quote! { serializer.serialize_month_year }),
             Type::Basic(BasicType::MultipleCharValue) => {
                 Some(quote! { serializer.serialize_multiple_char_value })
             }
@@ -106,9 +104,7 @@ impl Type {
             Type::Basic(BasicType::NumInGroup) => {
                 Some(quote! { serializer.serialize_num_in_group })
             }
-            Type::Basic(BasicType::Percentage) => {
-                Some(quote! { serializer.serialize_percentage })
-            }
+            Type::Basic(BasicType::Percentage) => Some(quote! { serializer.serialize_percentage }),
             Type::Basic(BasicType::Price) => Some(quote! { serializer.serialize_price }),
             Type::Basic(BasicType::PriceOffset) => {
                 Some(quote! { serializer.serialize_price_offset })
@@ -116,9 +112,7 @@ impl Type {
             Type::Basic(BasicType::Qty) => Some(quote! { serializer.serialize_qty }),
             Type::Basic(BasicType::SeqNum) => Some(quote! { serializer.serialize_seq_num }),
             Type::Basic(BasicType::String) => Some(quote! { serializer.serialize_string }),
-            Type::Basic(BasicType::TzTimeOnly) => {
-                Some(quote! { serializer.serialize_tz_timeonly })
-            }
+            Type::Basic(BasicType::TzTimeOnly) => Some(quote! { serializer.serialize_tz_timeonly }),
             Type::Basic(BasicType::TzTimestamp) => {
                 Some(quote! { serializer.serialize_tz_timestamp })
             }
@@ -208,7 +202,7 @@ impl Type {
                 quote! { deserializer.deserialize_xml(len as usize) }
             }
             Type::Group(name) => {
-                quote! { #name::deserialize(deserializer, first_run, expected_tags) }
+                quote! { #name::deserialize(deserializer, num_in_group_tag, expected_tags, last_run) }
             }
             Type::Enum((_, BasicType::Int)) => {
                 quote! { deserializer.deserialize_int_enum() }
@@ -374,54 +368,42 @@ impl SimpleMember {
         }
     }
 
-    fn gen_deserialize_match_entries(&self) -> Option<TokenStream> {
+    fn gen_deserialize_value(&self) -> Option<TokenStream> {
         let name = &self.name;
         let tag = self.tag;
         let deserialize = self.type_.gen_deserialize();
         match (&self.type_, self.tag) {
             // TODO: is it OK?
             (_, 8 | 9 | 10 | 35) => Some(quote! {
-                #tag => {
-                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                }
+                return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
             }),
             // MsgSeqNum
             (_, 34) => Some(quote! {
-                #tag => {
-                    if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                    }
-                    let msg_seq_num_value = #deserialize?;
-                    deserializer.set_seq_num(msg_seq_num_value);
-                    #name = Some(msg_seq_num_value);
+                if #name.is_some() {
+                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                 }
+                let msg_seq_num_value = #deserialize?;
+                deserializer.set_seq_num(msg_seq_num_value);
+                #name = Some(msg_seq_num_value);
             }),
             (Type::Basic(BasicType::Length), _) => Some(quote! {
-                #tag => {
-                    if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                    }
-                    #name = Some(#deserialize?);
+                if #name.is_some() {
+                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                 }
+                #name = Some(#deserialize?);
             }),
             (Type::Basic(BasicType::NumInGroup), _) => Some(quote! {
-                #tag => {
-                    return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
-                }
+                return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
             }),
             (Type::Group(_), _) => None,
             (Type::Basic(BasicType::Data | BasicType::XmlData), _) => Some(quote! {
-                #tag => {
-                    return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
-                }
+                return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
             }),
             _ => Some(quote! {
-                #tag => {
-                    if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                    }
-                    #name = Some(#deserialize?);
+                if #name.is_some() {
+                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                 }
+                #name = Some(#deserialize?);
             }),
         }
     }
@@ -452,7 +434,7 @@ pub struct CustomLengthMember {
 pub struct GroupMember {
     num_in_group: SimpleMember,
     group_body: SimpleMember,
-    expected_tags: Vec<(u16, bool)>,
+    expected_tags: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -478,7 +460,7 @@ impl MemberDesc {
     pub fn group(
         num_in_group: SimpleMember,
         group_body: SimpleMember,
-        expected_tags: Vec<(u16, bool)>,
+        expected_tags: Vec<u16>,
     ) -> MemberDesc {
         MemberDesc::Group(GroupMember {
             num_in_group,
@@ -487,27 +469,11 @@ impl MemberDesc {
         })
     }
 
-    fn _name(&self) -> &Ident {
-        match self {
-            MemberDesc::Simple(member) => &member.name,
-            MemberDesc::CustomLength(member) => &member.len.name,
-            MemberDesc::Group(member) => &member.num_in_group.name,
-        }
-    }
-
     pub fn tag_num(&self) -> u16 {
         match self {
             MemberDesc::Simple(member) => member.tag,
             MemberDesc::CustomLength(member) => member.len.tag,
             MemberDesc::Group(member) => member.num_in_group.tag,
-        }
-    }
-
-    pub fn required(&self) -> bool {
-        match self {
-            MemberDesc::Simple(member) => member.required,
-            MemberDesc::CustomLength(member) => member.len.required,
-            MemberDesc::Group(member) => member.num_in_group.required,
         }
     }
 
@@ -537,7 +503,6 @@ impl MemberDesc {
                         ..
                     },
             }) => {
-
                 let len_tag = Literal::byte_string(format!("{}=", len_tag).as_bytes());
                 let value_tag = Literal::byte_string(format!("{}=", value_tag).as_bytes());
                 let serialize_value = match value_type {
@@ -580,7 +545,8 @@ impl MemberDesc {
                     },
                 ..
             }) => {
-                let num_in_group_tag = Literal::byte_string(format!("{}=", num_in_group_tag).as_bytes());
+                let num_in_group_tag =
+                    Literal::byte_string(format!("{}=", num_in_group_tag).as_bytes());
                 if *required {
                     Some(quote! {
                         serializer.output_mut().extend_from_slice(#num_in_group_tag);
@@ -618,9 +584,9 @@ impl MemberDesc {
         }
     }
 
-    pub fn gen_deserialize_match_entries(&self) -> Option<TokenStream> {
+    pub fn gen_deserialize_value(&self) -> Option<TokenStream> {
         match self {
-            MemberDesc::Simple(member) => member.gen_deserialize_match_entries(),
+            MemberDesc::Simple(member) => member.gen_deserialize_value(),
             MemberDesc::CustomLength(CustomLengthMember {
                 len: SimpleMember {
                     name, tag, type_, ..
@@ -636,27 +602,25 @@ impl MemberDesc {
                 let deserialize = type_.gen_deserialize();
                 let next_member_deserialize = next_member_type.gen_deserialize();
                 Some(quote! {
-                    #tag => {
-                        if #name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                        }
-                        // deserialize_data()/deserialize_xml() expects
-                        // the name of variable below is `len`
-                        let len = #deserialize?;
-                        #name = Some(len);
-                        if deserializer.deserialize_tag_num()?.ok_or_else(|| {
-                            deserializer.reject(Some(#next_member_tag), SessionRejectReason::RequiredTagMissing)
-                        })? != #next_member_tag
-                        {
-                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
-                        }
-                        // This should never happen, as error would be
-                        // returned in #name.is_some() case.
-                        if #next_member_name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                        }
-                        #next_member_name = Some(#next_member_deserialize?);
+                    if #name.is_some() {
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                     }
+                    // deserialize_data()/deserialize_xml() expects
+                    // the name of variable below is `len`
+                    let len = #deserialize?;
+                    #name = Some(len);
+                    if deserializer.deserialize_tag_num()?.ok_or_else(|| {
+                        deserializer.reject(Some(#next_member_tag), SessionRejectReason::RequiredTagMissing)
+                    })? != #next_member_tag
+                    {
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
+                    }
+                    // This should never happen, as error would be
+                    // returned in #name.is_some() case.
+                    if #next_member_name.is_some() {
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                    }
+                    #next_member_name = Some(#next_member_deserialize?);
                 })
             }
             MemberDesc::Group(GroupMember {
@@ -676,33 +640,43 @@ impl MemberDesc {
                 let group_deserialize = group_type.gen_deserialize();
                 let group_name_local =
                     Ident::new(&format!("{}_local", group_name), Span::call_site());
-                let expected_tags: Vec<_> = expected_tags
-                    .iter()
-                    .map(|(expected_tag, required)| quote! { Some((#expected_tag, #required)) })
-                    .collect();
                 Some(quote! {
-                    #tag => {
-                        if #name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                        }
-                        let len = #deserialize?;
-                        #name = Some(len);
-                        if #group_name.is_some() {
-                            return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
-                        }
-                        let expected_tags = &mut [#(#expected_tags),*];
-                        let mut #group_name_local = Vec::with_capacity(len as usize);
-                        let first_run = true;
-                        #group_name_local.push(#group_deserialize?);
-                        let first_run = false;
-                        for _ in 1..len {
-                            #group_name_local.push(#group_deserialize?);
-                        }
-                        #group_name = Some(#group_name_local);
+                    if #name.is_some() {
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
                     }
+                    let len = #deserialize?;
+                    #name = Some(len);
+                    if #group_name.is_some() {
+                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                    }
+                    let num_in_group_tag = #tag;
+                    let expected_tags = &[#(#expected_tags),*];
+                    let mut #group_name_local = Vec::with_capacity(len as usize);
+                    let last_run = false;
+                    for _ in 0..len - 1 {
+                        #group_name_local.push(#group_deserialize?);
+                    }
+                    let last_run = true;
+                    #group_name_local.push(#group_deserialize?);
+                    #group_name = Some(#group_name_local);
                 })
             }
         }
+    }
+
+    pub fn gen_deserialize_match_entries(&self) -> Option<TokenStream> {
+        let tag = match self {
+            MemberDesc::Simple(member) => member.tag,
+            MemberDesc::CustomLength(CustomLengthMember { len, .. }) => len.tag,
+            MemberDesc::Group(GroupMember { num_in_group, .. }) => num_in_group.tag,
+        };
+        self.gen_deserialize_value().map(|deserialize_value| {
+            quote! {
+                #tag => {
+                    #deserialize_value
+                }
+            }
+        })
     }
 
     /// Generate code used to initialize structure.
