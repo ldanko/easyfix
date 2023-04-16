@@ -3,11 +3,8 @@ use std::{collections::BTreeMap, convert::Infallible, ops::RangeInclusive};
 use easyfix_messages::fields::SeqNum;
 
 pub trait MessagesStorage {
-    type Error: std::error::Error;
-
-    fn fetch(&mut self, seq_num: SeqNum) -> Result<Vec<u8>, Self::Error>;
-    fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> Result<Vec<Vec<u8>>, Self::Error>;
-    fn store(&mut self, seq_num: SeqNum, data: &[u8]) -> Result<(), Self::Error>;
+    fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>>;
+    fn store(&mut self, seq_num: SeqNum, data: &[u8]);
 
     //bool set( int s, const std::string& m ) EXCEPT ( IOException )
     //{ Locker l( m_mutex ); return m_pStore->set( s, m ); }
@@ -28,7 +25,7 @@ pub trait MessagesStorage {
     //UtcTimeStamp getCreationTime() const EXCEPT ( IOException )
     //{ Locker l( m_mutex ); return m_pStore->getCreationTime(); }
 
-    fn reset(&mut self) -> Result<(), Self::Error>;
+    fn reset(&mut self);
 }
 
 pub struct NullStorage {
@@ -46,19 +43,12 @@ impl NullStorage {
 }
 
 impl MessagesStorage for NullStorage {
-    type Error = Infallible;
-
-    fn fetch(&mut self, _seq_num: SeqNum) -> Result<Vec<u8>, Self::Error> {
-        Ok(Vec::new())
+    // TODO: Iterator or Stream! Returned Vec can be extremly big (and slow to create)
+    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>> {
+        Vec::new()
     }
 
-    // TODO: Stream!
-    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> Result<Vec<Vec<u8>>, Self::Error> {
-        Ok(Vec::new())
-    }
-
-    fn store(&mut self, _seq_num: SeqNum, _data: &[u8]) -> Result<(), Self::Error> {
-        Ok(())
+    fn store(&mut self, _seq_num: SeqNum, _data: &[u8]) {
     }
 
     fn next_sender_msg_seq_num(&self) -> SeqNum {
@@ -85,10 +75,9 @@ impl MessagesStorage for NullStorage {
         self.next_target_msg_seq_num += 1;
     }
 
-    fn reset(&mut self) -> Result<(), Self::Error> {
+    fn reset(&mut self) {
         self.next_sender_msg_seq_num = 1;
         self.next_target_msg_seq_num = 1;
-        Ok(())
     }
 }
 
@@ -109,20 +98,13 @@ impl InMemoryStorage {
 }
 
 impl MessagesStorage for InMemoryStorage {
-    type Error = Infallible;
-
-    fn fetch(&mut self, seq_num: SeqNum) -> Result<Vec<u8>, Self::Error> {
-        Ok(self.mem[&seq_num].clone())
-    }
-
     // TODO: Stream!
-    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> Result<Vec<Vec<u8>>, Self::Error> {
-        Ok(Vec::new())
+    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>> {
+        Vec::new()
     }
 
-    fn store(&mut self, seq_num: SeqNum, data: &[u8]) -> Result<(), Self::Error> {
+    fn store(&mut self, seq_num: SeqNum, data: &[u8]) {
         self.mem.insert(seq_num, data.to_vec());
-        Ok(())
     }
 
     fn next_sender_msg_seq_num(&self) -> SeqNum {
@@ -149,10 +131,9 @@ impl MessagesStorage for InMemoryStorage {
         self.next_target_msg_seq_num += 1;
     }
 
-    fn reset(&mut self) -> Result<(), Self::Error> {
+    fn reset(&mut self) {
         self.next_sender_msg_seq_num = 1;
         self.next_target_msg_seq_num = 1;
         self.mem.clear();
-        Ok(())
     }
 }

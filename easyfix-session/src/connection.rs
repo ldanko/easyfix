@@ -22,7 +22,8 @@ use crate::{
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
-    settings::Settings,
+    session_state::State,
+    settings::{SessionSettings, Settings},
     Error, Sender, SessionError, NO_INBOUND_TIMEOUT_PADDING,
 };
 
@@ -67,7 +68,6 @@ pub async fn send(msg: Box<FixtMessage>) {
     sender(&SessionId::from_input_msg(&msg))
         .unwrap()
         .send(msg)
-        .await;
 }
 
 async fn first_msg(
@@ -86,7 +86,7 @@ pub(crate) struct Connection<S> {
     session: Rc<Session<S>>,
 }
 
-pub(crate) async fn new_connection<S>(
+pub(crate) async fn acceptor_connection<S>(
     tcp_stream: TcpStream,
     settings: Settings,
     sessions: Rc<RefCell<SessionsMap<S>>>,
@@ -104,7 +104,7 @@ where
     let session_id = SessionId::from_input_msg(&msg);
     debug!("first_msg: {msg:?}");
 
-    let (sender, receiver) = mpsc::channel(10);
+    let (sender, receiver) = mpsc::unbounded_channel();
     let sender = Sender::new(sender);
 
     let (session_settings, session_state) = sessions
@@ -146,11 +146,85 @@ where
     let input_stream = stream
         .timeout(session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING)
         .map(|res| res.unwrap_or(InputEvent::Timeout));
-
     pin_mut!(input_stream);
 
     let output_stream = output_stream(session.clone(), session.heartbeat_interval(), receiver);
     pin_mut!(output_stream);
+
+    let connection = Connection::new(session);
+
+    let ret = tokio::try_join!(
+        connection
+            .input_loop(input_stream)
+            .instrument(input_loop_span),
+        connection
+            .output_loop(sink, output_stream)
+            .instrument(output_loop_span),
+    );
+    info!("connection closed");
+    // TODO: error here?
+    connection.session.on_disconnect().await;
+    unregister_sender(&session_id);
+    active_sessions.borrow_mut().remove(&session_id);
+    ret.map(|_| ())
+}
+
+pub(crate) async fn initiator_connection<S>(
+    tcp_stream: TcpStream,
+    settings: Settings,
+    session_settings: SessionSettings,
+    state: Rc<RefCell<State<S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
+    emitter: Emitter,
+) -> Result<(), Error>
+where
+    S: MessagesStorage,
+{
+    let (source, sink) = tcp_stream.into_split();
+    let session_id = session_settings.session_id.clone();
+
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let sender = Sender::new(sender);
+
+    register_sender(session_id.clone(), sender.clone());
+    let session = Rc::new(Session::new(
+        settings,
+        session_settings,
+        state,
+        sender,
+        emitter.clone(),
+    ));
+    active_sessions
+        .borrow_mut()
+        .insert(session_id.clone(), session.clone());
+
+    let session_span = info_span!(
+        "session",
+        // begin_string = %msg.header.begin_string,
+        // sender_comp_id = %msg.header.target_comp_id,
+        // target_comp_id = %msg.header.sender_comp_id,
+        id = %session_id
+    );
+
+    let input_loop_span = info_span!(parent: &session_span, "in");
+    let output_loop_span = info_span!(parent: &session_span, "out");
+
+    // TODO: Not here!, send this event when SessionState is created!
+    emitter
+        .send(FixEventInternal::Created(session_id.clone()))
+        .await;
+
+    let input_stream = input_stream(source)
+        .timeout(session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING)
+        .map(|res| res.unwrap_or(InputEvent::Timeout));
+    pin_mut!(input_stream);
+
+    let output_stream = output_stream(session.clone(), session.heartbeat_interval(), receiver);
+    pin_mut!(output_stream);
+
+    // TODO: It's not so simple, add check if session time is within range,
+    //       if not schedule timer to send logon at proper time
+    session.send_logon_request().await;
 
     let connection = Connection::new(session);
 

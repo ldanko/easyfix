@@ -72,6 +72,11 @@ impl SessionId {
         )
     }
 
+    pub fn reverse_route(mut self) -> SessionId {
+        std::mem::swap(&mut self.sender_comp_id, &mut self.target_comp_id);
+        self
+    }
+
     pub fn begin_string(&self) -> &FixStr {
         &self.begin_string
     }

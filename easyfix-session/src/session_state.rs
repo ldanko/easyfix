@@ -297,14 +297,12 @@ impl<S: MessagesStorage> State<S> {
         self.queue.clear();
     }
 
-    // TODO: change API to retrieve message data as output parameter, to save
-    //       on Vec allocations
-    pub fn fetch(&mut self, seq_num: SeqNum) -> Result<Vec<u8>, S::Error> {
-        self.messages_storage.fetch(seq_num)
+    pub fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>> {
+        self.messages_storage.fetch_range(range)
     }
 
-    pub fn store(&mut self, seq_num: SeqNum, data: &[u8]) -> Result<(), S::Error> {
-        self.messages_storage.store(seq_num, data)
+    pub fn store(&mut self, seq_num: SeqNum, data: &[u8]) {
+        self.messages_storage.store(seq_num, data);
     }
 
     pub fn next_sender_msg_seq_num(&self) -> SeqNum {

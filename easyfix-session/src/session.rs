@@ -671,7 +671,7 @@ impl<S: MessagesStorage> Session<S> {
         */
     }
 
-    async fn send_logon_request(&self) {
+    pub(crate) async fn send_logon_request(&self) {
         let mut state = self.state().borrow_mut();
 
         if self.session_settings.refresh_on_logon {
@@ -710,7 +710,7 @@ impl<S: MessagesStorage> Session<S> {
         });
 
         drop(state);
-        self.send(logon_request).await;
+        self.send(logon_request);
     }
 
     async fn send_logon_response(&self, expected_target_num: SeqNum) {
@@ -759,7 +759,7 @@ impl<S: MessagesStorage> Session<S> {
 
         drop(state);
 
-        self.send(logon_response).await;
+        self.send(logon_response);
     }
 
     pub(crate) async fn send_logout(&self, text: Option<FixString>) {
@@ -773,7 +773,7 @@ impl<S: MessagesStorage> Session<S> {
             }),
             trailer: self.new_trailer(),
         });
-        self.send(logout_response).await;
+        self.send(logout_response);
         self.state.borrow_mut().set_logout_sent(true);
     }
 
@@ -813,8 +813,7 @@ impl<S: MessagesStorage> Session<S> {
                 encoded_text: None,
             }),
             trailer: self.new_trailer(),
-        }))
-        .await;
+        }));
     }
 
     async fn send_sequence_reset(&self, begin_seq_num: SeqNum, end_seq_num: SeqNum) {
@@ -831,9 +830,9 @@ impl<S: MessagesStorage> Session<S> {
         sequence_reset.header.poss_dup_flag = Some(true);
         // TODO: Make sure in GipFill mode OrigSendingTime is same as SendingTime
         sequence_reset.header.orig_sending_time = Some(sequence_reset.header.sending_time);
-        self.send(sequence_reset).await;
+        self.send(sequence_reset);
 
-        info!("Sent SequenceReset TO: {end_seq_num}");
+        info!("Send SequenceReset TO: {end_seq_num}");
     }
 
     async fn send_resend_request(&self, msg_seq_num: SeqNum) {
@@ -851,7 +850,7 @@ impl<S: MessagesStorage> Session<S> {
         });
 
         // TODO: send_raw!
-        self.send(resend_request).await;
+        self.send(resend_request);
         // sendRaw(resendRequest);
 
         self.state
@@ -1050,8 +1049,8 @@ impl<S: MessagesStorage> Session<S> {
         true
     }
 
-    async fn send(&self, msg: Box<FixtMessage>) {
-        self.sender.send(msg).await;
+    fn send(&self, msg: Box<FixtMessage>) {
+        self.sender.send(msg);
     }
 
     pub(crate) async fn disconnect(&self) {
@@ -1080,13 +1079,16 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         state.set_resend_range(None);
-        self.sender.disconnect().await;
+        self.sender.disconnect();
     }
 
+    #[instrument(level = "trace", skip(self))]
     async fn resend_range(&self, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
+        info!("resend range: ({begin_seq_num}, {end_seq_num})");
         let next_sender_msg_seq_num = self.state.borrow().next_sender_msg_seq_num();
         if end_seq_num == 0 || end_seq_num >= next_sender_msg_seq_num {
             end_seq_num = next_sender_msg_seq_num - 1;
+            info!("adjust end_seq_num to {end_seq_num}");
         }
 
         // Just do a gap fill when messages aren't persisted
@@ -1096,29 +1098,44 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         let mut gap_fill_range = None;
-        // for msg in messages {
-        for msg_seq_num in begin_seq_num..=end_seq_num {
-            // TODO: GapFill in case of error
-            let mut msg = {
-                let msg = self.state.borrow_mut().fetch(msg_seq_num).unwrap();
-                FixtMessage::from_bytes(&msg).unwrap()
-            };
-            assert_eq!(msg_seq_num, msg.header.msg_seq_num);
+        let messages = self
+            .state
+            .borrow_mut()
+            .fetch_range(begin_seq_num..=end_seq_num);
+        info!(
+            "fetch messages range from {begin_seq_num} to {end_seq_num}, found {} messages",
+            messages.len()
+        );
+        for msg_str in messages {
+            // TODO: log error! and resend as gap fill instead of unwrap
+            let mut msg = FixtMessage::from_bytes(&msg_str).unwrap();
             if msg.resend_as_gap_fill() {
-                info!("Resending message {msg_seq_num} as gap fill");
-                gap_fill_range.get_or_insert((msg_seq_num, msg_seq_num)).1 += 1;
+                info!(
+                    "Message {:?}/{} changed to gap fill",
+                    msg.msg_type(),
+                    msg.header.msg_seq_num
+                );
+                gap_fill_range
+                    .get_or_insert((msg.header.msg_seq_num, msg.header.msg_seq_num))
+                    .1 += 1;
             } else {
                 if let Some((begin_seq_no, end_seq_no)) = gap_fill_range.take() {
+                    info!("Resending messages from {begin_seq_no} to {end_seq_no} as gap fill",);
                     self.send_sequence_reset(begin_seq_num, end_seq_num).await;
                 }
-                info!("Resending message {msg_seq_num}");
+                info!(
+                    "Resending message {:?}/{}",
+                    msg.msg_type(),
+                    msg.header.msg_seq_num
+                );
                 msg.header.orig_sending_time = Some(msg.header.sending_time);
                 msg.header.poss_dup_flag = Some(true);
                 // TODO: emit event!
-                self.send(msg).await;
+                self.send(msg);
             }
         }
         if let Some((begin_seq_no, end_seq_no)) = gap_fill_range {
+            info!("Resending messages from {begin_seq_no} to {end_seq_no} as gap fill",);
             self.send_sequence_reset(begin_seq_num, end_seq_num).await;
         }
     }
@@ -1154,7 +1171,7 @@ impl<S: MessagesStorage> Session<S> {
             trailer: self.new_trailer(),
         });
         trace!("Send Heartbeat");
-        self.send(heartbeat).await;
+        self.send(heartbeat);
 
         self.state.borrow_mut().incr_next_target_msg_seq_num();
 
@@ -1420,7 +1437,10 @@ impl<S: MessagesStorage> Session<S> {
             Message::Reject(reject) => self.on_reject(msg).await,
             Message::SequenceReset(sequence_reset) => self.on_sequence_reset(msg).await,
             Message::Logout(logout) => {
-                self.on_logout(msg).await;
+                if let Err(e) = self.on_logout(msg).await {
+                    // Nothing more we can do as client is disconnecting anyway
+                    error!("logout failed: {}", e);
+                }
                 return Some(Disconnect);
             }
             Message::Logon(logon) => match self.on_logon(msg).await {
@@ -1622,7 +1642,7 @@ impl<S: MessagesStorage> Session<S> {
             trailer: self.new_trailer(),
         });
 
-        self.send(test_request).await;
+        self.send(test_request);
     }
 
     pub async fn on_out_timeout(self: &Rc<Self>) {
@@ -1632,7 +1652,7 @@ impl<S: MessagesStorage> Session<S> {
             body: Message::Heartbeat(Heartbeat { test_req_id: None }),
             trailer: self.new_trailer(),
         });
-        self.send(heartbeat).await;
+        self.send(heartbeat);
     }
 
     pub fn heartbeat_interval(&self) -> Duration {

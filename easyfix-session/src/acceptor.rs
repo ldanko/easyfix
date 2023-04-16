@@ -16,7 +16,7 @@ use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
-    connection::new_connection,
+    connection::acceptor_connection,
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
@@ -27,25 +27,26 @@ use crate::{
 
 pub struct SessionsMap<S: MessagesStorage> {
     map: HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<S>>>)>,
-    message_storage_builder: Box<dyn Fn() -> S>,
+    message_storage_builder: Box<dyn Fn(&SessionId) -> S>,
 }
 
 impl<S: MessagesStorage> SessionsMap<S> {
-    fn new(message_storage_builder: Box<dyn Fn() -> S>) -> SessionsMap<S> {
+    fn new(message_storage_builder: Box<dyn Fn(&SessionId) -> S>) -> SessionsMap<S> {
         SessionsMap {
             map: HashMap::new(),
             message_storage_builder,
         }
     }
 
+    #[rustfmt::skip]
     pub fn register_session(&mut self, session_id: SessionId, session_settings: SessionSettings) {
         self.map.insert(
             session_id.clone(),
             (
                 session_settings,
-                Rc::new(RefCell::new(SessionState::new((self
-                    .message_storage_builder)(
-                )))),
+                Rc::new(RefCell::new(SessionState::new(
+                    (self.message_storage_builder)(&session_id),
+                ))),
             ),
         );
     }
@@ -71,7 +72,7 @@ pub struct Acceptor<S: MessagesStorage> {
 }
 
 impl<S: MessagesStorage + 'static> Acceptor<S> {
-    pub fn new(settings: Settings, message_storage_builder: Box<dyn Fn() -> S>) -> Acceptor<S> {
+    pub fn new(settings: Settings, message_storage_builder: Box<dyn Fn(&SessionId) -> S>) -> Acceptor<S> {
         let (emitter, event_stream) = events_channel();
         Acceptor {
             settings,
@@ -161,7 +162,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             let settings = settings.clone();
             let emitter = emitter.clone();
             tokio::task::spawn_local(async move {
-                match new_connection(tcp_stream, settings, sessions, active_sessions, emitter)
+                match acceptor_connection(tcp_stream, settings, sessions, active_sessions, emitter)
                     .instrument(info_span!("connection", %peer_addr))
                     .await
                 {

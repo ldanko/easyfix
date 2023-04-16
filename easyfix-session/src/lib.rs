@@ -4,6 +4,7 @@ pub mod acceptor;
 pub mod application;
 pub mod async_cell;
 mod connection;
+pub mod initiator;
 pub mod messages_storage;
 mod session;
 pub mod session_id;
@@ -45,16 +46,16 @@ pub(crate) enum SenderMsg {
 
 #[derive(Clone, Debug)]
 pub struct Sender {
-    inner: mpsc::Sender<SenderMsg>,
+    inner: mpsc::UnboundedSender<SenderMsg>,
 }
 
 impl Sender {
-    pub(crate) fn new(writer: mpsc::Sender<SenderMsg>) -> Sender {
+    pub(crate) fn new(writer: mpsc::UnboundedSender<SenderMsg>) -> Sender {
         Sender { inner: writer }
     }
 
-    pub async fn send(&self, msg: Box<FixtMessage>) {
-        if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)).await {
+    pub fn send(&self, msg: Box<FixtMessage>) {
+        if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)) {
             match msg.0 {
                 SenderMsg::Msg(msg) => error!(
                     "failed to send {:?}<{}> message, receiver closed or dropped",
@@ -66,15 +67,9 @@ impl Sender {
         }
     }
 
-    pub(crate) async fn disconnect(&self) {
-        if let Err(_) = self.inner.send(SenderMsg::Disconnect).await {
+    pub(crate) fn disconnect(&self) {
+        if let Err(_) = self.inner.send(SenderMsg::Disconnect) {
             error!("failed to disconnect, receiver closed or dropped");
         }
     }
-}
-
-pub struct Initiator {}
-
-impl Initiator {
-    fn _register_session() {}
 }

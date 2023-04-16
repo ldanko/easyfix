@@ -6,7 +6,7 @@ use easyfix_messages::{
     messages::FixtMessage,
 };
 use futures_util::Stream;
-use tokio::{sync::mpsc::Receiver, time::Duration};
+use tokio::{sync::mpsc::UnboundedReceiver, time::Duration};
 use tokio_stream::{Elapsed, StreamExt};
 use tracing::debug;
 
@@ -66,7 +66,9 @@ fn output_handler<S: MessagesStorage>(
         }
     }
     let buffer = message.serialize();
-    state.store(message.header.msg_seq_num, &buffer).unwrap();
+    if !message.header.poss_dup_flag.unwrap_or(false) {
+        state.store(message.header.msg_seq_num, &buffer);
+    }
 
     debug!(
         "Encoded raw data: {}",
@@ -78,7 +80,7 @@ fn output_handler<S: MessagesStorage>(
 pub(crate) fn output_stream<S: MessagesStorage>(
     session: Rc<Session<S>>,
     timeout_duration: Duration,
-    mut receiver: Receiver<SenderMsg>,
+    mut receiver: UnboundedReceiver<SenderMsg>,
 ) -> impl Stream<Item = OutputEvent> {
     // let stream = ReceiverStream::new(receiver).timeout(timeout_duration);
     let stream = stream! {
