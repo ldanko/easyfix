@@ -1,4 +1,4 @@
-use std::{net::Ipv4Addr, ops::RangeInclusive};
+use std::{net::IpAddr, ops::RangeInclusive};
 
 use chrono::NaiveTime;
 use easyfix_messages::fields::FixString;
@@ -18,7 +18,7 @@ where
 #[derive(Clone, Debug, Deserialize)]
 pub struct Settings {
     /// IP address
-    pub host: Ipv4Addr,
+    pub host: IpAddr,
     /// Port number
     pub port: u16,
     /// FIX SenderCompID<49> field value for outgoing messages.
