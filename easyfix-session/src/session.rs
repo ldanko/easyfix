@@ -884,7 +884,7 @@ impl<S: MessagesStorage> Session<S> {
             deliver_to_location_id: None,
             poss_dup_flag: None,
             poss_resend: None,
-            sending_time: UtcTimestamp::now_with_secs(),
+            sending_time: UtcTimestamp::now(),
             orig_sending_time: None,
             xml_data: None,
             message_encoding: None,
@@ -928,7 +928,7 @@ impl<S: MessagesStorage> Session<S> {
             deliver_to_location_id: None,
             poss_dup_flag: None,
             poss_resend: None,
-            sending_time: UtcTimestamp::now_with_secs(),
+            sending_time: UtcTimestamp::now(),
             orig_sending_time: None,
             xml_data: None,
             message_encoding: None,
@@ -956,7 +956,7 @@ impl<S: MessagesStorage> Session<S> {
         header.sender_comp_id = self.session_settings.session_id.sender_comp_id().to_owned();
         header.target_comp_id = self.session_settings.session_id.target_comp_id().to_owned();
         // header.msg_seq_num = ...
-        header.sending_time = UtcTimestamp::now_with_secs();
+        header.sending_time = UtcTimestamp::now();
         // TODO: decide when sending time should be updaated (last_sent_time)
     }
 
