@@ -54,7 +54,7 @@ fn output_handler<S: MessagesStorage>(
         header.msg_type = message.body.msg_type();
         header.sender_comp_id = session.session_id().sender_comp_id().to_owned();
         header.target_comp_id = session.session_id().target_comp_id().to_owned();
-        header.sending_time = UtcTimestamp::now_with_secs();
+        header.sending_time = UtcTimestamp::now();
 
         // TODO: fn serialize_to(&mut buf) / fn serialize_to_buf(&mut buf)
 
