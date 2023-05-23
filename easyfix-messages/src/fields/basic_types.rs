@@ -43,7 +43,7 @@ pub type Exchange = [u8; 4];
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TimePrecision {
     Secs = 0,
     Millis = 3,
@@ -768,7 +768,36 @@ impl Serialize for UtcTimestamp {
     }
 }
 
+impl PartialEq for UtcTimestamp {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamp == other.timestamp
+    }
+}
+
+impl Eq for UtcTimestamp {}
+
+impl PartialOrd for UtcTimestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.timestamp.partial_cmp(&other.timestamp)
+    }
+}
+
+impl Ord for UtcTimestamp {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp().cmp(&other.timestamp())
+    }
+}
+
 impl UtcTimestamp {
+    pub const MAX_UTC: UtcTimestamp = UtcTimestamp {
+        timestamp: DateTime::<Utc>::MAX_UTC,
+        precision: TimePrecision::Nanos,
+    };
+    pub const MIN_UTC: UtcTimestamp = UtcTimestamp {
+        timestamp: DateTime::<Utc>::MIN_UTC,
+        precision: TimePrecision::Nanos,
+    };
+
     /// Creates UtcTimestamp that represents current date and time with default precision
     pub fn now() -> UtcTimestamp {
         UtcTimestamp::with_precision(Utc::now(), TimePrecision::default())
@@ -930,5 +959,11 @@ mod tests {
     fn fix_string_replacemen_character_on_out_of_range() {
         let buf = b"Hello\x85world!".to_vec();
         assert_eq!(FixString::from_ascii_lossy(buf), "Hello?world!");
+    }
+
+    #[test]
+    fn utc_timestamp_default_precision_nanos() {
+        let now = UtcTimestamp::now();
+        assert_eq!(now.precision(), TimePrecision::Nanos);
     }
 }
