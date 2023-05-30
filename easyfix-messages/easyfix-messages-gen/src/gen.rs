@@ -442,9 +442,9 @@ impl Generator {
 
             #[derive(Clone, Debug)]
             pub struct FixtMessage {
-                pub header: Header,
-                pub body: Message,
-                pub trailer: Trailer,
+                pub header: Box<Header>,
+                pub body: Box<Message>,
+                pub trailer: Box<Trailer>,
             }
 
             impl FixtMessage {

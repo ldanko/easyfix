@@ -243,15 +243,15 @@ impl Struct {
                     }
                 }
                 Ok(Box::new(FixtMessage {
-                    header: Header {
+                    header: Box::new(Header {
                         #(#de_header_entries,)*
-                    },
-                    body: Message::#name(#name {
-                        #(#de_struct_entries,)*
                     }),
-                    trailer: Trailer {
+                    body: Box::new(Message::#name(#name {
+                        #(#de_struct_entries,)*
+                    })),
+                    trailer: Box::new(Trailer {
                         #(#de_trailer_entries,)*
-                    }
+                    })
                 }))
             }
         }
