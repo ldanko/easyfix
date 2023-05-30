@@ -1357,9 +1357,8 @@ impl<'de> Deserializer<'de> {
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
                 self.buf = &self.buf[9..];
-                let naive_date = NaiveDate::from_ymd_opt(year.into(), month.into(), day.into())
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))?;
-                Ok(UtcDateOnly::from_utc(naive_date, Utc))
+                UtcDateOnly::from_ymd_opt(year.into(), month.into(), day.into())
+                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
             },
             _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
         }
@@ -1908,8 +1907,13 @@ mod tests {
         let utc_timestamp = deserializer
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
-        let date_time: DateTime<Utc> =
-            DateTime::from_utc(NaiveDate::from_ymd(2019, 06, 05).and_hms(11, 51, 27), Utc);
+        let date_time: DateTime<Utc> = DateTime::from_utc(
+            NaiveDate::from_ymd_opt(2019, 06, 05)
+                .unwrap()
+                .and_hms_opt(11, 51, 27)
+                .unwrap(),
+            Utc,
+        );
         assert_eq!(utc_timestamp.timestamp(), date_time);
         assert_eq!(utc_timestamp.precision(), TimePrecision::Secs);
         assert_eq!(deserializer.buf, &[b'\x00']);
@@ -1923,7 +1927,10 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time: DateTime<Utc> = DateTime::from_utc(
-            NaiveDate::from_ymd(2019, 06, 05).and_hms_milli(11, 51, 27, 848),
+            NaiveDate::from_ymd_opt(2019, 06, 05)
+                .unwrap()
+                .and_hms_milli_opt(11, 51, 27, 848)
+                .unwrap(),
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
@@ -1939,7 +1946,10 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time: DateTime<Utc> = DateTime::from_utc(
-            NaiveDate::from_ymd(2019, 06, 05).and_hms_micro(11, 51, 27, 848757),
+            NaiveDate::from_ymd_opt(2019, 06, 05)
+                .unwrap()
+                .and_hms_micro_opt(11, 51, 27, 848757)
+                .unwrap(),
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
@@ -1955,7 +1965,10 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time: DateTime<Utc> = DateTime::from_utc(
-            NaiveDate::from_ymd(2019, 06, 05).and_hms_nano(11, 51, 27, 848757123),
+            NaiveDate::from_ymd_opt(2019, 06, 05)
+                .unwrap()
+                .and_hms_nano_opt(11, 51, 27, 848757123)
+                .unwrap(),
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
@@ -1971,7 +1984,10 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time: DateTime<Utc> = DateTime::from_utc(
-            NaiveDate::from_ymd(2019, 06, 05).and_hms_nano(11, 51, 27, 848757123),
+            NaiveDate::from_ymd_opt(2019, 06, 05)
+                .unwrap()
+                .and_hms_nano_opt(11, 51, 27, 848757123)
+                .unwrap(),
             Utc,
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
@@ -2001,7 +2017,10 @@ mod tests {
         let local_mkt_date = deserializer
             .deserialize_local_mkt_date()
             .expect("failed to deserialize utc timestamp");
-        assert_eq!(local_mkt_date, LocalMktDate::from_ymd(2022, 5, 30));
+        assert_eq!(
+            local_mkt_date,
+            LocalMktDate::from_ymd_opt(2022, 5, 30).unwrap()
+        );
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
 
