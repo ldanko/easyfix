@@ -628,7 +628,7 @@ impl Dictionary {
         );
 
         // XXX: Drop MsgType values which does not match Messages list
-        let mut msg_type_field = self.fields.get_mut(&35).expect("MsgType field not defined");
+        let msg_type_field = self.fields.get_mut(&35).expect("MsgType field not defined");
         msg_type_field.values = Some(
             msg_type_field
                 .values
