@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-messages"
-version = "0.2.3"
+version = "0.3.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - messages."
@@ -9,17 +9,15 @@ readme = "README.md"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0"
+anyhow = { workspace = true }
 chrono = { workspace = true }
-convert_case = "0.5"
 itoa = "1.0"
 rust_decimal = "1.22"
-ryu = "1.0"
 serde = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
-easyfix-messages-gen = { version = "0.2.0", path = "easyfix-messages-gen" }
+easyfix-messages-gen = { version = "0.3.0", path = "easyfix-messages-gen" }
 
 [dev-dependencies]
 assert_matches = { workspace = true }

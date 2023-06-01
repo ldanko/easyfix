@@ -1,6 +1,6 @@
 [package]
 name = "easyfix"
-version = "0.2.3"
+version = "0.3.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) engine."
@@ -9,7 +9,6 @@ readme = "README.md"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0"
-easyfix-dictionary = { version = "0.2.0", path = "../easyfix-dictionary" }
-easyfix-messages = { version = "0.2.3", path = "../easyfix-messages" }
+easyfix-dictionary = { version = "0.3.0", path = "../easyfix-dictionary" }
+easyfix-messages = { version = "0.3.0", path = "../easyfix-messages" }
 easyfix-session = { version = "0.1.0", path = "../easyfix-session" }
