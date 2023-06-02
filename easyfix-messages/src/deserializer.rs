@@ -21,7 +21,7 @@ impl fmt::Display for DeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DeserializeError::GarbledMessage(reason) => write!(f, "garbled message: {}", reason),
-            DeserializeError::Logout => write!(f, "MsgSeqNum missing, force logout"),
+            DeserializeError::Logout => write!(f, "MsgSeqNum missing"),
             DeserializeError::Reject {
                 tag: Some(tag),
                 reason,

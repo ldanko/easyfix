@@ -14,7 +14,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 use tokio_stream::StreamExt;
-use tracing::{debug, info, info_span, Instrument};
+use tracing::{debug, error, info, info_span, Instrument};
 
 use crate::{
     acceptor::{ActiveSessionsMap, SessionsMap},
@@ -88,6 +88,10 @@ async fn first_msg(
     match timeout(logon_timeout, stream.next()).await {
         Ok(Some(InputEvent::Message(msg))) => Ok(msg),
         Ok(Some(InputEvent::IoError(error))) => Err(error.into()),
+        Ok(Some(InputEvent::DeserializeError(error))) => {
+            error!("failed to deserialize first message: {error}");
+            Err(Error::SessionError(SessionError::LogonNeverReceived))
+        }
         _ => Err(Error::SessionError(SessionError::LogonNeverReceived)),
     }
 }
