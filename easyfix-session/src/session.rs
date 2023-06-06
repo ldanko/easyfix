@@ -1049,12 +1049,15 @@ impl<S: MessagesStorage> Session<S> {
 
         match &error {
             DeserializeError::GarbledMessage(reason) => error!("Garbled message: {reason}"),
-            DeserializeError::Logout => self.send_logout(
-                &mut self.state.borrow_mut(),
-                Some(FixString::from_ascii_lossy(
-                    b"MsgSeqNum(34) not found".to_vec(),
-                )),
-            ),
+            DeserializeError::Logout => {
+                self.send_logout(
+                    &mut self.state.borrow_mut(),
+                    Some(FixString::from_ascii_lossy(
+                        b"MsgSeqNum(34) not found".to_vec(),
+                    )),
+                );
+                self.disconnect().await;
+            }
             DeserializeError::Reject {
                 msg_type,
                 seq_num,
