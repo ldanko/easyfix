@@ -523,10 +523,10 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.disconnect();
     }
 
-    #[instrument(level = "trace", skip(self))]
-    async fn resend_range(&self, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
+    #[instrument(level = "trace", skip(self, state))]
+    fn resend_range(&self, state: &mut State<S>, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
         info!("resend range: ({begin_seq_num}, {end_seq_num})");
-        let next_sender_msg_seq_num = self.state.borrow().next_sender_msg_seq_num();
+        let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
         if end_seq_num == 0 || end_seq_num >= next_sender_msg_seq_num {
             end_seq_num = next_sender_msg_seq_num - 1;
             info!("adjust end_seq_num to {end_seq_num}");
@@ -534,7 +534,7 @@ impl<S: MessagesStorage> Session<S> {
 
         // Just do a gap fill when messages aren't persisted
         if !self.session_settings.persist {
-            let next_sender_msg_seq_num = self.state().borrow().next_sender_msg_seq_num();
+            let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
             end_seq_num += 1;
             if end_seq_num > next_sender_msg_seq_num {
                 end_seq_num = next_sender_msg_seq_num;
@@ -544,10 +544,7 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         let mut gap_fill_range = None;
-        let messages = self
-            .state
-            .borrow_mut()
-            .fetch_range(begin_seq_num..=end_seq_num);
+        let messages = state.fetch_range(begin_seq_num..=end_seq_num);
         info!(
             "fetch messages range from {begin_seq_num} to {end_seq_num}, found {} messages",
             messages.len()
@@ -637,13 +634,12 @@ impl<S: MessagesStorage> Session<S> {
 
         info!("Received ResendRequest FROM: {begin_seq_no} TO: {end_seq_no}");
 
-        self.resend_range(begin_seq_no, end_seq_no).await;
+        let mut state = self.state.borrow_mut();
 
-        {
-            let mut state = self.state.borrow_mut();
-            if state.next_target_msg_seq_num() == msg_seq_num {
-                state.incr_next_target_msg_seq_num();
-            }
+        self.resend_range(&mut state, begin_seq_no, end_seq_no);
+
+        if state.next_target_msg_seq_num() == msg_seq_num {
+            state.incr_next_target_msg_seq_num();
         }
 
         Ok(())
@@ -868,19 +864,14 @@ impl<S: MessagesStorage> Session<S> {
                             "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num}, \
                              TO: {next_sender_msg_num_at_logon_received} will be reset"
                         );
-                        drop(state);
                         self.send_sequence_reset(next_expected_msg_seq_num, end_seq_no);
-                        state = self.state.borrow_mut();
                     } else {
                         // resend missed messages
                         info!(
                             "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num} \
                              TO: {next_sender_msg_num_at_logon_received} will be resent"
                         );
-                        drop(state);
-                        self.resend_range(next_expected_msg_seq_num, end_seq_no)
-                            .await;
-                        state = self.state.borrow_mut();
+                        self.resend_range(&mut state, next_expected_msg_seq_num, end_seq_no)
                     }
                 }
             }
