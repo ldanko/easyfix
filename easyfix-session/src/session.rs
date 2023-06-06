@@ -485,7 +485,7 @@ impl<S: MessagesStorage> Session<S> {
     pub(crate) async fn disconnect(&self) {
         info!("disconnecting");
 
-        // To satisft clippy lint for holding reference across await point,
+        // To satisfy clippy lint for holding reference across await point,
         // which doest not see manual drop.
         let send_logout = {
             let mut state = self.state.borrow_mut();
