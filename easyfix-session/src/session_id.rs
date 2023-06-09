@@ -72,6 +72,18 @@ impl SessionId {
         )
     }
 
+    pub fn from_output_msg(msg: &FixtMessage) -> SessionId {
+        SessionId::from_output_header(&msg.header)
+    }
+
+    pub fn from_output_header(header: &Header) -> SessionId {
+        SessionId::new(
+            header.begin_string.clone(),
+            header.sender_comp_id.clone(),
+            header.target_comp_id.clone(),
+        )
+    }
+
     pub fn reverse_route(mut self) -> SessionId {
         std::mem::swap(&mut self.sender_comp_id, &mut self.target_comp_id);
         self
