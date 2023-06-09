@@ -21,14 +21,10 @@ pub(crate) enum OutputEvent {
     Disconnect,
 }
 
-fn output_handler<S: MessagesStorage>(
-    mut message: Box<FixtMessage>,
-    session: &Session<S>,
-) -> Vec<u8> {
+fn fill_header<S: MessagesStorage>(message: &mut FixtMessage, session: &Session<S>) {
     let mut state = session.state().borrow_mut();
 
     let header = &mut message.header;
-
     if header.begin_string.is_empty() {
         header.begin_string = BEGIN_STRING.to_owned();
     }
@@ -51,11 +47,16 @@ fn output_handler<S: MessagesStorage>(
     }
 
     state.set_last_sent_time(Instant::now());
+}
 
+fn output_handler<S: MessagesStorage>(message: Box<FixtMessage>, session: &Session<S>) -> Vec<u8> {
     // TODO: fn serialize_to(&mut buf) / fn serialize_to_buf(&mut buf)
     let buffer = message.serialize();
     if !message.header.poss_dup_flag.unwrap_or(false) {
-        state.store(message.header.msg_seq_num, &buffer);
+        session
+            .state()
+            .borrow_mut()
+            .store(message.header.msg_seq_num, &buffer);
     }
 
     debug!(
@@ -73,7 +74,8 @@ pub(crate) fn output_stream<S: MessagesStorage>(
     let stream = stream! {
         while let Some(sender_msg) = receiver.recv().await {
             match sender_msg {
-                SenderMsg::Msg(msg) => {
+                SenderMsg::Msg(mut msg) => {
+                    fill_header(&mut msg, &session);
                     match session.on_message_out(msg).await {
                         Ok(Some(msg)) => yield OutputEvent::Message(output_handler(msg, &session)),
                         Ok(None) => {}
