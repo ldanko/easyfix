@@ -13,6 +13,7 @@ use tokio::{
 use tokio_stream::{Elapsed, StreamExt};
 use tracing::debug;
 
+use super::Disconnect;
 use crate::{messages_storage::MessagesStorage, session::Session, SenderMsg};
 
 pub(crate) enum OutputEvent {
@@ -79,10 +80,16 @@ pub(crate) fn output_stream<S: MessagesStorage>(
                     match session.on_message_out(msg).await {
                         Ok(Some(msg)) => yield OutputEvent::Message(output_handler(msg, &session)),
                         Ok(None) => {}
-                        Err(_) => break,
+                        Err(Disconnect) => {
+                            yield OutputEvent::Disconnect;
+                            break;
+                        },
                     }
                 }
-                SenderMsg::Disconnect => yield OutputEvent::Disconnect,
+                SenderMsg::Disconnect => {
+                    yield OutputEvent::Disconnect;
+                    break;
+                },
             }
         }
     };

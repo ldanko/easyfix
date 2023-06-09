@@ -296,6 +296,13 @@ impl<S: MessagesStorage> Connection<S> {
                 }
                 OutputEvent::Timeout => self.session.on_out_timeout().await,
                 OutputEvent::Disconnect => {
+                    if let Err(e) = sink.flush().await {
+                        error!("final flush failed: {e}");
+                    }
+                    // XXX: Emit logout here instead of Session::disconnect,
+                    //      so `Logout` event will be delivered after Logout
+                    //      message instead of randomly before or after.
+                    self.session.emit_logout().await;
                     info!("disconnect, exit output processing");
                     return Ok(());
                 }

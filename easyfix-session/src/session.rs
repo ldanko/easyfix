@@ -482,30 +482,26 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.send_raw(msg);
     }
 
-    pub(crate) async fn disconnect(&self) {
-        info!("disconnecting");
+    pub(crate) async fn emit_logout(&self) {
+        let mut state = self.state.borrow_mut();
 
-        // To satisfy clippy lint for holding reference across await point,
-        // which doest not see manual drop.
-        let send_logout = {
-            let mut state = self.state.borrow_mut();
+        if state.logon_received() || state.logon_sent() {
+            state.set_logon_received(false);
+            state.set_logon_sent(false);
+            drop(state);
 
-            if state.logon_received() || state.logon_sent() {
-                state.set_logon_received(false);
-                state.set_logon_sent(false);
-                true
-            } else {
-                false
-            }
-        };
-
-        if send_logout {
             self.emitter
                 .send(FixEventInternal::Logout(
                     self.session_settings.session_id.clone(),
                 ))
                 .await;
         }
+    }
+
+    pub(crate) async fn disconnect(&self) {
+        info!("disconnecting");
+
+        // self.emit_logout().await;
 
         let mut state = self.state.borrow_mut();
 
