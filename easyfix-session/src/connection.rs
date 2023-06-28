@@ -113,7 +113,8 @@ where
 {
     let (source, sink) = tcp_stream.into_split();
     let stream = input_stream(source);
-    let logon_timeout = settings.heartbeat_interval + NO_INBOUND_TIMEOUT_PADDING;
+    let logon_timeout =
+        settings.auto_disconnect_after_no_logon_received + NO_INBOUND_TIMEOUT_PADDING;
     pin_mut!(stream);
     let msg = first_msg(&mut stream, logon_timeout).await?;
     let session_id = SessionId::from_input_msg(&msg);
