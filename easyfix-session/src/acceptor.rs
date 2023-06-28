@@ -117,7 +117,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         };
     }
 
-    pub async fn logout(&self, session_id: &SessionId, reason: Option<FixString>) {
+    pub fn logout(&self, session_id: &SessionId, reason: Option<FixString>) {
         let session = {
             let active_sessions = self.active_sessions.borrow();
             let Some(session) = active_sessions.get(session_id)  else {
@@ -130,7 +130,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         session.send_logout(&mut session.state().borrow_mut(), reason);
     }
 
-    pub async fn disconnect(&self, session_id: &SessionId) {
+    pub fn disconnect(&self, session_id: &SessionId) {
         let session = {
             let active_sessions = self.active_sessions.borrow();
             let Some(session) = active_sessions.get(session_id)  else {
@@ -140,7 +140,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             session.clone()
         };
 
-        session.disconnect().await;
+        session.disconnect();
     }
 
     async fn server_task(

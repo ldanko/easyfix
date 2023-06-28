@@ -323,12 +323,12 @@ impl<S: MessagesStorage> Session<S> {
                     );
                     self.send_logout(&mut self.state.borrow_mut(), text);
                     if disconnect {
-                        self.disconnect().await;
+                        self.disconnect();
                     }
                 }
                 Ok(InputResponderMsg::Disconnect { reason }) => {
                     error!("User disconnected: {reason:?}");
-                    self.disconnect().await;
+                    self.disconnect();
                 }
                 Err(_) => {}
             }
@@ -498,7 +498,7 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    pub(crate) async fn disconnect(&self) {
+    pub(crate) fn disconnect(&self) {
         info!("disconnecting");
 
         // self.emit_logout().await;
@@ -710,7 +710,7 @@ impl<S: MessagesStorage> Session<S> {
             }
         }
 
-        self.disconnect().await;
+        self.disconnect();
 
         Ok(())
     }
@@ -743,13 +743,13 @@ impl<S: MessagesStorage> Session<S> {
 
         if !enabled {
             error!("Session is not enabled for logon");
-            self.disconnect().await;
+            self.disconnect();
             return Ok(Some(Disconnect));
         }
 
         if !self.is_logon_time(message.header.sending_time) {
             error!("Received logon outside of valid logon time");
-            self.disconnect().await;
+            self.disconnect();
             return Ok(Some(Disconnect));
         }
 
@@ -769,7 +769,7 @@ impl<S: MessagesStorage> Session<S> {
 
         if should_send_logon && !reset_received {
             error!("Received logon response before sending request");
-            self.disconnect().await;
+            self.disconnect();
             return Ok(Some(Disconnect));
         }
 
@@ -958,12 +958,12 @@ impl<S: MessagesStorage> Session<S> {
             Err(VerifyError::Logout { text, disconnect }) => {
                 self.send_logout(&mut self.state.borrow_mut(), text);
                 if disconnect {
-                    self.disconnect().await;
+                    self.disconnect();
                 }
             }
             Err(VerifyError::Disconnect(msg)) => {
                 error!("disconnecting because of {msg}");
-                self.disconnect().await;
+                self.disconnect();
             }
         }
 
@@ -1057,7 +1057,7 @@ impl<S: MessagesStorage> Session<S> {
                         b"MsgSeqNum(34) not found".to_vec(),
                     )),
                 );
-                self.disconnect().await;
+                self.disconnect();
             }
             DeserializeError::Reject {
                 msg_type,
