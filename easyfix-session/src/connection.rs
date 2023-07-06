@@ -166,13 +166,13 @@ where
 
     let connection = Connection::new(session);
 
-    let ret = tokio::select!(
-        ret = connection
+    let ret = tokio::try_join!(
+        connection
             .input_loop(input_stream)
-            .instrument(input_loop_span) => ret,
-        ret = connection
+            .instrument(input_loop_span),
+        connection
             .output_loop(sink, output_stream)
-            .instrument(output_loop_span) => ret,
+            .instrument(output_loop_span),
     );
     info!("connection closed");
     // TODO: error here?
@@ -238,13 +238,13 @@ where
 
     let connection = Connection::new(session);
 
-    let ret = tokio::select!(
-        ret = connection
+    let ret = tokio::try_join!(
+        connection
             .input_loop(input_stream)
-            .instrument(input_loop_span) => ret,
-        ret = connection
+            .instrument(input_loop_span),
+        connection
             .output_loop(sink, output_stream)
-            .instrument(output_loop_span) => ret,
+            .instrument(output_loop_span),
     );
     info!("connection closed");
     // TODO: error here?
