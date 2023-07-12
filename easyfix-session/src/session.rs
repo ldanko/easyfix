@@ -207,7 +207,7 @@ impl<S: MessagesStorage> Session<S> {
         if msg_type == MsgType::Logout && state.logon_sent() {
             return true;
         }
-        if msg_type != MsgType::Logout && state.logon_sent() {
+        if msg_type != MsgType::Logout && state.logout_sent() {
             return true;
         }
         if msg_type == MsgType::SequenceReset {
