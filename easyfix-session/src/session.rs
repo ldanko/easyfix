@@ -671,9 +671,7 @@ impl<S: MessagesStorage> Session<S> {
         } else if new_seq_no < state.next_sender_msg_seq_num() {
             let reject_reason = SessionRejectReason::ValueIsIncorrect;
             let tag = FieldTag::NewSeqNo as i64;
-            let text = format!(
-                "{reject_reason:?} (tag={tag}) - NewSeqNum too low"
-            );
+            let text = format!("{reject_reason:?} (tag={tag}) - NewSeqNum too low");
             self.send_reject(
                 &mut state,
                 ref_msg_type,
