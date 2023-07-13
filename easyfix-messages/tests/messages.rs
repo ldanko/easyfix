@@ -154,3 +154,11 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
 }
+
+#[ignore]
+#[test]
+fn unknown_msg_type() {
+    let msg_str = "8=FIXT.1.1|9=0071|35=T|49=test_sender|56=test_target|34=1|52=20230713-21:55:13.436187000|10=248|";
+
+    FixtMessage::from_bytes(msg_str.replace("|", "\x01").as_bytes()).expect("Deserialize failed");
+}
