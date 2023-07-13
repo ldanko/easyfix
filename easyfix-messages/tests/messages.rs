@@ -7,8 +7,8 @@ use easyfix_messages::{
     messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
 };
 
-fn header(msg_type: MsgType) -> Header {
-    Header {
+fn header(msg_type: MsgType) -> Box<Header> {
+    Box::new(Header {
         begin_string: BEGIN_STRING.to_owned(),
         body_length: 0, // Serializer will overwrite this
         msg_type,
@@ -36,17 +36,17 @@ fn header(msg_type: MsgType) -> Header {
         hop_grp: None,
         appl_ver_id: None,
         cstm_appl_ver_id: None,
-    }
+    })
 }
 
-fn trailer() -> Trailer {
-    Trailer {
+fn trailer() -> Box<Trailer> {
+    Box::new(Trailer {
         signature: None,
         check_sum: FixString::from_ascii_lossy(b"000".to_vec()), // Serializer will overwrite this
-    }
+    })
 }
 
-fn fixt_message(msg: Message) -> Box<FixtMessage> {
+fn fixt_message(msg: Box<Message>) -> Box<FixtMessage> {
     Box::new(FixtMessage {
         header: header(msg.msg_type()),
         body: msg,
@@ -57,14 +57,16 @@ fn fixt_message(msg: Message) -> Box<FixtMessage> {
 #[test]
 fn heartbeat_ok() {
     // Simple test with simple message.
-    let msg = fixt_message(Message::Heartbeat(Heartbeat { test_req_id: None }));
+    let msg = fixt_message(Box::new(Message::Heartbeat(Heartbeat {
+        test_req_id: None,
+    })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
 }
 
 #[test]
 fn logon_msg_type_grp_no_present() {
-    let msg = fixt_message(Message::Logon(Logon {
+    let msg = fixt_message(Box::new(Message::Logon(Logon {
         encrypt_method: EncryptMethod::NoneOther,
         heart_bt_int: 30,
         raw_data: None,
@@ -76,14 +78,14 @@ fn logon_msg_type_grp_no_present() {
         password: None,
         default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         msg_type_grp: None,
-    }));
+    })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
 }
 
 #[test]
 fn logon_msg_type_grp_present_with_two_entries_1() {
-    let msg = fixt_message(Message::Logon(Logon {
+    let msg = fixt_message(Box::new(Message::Logon(Logon {
         encrypt_method: EncryptMethod::NoneOther,
         heart_bt_int: 30,
         raw_data: None,
@@ -112,14 +114,14 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
                 default_ver_indicator: None,
             },
         ]),
-    }));
+    })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
 }
 
 #[test]
 fn logon_msg_type_grp_present_with_two_entries_2() {
-    let msg = fixt_message(Message::Logon(Logon {
+    let msg = fixt_message(Box::new(Message::Logon(Logon {
         encrypt_method: EncryptMethod::NoneOther,
         heart_bt_int: 30,
         raw_data: None,
@@ -148,7 +150,7 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
                 default_ver_indicator: Some(false),
             },
         ]),
-    }));
+    })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
 }
