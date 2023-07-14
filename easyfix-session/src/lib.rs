@@ -40,10 +40,28 @@ pub enum Error {
     SessionError(SessionError),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum DisconnectReason {
+    /// Logout requested locally
+    LocalRequestedLogout,
+    /// Logout requested remotely
+    RemoteRequestedLogout,
+    /// Disconnect forced by User code
+    UserForcedDisconnect,
+    /// Received message without MsgSeqNum
+    MsgSeqNumNotFound,
+    /// Received message with MsgSeqNum too low
+    MsgSeqNumTooLow,
+    /// Invalid logon state
+    InvalidLogonState,
+    /// Connection lost
+    ConnectionLost,
+}
+
 #[derive(Debug)]
 pub(crate) enum SenderMsg {
     Msg(Box<FixtMessage>),
-    Disconnect,
+    Disconnect(DisconnectReason),
 }
 
 #[derive(Clone, Debug)]
@@ -64,7 +82,7 @@ impl Sender {
                     msg.msg_type(),
                     msg.msg_type().as_fix_str()
                 ),
-                SenderMsg::Disconnect => unreachable!(),
+                SenderMsg::Disconnect(_) => unreachable!(),
             }
         }
     }
@@ -83,13 +101,13 @@ impl Sender {
                     msg.msg_type(),
                     msg.msg_type().as_fix_str()
                 ),
-                SenderMsg::Disconnect => unreachable!(),
+                SenderMsg::Disconnect(_) => unreachable!(),
             }
         }
     }
 
-    pub(crate) fn disconnect(&self) {
-        if self.inner.send(SenderMsg::Disconnect).is_err() {
+    pub(crate) fn disconnect(&self, reason: DisconnectReason) {
+        if self.inner.send(SenderMsg::Disconnect(reason)).is_err() {
             error!("failed to disconnect, receiver closed or dropped");
         }
     }

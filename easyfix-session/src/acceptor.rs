@@ -22,7 +22,7 @@ use crate::{
     session_id::SessionId,
     session_state::State as SessionState,
     settings::SessionSettings,
-    Error, Settings,
+    DisconnectReason, Error, Settings,
 };
 
 type SessionMapInternal<S> = HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<S>>>)>;
@@ -140,7 +140,10 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             session.clone()
         };
 
-        session.disconnect();
+        session.disconnect(
+            &mut session.state().borrow_mut(),
+            DisconnectReason::UserForcedDisconnect,
+        );
     }
 
     async fn server_task(

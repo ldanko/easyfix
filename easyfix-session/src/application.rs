@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
-use crate::{session_id::SessionId, Sender};
+use crate::{session_id::SessionId, DisconnectReason, Sender};
 
 pub struct DoNotSend {
     pub gap_fill: bool,
@@ -115,7 +115,7 @@ impl Responder {
 pub(crate) enum FixEventInternal {
     Created(SessionId),
     Logon(SessionId, Option<Sender>),
-    Logout(SessionId),
+    Logout(SessionId, DisconnectReason),
     AppMsgIn(
         Option<Box<FixtMessage>>,
         Option<oneshot::Sender<InputResponderMsg>>,
@@ -150,7 +150,7 @@ impl Drop for FixEventInternal {
 pub enum FixEvent<'a> {
     Created(&'a SessionId),
     Logon(&'a SessionId, Sender),
-    Logout(&'a SessionId),
+    Logout(&'a SessionId, DisconnectReason),
     AppMsgIn(Box<FixtMessage>, InputResponder<'a>),
     AdmMsgIn(Box<FixtMessage>, InputResponder<'a>),
     //
@@ -214,7 +214,7 @@ impl AsEvent for FixEventInternal {
         match self {
             FixEventInternal::Created(id) => FixEvent::Created(id),
             FixEventInternal::Logon(id, sender) => FixEvent::Logon(id, sender.take().unwrap()),
-            FixEventInternal::Logout(id) => FixEvent::Logout(id),
+            FixEventInternal::Logout(id, reason) => FixEvent::Logout(id, *reason),
             FixEventInternal::AppMsgIn(msg, sender) => FixEvent::AppMsgIn(
                 msg.take().unwrap(),
                 InputResponder::new(sender.take().unwrap()),

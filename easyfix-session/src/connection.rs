@@ -24,7 +24,7 @@ use crate::{
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
-    Error, Sender, SessionError, NO_INBOUND_TIMEOUT_PADDING,
+    DisconnectReason, Error, Sender, SessionError, NO_INBOUND_TIMEOUT_PADDING,
 };
 
 mod input_stream;
@@ -278,14 +278,12 @@ impl<S: MessagesStorage> Connection<S> {
                 InputEvent::Timeout => self.session.on_in_timeout().await,
             }
         }
-        // TODO: Err(disconnected)
         Ok(())
     }
 
     async fn output_loop(
         &self,
         mut sink: impl AsyncWrite + Unpin,
-        //mut receiver: Receiver<Box<FixtMessage>>,
         mut output_stream: impl Stream<Item = OutputEvent> + Unpin,
     ) -> Result<(), Error> {
         while let Some(event) = output_stream.next().await {
@@ -296,21 +294,22 @@ impl<S: MessagesStorage> Connection<S> {
                     }
                 }
                 OutputEvent::Timeout => self.session.on_out_timeout().await,
-                OutputEvent::Disconnect => {
+                OutputEvent::Disconnect(reason) => {
                     if let Err(e) = sink.flush().await {
                         error!("final flush failed: {e}");
                     }
                     // XXX: Emit logout here instead of Session::disconnect,
                     //      so `Logout` event will be delivered after Logout
                     //      message instead of randomly before or after.
-                    self.session.emit_logout().await;
+                    self.session.emit_logout(reason).await;
                     info!("disconnect, exit output processing");
                     return Ok(());
                 }
             }
         }
-        // TODO: Internal Error here?
-        //Err(Error::SessionError(SessionError::InternalError)
+        self.session
+            .emit_logout(DisconnectReason::ConnectionLost)
+            .await;
         Ok(())
     }
 }

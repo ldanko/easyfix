@@ -22,7 +22,7 @@ use crate::{
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
-    Error, Sender,
+    DisconnectReason, Error, Sender,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -37,20 +37,16 @@ enum VerifyError {
         tag: Option<FieldTag>,
         logout: bool,
     },
-    #[error("Logout: {text:?}, disconnect: {disconnect}")]
-    Logout {
-        text: Option<FixString>,
-        disconnect: bool,
+    #[error("Invalid logon state")]
+    InvalidLogonState,
+    #[error("MsgSeqNum too low, expected {next_target_msg_seq_num}, got {msg_seq_num}")]
+    SeqNumTooLow {
+        msg_seq_num: SeqNum,
+        next_target_msg_seq_num: SeqNum,
     },
-    #[error("Disconnect: {0}")]
-    Disconnect(String),
 }
 
 impl VerifyError {
-    fn invalid_logon_state() -> VerifyError {
-        VerifyError::Disconnect("invalid logon state".to_owned())
-    }
-
     fn invalid_time() -> VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::SendingTimeAccuracyProblem,
@@ -84,19 +80,6 @@ impl VerifyError {
             reason: SessionRejectReason::SendingTimeAccuracyProblem,
             tag: None,
             logout: true,
-        }
-    }
-
-    fn seq_num_too_low(msg_seq_num: SeqNum, next_target_msg_seq_num: SeqNum) -> VerifyError {
-        VerifyError::Logout {
-            text: Some(FixString::from_ascii_lossy(
-                format!(
-                    "MsgSeqNum too low, expecting {}, but received {}",
-                    next_target_msg_seq_num, msg_seq_num
-                )
-                .into_bytes(),
-            )),
-            disconnect: true,
         }
     }
 }
@@ -246,7 +229,7 @@ impl<S: MessagesStorage> Session<S> {
 
         if !Self::valid_logon_state(&state, msg.header.msg_type) {
             error!("Invalid logon state");
-            Err(VerifyError::invalid_logon_state())
+            Err(VerifyError::InvalidLogonState)
         } else if !self.is_good_time(sending_time) {
             warn!("SendingTime<52> verification failed");
             Err(VerifyError::invalid_time())
@@ -277,10 +260,10 @@ impl<S: MessagesStorage> Session<S> {
                 Err(VerifyError::Duplicate)
             } else {
                 error!("Target too low");
-                Err(VerifyError::seq_num_too_low(
+                Err(VerifyError::SeqNumTooLow {
                     msg_seq_num,
-                    state.next_target_msg_seq_num(),
-                ))
+                    next_target_msg_seq_num: state.next_target_msg_seq_num(),
+                })
             }
         } else {
             drop(state);
@@ -321,14 +304,18 @@ impl<S: MessagesStorage> Session<S> {
                         "User rejected with Logout<5> ({})",
                         text.as_ref().map(FixString::as_utf8).unwrap_or_default()
                     );
-                    self.send_logout(&mut self.state.borrow_mut(), text);
+                    let mut state = self.state.borrow_mut();
+                    self.send_logout(&mut state, text);
                     if disconnect {
-                        self.disconnect();
+                        self.disconnect(&mut state, DisconnectReason::UserForcedDisconnect);
                     }
                 }
                 Ok(InputResponderMsg::Disconnect { reason }) => {
                     error!("User disconnected: {reason:?}");
-                    self.disconnect();
+                    self.disconnect(
+                        &mut self.state.borrow_mut(),
+                        DisconnectReason::UserForcedDisconnect,
+                    );
                 }
                 Err(_) => {}
             }
@@ -404,9 +391,7 @@ impl<S: MessagesStorage> Session<S> {
     pub(crate) fn send_logout(&self, state: &mut State<S>, text: Option<FixString>) {
         self.send(Box::new(Message::Logout(Logout {
             encoded_text: None,
-            // TODO: verify arg vs state
-            //
-            text: text.or_else(|| state.logout_reason().map(FixString::from)),
+            text,
         })));
         state.set_logout_sent(true);
     }
@@ -482,7 +467,7 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.send_raw(msg);
     }
 
-    pub(crate) async fn emit_logout(&self) {
+    pub(crate) async fn emit_logout(&self, reason: DisconnectReason) {
         let mut state = self.state.borrow_mut();
 
         if state.logon_received() || state.logon_sent() {
@@ -493,30 +478,31 @@ impl<S: MessagesStorage> Session<S> {
             self.emitter
                 .send(FixEventInternal::Logout(
                     self.session_settings.session_id.clone(),
+                    reason,
                 ))
                 .await;
         }
     }
 
-    pub(crate) fn disconnect(&self) {
+    pub(crate) fn disconnect(&self, state: &mut State<S>, reason: DisconnectReason) {
         info!("disconnecting");
 
+        // XXX: Emit logout in connection handler instead of here,
+        //      so `Logout` event will be delivered after Logout
+        //      message instead of randomly before or after.
         // self.emit_logout().await;
-
-        let mut state = self.state.borrow_mut();
 
         state.set_logout_sent(false);
         state.set_reset_received(false);
         state.set_reset_sent(false);
         // state.clearQueue();
-        state.set_logout_reason(None);
         if self.session_settings.reset_on_disconnect {
             state.reset();
         }
 
         state.set_resend_range(None);
         state.clear_queue();
-        self.sender.disconnect();
+        self.sender.disconnect(reason);
     }
 
     #[instrument(level = "trace", skip(self, state))]
@@ -685,32 +671,32 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_logout(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
-        self.verify(message, false, false).await?;
-
-        {
-            let mut state = self.state.borrow_mut();
-
-            if state.logout_sent() {
-                info!("received logout response");
-            } else {
-                info!("received logout request");
-                self.send_logout(
-                    &mut state,
-                    Some(FixString::from_ascii_lossy(b"Responding".to_vec())),
-                );
-                info!("sending logout response");
-            }
-
-            state.incr_next_target_msg_seq_num();
-            if self.session_settings.reset_on_logout {
-                state.reset();
-            }
+    async fn on_logout(&self, message: Box<FixtMessage>) {
+        if let Err(e) = self.verify(message, false, false).await {
+            // Nothing more we can do as client is disconnecting anyway
+            error!("logout failed: {e}");
         }
 
-        self.disconnect();
+        let mut state = self.state.borrow_mut();
+        let disconnect_reason = if state.logout_sent() {
+            info!("received logout response");
+            DisconnectReason::LocalRequestedLogout
+        } else {
+            info!("received logout request");
+            self.send_logout(
+                &mut state,
+                Some(FixString::from_ascii_lossy(b"Responding".to_vec())),
+            );
+            info!("sending logout response");
+            DisconnectReason::RemoteRequestedLogout
+        };
 
-        Ok(())
+        state.incr_next_target_msg_seq_num();
+        if self.session_settings.reset_on_logout {
+            state.reset();
+        }
+
+        self.disconnect(&mut state, disconnect_reason);
     }
 
     async fn on_logon(&self, message: Box<FixtMessage>) -> Result<Option<Disconnect>, VerifyError> {
@@ -741,13 +727,11 @@ impl<S: MessagesStorage> Session<S> {
 
         if !enabled {
             error!("Session is not enabled for logon");
-            self.disconnect();
             return Ok(Some(Disconnect));
         }
 
         if !self.is_logon_time(message.header.sending_time) {
             error!("Received logon outside of valid logon time");
-            self.disconnect();
             return Ok(Some(Disconnect));
         }
 
@@ -767,7 +751,6 @@ impl<S: MessagesStorage> Session<S> {
 
         if should_send_logon && !reset_received {
             error!("Received logon response before sending request");
-            self.disconnect();
             return Ok(Some(Disconnect));
         }
 
@@ -798,8 +781,6 @@ impl<S: MessagesStorage> Session<S> {
                         .into_bytes(),
                     );
                     self.send_logout(&mut state, Some(err));
-                    // TODO: add reason to be logged in `fn disconnect()`
-                    //self.disconnect(err, true).await;
                     return Ok(Some(Disconnect));
                 }
             }
@@ -901,14 +882,17 @@ impl<S: MessagesStorage> Session<S> {
             Message::Reject(ref _reject) => self.on_reject(msg).await,
             Message::SequenceReset(ref _sequence_reset) => self.on_sequence_reset(msg).await,
             Message::Logout(ref _logout) => {
-                if let Err(e) = self.on_logout(msg).await {
-                    // Nothing more we can do as client is disconnecting anyway
-                    error!("logout failed: {}", e);
-                }
+                self.on_logout(msg).await;
                 return Some(Disconnect);
             }
             Message::Logon(ref _logon) => match self.on_logon(msg).await {
-                Ok(Some(Disconnect)) => return Some(Disconnect),
+                Ok(Some(Disconnect)) => {
+                    self.disconnect(
+                        &mut self.state().borrow_mut(),
+                        DisconnectReason::InvalidLogonState,
+                    );
+                    return Some(Disconnect);
+                }
                 Ok(None) => Ok(()),
                 Err(e) => Err(e),
             },
@@ -953,15 +937,20 @@ impl<S: MessagesStorage> Session<S> {
                     self.send_logout(&mut state, None);
                 }
             }
-            Err(VerifyError::Logout { text, disconnect }) => {
-                self.send_logout(&mut self.state.borrow_mut(), text);
-                if disconnect {
-                    self.disconnect();
-                }
+            Err(e @ VerifyError::SeqNumTooLow { .. }) => {
+                let mut state = self.state.borrow_mut();
+                self.send_logout(
+                    &mut state,
+                    Some(FixString::from_ascii_lossy(e.to_string().into_bytes())),
+                );
+                self.disconnect(&mut state, DisconnectReason::MsgSeqNumTooLow);
             }
-            Err(VerifyError::Disconnect(msg)) => {
-                error!("disconnecting because of {msg}");
-                self.disconnect();
+            Err(VerifyError::InvalidLogonState) => {
+                error!("disconnecting because of invalid logon state");
+                self.disconnect(
+                    &mut self.state.borrow_mut(),
+                    DisconnectReason::InvalidLogonState,
+                );
             }
         }
 
@@ -986,10 +975,7 @@ impl<S: MessagesStorage> Session<S> {
         None
     }
 
-    pub async fn on_message_out(
-        &self,
-        msg: Box<FixtMessage>,
-    ) -> Result<Option<Box<FixtMessage>>, Disconnect> {
+    pub async fn on_message_out(&self, msg: Box<FixtMessage>) -> Option<Box<FixtMessage>> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         match msg.msg_cat() {
             MsgCat::Admin => {
@@ -1000,7 +986,7 @@ impl<S: MessagesStorage> Session<S> {
                     ))
                     .await;
                 // TODO: maybe change unwrap() to None ?
-                Ok(Some(receiver.await.unwrap()))
+                Some(receiver.await.unwrap())
             }
             MsgCat::App => {
                 self.emitter
@@ -1010,7 +996,7 @@ impl<S: MessagesStorage> Session<S> {
                     ))
                     .await;
                 match receiver.await {
-                    Ok(msg) => Ok(Some(msg)),
+                    Ok(msg) => Some(msg),
                     Err(_gap_fill) => {
                         // TODO: GAP FILL!
                         // let mut header = self.new_header(MsgType::SequenceReset);
@@ -1023,8 +1009,8 @@ impl<S: MessagesStorage> Session<S> {
                         //     }),
                         //     trailer: self.new_trailer(),
                         // })))
-                        Ok(None)
-                    } // TODO: Err(_no_gap_fill) => Ok(None),
+                        None
+                    } // TODO: Err(_no_gap_fill) => None,
                 }
             }
         }
@@ -1038,7 +1024,7 @@ impl<S: MessagesStorage> Session<S> {
         // Failed to parse the message. Discard the message.
         // Processing of the next valid FIX message will cause detection of
         // a sequence gap and a ResendRequest<2> will be generated.
-        // TODO: comment above: add whre in doc it's written
+        // TODO: comment above: add where in doc it's written
         // TODO: Make sure infinite resend loop is not possible
         // TODO: It seems that some error types from the parser should end with
         //       Reject<3> message, but now for simplicity all kinds of errors
@@ -1049,13 +1035,14 @@ impl<S: MessagesStorage> Session<S> {
         match &error {
             DeserializeError::GarbledMessage(reason) => error!("Garbled message: {reason}"),
             DeserializeError::Logout => {
+                let mut state = self.state.borrow_mut();
                 self.send_logout(
-                    &mut self.state.borrow_mut(),
+                    &mut state,
                     Some(FixString::from_ascii_lossy(
                         b"MsgSeqNum(34) not found".to_vec(),
                     )),
                 );
-                self.disconnect();
+                self.disconnect(&mut state, DisconnectReason::MsgSeqNumNotFound);
             }
             DeserializeError::Reject {
                 msg_type,

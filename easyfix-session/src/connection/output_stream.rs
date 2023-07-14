@@ -13,13 +13,12 @@ use tokio::{
 use tokio_stream::{Elapsed, StreamExt};
 use tracing::debug;
 
-use super::Disconnect;
-use crate::{messages_storage::MessagesStorage, session::Session, SenderMsg};
+use crate::{messages_storage::MessagesStorage, session::Session, DisconnectReason, SenderMsg};
 
 pub(crate) enum OutputEvent {
     Message(Vec<u8>),
     Timeout,
-    Disconnect,
+    Disconnect(DisconnectReason),
 }
 
 fn fill_header<S: MessagesStorage>(message: &mut FixtMessage, session: &Session<S>) {
@@ -50,7 +49,7 @@ fn fill_header<S: MessagesStorage>(message: &mut FixtMessage, session: &Session<
     state.set_last_sent_time(Instant::now());
 }
 
-fn output_handler<S: MessagesStorage>(message: Box<FixtMessage>, session: &Session<S>) -> Vec<u8> {
+fn output_handler<S: MessagesStorage>(message: &FixtMessage, session: &Session<S>) -> Vec<u8> {
     // TODO: fn serialize_to(&mut buf) / fn serialize_to_buf(&mut buf)
     let buffer = message.serialize();
     if !message.header.poss_dup_flag.unwrap_or(false) {
@@ -77,17 +76,12 @@ pub(crate) fn output_stream<S: MessagesStorage>(
             match sender_msg {
                 SenderMsg::Msg(mut msg) => {
                     fill_header(&mut msg, &session);
-                    match session.on_message_out(msg).await {
-                        Ok(Some(msg)) => yield OutputEvent::Message(output_handler(msg, &session)),
-                        Ok(None) => {}
-                        Err(Disconnect) => {
-                            yield OutputEvent::Disconnect;
-                            break;
-                        },
+                    if let Some(msg) = session.on_message_out(msg).await {
+                        yield OutputEvent::Message(output_handler(&msg, &session));
                     }
                 }
-                SenderMsg::Disconnect => {
-                    yield OutputEvent::Disconnect;
+                SenderMsg::Disconnect(reason) => {
+                    yield OutputEvent::Disconnect(reason);
                     break;
                 },
             }

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
 use easyfix_messages::{
-    fields::{FixStr, FixString, Int, SeqNum},
+    fields::{Int, SeqNum},
     messages::FixtMessage,
 };
 use tokio::time::Instant;
@@ -44,8 +44,6 @@ pub(crate) struct State<S> {
     heart_bt_int: Int,
     last_sent_time: Instant,
     last_received_time: Instant,
-    // TODO: enum
-    logout_reason: Option<FixString>,
 
     /// If this is anything other than zero it's the value of
     /// the 789/NextExpectedMsgSeqNum tag in the last Logon message sent.
@@ -74,8 +72,6 @@ impl<S: MessagesStorage> State<S> {
             heart_bt_int: 10,
             last_sent_time: Instant::now(),
             last_received_time: Instant::now(),
-            // TODO: enum
-            logout_reason: None,
             next_expected_msg_seq_num: 0,
             queue: Messages::new(),
             messages_storage,
@@ -158,14 +154,6 @@ impl<S: MessagesStorage> State<S> {
 
     pub fn should_send_logon(&self) -> bool {
         self.initiate() && !self.logon_sent()
-    }
-
-    pub fn logout_reason(&self) -> Option<&FixStr> {
-        self.logout_reason.as_deref()
-    }
-
-    pub fn set_logout_reason(&mut self, logout_reason: Option<FixString>) {
-        self.logout_reason = logout_reason;
     }
 
     /// No actual resend request has occurred but at logon we populated tag
