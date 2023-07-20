@@ -268,7 +268,7 @@ impl<S: MessagesStorage> Connection<S> {
                 InputEvent::Message(msg) => {
                     if let Some(Disconnect) = self.session.on_message_in(msg).await {
                         info!("disconnect, exit input processing");
-                        break;
+                        return Ok(());
                     }
                 }
                 InputEvent::DeserializeError(error) => {
@@ -278,6 +278,10 @@ impl<S: MessagesStorage> Connection<S> {
                 InputEvent::Timeout => self.session.on_in_timeout().await,
             }
         }
+        self.session.disconnect(
+            &mut self.session.state().borrow_mut(),
+            DisconnectReason::ConnectionLost,
+        );
         Ok(())
     }
 
