@@ -175,8 +175,6 @@ where
             .instrument(output_loop_span),
     );
     info!("connection closed");
-    // TODO: error here?
-    connection.session.on_disconnect().await;
     unregister_sender(&session_id);
     active_sessions.borrow_mut().remove(&session_id);
     ret.map(|_| ())
@@ -247,8 +245,6 @@ where
             .instrument(output_loop_span),
     );
     info!("connection closed");
-    // TODO: error here?
-    connection.session.on_disconnect().await;
     unregister_sender(&session_id);
     active_sessions.borrow_mut().remove(&session_id);
     ret.map(|_| ())
@@ -274,13 +270,20 @@ impl<S: MessagesStorage> Connection<S> {
                 InputEvent::DeserializeError(error) => {
                     self.session.on_deserialize_error(error).await
                 }
-                InputEvent::IoError(error) => return self.session.on_io_error(error).await,
+                InputEvent::IoError(error) => {
+                    error!("Input error: {error:?}");
+                    self.session.disconnect(
+                        &mut self.session.state().borrow_mut(),
+                        DisconnectReason::IoError,
+                    );
+                    return Ok(());
+                }
                 InputEvent::Timeout => self.session.on_in_timeout().await,
             }
         }
         self.session.disconnect(
             &mut self.session.state().borrow_mut(),
-            DisconnectReason::ConnectionLost,
+            DisconnectReason::Disconnected,
         );
         Ok(())
     }
@@ -294,7 +297,12 @@ impl<S: MessagesStorage> Connection<S> {
             match event {
                 OutputEvent::Message(msg) => {
                     if let Err(error) = sink.write_all(&msg).await {
-                        return self.session.on_io_error(error).await;
+                        error!("Output error: {error:?}");
+                        self.session.disconnect(
+                            &mut self.session.state().borrow_mut(),
+                            DisconnectReason::IoError,
+                        );
+                        return Ok(());
                     }
                 }
                 OutputEvent::Timeout => self.session.on_out_timeout().await,
@@ -312,7 +320,7 @@ impl<S: MessagesStorage> Connection<S> {
             }
         }
         self.session
-            .emit_logout(DisconnectReason::ConnectionLost)
+            .emit_logout(DisconnectReason::Disconnected)
             .await;
         Ok(())
     }

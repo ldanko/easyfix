@@ -54,8 +54,10 @@ pub enum DisconnectReason {
     MsgSeqNumTooLow,
     /// Invalid logon state
     InvalidLogonState,
-    /// Connection lost
-    ConnectionLost,
+    /// Remote side disconnected
+    Disconnected,
+    /// I/O Error
+    IoError,
 }
 
 #[derive(Debug)]

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, io, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use easyfix_messages::{
     deserializer::DeserializeError,
@@ -22,7 +22,7 @@ use crate::{
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
-    DisconnectReason, Error, Sender,
+    DisconnectReason, Sender,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -1065,17 +1065,6 @@ impl<S: MessagesStorage> Session<S> {
                 error,
             ))
             .await;
-    }
-
-    pub async fn on_disconnect(self: &Rc<Self>) {
-        trace!("on_disconnect");
-        //self.state.borrow_mut().status = SessionStatus::Disconnected;
-    }
-
-    pub async fn on_io_error(self: &Rc<Self>, _error: io::Error) -> Result<(), Error> {
-        trace!("on_io_error");
-        //self.state.borrow_mut().status = SessionStatus::Disconnected; ??
-        Ok(())
     }
 
     pub async fn on_in_timeout(self: &Rc<Self>) {
