@@ -353,7 +353,7 @@ impl<S: MessagesStorage> Session<S> {
         })));
     }
 
-    fn send_logon_response(&self, state: &mut State<S>, expected_target_num: SeqNum) {
+    fn send_logon_response(&self, state: &mut State<S>, next_expected_msg_seq_num: Option<SeqNum>) {
         if self.session_settings.reset_on_logon {
             state.reset();
         }
@@ -365,14 +365,7 @@ impl<S: MessagesStorage> Session<S> {
             heart_bt_int: state.heart_bt_int(),
             raw_data: None,
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
-            next_expected_msg_seq_num: if self.session_settings.enable_next_expected_msg_seq_num {
-                info!("Responding to Logon request with tag 789={expected_target_num}");
-                state.set_last_expected_logon_next_seq_num(expected_target_num);
-                Some(expected_target_num)
-            } else {
-                info!("Responding to Logon request");
-                None
-            },
+            next_expected_msg_seq_num,
             max_message_size: None,
             test_message_indicator: None,
             username: None,
@@ -738,6 +731,10 @@ impl<S: MessagesStorage> Session<S> {
 
         let msg_seq_num = message.header.msg_seq_num;
 
+        let enable_next_expected_msg_seq_num =
+            self.session_settings.enable_next_expected_msg_seq_num
+                && next_expected_msg_seq_num.is_some();
+
         if reset_seq_num_flag {
             let mut state = self.state.borrow_mut();
             state.set_reset_received(true);
@@ -767,7 +764,7 @@ impl<S: MessagesStorage> Session<S> {
 
         let next_sender_msg_num_at_logon_received = state.next_sender_msg_seq_num();
 
-        if self.session_settings.enable_next_expected_msg_seq_num {
+        if enable_next_expected_msg_seq_num {
             if let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num {
                 let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
                 // Is the 789 we received too high ??
@@ -787,8 +784,8 @@ impl<S: MessagesStorage> Session<S> {
             }
         }
 
-        // We test here that it's not too high (which would result in
-        // a resend) and that we are not resetting on logon 34=1
+        // Test here that it's not too high (which would result in a resend)
+        // and that it's not resetting on logon 34=1
         let is_logon_in_normal_sequence =
             !Self::is_target_too_high(&state, msg_seq_num) || self.session_settings.reset_on_logon;
 
@@ -796,16 +793,21 @@ impl<S: MessagesStorage> Session<S> {
             state.set_heart_bt_int(heart_bt_int);
             info!("Received logon request");
 
-            let mut next_expected_target_num = state.next_target_msg_seq_num();
-            // we increment for the logon later (after Logon response sent) in this method if and only if in sequence
-            if is_logon_in_normal_sequence {
-                // logon was fine take account of it in 789
-                next_expected_target_num += 1;
+            if enable_next_expected_msg_seq_num {
+                let mut next_expected_target_num = state.next_target_msg_seq_num();
+                // we increment for the logon later (after Logon response sent) in this method if and only if in sequence
+                if is_logon_in_normal_sequence {
+                    // logon was fine take account of it in 789
+                    next_expected_target_num += 1;
+                }
+
+                info!("Responding to Logon request with tag 789={next_expected_target_num}");
+                state.set_last_expected_logon_next_seq_num(next_expected_target_num);
+                self.send_logon_response(&mut state, Some(next_expected_target_num));
+            } else {
+                info!("Responding to Logon request");
+                self.send_logon_response(&mut state, None);
             }
-
-            self.send_logon_response(&mut state, next_expected_target_num);
-
-            info!("Responding to logon request");
         } else {
             info!("Received logon response");
         }
@@ -813,7 +815,7 @@ impl<S: MessagesStorage> Session<S> {
         state.set_reset_sent(false);
         state.set_reset_received(false);
 
-        if Self::is_target_too_high(&state, msg_seq_num) && !reset_seq_num_flag {
+        if !is_logon_in_normal_sequence {
             // if 789 was sent then we effectively have already sent a resend request
             if state.is_expected_logon_next_seq_num_sent() {
                 // Mark state as if we have already sent a resend request from the logon's 789 (we sent) to infinity.
@@ -828,7 +830,7 @@ impl<S: MessagesStorage> Session<S> {
             // nextQueued(timeStamp);
         }
 
-        if self.session_settings.enable_next_expected_msg_seq_num {
+        if enable_next_expected_msg_seq_num {
             if let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num {
                 // is the 789 lower (we checked for higher previously) than our next message after receiving the logon
                 if next_expected_msg_seq_num != next_sender_msg_num_at_logon_received {
