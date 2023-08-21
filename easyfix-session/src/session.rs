@@ -441,6 +441,7 @@ impl<S: MessagesStorage> Session<S> {
 
         sequence_reset.header.msg_seq_num = seq_num;
         sequence_reset.header.poss_dup_flag = Some(true);
+        sequence_reset.header.sending_time = UtcTimestamp::now();
         sequence_reset.header.orig_sending_time = Some(sequence_reset.header.sending_time);
         self.send_raw(sequence_reset);
 
