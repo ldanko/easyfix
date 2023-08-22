@@ -136,6 +136,10 @@ impl<S: MessagesStorage> State<S> {
         self.resend_range = resend_range;
     }
 
+    pub fn resend_range(&self) -> Option<RangeInclusive<SeqNum>> {
+        self.resend_range.clone()
+    }
+
     pub fn heart_bt_int(&self) -> Int {
         self.heart_bt_int
     }

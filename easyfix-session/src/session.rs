@@ -258,7 +258,20 @@ impl<S: MessagesStorage> Session<S> {
                 })
             }
         } else {
+            let resend_range_opt = state.resend_range();
             drop(state);
+
+            if let Some(resend_range) = resend_range_opt {
+                if check_too_high {
+                    let begin_seq_num = *resend_range.start();
+                    let end_seq_num = *resend_range.end();
+
+                    if msg_seq_num >= end_seq_num {
+                        info!("Resend request from {begin_seq_num} to {end_seq_num} has been satisfied");
+                        self.state.borrow_mut().set_resend_range(None);
+                    }
+                }
+            }
 
             let (sender, receiver) = tokio::sync::oneshot::channel();
             match msg.msg_cat() {
@@ -806,6 +819,8 @@ impl<S: MessagesStorage> Session<S> {
         state.set_reset_sent(false);
         state.set_reset_received(false);
 
+        let mut ret = Ok(None);
+
         if !is_logon_in_normal_sequence {
             // if 789 was sent then we effectively have already sent a resend request
             if state.is_expected_logon_next_seq_num_sent() {
@@ -814,11 +829,40 @@ impl<S: MessagesStorage> Session<S> {
                 state.set_reset_range_from_last_expected_logon_next_seq_num();
                 info!("Required resend will be suppressed as we are setting tag 789");
             }
-            // TODO!
-            // self.do_target_too_high(logon).await?;
+
+            warn!(
+                "Target MsgSeqNum too high, expected {}, got {msg_seq_num}",
+                state.next_target_msg_seq_num()
+            );
+
+            state.enqueue_msg(
+                // No need to clone input message. Pass empty message
+                // as it will be skipped during enqueued messages processing.
+                Box::new(FixtMessage {
+                    header: {
+                        let mut header = Box::new(new_header(MsgType::Logon));
+                        header.msg_seq_num = msg_seq_num;
+                        header
+                    },
+                    body: Box::new(Message::Logon(Logon {
+                        encrypt_method: EncryptMethod::NoneOther,
+                        heart_bt_int: 0,
+                        raw_data: None,
+                        reset_seq_num_flag: None,
+                        next_expected_msg_seq_num: None,
+                        max_message_size: None,
+                        test_message_indicator: None,
+                        username: None,
+                        password: None,
+                        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
+                        msg_type_grp: None,
+                    })),
+                    trailer: Box::new(new_trailer()),
+                }),
+            );
+            ret = Err(VerifyError::ResendRequest { msg_seq_num });
         } else {
             state.incr_next_target_msg_seq_num();
-            // nextQueued(timeStamp);
         }
 
         if enable_next_expected_msg_seq_num {
@@ -861,7 +905,7 @@ impl<S: MessagesStorage> Session<S> {
                 .await;
         }
 
-        Ok(None)
+        ret
     }
 
     #[instrument(name = "on_msg", level = "trace", skip_all, fields(msg_seq_num = msg.header.msg_seq_num))]
@@ -907,6 +951,21 @@ impl<S: MessagesStorage> Session<S> {
             Ok(()) => return None,
             Err(VerifyError::Duplicate) => {}
             Err(VerifyError::ResendRequest { msg_seq_num }) => {
+                if let Some(resend_range) = self.state.borrow().resend_range() {
+                    let begin_seq_num = *resend_range.start();
+                    let end_seq_num = *resend_range.end();
+
+                    if !self.session_settings.send_redundant_resend_requests
+                        && msg_seq_num >= begin_seq_num
+                    {
+                        if end_seq_num == 0 {
+                            warn!("ResendRequest from {begin_seq_num} to infinity already sent, suppressing another attempt");
+                        } else {
+                            warn!("ResendRequest from {begin_seq_num} to {end_seq_num} already sent, suppressing another attempt");
+                        }
+                        return None;
+                    }
+                }
                 self.send_resend_request(&mut self.state.borrow_mut(), msg_seq_num);
             }
             Err(VerifyError::Reject {
@@ -963,7 +1022,13 @@ impl<S: MessagesStorage> Session<S> {
                 break
             };
 
-            if let Some(disconnect) = self.on_message_in_impl(msg).await {
+            info!("Processing queued message {}", msg.header.msg_seq_num);
+
+            if matches!(msg.msg_type(), MsgType::Logon | MsgType::ResendRequest) {
+                // Logon and ResendRequest processing has already been done,
+                // just increment the target sequence nummber.
+                self.state.borrow_mut().incr_next_target_msg_seq_num();
+            } else if let Some(disconnect) = self.on_message_in_impl(msg).await {
                 return Some(disconnect);
             }
         }
