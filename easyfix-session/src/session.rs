@@ -770,14 +770,13 @@ impl<S: MessagesStorage> Session<S> {
                 // Is the 789 we received too high ??
                 if next_expected_msg_seq_num > next_sender_msg_seq_num {
                     // can't resend what we never sent! something unrecoverable has happened.
-                    let err = FixString::from_ascii_lossy(
-                        format!(
-                            "NextExpectedMsgSeqNum<789> too high \
+                    let error_msg = format!(
+                        "NextExpectedMsgSeqNum<789> too high \
                             (expected {next_sender_msg_seq_num}, \
                              got {next_expected_msg_seq_num})",
-                        )
-                        .into_bytes(),
                     );
+                    error!(error_msg);
+                    let err = FixString::from_ascii_lossy(error_msg.into_bytes());
                     self.send_logout(&mut state, Some(err));
                     return Ok(Some(Disconnect));
                 }
