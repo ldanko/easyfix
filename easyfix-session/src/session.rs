@@ -527,12 +527,12 @@ impl<S: MessagesStorage> Session<S> {
                     msg.header.msg_seq_num
                 );
                 gap_fill_range
-                    .get_or_insert((msg.header.msg_seq_num, msg.header.msg_seq_num))
+                    .get_or_insert((msg.header.msg_seq_num, msg.header.msg_seq_num - 1))
                     .1 += 1;
             } else {
-                if let Some((begin_seq_no, end_seq_no)) = gap_fill_range.take() {
-                    info!("Resending messages from {begin_seq_no} to {end_seq_no} as gap fill",);
-                    self.send_sequence_reset(begin_seq_num, end_seq_num);
+                if let Some((begin_seq_num, end_seq_num)) = gap_fill_range.take() {
+                    info!("Resending messages from {begin_seq_num} to {end_seq_num} as gap fill");
+                    self.send_sequence_reset(begin_seq_num, end_seq_num + 1);
                 }
                 info!(
                     "Resending message {:?}/{}",
@@ -545,8 +545,8 @@ impl<S: MessagesStorage> Session<S> {
                 self.send_raw(msg);
             }
         }
-        if let Some((begin_seq_no, end_seq_no)) = gap_fill_range {
-            info!("Resending messages from {begin_seq_no} to {end_seq_no} as gap fill",);
+        if let Some((begin_seq_num, end_seq_num)) = gap_fill_range {
+            info!("Resending messages from {begin_seq_num} to {end_seq_num} as gap fill");
             self.send_sequence_reset(begin_seq_num, end_seq_num + 1);
         }
     }
