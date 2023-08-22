@@ -12,7 +12,7 @@ use easyfix_messages::{
     },
 };
 use tokio::time::{Duration, Instant};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{error, info, instrument, trace, warn};
 
 use crate::{
     application::{Emitter, FixEventInternal, InputResponderMsg, Responder},
@@ -203,15 +203,7 @@ impl<S: MessagesStorage> Session<S> {
         false
     }
 
-    // TODO: Return ValidationError enum and outside of this function do all
-    //       async stuff, so functiolns like `do_target_too_high` could
-    //       get message by move
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(msg_type = ?msg.header.msg_type),
-        err, ret
-    )]
+    #[instrument(level = "trace", skip_all, err, ret)]
     async fn verify(
         &self,
         msg: Box<FixtMessage>,
@@ -436,11 +428,12 @@ impl<S: MessagesStorage> Session<S> {
         sequence_reset.header.poss_dup_flag = Some(true);
         sequence_reset.header.sending_time = UtcTimestamp::now();
         sequence_reset.header.orig_sending_time = Some(sequence_reset.header.sending_time);
-        self.send_raw(sequence_reset);
 
-        info!("Send SequenceReset (MsgSeqNum: {seq_num}, NewSeqNo: {new_seq_num})");
+        info!("SequenceReset sent (MsgSeqNum: {seq_num}, NewSeqNo: {new_seq_num})");
+        self.send_raw(sequence_reset);
     }
 
+    #[instrument(level = "trace", skip_all)]
     fn send_resend_request(&self, state: &mut State<S>, msg_seq_num: SeqNum) {
         let begin_seq_no = state.next_target_msg_seq_num();
         let end_seq_no = msg_seq_num - 1;
@@ -489,7 +482,6 @@ impl<S: MessagesStorage> Session<S> {
         state.set_logout_sent(false);
         state.set_reset_received(false);
         state.set_reset_sent(false);
-        // state.clearQueue();
         if self.session_settings.reset_on_disconnect {
             state.reset();
         }
@@ -499,7 +491,7 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.disconnect(reason);
     }
 
-    #[instrument(level = "trace", skip(self, state))]
+    #[instrument(level = "trace", skip_all)]
     fn resend_range(&self, state: &mut State<S>, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
         info!("resend range: ({begin_seq_num}, {end_seq_num})");
         let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
@@ -526,7 +518,6 @@ impl<S: MessagesStorage> Session<S> {
             messages.len()
         );
         for msg_str in messages {
-            debug!("MsgStr: {}", std::str::from_utf8(&msg_str).unwrap());
             // TODO: log error! and resend as gap fill instead of unwrap
             let mut msg = FixtMessage::from_bytes(&msg_str).unwrap();
             if msg.resend_as_gap_fill() {
@@ -693,6 +684,7 @@ impl<S: MessagesStorage> Session<S> {
         self.disconnect(&mut state, disconnect_reason);
     }
 
+    #[instrument(level = "trace", skip_all, err, ret)]
     async fn on_logon(&self, message: Box<FixtMessage>) -> Result<Option<Disconnect>, VerifyError> {
         let (
             enabled,
@@ -872,10 +864,11 @@ impl<S: MessagesStorage> Session<S> {
         Ok(None)
     }
 
+    #[instrument(name = "on_msg", level = "trace", skip_all, fields(msg_seq_num = msg.header.msg_seq_num))]
     pub async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<Disconnect> {
         let msg_type = msg.header.msg_type;
         let msg_seq_num = msg.header.msg_seq_num;
-        trace!(msg_type = format!("{:?}<{}>", msg_type, msg_type.as_fix_str()));
+        trace!(msg_type = format!("{msg_type:?}<{}>", msg_type.as_fix_str()));
 
         let result = match *msg.body {
             Message::Heartbeat(ref _heartbeat) => self.on_heartbeat(msg).await,

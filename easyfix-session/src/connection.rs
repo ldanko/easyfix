@@ -33,6 +33,7 @@ use input_stream::{input_stream, InputEvent};
 mod output_stream;
 use output_stream::{output_stream, OutputEvent};
 
+#[derive(Debug)]
 pub struct Disconnect;
 
 // TODO: cfg(mt) on mt build

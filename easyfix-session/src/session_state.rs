@@ -5,7 +5,7 @@ use easyfix_messages::{
     messages::FixtMessage,
 };
 use tokio::time::Instant;
-use tracing::info;
+use tracing::{info, instrument};
 
 use crate::messages_storage::MessagesStorage;
 
@@ -214,6 +214,7 @@ impl<S: MessagesStorage> State<S> {
         self.messages_storage.incr_next_sender_msg_seq_num();
     }
 
+    #[instrument(level = "trace", skip_all)]
     pub fn incr_next_target_msg_seq_num(&mut self) {
         info!(
             "old target msg seq num: {}",
