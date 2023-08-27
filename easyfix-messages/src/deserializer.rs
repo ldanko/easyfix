@@ -320,7 +320,7 @@ impl<'de> Deserializer<'de> {
                 msg_type: value.to_owned(),
                 seq_num,
                 tag: Some(35),
-                reason: SessionRejectReason::InvalidMsgType,
+                reason: SessionRejectReason::InvalidMsgtype,
             })
         } else {
             Err(DeserializeError::Logout)

@@ -6936,13 +6936,13 @@
    <value enum='7' description='DECRYPTION_PROBLEM' />
    <value enum='8' description='SIGNATURE_PROBLEM' />
    <value enum='9' description='COMP_ID_PROBLEM' />
-   <value enum='10' description='SENDING_TIME_ACCURACY_PROBLEM' />
-   <value enum='11' description='INVALID_MSG_TYPE' />
+   <value enum='10' description='SENDINGTIME_ACCURACY_PROBLEM' />
+   <value enum='11' description='INVALID_MSGTYPE' />
    <value enum='12' description='XML_VALIDATION_ERROR' />
    <value enum='13' description='TAG_APPEARS_MORE_THAN_ONCE' />
    <value enum='14' description='TAG_SPECIFIED_OUT_OF_REQUIRED_ORDER' />
    <value enum='15' description='REPEATING_GROUP_FIELDS_OUT_OF_ORDER' />
-   <value enum='16' description='INCORRECT_NUM_IN_GROUP_COUNT_FOR_REPEATING_GROUP' />
+   <value enum='16' description='INCORRECT_NUMINGROUP_COUNT_FOR_REPEATING_GROUP' />
    <value enum='17' description='NON_DATA_VALUE_INCLUDES_FIELD_DELIMITER' />
    <value enum='18' description='INVALID_UNSUPPORTED_APPLICATION_VERSION' />
    <value enum='99' description='OTHER' />

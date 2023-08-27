@@ -108,7 +108,7 @@ impl Struct {
                     if tag == #first_member_tag && last_run || tag != #first_member_tag && !last_run {
                         return Err(deserializer.reject(
                             Some(num_in_group_tag),
-                            SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup,
+                            SessionRejectReason::IncorrectNumingroupCountForRepeatingGroup,
                         ));
                     }
                     deserializer.put_tag(tag);
@@ -123,7 +123,7 @@ impl Struct {
                             if tag == #first_member_tag && last_run || tag != #first_member_tag && !last_run {
                                 return Err(deserializer.reject(
                                     Some(num_in_group_tag),
-                                    SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup,
+                                    SessionRejectReason::IncorrectNumingroupCountForRepeatingGroup,
                                 ));
                             } else {
                                 deserializer.put_tag(tag);

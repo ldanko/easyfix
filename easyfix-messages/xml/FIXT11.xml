@@ -260,13 +260,13 @@
     <field name='SessionRejectReason' number='373' type='INT'>
       <value description='INVALID_TAG_NUMBER' enum='0'/>
       <value description='REQUIRED_TAG_MISSING' enum='1'/>
-      <value description='SENDING_TIME_ACCURACY_PROBLEM' enum='10'/>
-      <value description='INVALID_MSG_TYPE' enum='11'/>
+      <value description='SENDINGTIME_ACCURACY_PROBLEM' enum='10'/>
+      <value description='INVALID_MSGTYPE' enum='11'/>
       <value description='XML_VALIDATION_ERROR' enum='12'/>
       <value description='TAG_APPEARS_MORE_THAN_ONCE' enum='13'/>
       <value description='TAG_SPECIFIED_OUT_OF_REQUIRED_ORDER' enum='14'/>
       <value description='REPEATING_GROUP_FIELDS_OUT_OF_ORDER' enum='15'/>
-      <value description='INCORRECT_NUM_IN_GROUP_COUNT_FOR_REPEATING_GROUP' enum='16'/>
+      <value description='INCORRECT_NUMINGROUP_COUNT_FOR_REPEATING_GROUP' enum='16'/>
       <value description='NON_DATA_VALUE_INCLUDES_FIELD_DELIMITER' enum='17'/>
       <value description='TAG_NOT_DEFINED_FOR_THIS_MESSAGE_TYPE' enum='2'/>
       <value description='UNDEFINED_TAG' enum='3'/>

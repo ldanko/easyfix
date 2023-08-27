@@ -49,7 +49,7 @@ enum VerifyError {
 impl VerifyError {
     fn invalid_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::SendingTimeAccuracyProblem,
+            reason: SessionRejectReason::SendingtimeAccuracyProblem,
             tag: None,
             logout: false,
         }
@@ -57,7 +57,7 @@ impl VerifyError {
 
     fn invalid_comp_id() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::CompIdProblem,
+            reason: SessionRejectReason::CompidProblem,
             tag: None,
             logout: true,
         }
@@ -77,7 +77,7 @@ impl VerifyError {
 
     fn invalid_orig_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::SendingTimeAccuracyProblem,
+            reason: SessionRejectReason::SendingtimeAccuracyProblem,
             tag: None,
             logout: true,
         }
