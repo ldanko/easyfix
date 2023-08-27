@@ -347,14 +347,16 @@ impl<S: MessagesStorage> Session<S> {
             } else {
                 None
             },
-            max_message_size: None,
-            test_message_indicator: None,
-            username: None,
-            password: None,
+            session_status: None,
+            text: None,
+            // max_message_size: None,
+            // test_message_indicator: None,
+            // username: None,
+            // password: None,
             // TODO: if self.session_settings.session_id().is_fixt()
             // default_appl_ver_id: self.sender_default_appl_ver_id().to_owned(),
             default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-            msg_type_grp: None,
+            // msg_type_grp: None,
         })));
     }
 
@@ -371,14 +373,16 @@ impl<S: MessagesStorage> Session<S> {
             raw_data: None,
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
-            max_message_size: None,
-            test_message_indicator: None,
-            username: None,
-            password: None,
+            session_status: None,
+            text: None,
+            // max_message_size: None,
+            // test_message_indicator: None,
+            // username: None,
+            // password: None,
             // TODO: if self.session_settings.session_id().is_fixt()
             // default_appl_ver_id: self.sender_default_appl_ver_id().to_owned(),
             default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-            msg_type_grp: None,
+            // msg_type_grp: None,
         })));
 
         state.set_last_received_time(Instant::now());
@@ -388,8 +392,9 @@ impl<S: MessagesStorage> Session<S> {
 
     pub(crate) fn send_logout(&self, state: &mut State<S>, text: Option<FixString>) {
         self.send(Box::new(Message::Logout(Logout {
-            encoded_text: None,
+            // encoded_text: None,
             text,
+            session_status: None,
         })));
         state.set_logout_sent(true);
     }
@@ -850,12 +855,14 @@ impl<S: MessagesStorage> Session<S> {
                         raw_data: None,
                         reset_seq_num_flag: None,
                         next_expected_msg_seq_num: None,
-                        max_message_size: None,
-                        test_message_indicator: None,
-                        username: None,
-                        password: None,
+                        session_status: None,
+                        text: None,
+                        // max_message_size: None,
+                        // test_message_indicator: None,
+                        // username: None,
+                        // password: None,
                         default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-                        msg_type_grp: None,
+                        // msg_type_grp: None,
                     })),
                     trailer: Box::new(new_trailer()),
                 }),

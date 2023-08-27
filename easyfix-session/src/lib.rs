@@ -124,34 +124,34 @@ pub const fn new_header(msg_type: MsgType) -> Header {
         sender_comp_id: FixString::new(),
         target_comp_id: FixString::new(),
         on_behalf_of_comp_id: None,
-        deliver_to_comp_id: None,
-        secure_data: None,
+        // deliver_to_comp_id: None,
+        // secure_data: None,
         msg_seq_num: 0,
         sender_sub_id: None,
-        sender_location_id: None,
+        // sender_location_id: None,
         target_sub_id: None,
-        target_location_id: None,
-        on_behalf_of_sub_id: None,
-        on_behalf_of_location_id: None,
-        deliver_to_sub_id: None,
-        deliver_to_location_id: None,
+        // target_location_id: None,
+        // on_behalf_of_sub_id: None,
+        // on_behalf_of_location_id: None,
+        // deliver_to_sub_id: None,
+        // deliver_to_location_id: None,
         poss_dup_flag: None,
         poss_resend: None,
         sending_time: UtcTimestamp::MIN_UTC,
         orig_sending_time: None,
-        xml_data: None,
-        message_encoding: None,
+        // xml_data: None,
+        // message_encoding: None,
         last_msg_seq_num_processed: None,
-        hop_grp: None,
+        // hop_grp: None,
         appl_ver_id: None,
-        cstm_appl_ver_id: None,
+        // cstm_appl_ver_id: None,
     }
 }
 
 pub const fn new_trailer() -> Trailer {
     // XXX: all required fields overwritten before serialization (if not set)
     Trailer {
-        signature: None,
+        // signature: None,
         check_sum: FixString::new(),
     }
 }
