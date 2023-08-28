@@ -170,12 +170,14 @@ where
     let ret = tokio::try_join!(
         connection
             .input_loop(input_stream)
-            .instrument(input_loop_span),
+            .instrument(input_loop_span.clone()),
         connection
             .output_loop(sink, output_stream)
             .instrument(output_loop_span),
     );
-    info!("connection closed");
+    session_span.in_scope(|| {
+        info!("connection closed");
+    });
     unregister_sender(&session_id);
     active_sessions.borrow_mut().remove(&session_id);
     ret.map(|_| ())

@@ -59,6 +59,8 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
         let active_sessions = self.active_sessions.clone();
         let state = self.state.clone();
 
+        let connection_span = info_span!("connection", %addr);
+
         tokio::task::spawn_local(async move {
             match initiator_connection(
                 tcp_stream,
@@ -68,11 +70,15 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
                 active_sessions,
                 emitter,
             )
-            .instrument(info_span!("connection", %addr))
+            .instrument(connection_span.clone())
             .await
             {
-                Ok(()) => info!("Connection closed"),
-                Err(error) => error!("Connection closed: {}", error),
+                Ok(()) => connection_span.in_scope(|| {
+                    info!("Connection closed");
+                }),
+                Err(error) => connection_span.in_scope(|| {
+                    error!("Connection closed with error: {}", error);
+                }),
             }
         });
         Ok(())

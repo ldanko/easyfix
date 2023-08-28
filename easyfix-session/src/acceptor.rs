@@ -157,9 +157,12 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         let listener = TcpListener::bind(&address).await?;
         loop {
             let (tcp_stream, peer_addr) = listener.accept().await?;
+            let connection_span = info_span!("connection", %peer_addr);
 
-            info!("---------------------------------------------------------");
-            info!("New connection from {}", peer_addr);
+            connection_span.in_scope(|| {
+                info!("---------------------------------------------------------");
+                info!("New connection");
+            });
 
             let sessions = sessions.clone();
             let active_sessions = active_sessions.clone();
@@ -167,11 +170,15 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             let emitter = emitter.clone();
             tokio::task::spawn_local(async move {
                 match acceptor_connection(tcp_stream, settings, sessions, active_sessions, emitter)
-                    .instrument(info_span!("connection", %peer_addr))
+                    .instrument(connection_span.clone())
                     .await
                 {
-                    Ok(()) => info!("Connection closed"),
-                    Err(error) => error!("Connection closed: {}", error),
+                    Ok(()) => connection_span.in_scope(|| {
+                        info!("Connection closed");
+                    }),
+                    Err(error) => connection_span.in_scope(|| {
+                        error!("Connection closed with error: {}", error);
+                    }),
                 }
             });
         }
