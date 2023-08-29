@@ -3,6 +3,7 @@
 members = [
     "easyfix",
     "easyfix-dictionary",
+    "easyfix-macros",
     "easyfix-messages",
     "easyfix-session",
 ]

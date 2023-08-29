@@ -1,0 +1,5 @@
+error: wrong byte found at position 3
+ --> tests/scenarios/fail_on_control_character.rs:4:14
+  |
+4 |     fix_str!("123\x01");
+  |              ^^^^^^^^^

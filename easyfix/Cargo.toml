@@ -10,5 +10,6 @@ edition = "2021"
 
 [dependencies]
 easyfix-dictionary = { version = "0.3.0", path = "../easyfix-dictionary" }
+easyfix-macros = { version = "0.1.0", path = "../easyfix-macros" }
 easyfix-messages = { version = "0.4.0", path = "../easyfix-messages" }
 easyfix-session = { version = "0.4.0", path = "../easyfix-session" }
