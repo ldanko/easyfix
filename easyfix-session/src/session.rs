@@ -338,7 +338,6 @@ impl<S: MessagesStorage> Session<S> {
             // encrypt_method: EncryptMethod::None,
             encrypt_method: EncryptMethod::NoneOther,
             heart_bt_int: state.heart_bt_int(),
-            raw_data: None,
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num: if self.session_settings.enable_next_expected_msg_seq_num {
                 let next_expected_msg_seq_num = state.next_sender_msg_seq_num();
@@ -347,16 +346,8 @@ impl<S: MessagesStorage> Session<S> {
             } else {
                 None
             },
-            session_status: None,
-            text: None,
-            // max_message_size: None,
-            // test_message_indicator: None,
-            // username: None,
-            // password: None,
-            // TODO: if self.session_settings.session_id().is_fixt()
-            // default_appl_ver_id: self.sender_default_appl_ver_id().to_owned(),
             default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-            // msg_type_grp: None,
+            ..Default::default()
         })));
     }
 
@@ -366,23 +357,15 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         self.send(Box::new(Message::Logon(Logon {
-            // encrypt_method: EncryptMethod::None,
             encrypt_method: EncryptMethod::NoneOther,
             // TODO: option to use predefined OR the value from Logon request
             heart_bt_int: state.heart_bt_int(),
-            raw_data: None,
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
-            session_status: None,
-            text: None,
-            // max_message_size: None,
-            // test_message_indicator: None,
-            // username: None,
-            // password: None,
             // TODO: if self.session_settings.session_id().is_fixt()
             // default_appl_ver_id: self.sender_default_appl_ver_id().to_owned(),
             default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-            // msg_type_grp: None,
+            ..Default::default()
         })));
 
         state.set_last_received_time(Instant::now());
@@ -392,9 +375,8 @@ impl<S: MessagesStorage> Session<S> {
 
     pub(crate) fn send_logout(&self, state: &mut State<S>, text: Option<FixString>) {
         self.send(Box::new(Message::Logout(Logout {
-            // encoded_text: None,
             text,
-            session_status: None,
+            ..Default::default()
         })));
         state.set_logout_sent(true);
     }
@@ -849,21 +831,7 @@ impl<S: MessagesStorage> Session<S> {
                         header.msg_seq_num = msg_seq_num;
                         header
                     },
-                    body: Box::new(Message::Logon(Logon {
-                        encrypt_method: EncryptMethod::NoneOther,
-                        heart_bt_int: 0,
-                        raw_data: None,
-                        reset_seq_num_flag: None,
-                        next_expected_msg_seq_num: None,
-                        session_status: None,
-                        text: None,
-                        // max_message_size: None,
-                        // test_message_indicator: None,
-                        // username: None,
-                        // password: None,
-                        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-                        // msg_type_grp: None,
-                    })),
+                    body: Box::new(Message::Logon(Logon::default())),
                     trailer: Box::new(new_trailer()),
                 }),
             );
