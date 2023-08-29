@@ -52,13 +52,12 @@ pub enum TimePrecision {
     Nanos = 9,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct UtcTimestamp {
     timestamp: DateTime<Utc>,
     precision: TimePrecision,
 }
 
-// TODO: use newtype, to prevent mixing with LocaLMktTime
 #[derive(Clone, Copy, Debug)]
 pub struct UtcTimeOnly {
     timestamp: NaiveTime,

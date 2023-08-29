@@ -1,5 +1,6 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Country {
+    #[default]
     AD, // Andorra
     AE, // United Arab Emirates
     AF, // Afghanistan

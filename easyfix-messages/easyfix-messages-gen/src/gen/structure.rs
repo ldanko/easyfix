@@ -293,7 +293,7 @@ impl Struct {
         };
 
         quote! {
-            #[derive(Clone, Debug)]
+            #[derive(Clone, Debug, Default)]
             pub struct #name {
                 #(pub #members_definitions,)*
             }
