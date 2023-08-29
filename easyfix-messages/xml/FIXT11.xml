@@ -275,7 +275,7 @@
       <value description='INCORRECT_DATA_FORMAT_FOR_VALUE' enum='6'/>
       <value description='DECRYPTION_PROBLEM' enum='7'/>
       <value description='SIGNATURE_PROBLEM' enum='8'/>
-      <value description='COMP_ID_PROBLEM' enum='9'/>
+      <value description='COMPID_PROBLEM' enum='9'/>
       <value description='OTHER' enum='99'/>
     </field>
     <field name='MaxMessageSize' number='383' type='LENGTH'/>
