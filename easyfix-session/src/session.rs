@@ -597,7 +597,13 @@ impl<S: MessagesStorage> Session<S> {
 
         let msg_seq_num = msg.header.msg_seq_num;
 
-        self.verify(msg, false, false).await?;
+        // XXX: Do not check if message is too high here - in such case message
+        //      would be enqueued for later processing. This might lead to
+        //      dedclock when both sides would wait for resended messages.
+        //
+        //      Instead just resend requested messages and after that, send
+        //      ResendRequest for missing messages.
+        self.verify(msg, false, true).await?;
 
         info!("Received ResendRequest FROM: {begin_seq_no} TO: {end_seq_no}");
 
@@ -605,7 +611,20 @@ impl<S: MessagesStorage> Session<S> {
 
         self.resend_range(&mut state, begin_seq_no, end_seq_no);
 
-        if state.next_target_msg_seq_num() == msg_seq_num {
+        if Self::is_target_too_high(&state, msg_seq_num) {
+            // XXX: This message will be ignored during queued messages
+            //      processing, it's enqueued only to omaintain proper
+            //      sequence numbers.
+            state.enqueue_msg(Box::new(FixtMessage {
+                header: Box::new(new_header(MsgType::ResendRequest)),
+                body: Box::new(Message::ResendRequest(ResendRequest {
+                    begin_seq_no,
+                    end_seq_no,
+                })),
+                trailer: Box::new(new_trailer()),
+            }));
+            self.send_resend_request(&mut state, msg_seq_num);
+        } else if state.next_target_msg_seq_num() == msg_seq_num {
             state.incr_next_target_msg_seq_num();
         }
 
