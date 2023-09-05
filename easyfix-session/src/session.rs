@@ -567,10 +567,12 @@ impl<S: MessagesStorage> Session<S> {
     /// Got TestRequest, answer with Heartbeat and return.
     async fn on_test_request(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
         trace!("on_test_request");
-        let test_req_id = {
-            let Message::TestRequest(ref test_request) = *message.body else { unreachable!() };
-            test_request.test_req_id.clone()
+
+        let Message::TestRequest(ref test_request) = *message.body else {
+            unreachable!();
         };
+
+        let test_req_id = test_request.test_req_id.clone();
 
         self.verify(message, false, true).await?;
 
@@ -587,13 +589,13 @@ impl<S: MessagesStorage> Session<S> {
     async fn on_resend_request(&self, msg: Box<FixtMessage>) -> Result<(), VerifyError> {
         trace!("on_resend_request");
 
-        let (begin_seq_no, end_seq_no) =
-            if let Message::ResendRequest(ref resend_request) = *msg.body {
-                (resend_request.begin_seq_no, resend_request.end_seq_no)
-            } else {
-                // Enum is matched in on_message_in_impl
-                unreachable!();
-            };
+        let Message::ResendRequest(ref resend_request) = *msg.body else {
+            // Enum is matched in on_message_in_impl
+            unreachable!();
+        };
+
+        let begin_seq_no = resend_request.begin_seq_no;
+        let end_seq_no = resend_request.end_seq_no;
 
         let msg_seq_num = msg.header.msg_seq_num;
 
@@ -642,6 +644,8 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     async fn on_sequence_reset(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+        trace!("on_sequence_reset");
+
         let Message::SequenceReset(ref sequence_reset) = *message.body else {
             unreachable!();
         };
