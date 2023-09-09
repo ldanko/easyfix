@@ -59,10 +59,14 @@ pub struct SessionSettings {
     pub sender_default_appl_ver_id: FixString,
     pub target_default_appl_ver_id: FixString,
 
-    ///  Enable the next expected message sequence number (optional tag 789
-    ///  on Logon) on sent Logon message and use value of tag 789 on received
-    ///  Logon message to synchronize session.
+    /// Enable the next expected message sequence number (optional tag 789
+    /// on Logon) on sent Logon message and use value of tag 789 on received
+    /// Logon message to synchronize session.
     pub enable_next_expected_msg_seq_num: bool,
 
+    // Enable messages persistence.
     pub persist: bool,
+
+    // Enable Logout<5> verification.
+    pub verify_logout: bool,
 }

@@ -647,6 +647,7 @@ impl<S: MessagesStorage> Session<S> {
         trace!("on_sequence_reset");
 
         let Message::SequenceReset(ref sequence_reset) = *message.body else {
+            // Enum is matched in on_message_in_impl
             unreachable!();
         };
 
@@ -679,8 +680,10 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_logout(&self, message: Box<FixtMessage>) {
-        if let Err(e) = self.verify(message, false, false).await {
+    async fn on_logout(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+        if self.session_settings.verify_logout {
+            self.verify(message, true, true).await?;
+        } else if let Err(e) = self.verify(message, false, false).await {
             // Nothing more we can do as client is disconnecting anyway
             error!("logout failed: {e}");
         }
@@ -705,6 +708,8 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         self.disconnect(&mut state, disconnect_reason);
+
+        Ok(())
     }
 
     #[instrument(level = "trace", skip_all, err, ret)]
@@ -919,8 +924,11 @@ impl<S: MessagesStorage> Session<S> {
             Message::Reject(ref _reject) => self.on_reject(msg).await,
             Message::SequenceReset(ref _sequence_reset) => self.on_sequence_reset(msg).await,
             Message::Logout(ref _logout) => {
-                self.on_logout(msg).await;
-                return Some(Disconnect);
+                if let Err(e) = self.on_logout(msg).await {
+                    Err(e)
+                } else {
+                    return Some(Disconnect);
+                }
             }
             Message::Logon(ref _logon) => match self.on_logon(msg).await {
                 Ok(Some(Disconnect)) => {
