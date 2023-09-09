@@ -59,24 +59,24 @@ impl EnumDesc {
             }
 
             impl #name {
-                pub fn from_bytes(input: &[u8]) -> Option<#name> {
+                pub const fn from_bytes(input: &[u8]) -> Option<#name> {
                     match input {
                         #(#variant_value_as_bytes => Some(#name::#variant_name),)*
                         _ => None,
                     }
                 }
 
-                pub fn from_fix_str(input: &FixStr) -> Option<#name> {
+                pub const fn from_fix_str(input: &FixStr) -> Option<#name> {
                     #name::from_bytes(input.as_bytes())
                 }
 
-                pub fn as_bytes(&self) -> &'static [u8] {
+                pub const fn as_bytes(&self) -> &'static [u8] {
                     match self {
                         #(#name::#variant_name => #variant_value_as_bytes,)*
                     }
                 }
 
-                pub fn as_fix_str(&self) -> &'static FixStr {
+                pub const fn as_fix_str(&self) -> &'static FixStr {
                     unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
                 }
             }
