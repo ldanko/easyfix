@@ -26,7 +26,7 @@ pub fn fix_str(ts: TokenStream) -> TokenStream {
     }
 
     quote! {
-      unsafe { easyfix_messages::fields::FixStr::from_ascii_unchecked(#input.as_bytes()) }
+      unsafe { FixStr::from_ascii_unchecked(#input.as_bytes()) }
     }
     .into()
 }
