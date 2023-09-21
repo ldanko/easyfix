@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use tracing::warn;
+
 use crate::fields::basic_types::*;
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
@@ -29,6 +31,7 @@ impl Default for Serializer {
 pub struct Serializer {
     output: Vec<u8>,
     body_start_idx: usize,
+    current_tag_num: TagNum,
 }
 
 impl Serializer {
@@ -37,6 +40,7 @@ impl Serializer {
             // Allocate for max message size, to prevent vector reallocation.
             output: Vec::with_capacity(MAX_MSG_SIZE),
             body_start_idx: 0,
+            current_tag_num: 0,
         }
     }
 
@@ -88,6 +92,7 @@ impl Serializer {
     /// Serialize sequence of character digits without commas or decimals.
     /// Value must be positive and may not contain leading zeros.
     pub fn serialize_tag_num(&mut self, tag_num: &TagNum) {
+        self.current_tag_num = *tag_num;
         let mut buffer = itoa::Buffer::new();
         self.output
             .extend_from_slice(buffer.format(*tag_num).as_bytes());
@@ -114,6 +119,9 @@ impl Serializer {
     /// Serialize sequence of character digits without commas or decimals.
     /// Value must be positive.
     pub fn serialize_num_in_group(&mut self, num_in_group: &NumInGroup) {
+        if *num_in_group == 0 {
+            warn!("empty Group (tag={})", self.current_tag_num);
+        }
         let mut buffer = itoa::Buffer::new();
         self.output
             .extend_from_slice(buffer.format(*num_in_group).as_bytes());
@@ -170,15 +178,35 @@ impl Serializer {
         }
     }
 
-    /// Dese any ISO/IEC 8859-1 (Latin-1) character except control characters.
+    fn validate_char(&self, c: &Char) {
+        if matches!(c, 0x00..=0x1f) {
+            warn!(
+                "wrong Char value - special character ({:#04x}) (tag={})",
+                c, self.current_tag_num
+            );
+        }
+        if matches!(c, 0x80..=0xff) {
+            warn!(
+                "value of Char value - outside ASCII range ({:#04x}) (tag={})",
+                c, self.current_tag_num
+            );
+        }
+    }
+
+    /// Use any ASCII character except control characters.
     pub fn serialize_char(&mut self, c: &Char) {
+        self.validate_char(c);
         self.output.push(*c);
     }
 
     /// Serialize string containing one or more space-delimited single
     /// character values, e.g. “2 A F”.
     pub fn serialize_multiple_char_value(&mut self, mcv: &MultipleCharValue) {
+        if mcv.is_empty() {
+            warn!("empty MutlipleCharValue (tag={})", self.current_tag_num);
+        }
         for c in mcv {
+            self.validate_char(c);
             self.output.push(*c);
             self.output.push(b' ');
         }
@@ -188,13 +216,25 @@ impl Serializer {
     /// Serialize alphanumeric free-format strings can include any character
     /// except control characters.
     pub fn serialize_string(&mut self, input: &FixStr) {
+        if input.is_empty() {
+            warn!("empty String (tag={})", self.current_tag_num);
+        }
         self.output.extend_from_slice(input.as_bytes());
     }
 
     /// Serialize string containing one or more space-delimited multiple
     /// character values, e.g. “AV AN A”.
     pub fn serialize_multiple_string_value(&mut self, input: &MultipleStringValue) {
+        if input.is_empty() {
+            warn!("empty MultipleStringValue (tag={})", self.current_tag_num);
+        }
         for s in input {
+            if s.is_empty() {
+                warn!(
+                    "empty MultipleStringValue element (tag={})",
+                    self.current_tag_num
+                );
+            }
             self.output.extend_from_slice(s.as_bytes());
             self.output.push(b' ');
         }
@@ -370,11 +410,17 @@ impl Serializer {
     /// Serialize raw data with no format or content restrictions,
     /// or a character string encoded as specified by MessageEncoding(347).
     pub fn serialize_data(&mut self, data: &Data) {
+        if data.is_empty() {
+            warn!("empty Data (tag={})", self.current_tag_num);
+        }
         self.output.extend_from_slice(data);
     }
 
     /// Serialize XML document.
     pub fn serialize_xml(&mut self, xml_data: &XmlData) {
+        if xml_data.is_empty() {
+            warn!("empty XmlData (tag={})", self.current_tag_num);
+        }
         self.output.extend_from_slice(xml_data);
     }
 
@@ -391,6 +437,9 @@ impl Serializer {
     where
         T: Copy + Into<&'static [u8]>,
     {
+        if values.is_empty() {
+            warn!("empty enum collection (tag={})", self.current_tag_num);
+        }
         for value in values {
             self.output.extend_from_slice((*value).into());
             self.output.push(b' ');

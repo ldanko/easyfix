@@ -15,6 +15,7 @@ itoa = "1.0"
 rust_decimal = "1.22"
 serde = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [build-dependencies]
 easyfix-messages-gen = { version = "0.5.1", path = "easyfix-messages-gen" }
