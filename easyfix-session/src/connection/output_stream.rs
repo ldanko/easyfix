@@ -10,7 +10,7 @@ use tokio::{
     sync::mpsc::UnboundedReceiver,
     time::{Duration, Instant},
 };
-use tokio_stream::{Elapsed, StreamExt};
+use tokio_stream::StreamExt;
 use tracing::{debug, instrument};
 
 use crate::{messages_storage::MessagesStorage, session::Session, DisconnectReason, SenderMsg};
@@ -49,7 +49,15 @@ fn fill_header<S: MessagesStorage>(message: &mut FixtMessage, session: &Session<
     state.set_last_sent_time(Instant::now());
 }
 
-#[instrument(name = "serialize", level = "trace", skip_all, fields(msg_seq_num = message.header.msg_seq_num, msg_type = ?message.msg_type()))]
+#[instrument(
+    name = "serialize",
+    level = "trace",
+    skip_all,
+    fields(
+        msg_seq_num = message.header.msg_seq_num,
+        msg_type = ?message.msg_type()
+    )
+)]
 fn output_handler<S: MessagesStorage>(message: &FixtMessage, session: &Session<S>) -> Vec<u8> {
     // TODO: fn serialize_to(&mut buf) / fn serialize_to_buf(&mut buf)
     let buffer = message.serialize();
@@ -88,8 +96,7 @@ pub(crate) fn output_stream<S: MessagesStorage>(
             }
         }
     };
-    stream.timeout(timeout_duration).map(|res| match res {
-        Ok(event) => event,
-        Err(Elapsed { .. }) => OutputEvent::Timeout,
-    })
+    stream
+        .timeout(timeout_duration)
+        .map(|res| res.unwrap_or(OutputEvent::Timeout))
 }

@@ -8,7 +8,7 @@ use easyfix_messages::{
 };
 use futures_util::Stream;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tracing::{debug, error, info};
+use tracing::{debug, info, warn};
 
 use super::Disconnect;
 
@@ -90,7 +90,7 @@ async fn input_handler(
             if buffer.is_empty() {
                 return Err(Disconnect);
             } else {
-                error!("Connection reset by peer");
+                warn!("Connection reset by peer");
                 return Err(Disconnect);
             }
         }

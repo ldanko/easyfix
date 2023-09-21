@@ -126,6 +126,6 @@ pub fn new_header(msg_type: MsgType) -> Header {
 }
 
 pub fn new_trailer() -> Trailer {
-    // XXX: all required fields overwritten before serialization (if not set)
+    // XXX: all required fields overwritten before serialization
     Trailer::default()
 }

@@ -90,11 +90,7 @@ trait MessageExt {
 
 impl MessageExt for FixtMessage {
     fn resend_as_gap_fill(&self) -> bool {
-        match (self.msg_cat(), self.msg_type()) {
-            (MsgCat::App, _) => false,
-            (MsgCat::Admin, MsgType::Reject) => false,
-            (MsgCat::Admin, _) => true,
-        }
+        matches!(self.msg_cat(), MsgCat::Admin) && !matches!(self.msg_type(), MsgType::Reject)
     }
 }
 
