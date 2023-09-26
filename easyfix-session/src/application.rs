@@ -146,18 +146,51 @@ impl Drop for FixEventInternal {
     }
 }
 
+/// FIX protolol events.
 #[derive(Debug)]
 pub enum FixEvent<'a> {
+    /// Session created.
     Created(&'a SessionId),
+
+    /// Successfull Logon<A> messages exchange.
+    ///
+    /// Use `Sender` to send messages to connected peer.
     Logon(&'a SessionId, Sender),
+
+    /// Session disconnected.
     Logout(&'a SessionId, DisconnectReason),
+
+    /// New application message received.
+    ///
+    /// Use `InputResponder` to reject the message or to force logut or
+    /// disconnection.
     AppMsgIn(Box<FixtMessage>, InputResponder<'a>),
+
+    /// New administration message received.
+    ///
+    /// Use `InputResponder` to reject the message or to force logut or
+    /// disconnection.
     AdmMsgIn(Box<FixtMessage>, InputResponder<'a>),
-    //
+
+    /// Application message is ready to be send.
+    ///
+    /// Use `Responder` to change the message to GapFill or to discard it.
+    ///
+    /// This event may happen after session disconnection when output queue
+    /// still has messages to send. In such case all messages will be stored
+    /// and will be available thorough ResendRequest<2>.
     AppMsgOut(&'a mut FixtMessage, &'a mut Responder), // TODO: Try pass by value but bind named
-    // ref to the struct
+
+    /// Administration message is ready to be send.
+    ///
+    /// Use `Responder` to change the message to GapFill or to discard it.
+    ///
+    /// This event may happen after session disconnection when output queue
+    /// still has messages to send. In such case all messages will be stored
+    /// and will be available thorough ResendRequest<2>.
     AdmMsgOut(&'a mut FixtMessage),
-    //
+
+    /// Failed to deserialize input message.
     DeserializeError(&'a SessionId, &'a DeserializeError),
 }
 
