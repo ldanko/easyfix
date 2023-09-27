@@ -10,14 +10,14 @@ use futures_util::Stream;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{debug, info, warn};
 
-use super::Disconnect;
-
 pub enum InputEvent {
     Message(Box<FixtMessage>),
     DeserializeError(DeserializeError),
     IoError(io::Error),
     Timeout,
 }
+
+struct Disconnect;
 
 fn process_garbled_data(buf: &mut BytesMut) {
     let len = buf.len();

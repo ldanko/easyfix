@@ -90,8 +90,10 @@ pub(crate) fn output_stream<S: MessagesStorage>(
                     }
                 }
                 SenderMsg::Disconnect(reason) => {
+                    // Close stream, but don't break the loop now.
+                    // It's possible there are still messages inside.
+                    receiver.close();
                     yield OutputEvent::Disconnect(reason);
-                    break;
                 },
             }
         }

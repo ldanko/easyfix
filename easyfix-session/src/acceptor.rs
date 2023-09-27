@@ -12,7 +12,7 @@ use easyfix_messages::fields::FixString;
 use futures::{self, Stream};
 use pin_project::pin_project;
 use tokio::net::TcpListener;
-use tracing::{error, info, info_span, warn, Instrument};
+use tracing::{info, info_span, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
@@ -169,17 +169,12 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             let settings = settings.clone();
             let emitter = emitter.clone();
             tokio::task::spawn_local(async move {
-                match acceptor_connection(tcp_stream, settings, sessions, active_sessions, emitter)
+                acceptor_connection(tcp_stream, settings, sessions, active_sessions, emitter)
                     .instrument(connection_span.clone())
-                    .await
-                {
-                    Ok(()) => connection_span.in_scope(|| {
-                        info!("Connection closed");
-                    }),
-                    Err(error) => connection_span.in_scope(|| {
-                        error!("Connection closed with error: {}", error);
-                    }),
-                }
+                    .await;
+                connection_span.in_scope(|| {
+                    info!("Connection closed");
+                });
             });
         }
     }

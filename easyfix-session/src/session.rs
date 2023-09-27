@@ -16,7 +16,6 @@ use tracing::{error, info, instrument, trace, warn};
 
 use crate::{
     application::{Emitter, FixEventInternal, InputResponderMsg, Responder},
-    connection::Disconnect,
     messages_storage::MessagesStorage,
     new_header, new_trailer,
     session_id::SessionId,
@@ -44,6 +43,21 @@ enum VerifyError {
         msg_seq_num: SeqNum,
         next_target_msg_seq_num: SeqNum,
     },
+    #[error("User rejected ({reason:?}: {text})")]
+    UserForcedReject {
+        ref_msg_type: FixString,
+        ref_seq_num: SeqNum,
+        reason: SessionRejectReason,
+        text: FixString,
+        ref_tag_id: Option<i64>,
+    },
+    #[error("User rejected with Logout<5> ({})", .text.as_ref().map(FixString::as_utf8).unwrap_or_default())]
+    UserForcedLogout {
+        text: Option<FixString>,
+        disconnect: bool,
+    },
+    #[error("User disconnected: {reason:?}")]
+    UserForcedDisconnect { reason: Option<String> },
 }
 
 impl VerifyError {
@@ -299,33 +313,19 @@ impl<S: MessagesStorage> Session<S> {
                     text,
                     ref_tag_id,
                 }) => {
-                    warn!("User rejected ({reason:?}: {text})");
-                    self.send_reject(
-                        &mut self.state().borrow_mut(),
+                    return Err(VerifyError::UserForcedReject {
                         ref_msg_type,
                         ref_seq_num,
                         reason,
                         text,
                         ref_tag_id,
-                    );
+                    })
                 }
                 Ok(InputResponderMsg::Logout { text, disconnect }) => {
-                    error!(
-                        "User rejected with Logout<5> ({})",
-                        text.as_ref().map(FixString::as_utf8).unwrap_or_default()
-                    );
-                    let mut state = self.state.borrow_mut();
-                    self.send_logout(&mut state, text);
-                    if disconnect {
-                        self.disconnect(&mut state, DisconnectReason::UserForcedDisconnect);
-                    }
+                    return Err(VerifyError::UserForcedLogout { text, disconnect })
                 }
                 Ok(InputResponderMsg::Disconnect { reason }) => {
-                    error!("User disconnected: {reason:?}");
-                    self.disconnect(
-                        &mut self.state.borrow_mut(),
-                        DisconnectReason::UserForcedDisconnect,
-                    );
+                    return Err(VerifyError::UserForcedDisconnect { reason })
                 }
                 Err(_) => {}
             }
@@ -451,12 +451,36 @@ impl<S: MessagesStorage> Session<S> {
         state.set_resend_range(Some(begin_seq_no..=msg_seq_num - 1));
     }
 
+    /// Send FIX message.
     fn send(&self, msg: Box<Message>) {
-        self.sender.send(msg);
+        if let Err(msg) = self.sender.send(msg) {
+            // This should never happen.
+            // See `fn input_loop()` and `fn output_loop()` in connection.rs
+            // Output loop always waits for input loop to finish, so it's not
+            // possible that output queue is closed when input message is still
+            // being processed.
+            unreachable!(
+                "Can't send message {:?}/{} - output stream is closed",
+                msg.msg_type(),
+                msg.header.msg_seq_num
+            );
+        }
     }
 
+    /// Send FIXT message.
     fn send_raw(&self, msg: Box<FixtMessage>) {
-        self.sender.send_raw(msg);
+        if let Err(msg) = self.sender.send_raw(msg) {
+            // This should never happen.
+            // See `fn input_loop()` and `fn output_loop()` in connection.rs
+            // Output loop always waits for input loop to finish, so it's not
+            // possible that output queue is closed when input message is still
+            // being processed.
+            unreachable!(
+                "Can't send message {:?}/{} - output stream is closed",
+                msg.msg_type(),
+                msg.header.msg_seq_num
+            );
+        }
     }
 
     pub(crate) async fn emit_logout(&self, reason: DisconnectReason) {
@@ -477,6 +501,11 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     pub(crate) fn disconnect(&self, state: &mut State<S>, reason: DisconnectReason) {
+        if self.sender.is_closed() {
+            info!("already disconnected");
+            return;
+        }
+
         info!("disconnecting");
 
         // XXX: Emit logout in connection handler instead of here,
@@ -685,7 +714,7 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_logout(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_logout(&self, message: Box<FixtMessage>) -> Result<DisconnectReason, VerifyError> {
         if self.session_settings.verify_logout {
             self.verify(message, true, true).await?;
         } else if let Err(e) = self.verify(message, false, false).await {
@@ -712,13 +741,14 @@ impl<S: MessagesStorage> Session<S> {
             state.reset();
         }
 
-        self.disconnect(&mut state, disconnect_reason);
-
-        Ok(())
+        Ok(disconnect_reason)
     }
 
     #[instrument(level = "trace", skip_all, err, ret)]
-    async fn on_logon(&self, message: Box<FixtMessage>) -> Result<Option<Disconnect>, VerifyError> {
+    async fn on_logon(
+        &self,
+        message: Box<FixtMessage>,
+    ) -> Result<Option<DisconnectReason>, VerifyError> {
         let (
             enabled,
             initiate,
@@ -746,12 +776,12 @@ impl<S: MessagesStorage> Session<S> {
 
         if !enabled {
             error!("Session is not enabled for logon");
-            return Ok(Some(Disconnect));
+            return Ok(Some(DisconnectReason::InvalidLogonState));
         }
 
         if !self.is_logon_time(message.header.sending_time) {
             error!("Received logon outside of valid logon time");
-            return Ok(Some(Disconnect));
+            return Ok(Some(DisconnectReason::InvalidLogonState));
         }
 
         let msg_seq_num = message.header.msg_seq_num;
@@ -774,7 +804,7 @@ impl<S: MessagesStorage> Session<S> {
 
         if should_send_logon && !reset_received {
             error!("Received logon response before sending request");
-            return Ok(Some(Disconnect));
+            return Ok(Some(DisconnectReason::InvalidLogonState));
         }
 
         if !initiate && self.session_settings.reset_on_logon {
@@ -803,7 +833,7 @@ impl<S: MessagesStorage> Session<S> {
                     error!(error_msg);
                     let err = FixString::from_ascii_lossy(error_msg.into_bytes());
                     self.send_logout(&mut state, Some(err));
-                    return Ok(Some(Disconnect));
+                    return Ok(Some(DisconnectReason::InvalidLogonState));
                 }
             }
         }
@@ -917,7 +947,7 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     #[instrument(name = "on_msg", level = "trace", skip_all, fields(msg_seq_num = msg.header.msg_seq_num))]
-    pub async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<Disconnect> {
+    pub async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
         let msg_type = msg.header.msg_type;
         let msg_seq_num = msg.header.msg_seq_num;
         trace!(msg_type = format!("{msg_type:?}<{}>", msg_type.as_fix_str()));
@@ -928,20 +958,13 @@ impl<S: MessagesStorage> Session<S> {
             Message::ResendRequest(ref _resend_request) => self.on_resend_request(msg).await,
             Message::Reject(ref _reject) => self.on_reject(msg).await,
             Message::SequenceReset(ref _sequence_reset) => self.on_sequence_reset(msg).await,
-            Message::Logout(ref _logout) => {
-                if let Err(e) = self.on_logout(msg).await {
-                    Err(e)
-                } else {
-                    return Some(Disconnect);
-                }
-            }
+            Message::Logout(ref _logout) => match self.on_logout(msg).await {
+                Ok(disconnect_reason) => return Some(disconnect_reason),
+                Err(e) => Err(e),
+            },
             Message::Logon(ref _logon) => match self.on_logon(msg).await {
-                Ok(Some(Disconnect)) => {
-                    self.disconnect(
-                        &mut self.state().borrow_mut(),
-                        DisconnectReason::InvalidLogonState,
-                    );
-                    return Some(Disconnect);
+                Ok(Some(disconnect_reason)) => {
+                    return Some(disconnect_reason);
                 }
                 Ok(None) => Ok(()),
                 Err(e) => Err(e),
@@ -1008,25 +1031,52 @@ impl<S: MessagesStorage> Session<S> {
                     &mut state,
                     Some(FixString::from_ascii_lossy(e.to_string().into_bytes())),
                 );
-                self.disconnect(&mut state, DisconnectReason::MsgSeqNumTooLow);
+                return Some(DisconnectReason::MsgSeqNumTooLow);
             }
             Err(VerifyError::InvalidLogonState) => {
                 error!("disconnecting because of invalid logon state");
-                self.disconnect(
-                    &mut self.state.borrow_mut(),
-                    DisconnectReason::InvalidLogonState,
+                return Some(DisconnectReason::InvalidLogonState);
+            }
+            Err(VerifyError::UserForcedReject {
+                ref_msg_type,
+                ref_seq_num,
+                reason,
+                text,
+                ref_tag_id,
+            }) => {
+                warn!("User rejected ({reason:?}: {text})");
+                self.send_reject(
+                    &mut self.state().borrow_mut(),
+                    ref_msg_type,
+                    ref_seq_num,
+                    reason,
+                    text,
+                    ref_tag_id,
                 );
+            }
+            Err(VerifyError::UserForcedLogout { text, disconnect }) => {
+                error!(
+                    "User rejected with Logout<5> ({})",
+                    text.as_ref().map(FixString::as_utf8).unwrap_or_default()
+                );
+                let mut state = self.state.borrow_mut();
+                self.send_logout(&mut state, text);
+                if disconnect {
+                    return Some(DisconnectReason::UserForcedDisconnect);
+                }
+            }
+            Err(VerifyError::UserForcedDisconnect { reason }) => {
+                error!("User disconnected: {reason:?}");
+                return Some(DisconnectReason::UserForcedDisconnect);
             }
         }
 
-        //self.state.borrow_mut().last_inbound_message_time = Instant::now();
         None
     }
 
-    // TODO: Result<(), Disconnect>
-    pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<Disconnect> {
-        if let Some(disconnect) = self.on_message_in_impl(msg).await {
-            return Some(disconnect);
+    pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
+        if let Some(disconnect_reason) = self.on_message_in_impl(msg).await {
+            return Some(disconnect_reason);
         }
         loop {
             let Some(msg) = self.state.borrow_mut().retrieve_msg() else {
@@ -1039,8 +1089,8 @@ impl<S: MessagesStorage> Session<S> {
                 // Logon and ResendRequest processing has already been done,
                 // just increment the target sequence nummber.
                 self.state.borrow_mut().incr_next_target_msg_seq_num();
-            } else if let Some(disconnect) = self.on_message_in_impl(msg).await {
-                return Some(disconnect);
+            } else if let Some(disconnect_reason) = self.on_message_in_impl(msg).await {
+                return Some(disconnect_reason);
             }
         }
         None
@@ -1087,7 +1137,7 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    pub async fn on_deserialize_error(&self, error: DeserializeError) {
+    pub async fn on_deserialize_error(&self, error: DeserializeError) -> Option<DisconnectReason> {
         trace!("on_deserialize_error");
 
         // TODO: if msg_type is logon, handle missing CompId separately (disconnect)
@@ -1113,7 +1163,7 @@ impl<S: MessagesStorage> Session<S> {
                         b"MsgSeqNum(34) not found".to_vec(),
                     )),
                 );
-                self.disconnect(&mut state, DisconnectReason::MsgSeqNumNotFound);
+                return Some(DisconnectReason::MsgSeqNumNotFound);
             }
             DeserializeError::Reject {
                 msg_type,
@@ -1136,6 +1186,8 @@ impl<S: MessagesStorage> Session<S> {
                 error,
             ))
             .await;
+
+        None
     }
 
     pub async fn on_in_timeout(self: &Rc<Self>) {

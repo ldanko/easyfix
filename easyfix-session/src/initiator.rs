@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, net::SocketAddr, rc::Rc};
 
 use pin_project::pin_project;
 use tokio::net::TcpStream;
-use tracing::{error, info, info_span, Instrument};
+use tracing::{info, info_span, Instrument};
 
 use crate::{
     application::{events_channel, Emitter, EventStream},
@@ -62,7 +62,7 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
         let connection_span = info_span!("connection", %addr);
 
         tokio::task::spawn_local(async move {
-            match initiator_connection(
+            initiator_connection(
                 tcp_stream,
                 settings,
                 session_settings,
@@ -71,15 +71,10 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
                 emitter,
             )
             .instrument(connection_span.clone())
-            .await
-            {
-                Ok(()) => connection_span.in_scope(|| {
-                    info!("Connection closed");
-                }),
-                Err(error) => connection_span.in_scope(|| {
-                    error!("Connection closed with error: {}", error);
-                }),
-            }
+            .await;
+            connection_span.in_scope(|| {
+                info!("Connection closed");
+            });
         });
         Ok(())
     }

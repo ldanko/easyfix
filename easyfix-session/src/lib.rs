@@ -40,6 +40,7 @@ pub enum Error {
     SessionError(SessionError),
 }
 
+/// Disconnection reasons.
 #[derive(Clone, Copy, Debug)]
 pub enum DisconnectReason {
     /// Logout requested locally
@@ -72,46 +73,73 @@ pub struct Sender {
 }
 
 impl Sender {
+    /// Create new `Sender` instance.
     pub(crate) fn new(writer: mpsc::UnboundedSender<SenderMsg>) -> Sender {
         Sender { inner: writer }
     }
 
-    pub fn send_raw(&self, msg: Box<FixtMessage>) {
+    /// Send FIXT message.
+    ///
+    /// All header and trailer fields can be also adjusted when handing
+    /// `FixEvent::AppMsgOut` and `FixEvent::AdmMsgOut`.
+    ///
+    /// Before serialziation following header fields will be filled:
+    /// - begin_string (if not empty)
+    /// - msg_type
+    /// - sender_comp_id (if not empty)
+    /// - target_comp_id (if not empty)
+    /// - sending_time (if eq UtcTimestamp::MIN_UTC)
+    /// - msg_seq_num (if eq 0)
+    ///
+    /// The checksum(10) field value is always ignored - it is computed and set
+    /// after serialziation.
+    pub fn send_raw(&self, msg: Box<FixtMessage>) -> Result<(), Box<FixtMessage>> {
         if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)) {
             match msg.0 {
-                SenderMsg::Msg(msg) => error!(
-                    "failed to send {:?}<{}> message, receiver closed or dropped",
-                    msg.msg_type(),
-                    msg.msg_type().as_fix_str()
-                ),
+                SenderMsg::Msg(msg) => {
+                    error!(
+                        "failed to send {:?}<{}> message, receiver closed or dropped",
+                        msg.msg_type(),
+                        msg.msg_type().as_fix_str()
+                    );
+                    Err(msg)
+                }
                 SenderMsg::Disconnect(_) => unreachable!(),
             }
+        } else {
+            Ok(())
         }
     }
 
-    // TOOD: Check if send_raw is faster
-    pub fn send(&self, msg: Box<Message>) {
+    /// Send FIX message.
+    ///
+    /// FIXT message will be constructed internally using default values
+    /// for Header and Trailer.
+    ///
+    /// All header and trailer fields can be also adjusted when handing
+    /// `FixEvent::AppMsgOut` and `FixEvent::AdmMsgOut`.
+    pub fn send(&self, msg: Box<Message>) -> Result<(), Box<FixtMessage>> {
         let msg = Box::new(FixtMessage {
             header: Box::new(new_header(msg.msg_type())),
             body: msg,
             trailer: Box::new(new_trailer()),
         });
-        if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)) {
-            match msg.0 {
-                SenderMsg::Msg(msg) => error!(
-                    "failed to send {:?}<{}> message, receiver closed or dropped",
-                    msg.msg_type(),
-                    msg.msg_type().as_fix_str()
-                ),
-                SenderMsg::Disconnect(_) => unreachable!(),
-            }
-        }
+        self.send_raw(msg)
     }
 
+    /// Send disconnect message.
+    ///
+    /// Output stream will closs output queue so no more message can be send
+    /// after this one.
     pub(crate) fn disconnect(&self, reason: DisconnectReason) {
         if self.inner.send(SenderMsg::Disconnect(reason)).is_err() {
             error!("failed to disconnect, receiver closed or dropped");
         }
+    }
+
+    /// Check if sender can send more messages.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.is_closed()
     }
 }
 
