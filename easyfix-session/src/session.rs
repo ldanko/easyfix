@@ -149,7 +149,16 @@ impl<S: MessagesStorage> Session<S> {
             return true;
         }
 
-        Utc::now() - sending_time.timestamp()
+        // neg implementation for chrono::Duration modifies secs value,
+        // so abs value has to be calculated manually
+        let now = Utc::now();
+        let sending_timestamp = sending_time.timestamp();
+        let abs_time_diff = if now > sending_timestamp {
+            now - sending_timestamp
+        } else {
+            sending_timestamp - now
+        };
+        abs_time_diff
             <= chrono::Duration::from_std(self.session_settings.max_latency).expect("duration")
     }
 
