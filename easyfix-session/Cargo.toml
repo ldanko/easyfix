@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-session"
-version = "0.5.1"
+version = "0.6.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - session."
