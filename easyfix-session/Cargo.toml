@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-session"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - session."
@@ -13,7 +13,7 @@ async-stream = { workspace = true }
 async-trait = "0.1"
 bytes = "1.2"
 chrono = { workspace = true }
-easyfix-messages = { version = "0.5.1", path = "../easyfix-messages" }
+easyfix-messages = { version = "0.5.2", path = "../easyfix-messages" }
 futures = "0.3"
 futures-util = "0.3.26"
 once_cell = "1.16"
