@@ -457,7 +457,7 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    SessionRejectReason::IncorrectDataFormatForValue,
                 ))
             }
             _ => {}
