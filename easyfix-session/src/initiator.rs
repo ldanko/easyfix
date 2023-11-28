@@ -53,6 +53,7 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
 
         let addr = SocketAddr::from((self.settings.host, self.settings.port));
         let tcp_stream = TcpStream::connect(addr).await?;
+        tcp_stream.set_nodelay(true)?;
         let emitter = self.emitter.clone();
         let settings = self.settings.clone();
         let session_settings = self.session_settings.clone();

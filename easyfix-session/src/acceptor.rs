@@ -157,6 +157,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         let listener = TcpListener::bind(&address).await?;
         loop {
             let (tcp_stream, peer_addr) = listener.accept().await?;
+            tcp_stream.set_nodelay(true)?;
             let connection_span = info_span!("connection", %peer_addr);
 
             connection_span.in_scope(|| {
