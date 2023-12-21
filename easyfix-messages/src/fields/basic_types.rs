@@ -40,6 +40,7 @@ pub type MultipleStringValue = Vec<FixString>;
 
 pub use crate::{country::Country, currency::Currency};
 pub type Exchange = [u8; 4];
+// TODO: don't use Vec here
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
@@ -68,6 +69,7 @@ pub type UtcDateOnly = NaiveDate;
 pub type LocalMktTime = NaiveTime;
 pub type LocalMktDate = NaiveDate;
 
+// TODO: don't use Vec here
 pub type TzTimestamp = Vec<u8>;
 pub type TzTimeOnly = Vec<u8>;
 
@@ -75,6 +77,7 @@ pub type Length = u16;
 pub type Data = Vec<u8>;
 pub type XmlData = Data;
 
+// TODO: don't use Vec here
 pub type Tenor = Vec<u8>;
 
 #[derive(Debug)]
@@ -623,7 +626,7 @@ where
     //     }
     // }
 
-    let [b'.', buf@..] = buf else {
+    let [b'.', buf @ ..] = buf else {
         return Err(de::Error::custom("incorrecct data format for UtcTimestamp"));
     };
 
