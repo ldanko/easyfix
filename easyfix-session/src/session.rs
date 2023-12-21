@@ -761,7 +761,9 @@ impl<S: MessagesStorage> Session<S> {
         ) = {
             let state = self.state.borrow_mut();
 
-            let Message::Logon(ref logon) = *message.body else { unreachable!() };
+            let Message::Logon(ref logon) = *message.body else {
+                unreachable!()
+            };
             (
                 state.enabled(),
                 state.initiate(),
@@ -1080,7 +1082,7 @@ impl<S: MessagesStorage> Session<S> {
         }
         loop {
             let Some(msg) = self.state.borrow_mut().retrieve_msg() else {
-                break
+                break;
             };
 
             info!("Processing queued message {}", msg.header.msg_seq_num);

@@ -125,12 +125,10 @@ pub(crate) async fn acceptor_connection<S>(
     let (sender, receiver) = mpsc::unbounded_channel();
     let sender = Sender::new(sender);
 
-    let Some((session_settings, session_state)) = sessions
-        .borrow()
-        .get_session(&session_id) else {
-            error!("failed to establish new session: unknown session id");
-            return;
-        };
+    let Some((session_settings, session_state)) = sessions.borrow().get_session(&session_id) else {
+        error!("failed to establish new session: unknown session id");
+        return;
+    };
     register_sender(session_id.clone(), sender.clone());
     let session = Rc::new(Session::new(
         settings,
