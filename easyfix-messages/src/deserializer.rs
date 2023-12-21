@@ -1208,7 +1208,7 @@ impl<'de> Deserializer<'de> {
                 let naive_date_time = naive_date
                     .and_hms_nano_opt(hour, min, sec, fraction_of_second)
                     .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))?;
-                let timestamp = DateTime::from_utc(naive_date_time, Utc);
+                let timestamp = Utc.from_utc_datetime(&naive_date_time);
 
                 match precision {
                     0 => Ok(UtcTimestamp::with_secs(timestamp)),

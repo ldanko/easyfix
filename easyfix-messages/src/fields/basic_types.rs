@@ -3,7 +3,7 @@ use std::{borrow, fmt, mem, ops};
 use chrono::Timelike;
 pub use chrono::{
     format::{DelayedFormat, StrftimeItems},
-    DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc,
+    DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
 pub use rust_decimal::Decimal;
 use serde::{
@@ -730,7 +730,7 @@ impl<'de> Visitor<'de> for UtcTimestampVisitor {
                 let naive_date_time = naive_date
                     .and_hms_nano_opt(hour, min, sec, fraction_of_second)
                     .ok_or_else(|| de::Error::custom("incorrecct data format for UtcTimestamp"))?;
-                let timestamp = DateTime::from_utc(naive_date_time, Utc);
+                let timestamp = Utc.from_utc_datetime(&naive_date_time);
 
                 match precision {
                     0 => Ok(UtcTimestamp::with_secs(timestamp)),
@@ -818,7 +818,7 @@ impl UtcTimestamp {
     pub fn with_secs(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
         UtcTimestamp {
-            timestamp: DateTime::from_utc(NaiveDateTime::from_timestamp_opt(secs, 0).unwrap(), Utc),
+            timestamp: Utc.from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, 0).unwrap()),
             precision: TimePrecision::Secs,
         }
     }
@@ -833,10 +833,8 @@ impl UtcTimestamp {
         let secs = date_time.timestamp();
         let nsecs = date_time.timestamp_subsec_millis() * 1_000_000;
         UtcTimestamp {
-            timestamp: DateTime::from_utc(
-                NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
-                Utc,
-            ),
+            timestamp: Utc
+                .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Millis,
         }
     }
@@ -847,10 +845,8 @@ impl UtcTimestamp {
         let secs = date_time.timestamp();
         let nsecs = date_time.timestamp_subsec_micros() * 1_000;
         UtcTimestamp {
-            timestamp: DateTime::from_utc(
-                NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
-                Utc,
-            ),
+            timestamp: Utc
+                .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Micros,
         }
     }
@@ -861,10 +857,8 @@ impl UtcTimestamp {
         let secs = date_time.timestamp();
         let nsecs = date_time.timestamp_subsec_nanos();
         UtcTimestamp {
-            timestamp: DateTime::from_utc(
-                NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap(),
-                Utc,
-            ),
+            timestamp: Utc
+                .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Nanos,
         }
     }
