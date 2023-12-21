@@ -609,8 +609,7 @@ impl Dictionary {
             root.get_child_element("components")?
                 .get_child_elements()
                 .map(Component::from_xml)
-                .collect::<Result<Vec<_>>>()?
-                .into_iter(),
+                .collect::<Result<Vec<_>>>()?,
         );
         self.components_by_name.extend(
             self.components
