@@ -86,6 +86,18 @@ pub struct FixStringError {
     value: u8,
 }
 
+impl FixStringError {
+    /// Returns the index of unexpected character.
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+
+    /// Returns the value of unexpected character.
+    pub fn value(&self) -> u8 {
+        self.value
+    }
+}
+
 impl fmt::Display for FixStringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
