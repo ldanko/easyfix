@@ -33,26 +33,22 @@ fn process_garbled_data(buf: &mut BytesMut) {
 }
 
 fn parse_message(bytes: &mut BytesMut) -> Result<Option<Box<FixtMessage>>, DeserializeError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
     debug!(
         "Raw data input :: {}",
         String::from_utf8_lossy(bytes).replace('\x01', "|")
     );
-    if bytes.is_empty() {
-        debug!("Decoding stream empty");
-        return Ok(None);
-    }
 
     let src_len = bytes.len();
 
     match raw_message(bytes) {
         Ok((leftover, raw_msg)) => {
-            let result = FixtMessage::from_raw_message(raw_msg);
+            let result = FixtMessage::from_raw_message(raw_msg).map(Some);
             let leftover_len = leftover.len();
             bytes.split_to(src_len - leftover_len).freeze();
-            match result {
-                Err(e) => Err(e),
-                Ok(msg) => Ok(Some(msg)),
-            }
+            result
         }
         Err(RawMessageError::Incomplete) => Ok(None),
         Err(RawMessageError::Garbled) => {

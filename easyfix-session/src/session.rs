@@ -64,15 +64,15 @@ impl VerifyError {
     fn invalid_time() -> VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::SendingtimeAccuracyProblem,
-            tag: None,
+            tag: Some(FieldTag::SendingTime),
             logout: false,
         }
     }
 
-    fn invalid_comp_id() -> VerifyError {
+    fn invalid_comp_id(field_tag: FieldTag) -> VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::CompidProblem,
-            tag: None,
+            tag: Some(field_tag),
             logout: true,
         }
     }
@@ -92,7 +92,7 @@ impl VerifyError {
     fn invalid_orig_time() -> VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::SendingtimeAccuracyProblem,
-            tag: None,
+            tag: Some(FieldTag::OrigSendingTime),
             logout: true,
         }
     }
@@ -154,9 +154,9 @@ impl<S: MessagesStorage> Session<S> {
             .contains(&time.timestamp().time())
     }
 
-    fn is_good_time(&self, sending_time: UtcTimestamp) -> bool {
+    fn check_sending_time(&self, sending_time: UtcTimestamp) -> Result<(), VerifyError> {
         if !self.session_settings.check_latency {
-            return true;
+            return Ok(());
         }
 
         // neg implementation for chrono::Duration modifies secs value,
@@ -168,8 +168,14 @@ impl<S: MessagesStorage> Session<S> {
         } else {
             sending_timestamp - now
         };
-        abs_time_diff
-            <= chrono::Duration::from_std(self.session_settings.max_latency).expect("duration")
+        let max_latency =
+            chrono::Duration::from_std(self.session_settings.max_latency).expect("duration");
+        if abs_time_diff > max_latency {
+            warn!("SendingTime<52> verification failed: abs_time_diff: {abs_time_diff:?}, max_latency: {max_latency:?}");
+            Err(VerifyError::invalid_time())
+        } else {
+            Ok(())
+        }
     }
 
     fn is_target_too_high(state: &State<S>, msg_seq_num: SeqNum) -> bool {
@@ -180,13 +186,20 @@ impl<S: MessagesStorage> Session<S> {
         msg_seq_num < state.next_target_msg_seq_num()
     }
 
-    fn is_correct_comp_id(&self, sender_comp_id: &FixStr, target_comp_id: &FixStr) -> bool {
+    fn check_comp_id(
+        &self,
+        sender_comp_id: &FixStr,
+        target_comp_id: &FixStr,
+    ) -> Result<(), VerifyError> {
         if !self.session_settings.check_comp_id {
-            return true;
+            Ok(())
+        } else if self.session_settings.session_id.sender_comp_id() != target_comp_id {
+            Err(VerifyError::invalid_comp_id(FieldTag::TargetCompId))
+        } else if self.session_settings.session_id.target_comp_id() != sender_comp_id {
+            Err(VerifyError::invalid_comp_id(FieldTag::SenderCompId))
+        } else {
+            Ok(())
         }
-
-        self.session_settings.session_id.sender_comp_id() == target_comp_id
-            && self.session_settings.session_id.target_comp_id() == sender_comp_id
     }
 
     fn should_send_reset(&self, state: &State<S>) -> bool {
@@ -197,32 +210,27 @@ impl<S: MessagesStorage> Session<S> {
             && state.next_sender_msg_seq_num() == 1
     }
 
-    fn valid_logon_state(state: &State<S>, msg_type: MsgType) -> bool {
+    fn check_logon_state(state: &State<S>, msg_type: MsgType) -> Result<(), VerifyError> {
         if (msg_type == MsgType::Logon && state.reset_sent()) || state.reset_received() {
-            return true;
-        }
-        if (msg_type == MsgType::Logon && !state.logon_received())
+            Ok(())
+        } else if (msg_type == MsgType::Logon && !state.logon_received())
             || (msg_type != MsgType::Logon && state.logon_received())
         {
-            return true;
+            Ok(())
+        } else if msg_type == MsgType::Logout && state.logon_sent() {
+            Ok(())
+        } else if msg_type != MsgType::Logout && state.logout_sent() {
+            Ok(())
+        } else if msg_type == MsgType::SequenceReset {
+            Ok(())
+        } else if msg_type == MsgType::Reject {
+            Ok(())
+        } else {
+            Err(VerifyError::InvalidLogonState)
         }
-        if msg_type == MsgType::Logout && state.logon_sent() {
-            return true;
-        }
-        if msg_type != MsgType::Logout && state.logout_sent() {
-            return true;
-        }
-        if msg_type == MsgType::SequenceReset {
-            return true;
-        }
-        if msg_type == MsgType::Reject {
-            return true;
-        }
-
-        false
     }
 
-    #[instrument(level = "trace", skip_all, err, ret)]
+    #[instrument(skip_all, err)]
     async fn verify(
         &self,
         msg: Box<FixtMessage>,
@@ -238,16 +246,11 @@ impl<S: MessagesStorage> Session<S> {
 
         let state = self.state.borrow();
 
-        if !Self::valid_logon_state(&state, msg.header.msg_type) {
-            error!("Invalid logon state");
-            Err(VerifyError::InvalidLogonState)
-        } else if !self.is_good_time(sending_time) {
-            warn!("SendingTime<52> verification failed");
-            Err(VerifyError::invalid_time())
-        } else if !self.is_correct_comp_id(sender_comp_id, target_comp_id) {
-            error!("CompID verification failed");
-            Err(VerifyError::invalid_comp_id())
-        } else if check_too_high && Self::is_target_too_high(&state, msg_seq_num) {
+        Self::check_logon_state(&state, msg.header.msg_type)?;
+        self.check_sending_time(sending_time)?;
+        self.check_comp_id(sender_comp_id, target_comp_id)?;
+
+        if check_too_high && Self::is_target_too_high(&state, msg_seq_num) {
             warn!(
                 "Target MsgSeqNum too high, expected {}, got {msg_seq_num}",
                 state.next_target_msg_seq_num()
@@ -948,7 +951,15 @@ impl<S: MessagesStorage> Session<S> {
         ret
     }
 
-    #[instrument(name = "on_msg", level = "trace", skip_all, fields(msg_seq_num = msg.header.msg_seq_num))]
+    #[instrument(
+        name = "on_msg",
+        level = "trace",
+        skip_all,
+        fields(
+            msg_seq_num = msg.header.msg_seq_num,
+            msg_type = ?msg.msg_type()
+            )
+        )]
     pub async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
         let msg_type = msg.header.msg_type;
         let msg_seq_num = msg.header.msg_seq_num;
@@ -971,16 +982,10 @@ impl<S: MessagesStorage> Session<S> {
                 Ok(None) => Ok(()),
                 Err(e) => Err(e),
             },
-            _ => {
-                let verify_result = self.verify(msg, true, true).await;
-                if let Err(e) = verify_result {
-                    error!("message verification failed: {e:?}",);
-                    Err(e)
-                } else {
-                    self.state.borrow_mut().incr_next_target_msg_seq_num();
-                    Ok(())
-                }
-            }
+            _ => self
+                .verify(msg, true, true)
+                .await
+                .map(|_| self.state.borrow_mut().incr_next_target_msg_seq_num()),
         };
 
         match result {
