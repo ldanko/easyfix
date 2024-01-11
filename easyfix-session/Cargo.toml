@@ -10,7 +10,6 @@ edition = "2021"
 
 [dependencies]
 async-stream = { workspace = true }
-async-trait = "0.1"
 bytes = "1.2"
 chrono = { workspace = true }
 easyfix-messages = { version = "0.5.3", path = "../easyfix-messages" }
