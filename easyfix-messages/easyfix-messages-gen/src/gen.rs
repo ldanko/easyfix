@@ -354,7 +354,11 @@ impl Generator {
 
         let begin_string = Literal::byte_string(&self.begin_string);
         let fields_names = &self.fields_names;
-        let fields_names_as_str: Vec<_> = self.fields_names.iter().map(|f| f.to_string()).collect();
+        let fields_names_as_bytes: Vec<_> = self
+            .fields_names
+            .iter()
+            .map(|f| Literal::byte_string(f.to_string().as_bytes()))
+            .collect();
         let fields_numbers = &self.fields_numbers;
         let fields_numbers_literals = self
             .fields_numbers
@@ -381,18 +385,32 @@ impl Generator {
 
             impl fmt::Display for FieldTag {
                 fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    match self {
-                        #(FieldTag::#fields_names => write!(f, #fields_names_as_str),)*
-                    }
+                    write!(f, "{}", self.as_fix_str())
                 }
             }
 
             impl FieldTag {
-                fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
+                const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
                     match tag_num {
                         #(#fields_numbers_literals => Some(FieldTag::#fields_names),)*
                         _ => None,
                     }
+                }
+
+                pub const fn as_bytes(&self) -> &'static [u8] {
+                    match self {
+                        #(FieldTag::#fields_names => #fields_names_as_bytes,)*
+                    }
+                }
+
+                pub const fn as_fix_str(&self) -> &'static FixStr {
+                    unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+                }
+            }
+
+            impl ToFixString for FieldTag {
+                fn to_fix_string(&self) -> FixString {
+                    self.as_fix_str().to_owned()
                 }
             }
 
