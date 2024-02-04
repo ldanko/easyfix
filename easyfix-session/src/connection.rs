@@ -2,11 +2,11 @@ use std::{
     cell::RefCell,
     collections::{hash_map::Entry, HashMap},
     rc::Rc,
+    sync::Mutex,
 };
 
 use easyfix_messages::messages::{FixtMessage, Message};
 use futures_util::{pin_mut, Stream};
-use once_cell::unsync::Lazy;
 use tokio::{
     self,
     io::{AsyncWrite, AsyncWriteExt},
@@ -34,31 +34,38 @@ use input_stream::{input_stream, InputEvent};
 mod output_stream;
 use output_stream::{output_stream, OutputEvent};
 
-// TODO: cfg(mt) on mt build
-static mut SENDERS: Lazy<HashMap<SessionId, Sender>> = Lazy::new(HashMap::new);
-
-fn senders() -> &'static HashMap<SessionId, Sender> {
-    Lazy::force(unsafe { &SENDERS })
-}
-
-fn senders_mut() -> &'static mut HashMap<SessionId, Sender> {
-    Lazy::force_mut(unsafe { &mut SENDERS })
-}
+static SENDERS: Mutex<Option<HashMap<SessionId, Sender>>> = Mutex::new(None);
 
 pub fn register_sender(session_id: SessionId, sender: Sender) {
-    if let Entry::Vacant(entry) = senders_mut().entry(session_id) {
+    if let Entry::Vacant(entry) = SENDERS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .entry(session_id)
+    {
         entry.insert(sender);
     }
 }
 
 pub fn unregister_sender(session_id: &SessionId) {
-    if senders_mut().remove(session_id).is_none() {
+    if SENDERS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .remove(session_id)
+        .is_none()
+    {
         // TODO: ERROR?
     }
 }
 
-pub fn sender(session_id: &SessionId) -> Option<&Sender> {
-    senders().get(session_id)
+pub fn sender(session_id: &SessionId) -> Option<Sender> {
+    SENDERS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .get(session_id)
+        .cloned()
 }
 
 // TODO: Remove?

@@ -15,7 +15,6 @@ chrono = { workspace = true }
 easyfix-messages = { version = "0.5.3", path = "../easyfix-messages" }
 futures = "0.3"
 futures-util = "0.3.26"
-once_cell = "1.16"
 pin-project = "1.0"
 serde = { workspace = true }
 thiserror = { workspace = true }
