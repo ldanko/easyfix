@@ -291,6 +291,17 @@ impl PartialEq<String> for FixStr {
     }
 }
 
+/// Creates a `FixString` using interpolation of runtime expressions, replacing
+/// invalid characters by `?`.
+///
+/// See [the formatting syntax documentation in `std::fmt`] for details.
+#[macro_export]
+macro_rules! fix_format {
+    ($($arg:tt)*) => {{
+        FixString::from_ascii_lossy(std::format!($($arg)*).into_bytes())
+    }}
+}
+
 // TODO: Optional feature for ISO 8859-1 encoded strings
 impl FixString {
     pub const fn new() -> FixString {
