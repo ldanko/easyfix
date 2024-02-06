@@ -120,16 +120,18 @@ impl FixStr {
     /// A FIX string slice ([`&FixStr`]) is made of bytes ([`u8`]), and a byte
     /// slice ([`&[u8]`][slice]) is made of bytes, so this function
     /// converts between the two. Not all byte slices are valid string slices,
-    /// however: [`&FixStr`] requires that it is valid ASCII.
-    /// `from_ascii()` checks to ensure that the bytes are valid ASCII,
-    /// and then does the conversion.
+    /// however: [`&FixStr`] requires that it is valid ASCII without controll
+    /// characters.
+    /// `from_ascii()` checks to ensure that the bytes are valid, and then does
+    /// the conversion.
     ///
     /// [`&FixStr`]: FixStr
     ///
-    /// If you are sure that the byte slice is valid ASCII, and you don't want
-    /// to incur the overhead of the validity check, there is an unsafe version
-    /// of this function, [`from_ascii_unchecked`], which has the same behavior
-    /// but skips the check.
+    /// If you are sure that the byte slice is valid ASCII without controll
+    /// characters, and you don't want to incur the overhead of the validity
+    /// check, there is an unsafe version of this function,
+    /// [`from_ascii_unchecked`], which has the same behavior but skips
+    /// the check.
     ///
     /// [`from_ascii_unchecked`]: FixStr::from_ascii_unchecked
     ///
@@ -143,14 +145,16 @@ impl FixStr {
     /// # Errors
     ///
     /// Returns `Err` if the slice is not ASCII.
-    pub fn from_ascii(buf: &[u8]) -> Result<&FixStr, FixStringError> {
-        for i in 0..buf.len() {
-            // SAFETY: `i` never exceeds buf.len()
-            let c = unsafe { *buf.get_unchecked(i) };
+    pub const fn from_ascii(buf: &[u8]) -> Result<&FixStr, FixStringError> {
+        let mut i = 0;
+        while i < buf.len() {
+            let c = buf[i];
             if !is_non_control_ascii_char(c) {
                 return Err(FixStringError { idx: i, value: c });
             }
+            i += 1;
         }
+        // SAFETY: `buf` validity checked just above.
         unsafe { Ok(FixStr::from_ascii_unchecked(buf)) }
     }
 
@@ -356,6 +360,8 @@ impl FixString {
         FixString(buf)
     }
 
+    /// Converts a slice of bytes to a `FixString`, replacing invalid
+    /// characters by `?`.
     pub fn from_ascii_lossy(mut buf: Vec<u8>) -> FixString {
         for i in 0..buf.len() {
             // SAFETY: `i` never exceeds buf.len()
