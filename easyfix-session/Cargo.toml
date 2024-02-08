@@ -25,3 +25,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3.16", features = ["env-filter", "json"]}
+easyfix-macros = { path = "../easyfix-macros" }

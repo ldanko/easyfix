@@ -1,7 +1,11 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::NaiveTime;
-use easyfix_messages::{fields::FixString, messages::Header};
+use easyfix_macros::fix_str;
+use easyfix_messages::{
+    fields::{FixStr, FixString},
+    messages::Header,
+};
 use easyfix_session::{
     acceptor::Acceptor,
     application::{AsEvent, FixEvent},
@@ -25,7 +29,7 @@ async fn acceptor() {
         auto_disconnect_after_no_heartbeat: 3,
     };
 
-    let mut acceptor = Acceptor::new(settings.clone(), Box::new(|| InMemoryStorage::new()));
+    let mut acceptor = Acceptor::new(settings.clone(), Box::new(|_| InMemoryStorage::new()));
     let begin_string = FixString::from_ascii_lossy(b"FIXT.1.1".to_vec());
     let sender_comp_id = settings.sender_comp_id.clone();
     let fix_string = |s: &str| FixString::from_ascii_lossy(s.as_bytes().to_vec());
@@ -44,8 +48,10 @@ async fn acceptor() {
                 session_id,
                 // session_time: UtcTimeOnly::from_hms(8, 0, 0)..=UtcTimeOnly::from_hms(16, 0, 0),
                 //logon_time: UtcTimeOnly::from_hms(7, 30, 0)..=UtcTimeOnly::from_hms(16, 30, 0),
-                session_time: NaiveTime::from_hms(0, 0, 0)..=NaiveTime::from_hms(23, 59, 59),
-                logon_time: NaiveTime::from_hms(0, 0, 0)..=NaiveTime::from_hms(23, 59, 59),
+                session_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                    ..=NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
+                logon_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+                    ..=NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
 
                 send_redundant_resend_requests: false,
                 check_comp_id: true,
@@ -55,11 +61,13 @@ async fn acceptor() {
                 reset_on_logon: false,
                 reset_on_logout: false,
                 reset_on_disconnect: false,
-                sender_default_appl_ver_id: FixString::from_ascii_lossy(b"9".to_vec()),
-                target_default_appl_ver_id: FixString::from_ascii_lossy(b"9".to_vec()),
+                sender_default_appl_ver_id: fix_str!("9").to_owned(),
+                target_default_appl_ver_id: fix_str!("9").to_owned(),
                 persist: false,
                 refresh_on_logon: false,
                 enable_next_expected_msg_seq_num: true,
+
+                verify_logout: true,
             },
         );
     };
@@ -75,20 +83,20 @@ async fn acceptor() {
         match entry.as_event() {
             FixEvent::Created(session_id) => info!("Session created: {}", session_id),
             FixEvent::Logon(session_id, sender) => {
-                info!("Logon: {}", session_id);
+                info!("Logon: {session_id}");
                 senders.insert(session_id.clone(), sender);
             }
-            FixEvent::Logout(session_id) => {
-                info!("Logout: {}", session_id);
+            FixEvent::Logout(session_id, reason) => {
+                info!("Logout: {session_id}, reason: {reason:?}");
                 senders.remove(session_id);
             }
-            FixEvent::AppMsgIn(mut msg) => {
+            FixEvent::AppMsgIn(mut msg, _responder) => {
                 info!("App input msg: {:?}", msg.msg_type());
                 let session_id = SessionId::from_input_msg(&msg);
                 reverse_route(&mut msg.header);
-                senders.get(&session_id).unwrap().send(msg).await;
+                let _ = senders.get(&session_id).unwrap().send_raw(msg);
             }
-            FixEvent::AdmMsgIn(msg) => info!("Adm input msg: {:?}", msg.msg_type()),
+            FixEvent::AdmMsgIn(msg, _responder) => info!("Adm input msg: {:?}", msg.msg_type()),
             FixEvent::AppMsgOut(msg, _responder) => {
                 info!("App output msg: {:?}", msg.msg_type());
                 _responder.do_not_send();
