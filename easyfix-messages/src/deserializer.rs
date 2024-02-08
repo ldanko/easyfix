@@ -36,6 +36,22 @@ impl fmt::Display for DeserializeError {
 
 impl Error for DeserializeError {}
 
+impl From<RawMessageError> for DeserializeError {
+    fn from(error: RawMessageError) -> Self {
+        match error {
+            RawMessageError::Incomplete => {
+                DeserializeError::GarbledMessage("Incomplete message data".to_owned())
+            }
+            RawMessageError::Garbled => {
+                DeserializeError::GarbledMessage("Message not well formed".to_owned())
+            }
+            RawMessageError::InvalidChecksum => {
+                DeserializeError::GarbledMessage("Invalid checksum".to_owned())
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum DeserializeErrorInternal {
     #[error("Incomplete")]
@@ -68,14 +84,14 @@ fn deserialize_checksum(bytes: &[u8]) -> Result<(&[u8], u8), RawMessageError> {
                 value = value
                     .checked_mul(10)
                     .and_then(|v| v.checked_add(n - b'0'))
-                    .ok_or(RawMessageError::Garbled)?;
+                    .ok_or(RawMessageError::InvalidChecksum)?;
             }
-            _ => return Err(RawMessageError::Garbled),
+            _ => return Err(RawMessageError::InvalidChecksum),
         }
     }
 
     if bytes[3] != b'\x01' {
-        return Err(RawMessageError::Garbled);
+        return Err(RawMessageError::InvalidChecksum);
     }
 
     Ok((&bytes[4..], value))
@@ -159,6 +175,8 @@ pub enum RawMessageError {
     Incomplete,
     #[error("Garbled")]
     Garbled,
+    #[error("Invalid checksum")]
+    InvalidChecksum,
 }
 
 impl From<DeserializeErrorInternal> for RawMessageError {
@@ -195,7 +213,7 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage), RawMessageError>
     let bytes = deserialize_tag(bytes, b"10=")?;
     let (bytes, checksum) = deserialize_checksum(bytes)?;
     if calculated_checksum != checksum {
-        return Err(RawMessageError::Garbled);
+        return Err(RawMessageError::InvalidChecksum);
     }
     Ok((
         bytes,

@@ -51,11 +51,9 @@ fn parse_message(bytes: &mut BytesMut) -> Result<Option<Box<FixtMessage>>, Deser
             result
         }
         Err(RawMessageError::Incomplete) => Ok(None),
-        Err(RawMessageError::Garbled) => {
+        Err(err) => {
             process_garbled_data(bytes);
-            Err(DeserializeError::GarbledMessage(
-                "Message not well formed".into(),
-            ))
+            Err(err.into())
         }
     }
 }
