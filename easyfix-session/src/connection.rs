@@ -285,7 +285,7 @@ impl<S: MessagesStorage> Connection<S> {
             // See `fn send()` and `fn send_raw()` from session.rs.
             input_closed_tx
                 .send(())
-                .expect("Failed to notify about closed inpout");
+                .expect("Failed to notify about closed inpuot");
 
             return;
         }

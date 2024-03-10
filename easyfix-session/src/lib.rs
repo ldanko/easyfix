@@ -130,7 +130,7 @@ impl Sender {
 
     /// Send disconnect message.
     ///
-    /// Output stream will closs output queue so no more message can be send
+    /// Output stream will close output queue so no more message can be send
     /// after this one.
     pub(crate) fn disconnect(&self, reason: DisconnectReason) {
         if self.inner.send(SenderMsg::Disconnect(reason)).is_err() {
