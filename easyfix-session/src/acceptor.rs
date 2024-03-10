@@ -118,26 +118,20 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     }
 
     pub fn logout(&self, session_id: &SessionId, reason: Option<FixString>) {
-        let session = {
-            let active_sessions = self.active_sessions.borrow();
-            let Some(session) = active_sessions.get(session_id) else {
-                warn!("logout: session {session_id} not found");
-                return;
-            };
-            session.clone()
+        let active_sessions = self.active_sessions.borrow();
+        let Some(session) = active_sessions.get(session_id) else {
+            warn!("logout: session {session_id} not found");
+            return;
         };
 
         session.send_logout(&mut session.state().borrow_mut(), reason);
     }
 
     pub fn disconnect(&self, session_id: &SessionId) {
-        let session = {
-            let active_sessions = self.active_sessions.borrow();
-            let Some(session) = active_sessions.get(session_id) else {
-                warn!("logout: session {session_id} not found");
-                return;
-            };
-            session.clone()
+        let active_sessions = self.active_sessions.borrow();
+        let Some(session) = active_sessions.get(session_id) else {
+            warn!("logout: session {session_id} not found");
+            return;
         };
 
         session.disconnect(
