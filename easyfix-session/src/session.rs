@@ -961,7 +961,7 @@ impl<S: MessagesStorage> Session<S> {
             msg_type = ?msg.msg_type()
             )
         )]
-    pub async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
+    async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
         let msg_type = msg.header.msg_type;
         let msg_seq_num = msg.header.msg_seq_num;
         trace!(msg_type = format!("{msg_type:?}<{}>", msg_type.as_fix_str()));
