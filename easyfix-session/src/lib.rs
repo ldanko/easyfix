@@ -137,11 +137,6 @@ impl Sender {
             error!("failed to disconnect, receiver closed or dropped");
         }
     }
-
-    /// Check if sender can send more messages.
-    pub(crate) fn is_closed(&self) -> bool {
-        self.inner.is_closed()
-    }
 }
 
 pub fn new_header(msg_type: MsgType) -> Header {
