@@ -44,6 +44,8 @@ pub(crate) struct State<S> {
     last_sent_time: Instant,
     last_received_time: Instant,
 
+    disconnected: bool,
+
     /// If this is anything other than zero it's the value of
     /// the 789/NextExpectedMsgSeqNum tag in the last Logon message sent.
     /// It is used to determine if the recipient has enough information
@@ -71,6 +73,7 @@ impl<S: MessagesStorage> State<S> {
             heart_bt_int: 10,
             last_sent_time: Instant::now(),
             last_received_time: Instant::now(),
+            disconnected: true,
             next_expected_msg_seq_num: 0,
             queue: Messages::new(),
             messages_storage,
@@ -223,5 +226,13 @@ impl<S: MessagesStorage> State<S> {
 
     pub fn reset(&mut self) {
         self.messages_storage.reset();
+    }
+
+    pub fn disconnected(&self) -> bool {
+        self.disconnected
+    }
+
+    pub fn set_disconnected(&mut self, disconnected: bool) {
+        self.disconnected = disconnected;
     }
 }

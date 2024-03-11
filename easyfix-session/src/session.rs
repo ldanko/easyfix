@@ -504,12 +504,13 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     pub(crate) fn disconnect(&self, state: &mut State<S>, reason: DisconnectReason) {
-        if self.sender.is_closed() {
+        if state.disconnected() {
             info!("already disconnected");
             return;
         }
 
         info!("disconnecting");
+        state.set_disconnected(true);
 
         // XXX: Emit logout in connection handler instead of here,
         //      so `Logout` event will be delivered after Logout
