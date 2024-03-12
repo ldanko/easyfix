@@ -292,39 +292,45 @@ impl<S: MessagesStorage> Connection<S> {
             return;
         }
 
+        let mut disconnect_reason = DisconnectReason::Disconnected;
+
         while let Some(event) = input_stream.next().await {
+            // Don't accept new messages if session is disconnected.
             if self.session.state().borrow().disconnected() {
                 info!("session disconnected, exit input processing");
-                break;
+                // Notify output loop that all input is processed so output queue can
+                // be safely closed.
+                // See `fn send()` and `fn send_raw()` from session.rs.
+                input_closed_tx
+                    .send(())
+                    .expect("Failed to notify about closed inpout");
+                return;
             }
             match event {
                 InputEvent::Message(msg) => {
                     if let Some(dr) = self.session.on_message_in(msg).await {
                         info!("disconnect ({dr:?}), exit input processing");
-                        self.session
-                            .disconnect(&mut self.session.state().borrow_mut(), dr);
+                        disconnect_reason = dr;
                         break;
                     }
                 }
                 InputEvent::DeserializeError(error) => {
                     if let Some(dr) = self.session.on_deserialize_error(error).await {
                         info!("disconnect ({dr:?}), exit input processing");
-                        self.session
-                            .disconnect(&mut self.session.state().borrow_mut(), dr);
+                        disconnect_reason = dr;
                         break;
                     }
                 }
                 InputEvent::IoError(error) => {
                     error!("Input error: {error:?}");
-                    self.session.disconnect(
-                        &mut self.session.state().borrow_mut(),
-                        DisconnectReason::IoError,
-                    );
+                    disconnect_reason = DisconnectReason::IoError;
                     break;
                 }
                 InputEvent::Timeout => self.session.on_in_timeout().await,
             }
         }
+        self.session
+            .disconnect(&mut self.session.state().borrow_mut(), disconnect_reason);
 
         // Notify output loop that all input is processed so output queue can
         // be safely closed.
