@@ -169,7 +169,7 @@ impl TryFrom<&str> for BasicType {
             "DATA" => Ok(BasicType::Data),
             "EXCHANGE" => Ok(BasicType::Exchange),
             "FLOAT" => Ok(BasicType::Float),
-            "INT" => Ok(BasicType::Int),
+            "INT" | "LONG" => Ok(BasicType::Int),
             "LANGUAGE" => Ok(BasicType::Language),
             "LENGTH" => Ok(BasicType::Length),
             "LOCALMKTDATE" => Ok(BasicType::LocalMktDate),
