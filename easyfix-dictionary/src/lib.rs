@@ -135,7 +135,6 @@ pub enum BasicType {
     Exchange,
     Float,
     Int,
-    Long,
     Language,
     Length,
     LocalMktDate,
