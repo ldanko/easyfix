@@ -476,9 +476,9 @@ impl Generator {
 
                 pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<FixtMessage>, DeserializeError> {
                     let begin_string = deserializer.begin_string();
-                    if begin_string != BEGIN_STRING {
-                        return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
-                    }
+                    // if begin_string != BEGIN_STRING {
+                    //     return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
+                    // }
 
                     let body_length = deserializer.body_length();
 
