@@ -299,7 +299,7 @@ impl Serializer {
     ///        milliseconds, 6 digits to convey microseconds, 9 digits
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn serialize_utc_timestamp(&mut self, input: &UtcTimestamp) {
-        write!(self.output, "{}", input.format("%Y%m%d-%H:%M:%S.%f"))
+        write!(self.output, "{}", input.format_precisely())
             .expect("UtcTimestamp serialization failed")
     }
 

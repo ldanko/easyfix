@@ -794,8 +794,8 @@ impl Serialize for UtcTimestamp {
     where
         S: Serializer,
     {
-        // TODO: make sure proper prcision is used
-        serializer.serialize_str(&self.format("%Y%m%d-%H:%M:%S.%f").to_string())
+        let formatted_timestamp = self.format_precisely().to_string();
+        serializer.serialize_str(&formatted_timestamp)
     }
 }
 
@@ -892,6 +892,16 @@ impl UtcTimestamp {
             timestamp: Utc
                 .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Nanos,
+        }
+    }
+
+    /// Formats timestamp with precision set inside the struct
+    pub fn format_precisely(&self) -> DelayedFormat<StrftimeItems> {
+        match self.precision {
+            TimePrecision::Secs => self.format("%Y%m%d-%H:%M:%S"),
+            TimePrecision::Millis => self.format("%Y%m%d-%H:%M:%S%.3f"),
+            TimePrecision::Micros => self.format("%Y%m%d-%H:%M:%S%.6f"),
+            TimePrecision::Nanos => self.format("%Y%m%d-%H:%M:%S%.9f"),
         }
     }
 
