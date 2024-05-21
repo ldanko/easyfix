@@ -932,7 +932,7 @@ impl UtcTimeOnly {
     /// input's precision is adjusted to requested one
     pub fn with_millis(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
-            timestamp: time.with_nanosecond(time.nanosecond() / 1_000_000).unwrap(),
+            timestamp: time,
             precision: TimePrecision::Millis,
         }
     }
@@ -941,7 +941,7 @@ impl UtcTimeOnly {
     /// input's precision is adjusted to requested one
     pub fn with_micros(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
-            timestamp: time.with_nanosecond(time.nanosecond() / 1_000).unwrap(),
+            timestamp: time,
             precision: TimePrecision::Micros,
         }
     }
