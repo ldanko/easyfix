@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-messages-gen"
-version = "0.5.3"
+version = "0.5.4"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - messages generator."
@@ -11,6 +11,6 @@ edition = "2021"
 [dependencies]
 anyhow = { workspace = true }
 convert_case = "0.6"
-easyfix-dictionary = { version = "0.3.1", path = "../../easyfix-dictionary" }
+easyfix-dictionary = { version = "0.3.2", path = "../../easyfix-dictionary" }
 proc-macro2 = "1.0"
 quote = "1.0"
