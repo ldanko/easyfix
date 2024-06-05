@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use easyfix_messages::fields::FixString;
+use easyfix_messages::fields::{FixString, SessionStatus};
 use futures::{self, Stream};
 use pin_project::pin_project;
 use tokio::net::TcpListener;
@@ -117,14 +117,19 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         };
     }
 
-    pub fn logout(&self, session_id: &SessionId, reason: Option<FixString>) {
+    pub fn logout(
+        &self,
+        session_id: &SessionId,
+        session_status: Option<SessionStatus>,
+        reason: Option<FixString>,
+    ) {
         let active_sessions = self.active_sessions.borrow();
         let Some(session) = active_sessions.get(session_id) else {
             warn!("logout: session {session_id} not found");
             return;
         };
 
-        session.send_logout(&mut session.state().borrow_mut(), reason);
+        session.send_logout(&mut session.state().borrow_mut(), session_status, reason);
     }
 
     pub fn disconnect(&self, session_id: &SessionId) {

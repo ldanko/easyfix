@@ -6,7 +6,7 @@ use std::{
 
 use easyfix_messages::{
     deserializer::DeserializeError,
-    fields::{FixString, SeqNum, SessionRejectReason},
+    fields::{FixString, SeqNum, SessionRejectReason, SessionStatus},
     messages::FixtMessage,
 };
 use futures::Stream;
@@ -33,6 +33,7 @@ pub(crate) enum InputResponderMsg {
         ref_tag_id: Option<i64>,
     },
     Logout {
+        session_status: Option<SessionStatus>,
         text: Option<FixString>,
         disconnect: bool,
     },
@@ -74,9 +75,18 @@ impl<'a> InputResponder<'a> {
             .unwrap();
     }
 
-    pub fn logout(self, text: Option<FixString>, disconnect: bool) {
+    pub fn logout(
+        self,
+        session_status: Option<SessionStatus>,
+        text: Option<FixString>,
+        disconnect: bool,
+    ) {
         self.sender
-            .send(InputResponderMsg::Logout { text, disconnect })
+            .send(InputResponderMsg::Logout {
+                session_status,
+                text,
+                disconnect,
+            })
             .unwrap();
     }
 

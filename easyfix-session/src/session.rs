@@ -4,7 +4,7 @@ use easyfix_messages::{
     deserializer::DeserializeError,
     fields::{
         DefaultApplVerId, EncryptMethod, FixStr, FixString, Int, MsgType, SeqNum,
-        SessionRejectReason, Utc, UtcTimestamp,
+        SessionRejectReason, SessionStatus, Utc, UtcTimestamp,
     },
     messages::{
         FieldTag, FixtMessage, Heartbeat, Logon, Logout, Message, MsgCat, Reject, ResendRequest,
@@ -53,6 +53,7 @@ enum VerifyError {
     },
     #[error("User rejected with Logout<5> ({})", .text.as_ref().map(FixString::as_utf8).unwrap_or_default())]
     UserForcedLogout {
+        session_status: Option<SessionStatus>,
         text: Option<FixString>,
         disconnect: bool,
     },
@@ -210,6 +211,8 @@ impl<S: MessagesStorage> Session<S> {
             && state.next_sender_msg_seq_num() == 1
     }
 
+    // current implementation is more readable than clippy proposal
+    #[allow(clippy::if_same_then_else)]
     fn check_logon_state(state: &State<S>, msg_type: MsgType) -> Result<(), VerifyError> {
         if (msg_type == MsgType::Logon && state.reset_sent()) || state.reset_received() {
             Ok(())
@@ -324,8 +327,16 @@ impl<S: MessagesStorage> Session<S> {
                         ref_tag_id,
                     })
                 }
-                Ok(InputResponderMsg::Logout { text, disconnect }) => {
-                    return Err(VerifyError::UserForcedLogout { text, disconnect })
+                Ok(InputResponderMsg::Logout {
+                    session_status,
+                    text,
+                    disconnect,
+                }) => {
+                    return Err(VerifyError::UserForcedLogout {
+                        session_status,
+                        text,
+                        disconnect,
+                    })
                 }
                 Ok(InputResponderMsg::Disconnect { reason }) => {
                     return Err(VerifyError::UserForcedDisconnect { reason })
@@ -381,8 +392,17 @@ impl<S: MessagesStorage> Session<S> {
         state.set_logon_sent(true);
     }
 
-    pub(crate) fn send_logout(&self, state: &mut State<S>, text: Option<FixString>) {
+    pub(crate) fn send_logout(
+        &self,
+        state: &mut State<S>,
+        session_status: Option<SessionStatus>,
+        text: Option<FixString>,
+    ) {
+        // User can add new fields to message definition, this way in most
+        // cases new field won't require changes here.
+        #[allow(clippy::needless_update)]
         self.send(Box::new(Message::Logout(Logout {
+            session_status,
             text,
             ..Default::default()
         })));
@@ -418,7 +438,6 @@ impl<S: MessagesStorage> Session<S> {
             ref_msg_type: Some(ref_msg_type),
             session_reject_reason: Some(reason),
             text: Some(text),
-            encoded_text: None,
             ..Default::default()
         })));
     }
@@ -735,6 +754,7 @@ impl<S: MessagesStorage> Session<S> {
             info!("received logout request");
             self.send_logout(
                 &mut state,
+                Some(SessionStatus::SessionLogoutComplete),
                 Some(FixString::from_ascii_lossy(b"Responding".to_vec())),
             );
             info!("sending logout response");
@@ -839,7 +859,11 @@ impl<S: MessagesStorage> Session<S> {
                     );
                     error!(error_msg);
                     let err = FixString::from_ascii_lossy(error_msg.into_bytes());
-                    self.send_logout(&mut state, Some(err));
+                    self.send_logout(
+                        &mut state,
+                        Some(SessionStatus::ReceivedNextExpectedMsgSeqNumTooHigh),
+                        Some(err),
+                    );
                     return Ok(Some(DisconnectReason::InvalidLogonState));
                 }
             }
@@ -1031,13 +1055,14 @@ impl<S: MessagesStorage> Session<S> {
                     tag,
                 );
                 if logout {
-                    self.send_logout(&mut state, None);
+                    self.send_logout(&mut state, None, None);
                 }
             }
             Err(e @ VerifyError::SeqNumTooLow { .. }) => {
                 let mut state = self.state.borrow_mut();
                 self.send_logout(
                     &mut state,
+                    Some(SessionStatus::ReceivedMsgSeqNumTooLow),
                     Some(FixString::from_ascii_lossy(e.to_string().into_bytes())),
                 );
                 return Some(DisconnectReason::MsgSeqNumTooLow);
@@ -1063,13 +1088,17 @@ impl<S: MessagesStorage> Session<S> {
                     ref_tag_id,
                 );
             }
-            Err(VerifyError::UserForcedLogout { text, disconnect }) => {
+            Err(VerifyError::UserForcedLogout {
+                session_status,
+                text,
+                disconnect,
+            }) => {
                 error!(
                     "User rejected with Logout<5> ({})",
                     text.as_ref().map(FixString::as_utf8).unwrap_or_default()
                 );
                 let mut state = self.state.borrow_mut();
-                self.send_logout(&mut state, text);
+                self.send_logout(&mut state, session_status, text);
                 if disconnect {
                     return Some(DisconnectReason::UserForcedDisconnect);
                 }
@@ -1168,6 +1197,7 @@ impl<S: MessagesStorage> Session<S> {
                 let mut state = self.state.borrow_mut();
                 self.send_logout(
                     &mut state,
+                    None,
                     Some(FixString::from_ascii_lossy(
                         b"MsgSeqNum(34) not found".to_vec(),
                     )),
