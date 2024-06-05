@@ -12,7 +12,7 @@ edition = "2021"
 anyhow = { workspace = true }
 chrono = { workspace = true }
 itoa = "1.0"
-rust_decimal = "1.22"
+rust_decimal = "1.35"
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

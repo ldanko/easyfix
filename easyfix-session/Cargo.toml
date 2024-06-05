@@ -10,19 +10,19 @@ edition = "2021"
 
 [dependencies]
 async-stream = { workspace = true }
-bytes = "1.2"
+bytes = "1.6"
 chrono = { workspace = true }
 easyfix-messages = { version = "0.5.4", path = "../easyfix-messages" }
 futures = "0.3"
 futures-util = "0.3.26"
-pin-project = "1.0"
+pin-project = "1.1"
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { version = "1.26", features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
+tokio = { version = "1.38", features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tracing-subscriber = { version = "0.3.16", features = ["env-filter", "json"]}
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"]}
 easyfix-macros = { path = "../easyfix-macros" }
