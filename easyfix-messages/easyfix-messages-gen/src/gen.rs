@@ -217,7 +217,7 @@ impl Generator {
                 members_descs,
                 Some(MessageProperties {
                     msg_cat: msg.msg_cat(),
-                    msg_type: msg.msg_type(),
+                    _msg_type: msg.msg_type(),
                     header_members: header_members.clone(),
                     trailer_members: trailer_members.clone(),
                 }),

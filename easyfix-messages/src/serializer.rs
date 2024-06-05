@@ -448,7 +448,3 @@ impl Serializer {
         self.output.pop();
     }
 }
-
-trait Serialize: Sized {
-    fn serialize(serializer: &mut Serializer) -> Result<Self, Box<dyn std::error::Error>>;
-}

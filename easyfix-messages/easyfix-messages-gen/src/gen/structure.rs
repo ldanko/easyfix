@@ -9,7 +9,7 @@ use crate::gen::member::MemberDesc;
 
 pub struct MessageProperties {
     pub msg_cat: MsgCat,
-    pub msg_type: MsgType,
+    pub _msg_type: MsgType,
     pub header_members: Rc<Vec<MemberDesc>>,
     pub trailer_members: Rc<Vec<MemberDesc>>,
 }

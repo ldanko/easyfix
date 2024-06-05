@@ -809,7 +809,7 @@ impl Eq for UtcTimestamp {}
 
 impl PartialOrd for UtcTimestamp {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.timestamp.partial_cmp(&other.timestamp)
+        Some(self.timestamp.cmp(&other.timestamp))
     }
 }
 
