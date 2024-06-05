@@ -419,6 +419,7 @@ impl<S: MessagesStorage> Session<S> {
             session_reject_reason: Some(reason),
             text: Some(text),
             encoded_text: None,
+            ..Default::default()
         })));
     }
 
