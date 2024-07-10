@@ -377,7 +377,7 @@ impl Generator {
 
             pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(#begin_string) };
 
-            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
             #[repr(u16)]
             pub enum FieldTag {
                 #(#fields_names = #fields_numbers,)*
@@ -418,7 +418,7 @@ impl Generator {
 
             #(#structs_defs)*
 
-            #[derive(Clone, Debug)]
+            #[derive(Clone, Debug, serde::Serialize)]
             pub enum Message {
                 #(#name(#name),)*
             }
@@ -458,7 +458,7 @@ impl Generator {
 
             #(#impl_from_msg)*
 
-            #[derive(Clone, Debug)]
+            #[derive(Clone, Debug, serde::Serialize)]
             pub struct FixtMessage {
                 pub header: Box<Header>,
                 pub body: Box<Message>,

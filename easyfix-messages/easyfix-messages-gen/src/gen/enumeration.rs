@@ -47,9 +47,9 @@ impl EnumDesc {
             quote! { match input }
         };
         let derives = if name == "MsgType" {
-            quote! { #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)] }
+            quote! { #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize)] }
         } else {
-            quote! { #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)] }
+            quote! { #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)] }
         };
         quote! {
             #derives

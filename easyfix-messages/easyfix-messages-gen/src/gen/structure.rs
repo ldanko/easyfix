@@ -293,7 +293,7 @@ impl Struct {
         };
 
         quote! {
-            #[derive(Clone, Debug, Default)]
+            #[derive(Clone, Debug, Default, serde::Serialize)]
             pub struct #name {
                 #(pub #members_definitions,)*
             }
