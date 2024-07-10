@@ -390,7 +390,7 @@ impl Generator {
             }
 
             impl FieldTag {
-                const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
+                pub const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
                     match tag_num {
                         #(#fields_numbers_literals => Some(FieldTag::#fields_names),)*
                         _ => None,
