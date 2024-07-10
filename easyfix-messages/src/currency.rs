@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub enum Currency {
     #[default]
     AED, // United Arab Emirates dirham

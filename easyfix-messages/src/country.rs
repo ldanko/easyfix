@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub enum Country {
     #[default]
     AD, // Andorra
