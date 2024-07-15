@@ -9792,6 +9792,8 @@
    <value enum='6' description='ACCOUNT_LOCKED' />
    <value enum='7' description='LOGONS_ARE_NOT_ALLOWED_AT_THIS_TIME' />
    <value enum='8' description='PASSWORD_EXPIRED' />
+   <value enum='9' description='RECEIVED_MSG_SEQ_NUM_TOO_LOW' />
+   <value enum='10' description='RECEIVED_NEXT_EXPECTED_MSG_SEQ_NUM_TOO_HIGH' />
   </field>
   <field number='1410' name='DefaultVerIndicator' type='BOOLEAN' />
   <field number='1411' name='Nested4PartySubIDType' type='INT' />
