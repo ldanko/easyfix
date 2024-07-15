@@ -65,6 +65,7 @@
       <field name='NewSeqNo' required='Y'/>
     </message>
     <message msgcat='admin' msgtype='5' name='Logout'>
+      <field name='SessionStatus' required='N'/>
       <field name='Text' required='N'/>
       <field name='EncodedTextLen' required='N'/>
       <field name='EncodedText' required='N'/>
