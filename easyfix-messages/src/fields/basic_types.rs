@@ -44,7 +44,7 @@ pub type Exchange = [u8; 4];
 pub type MonthYear = Vec<u8>;
 pub type Language = [u8; 2];
 
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, serde::Serialize)]
 pub enum TimePrecision {
     Secs = 0,
     Millis = 3,
@@ -59,7 +59,7 @@ pub struct UtcTimestamp {
     precision: TimePrecision,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct UtcTimeOnly {
     timestamp: NaiveTime,
     precision: TimePrecision,
