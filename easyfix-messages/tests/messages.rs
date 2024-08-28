@@ -1,7 +1,9 @@
+use assert_matches::assert_matches;
 use easyfix_messages::{
+    deserializer::DeserializeError,
     fields::{
-        DefaultApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc,
-        UtcTimestamp,
+        DefaultApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, SessionRejectReason,
+        ToFixString, Utc, UtcTimestamp,
     },
     groups::MsgTypeGrp,
     messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
@@ -136,10 +138,16 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
 }
 
-#[ignore]
 #[test]
 fn unknown_msg_type() {
-    let msg_str = "8=FIXT.1.1|9=0071|35=T|49=test_sender|56=test_target|34=1|52=20230713-21:55:13.436187000|10=248|";
+    let msg_str = "8=FIXT.1.1|9=0077|35=UNKNOWN|49=test_sender|56=test_target|34=1|52=20230713-21:55:13.436187000|10=254|";
 
-    FixtMessage::from_bytes(msg_str.replace("|", "\x01").as_bytes()).expect("Deserialize failed");
+    assert_matches!(
+        FixtMessage::from_bytes(msg_str.replace("|", "\x01").as_bytes()),
+        Err(DeserializeError::Reject {
+            tag: Some(35),
+            reason: SessionRejectReason::InvalidMsgtype,
+            ..
+        })
+    );
 }

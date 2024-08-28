@@ -412,14 +412,14 @@ impl<S: MessagesStorage> Session<S> {
     fn send_reject(
         &self,
         state: &mut State<S>,
-        ref_msg_type: FixString,
+        ref_msg_type: Option<FixString>,
         ref_seq_num: SeqNum,
         reason: SessionRejectReason,
         text: FixString,
         ref_tag_id: Option<i64>,
     ) {
         if !matches!(
-            MsgType::from_fix_str(&ref_msg_type),
+            ref_msg_type.as_deref().and_then(MsgType::from_fix_str),
             Some(MsgType::Logon) | Some(MsgType::SequenceReset)
         ) && ref_seq_num == state.next_target_msg_seq_num()
         {
@@ -435,7 +435,7 @@ impl<S: MessagesStorage> Session<S> {
         self.send(Box::new(Message::Reject(Reject {
             ref_seq_num,
             ref_tag_id,
-            ref_msg_type: Some(ref_msg_type),
+            ref_msg_type: ref_msg_type,
             session_reject_reason: Some(reason),
             text: Some(text),
             ..Default::default()
@@ -727,7 +727,7 @@ impl<S: MessagesStorage> Session<S> {
             let text = format!("{reject_reason:?} (tag={tag}) - NewSeqNum too low");
             self.send_reject(
                 &mut state,
-                ref_msg_type,
+                Some(ref_msg_type),
                 ref_seq_num,
                 reject_reason,
                 FixString::from_ascii_lossy(text.into_bytes()),
@@ -1044,7 +1044,7 @@ impl<S: MessagesStorage> Session<S> {
                 let tag = tag.map(|t| t as i64);
                 self.send_reject(
                     &mut state,
-                    msg_type.as_fix_str().to_owned(),
+                    Some(msg_type.as_fix_str().to_owned()),
                     msg_seq_num,
                     reason,
                     if let Some(tag) = tag {
@@ -1081,7 +1081,7 @@ impl<S: MessagesStorage> Session<S> {
                 warn!("User rejected ({reason:?}: {text})");
                 self.send_reject(
                     &mut self.state().borrow_mut(),
-                    ref_msg_type,
+                    Some(ref_msg_type),
                     ref_seq_num,
                     reason,
                     text,

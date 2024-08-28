@@ -491,7 +491,6 @@ impl Generator {
                     } else {
                         return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                     };
-                    deserializer.set_msg_type(msg_type);
 
                     Message::deserialize(&mut deserializer, begin_string, body_length, msg_type)
                 }
@@ -502,8 +501,7 @@ impl Generator {
                 }
 
                 pub fn from_bytes(input: &[u8]) -> Result<Box<FixtMessage>, DeserializeError> {
-                    let (_, raw_msg) = raw_message(input)
-                        .map_err(|_| DeserializeError::GarbledMessage("Message not well formed".into()))?;
+                    let (_, raw_msg) = raw_message(input)?;
                     let deserializer = Deserializer::from_raw_message(raw_msg);
                     FixtMessage::deserialize(deserializer)
                 }

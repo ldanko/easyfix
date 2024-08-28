@@ -10,7 +10,7 @@ pub enum DeserializeError {
     GarbledMessage(String),
     Logout,
     Reject {
-        msg_type: FixString,
+        msg_type: Option<FixString>,
         seq_num: SeqNum,
         tag: Option<TagNum>,
         reason: SessionRejectReason,
@@ -59,8 +59,6 @@ enum DeserializeErrorInternal {
     #[error("{0:?}")]
     Error(SessionRejectReason),
 }
-
-// type Result2<'a, T> = std::result::Result<(&'a [u8], T), DeserializeErrorInternal>;
 
 fn deserialize_tag<'a>(bytes: &'a [u8], tag: &'a [u8]) -> Result<&'a [u8], RawMessageError> {
     if bytes.len() < tag.len() {
@@ -266,29 +264,47 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn set_seq_num(&mut self, seq_num: SeqNum) {
+        debug_assert!(self.seq_num.is_none());
+
         self.seq_num = Some(seq_num);
     }
 
     pub fn set_msg_type(&mut self, msg_type: MsgType) {
+        debug_assert!(self.msg_type.is_none());
+
         self.msg_type = Some(msg_type);
     }
 
+    // This may fail when RawData or XmlData fields (or other binary fields)
+    // are located before MsgSeqNum and has value `34=` inside
+    fn try_find_msg_seq_num(&mut self) -> Result<SeqNum, DeserializeError> {
+        let seq_num_tag = b"34=";
+
+        let start_index = self
+            .buf
+            .windows(seq_num_tag.len())
+            .position(|window| window == seq_num_tag)
+            .ok_or(DeserializeError::Logout)?;
+        self.buf = &self.buf[start_index + seq_num_tag.len()..];
+
+        self.deserialize_seq_num()
+    }
+
     pub fn reject(&mut self, tag: Option<TagNum>, reason: SessionRejectReason) -> DeserializeError {
-        if let Some(seq_num) = self.seq_num {
-            DeserializeError::Reject {
-                msg_type: self
-                    .msg_type
-                    .map(|msg_type| msg_type.to_fix_string())
-                    .unwrap_or_else(|| unsafe {
-                        // TODO: Panic?
-                        FixString::from_ascii_unchecked(b"UNKNOWN".to_vec())
-                    }),
-                seq_num,
-                tag,
-                reason,
-            }
+        let seq_num = if let Some(seq_num) = self.seq_num {
+            seq_num
         } else {
-            DeserializeError::Logout
+            match self.try_find_msg_seq_num() {
+                Ok(seq_num) => seq_num,
+                Err(err) => return err,
+            }
+        };
+
+        DeserializeError::Reject {
+            msg_type: self.msg_type.map(|msg_type| msg_type.to_fix_string()),
+            seq_num,
+            tag,
+            reason,
         }
     }
 
@@ -316,6 +332,7 @@ impl<'de> Deserializer<'de> {
             }
         }
         // This should never happen
+        debug_assert!(false);
         self.reject(None, SessionRejectReason::RepeatingGroupFieldsOutOfOrder)
     }
 
@@ -325,24 +342,17 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize MsgType
     pub fn deserialize_msg_type(&mut self) -> Result<MsgType, DeserializeError> {
-        let seq_num = self.seq_num;
-        let value = self.deserialize_str()?;
-        if let Ok(msg_type) = MsgType::try_from(value) {
-            // Remember MsgType.
-            self.msg_type = Some(msg_type);
-            Ok(msg_type)
-        } else if let Some(seq_num) = seq_num {
-            // TODO: This won't work, MsgType is deserialized before MsgSeqNum,
-            //       so `Logout` will always be returned
-            Err(DeserializeError::Reject {
-                msg_type: value.to_owned(),
-                seq_num,
-                tag: Some(35),
-                reason: SessionRejectReason::InvalidMsgtype,
-            })
-        } else {
-            Err(DeserializeError::Logout)
-        }
+        let Ok(value) = self.deserialize_str() else {
+            return Err(self.reject(Some(35), SessionRejectReason::InvalidMsgtype));
+        };
+
+        let Ok(msg_type) = MsgType::try_from(value) else {
+            return Err(self.reject(Some(35), SessionRejectReason::InvalidMsgtype));
+        };
+
+        // Remember MsgType.
+        self.set_msg_type(msg_type);
+        Ok(msg_type)
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
@@ -364,7 +374,7 @@ impl<'de> Deserializer<'de> {
 
         let mut value: TagNum = 0;
         for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and self.bug.len()
+            // SAFETY: i is between 0 and self.buf.len()
             match unsafe { self.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     value = value
@@ -472,12 +482,7 @@ impl<'de> Deserializer<'de> {
                     self.current_tag
                 )))
             }
-            [b'\x01', ..] => {
-                return Err(self.reject(
-                    self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
-                ))
-            }
+            [b'\x01', ..] => return Err(DeserializeError::Logout),
             _ => {}
         }
 
@@ -489,21 +494,14 @@ impl<'de> Deserializer<'de> {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as SeqNum))
-                        .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
-                        })?;
+                        .ok_or_else(|| DeserializeError::Logout)?;
                 }
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];
                     // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
                     return Ok(value);
                 }
-                _ => {
-                    return Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
-                    ))
-                }
+                _ => return Err(DeserializeError::Logout),
             }
         }
 
@@ -705,22 +703,27 @@ impl<'de> Deserializer<'de> {
         )))
     }
 
+    #[inline(always)]
     pub fn deserialize_qty(&mut self) -> Result<Qty, DeserializeError> {
         self.deserialize_float()
     }
 
+    #[inline(always)]
     pub fn deserialize_price(&mut self) -> Result<Price, DeserializeError> {
         self.deserialize_float()
     }
 
+    #[inline(always)]
     pub fn deserialize_price_offset(&mut self) -> Result<PriceOffset, DeserializeError> {
         self.deserialize_float()
     }
 
+    #[inline(always)]
     pub fn deserialize_amt(&mut self) -> Result<Amt, DeserializeError> {
         self.deserialize_float()
     }
 
+    #[inline(always)]
     pub fn deserialize_percentage(&mut self) -> Result<Percentage, DeserializeError> {
         self.deserialize_float()
     }
@@ -868,6 +871,7 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
+    #[inline(always)]
     pub fn deserialize_string(&mut self) -> Result<FixString, DeserializeError> {
         self.deserialize_str().map(FixString::from)
     }
@@ -1829,13 +1833,16 @@ mod tests {
     fn deserialize_checksum_garbled() {
         assert_matches!(
             deserialize_checksum(b"A23\x01"),
-            Err(RawMessageError::Garbled)
+            Err(RawMessageError::InvalidChecksum)
         );
 
-        assert_matches!(deserialize_checksum(b"1234"), Err(RawMessageError::Garbled));
+        assert_matches!(
+            deserialize_checksum(b"1234"),
+            Err(RawMessageError::InvalidChecksum)
+        );
         assert_matches!(
             deserialize_checksum(b"1234\x01"),
-            Err(RawMessageError::Garbled)
+            Err(RawMessageError::InvalidChecksum)
         );
     }
 
