@@ -1041,19 +1041,32 @@ impl<S: MessagesStorage> Session<S> {
                 logout,
             }) => {
                 let mut state = self.state().borrow_mut();
-                let tag = tag.map(|t| t as i64);
+                let tag_as_i64 = tag.map(|t| t as i64);
                 self.send_reject(
                     &mut state,
                     Some(msg_type.as_fix_str().to_owned()),
                     msg_seq_num,
                     reason,
-                    if let Some(tag) = tag {
+                    if let Some(tag) = tag_as_i64 {
                         FixString::from_ascii_lossy(format!("{reason:?} (tag={tag})").into_bytes())
                     } else {
                         FixString::from_ascii_lossy(format!("{reason:?}").into_bytes())
                     },
-                    tag,
+                    tag_as_i64,
                 );
+
+                self.emitter
+                    .send(FixEventInternal::DeserializeError(
+                        self.session_id().clone(),
+                        DeserializeError::Reject {
+                            msg_type: Some(msg_type.as_fix_str().to_owned()),
+                            seq_num: msg_seq_num,
+                            tag: tag.map(|t| t as u16),
+                            reason,
+                        },
+                    ))
+                    .await;
+
                 if logout {
                     self.send_logout(&mut state, None, None);
                 }
@@ -1183,11 +1196,7 @@ impl<S: MessagesStorage> Session<S> {
         // Failed to parse the message. Discard the message.
         // Processing of the next valid FIX message will cause detection of
         // a sequence gap and a ResendRequest<2> will be generated.
-        // TODO: comment above: add where in doc it's written
         // TODO: Make sure infinite resend loop is not possible
-        // TODO: It seems that some error types from the parser should end with
-        //       Reject<3> message, but now for simplicity all kinds of errors
-        //       results with message discard.
         let text = FixString::from_ascii_lossy(error.to_string().into_bytes());
         error!(deserialize_error = %text);
 
