@@ -819,6 +819,13 @@ impl Ord for UtcTimestamp {
     }
 }
 
+impl fmt::Display for UtcTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let result = self.format_precisely().to_string();
+        write!(f, "{}", result)
+    }
+}
+
 impl UtcTimestamp {
     pub const MAX_UTC: UtcTimestamp = UtcTimestamp {
         timestamp: DateTime::<Utc>::MAX_UTC,
@@ -850,7 +857,7 @@ impl UtcTimestamp {
     pub fn with_secs(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
         UtcTimestamp {
-            timestamp: DateTime::from_timestamp(secs, 0).unwrap(),
+            timestamp: Utc.from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, 0).unwrap()),
             precision: TimePrecision::Secs,
         }
     }
@@ -865,7 +872,8 @@ impl UtcTimestamp {
         let secs = date_time.timestamp();
         let nsecs = date_time.timestamp_subsec_millis() * 1_000_000;
         UtcTimestamp {
-            timestamp: DateTime::<Utc>::from_timestamp(secs, nsecs).unwrap(),
+            timestamp: Utc
+                .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Millis,
         }
     }
@@ -876,7 +884,8 @@ impl UtcTimestamp {
         let secs = date_time.timestamp();
         let nsecs = date_time.timestamp_subsec_micros() * 1_000;
         UtcTimestamp {
-            timestamp: DateTime::<Utc>::from_timestamp(secs, nsecs).unwrap(),
+            timestamp: Utc
+                .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Micros,
         }
     }
@@ -887,7 +896,8 @@ impl UtcTimestamp {
         let secs = date_time.timestamp();
         let nsecs = date_time.timestamp_subsec_nanos();
         UtcTimestamp {
-            timestamp: DateTime::<Utc>::from_timestamp(secs, nsecs).unwrap(),
+            timestamp: Utc
+                .from_utc_datetime(&NaiveDateTime::from_timestamp_opt(secs, nsecs).unwrap()),
             precision: TimePrecision::Nanos,
         }
     }

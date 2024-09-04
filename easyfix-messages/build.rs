@@ -11,7 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", fixt_xml_path);
     println!("cargo:rerun-if-changed={}", fix_xml_path);
     generate_fix_messages(
-        fixt_xml_path,
+        Some(fixt_xml_path),
         fix_xml_path,
         out_path.join("generated_fields.rs"),
         out_path.join("generated_groups.rs"),
