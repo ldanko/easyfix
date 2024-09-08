@@ -1,8 +1,8 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    io,
     net::SocketAddr,
-    panic,
     pin::Pin,
     rc::Rc,
     task::{Context, Poll},
@@ -11,7 +11,7 @@ use std::{
 use easyfix_messages::fields::{FixString, SessionStatus};
 use futures::{self, Stream};
 use pin_project::pin_project;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, task::JoinHandle};
 use tracing::{info, info_span, warn, Instrument};
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
     session_id::SessionId,
     session_state::State as SessionState,
     settings::SessionSettings,
-    DisconnectReason, Error, Settings,
+    DisconnectReason, Settings,
 };
 
 type SessionMapInternal<S> = HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<S>>>)>;
@@ -98,23 +98,13 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         self.sessions.clone()
     }
 
-    pub fn start(&self) {
-        let server_task = tokio::task::spawn_local(Self::server_task(
+    pub fn start(&self) -> JoinHandle<Result<(), io::Error>> {
+        tokio::task::spawn_local(Self::server_task(
             self.settings.clone(),
             self.sessions.clone(),
             self.active_sessions.clone(),
             self.emitter.clone(),
-        ));
-
-        // TODO
-        let _server_error_fut = async {
-            if let Err(err) = server_task.await {
-                if err.is_panic() {
-                    // Resume the panic on the main task
-                    panic::resume_unwind(err.into_panic());
-                }
-            }
-        };
+        ))
     }
 
     pub fn logout(
@@ -150,7 +140,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         sessions: Rc<RefCell<SessionsMap<S>>>,
         active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
         emitter: Emitter,
-    ) -> Result<(), Error> {
+    ) -> Result<(), io::Error> {
         info!("Acceptor started");
         let address = SocketAddr::from((settings.host, settings.port));
         let listener = TcpListener::bind(&address).await?;
