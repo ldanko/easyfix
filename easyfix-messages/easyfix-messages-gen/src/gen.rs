@@ -419,6 +419,7 @@ impl Generator {
             #(#structs_defs)*
 
             #[derive(Clone, Debug, serde::Serialize)]
+            #[allow(clippy::large_enum_variant)]
             pub enum Message {
                 #(#name(#name),)*
             }

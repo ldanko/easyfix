@@ -494,7 +494,7 @@ impl<'de> Deserializer<'de> {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as SeqNum))
-                        .ok_or_else(|| DeserializeError::Logout)?;
+                        .ok_or(DeserializeError::Logout)?;
                 }
                 b'\x01' => {
                     self.buf = &self.buf[i + 1..];

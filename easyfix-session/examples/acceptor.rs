@@ -16,7 +16,6 @@ use easyfix_session::{
 use tokio::{runtime::Builder, task::LocalSet};
 use tokio_stream::StreamExt;
 use tracing::{error, info};
-use tracing_subscriber;
 
 async fn acceptor() {
     let settings = Settings {
