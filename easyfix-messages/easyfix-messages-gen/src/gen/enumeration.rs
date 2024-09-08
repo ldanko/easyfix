@@ -47,9 +47,17 @@ impl EnumDesc {
             quote! { match input }
         };
         let derives = if name == "MsgType" {
-            quote! { #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize)] }
+            quote! {
+                #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+                #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+                #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+            }
         } else {
-            quote! { #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)] }
+            quote! {
+                #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+                #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+                #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+            }
         };
         quote! {
             #derives
