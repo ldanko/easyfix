@@ -3,15 +3,15 @@
 
 pub mod acceptor;
 pub mod application;
-mod connection;
 pub mod initiator;
+mod io;
 pub mod messages_storage;
 mod session;
 pub mod session_id;
 mod session_state;
 pub mod settings;
 
-use std::{io, time::Duration};
+use std::time::Duration;
 
 use easyfix_messages::{
     fields::{FixString, MsgType, UtcTimestamp},
@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
 
-pub use connection::{send, send_raw, sender};
+pub use io::{send, send_raw, sender};
 use tracing::error;
 
 #[derive(Debug, thiserror::Error)]
@@ -36,7 +36,7 @@ pub enum SessionError {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    Io(#[from] std::io::Error),
     #[error("Session error: {0}")]
     SessionError(SessionError),
 }

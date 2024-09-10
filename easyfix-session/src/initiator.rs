@@ -6,7 +6,7 @@ use tracing::{info, info_span, Instrument};
 
 use crate::{
     application::{events_channel, Emitter, EventStream},
-    connection::initiator_connection,
+    io::initiator_connection,
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
