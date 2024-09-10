@@ -12,7 +12,7 @@ use easyfix_messages::fields::{FixString, SessionStatus};
 use futures::{self, Stream};
 use pin_project::pin_project;
 use tokio::{net::TcpListener, task::JoinHandle};
-use tracing::{info, info_span, warn, Instrument};
+use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
@@ -98,8 +98,8 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         self.sessions.clone()
     }
 
-    pub fn start(&self) -> JoinHandle<Result<(), io::Error>> {
-        tokio::task::spawn_local(Self::server_task(
+    pub fn start(&self) -> JoinHandle<()> {
+        tokio::task::spawn_local(Self::server_task_wrapper(
             self.settings.clone(),
             self.sessions.clone(),
             self.active_sessions.clone(),
@@ -133,6 +133,17 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             &mut session.state().borrow_mut(),
             DisconnectReason::UserForcedDisconnect,
         );
+    }
+
+    async fn server_task_wrapper(
+        settings: Settings,
+        sessions: Rc<RefCell<SessionsMap<S>>>,
+        active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
+        emitter: Emitter,
+    ) {
+        if let Err(err) = Self::server_task(settings, sessions, active_sessions, emitter).await {
+            error!("serfer task failed: {err}")
+        }
     }
 
     async fn server_task(
