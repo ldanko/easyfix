@@ -234,6 +234,9 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     #[instrument(skip_all, err)]
+    #[expect(clippy::await_holding_refcell_ref)]
+    // Make sure `state` is dropped before await points, see
+    // https://github.com/rust-lang/rust-clippy/issues/6353
     async fn verify(
         &self,
         msg: Box<FixtMessage>,
@@ -435,7 +438,7 @@ impl<S: MessagesStorage> Session<S> {
         self.send(Box::new(Message::Reject(Reject {
             ref_seq_num,
             ref_tag_id,
-            ref_msg_type: ref_msg_type,
+            ref_msg_type,
             session_reject_reason: Some(reason),
             text: Some(text),
             ..Default::default()
@@ -506,6 +509,9 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
+    #[expect(clippy::await_holding_refcell_ref)]
+    // Make sure `state` is dropped before await points, see
+    // https://github.com/rust-lang/rust-clippy/issues/6353
     pub(crate) async fn emit_logout(&self, reason: DisconnectReason) {
         let mut state = self.state.borrow_mut();
 
@@ -547,6 +553,10 @@ impl<S: MessagesStorage> Session<S> {
         state.set_resend_range(None);
         state.clear_queue();
         self.sender.disconnect(reason);
+    }
+
+    pub(crate) fn reset(&self, state: &mut State<S>) {
+        state.reset();
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -770,6 +780,9 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     #[instrument(level = "trace", skip_all, err, ret)]
+    #[expect(clippy::await_holding_refcell_ref)]
+    // Make sure `state` is dropped before await points, see
+    // https://github.com/rust-lang/rust-clippy/issues/6353
     async fn on_logon(
         &self,
         message: Box<FixtMessage>,
@@ -986,6 +999,9 @@ impl<S: MessagesStorage> Session<S> {
             msg_type = ?msg.msg_type()
             )
         )]
+    #[expect(clippy::await_holding_refcell_ref)]
+    // Make sure `state` is dropped before await points, see
+    // https://github.com/rust-lang/rust-clippy/issues/6353
     async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
         let msg_type = msg.header.msg_type;
         let msg_seq_num = msg.header.msg_seq_num;

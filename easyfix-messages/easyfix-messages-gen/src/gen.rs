@@ -377,7 +377,9 @@ impl Generator {
 
             pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(#begin_string) };
 
-            #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+            #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+            #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
             #[repr(u16)]
             pub enum FieldTag {
                 #(#fields_names = #fields_numbers,)*
@@ -418,7 +420,10 @@ impl Generator {
 
             #(#structs_defs)*
 
-            #[derive(Clone, Debug, serde::Serialize)]
+            #[derive(Clone, Debug)]
+            #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+            #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+            #[allow(clippy::large_enum_variant)]
             pub enum Message {
                 #(#name(#name),)*
             }
@@ -458,7 +463,9 @@ impl Generator {
 
             #(#impl_from_msg)*
 
-            #[derive(Clone, Debug, serde::Serialize)]
+            #[derive(Clone, Debug)]
+            #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+            #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
             pub struct FixtMessage {
                 pub header: Box<Header>,
                 pub body: Box<Message>,

@@ -8,6 +8,11 @@ repository = "https://github.com/ldanko/easyfix"
 readme = "README.md"
 edition = "2021"
 
+[features]
+default = []
+serialize-messages = ["easyfix-messages/serialize"]
+deserialize-messages = ["easyfix-messages/deserialize"]
+
 [dependencies]
 easyfix-dictionary = { version = "0.3.2", path = "../easyfix-dictionary" }
 easyfix-macros = { version = "0.1.2", path = "../easyfix-macros" }
