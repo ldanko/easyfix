@@ -68,7 +68,7 @@ fn log_duration<T>(msg: &str, action: impl FnOnce() -> T) -> T {
 }
 
 pub fn generate_fix_messages(
-    fixt_xml_path: impl AsRef<Path>,
+    fixt_xml_path: Option<impl AsRef<Path>>,
     fix_xml_path: impl AsRef<Path>,
     fields_file: impl AsRef<Path>,
     groups_file: impl AsRef<Path>,
@@ -77,17 +77,21 @@ pub fn generate_fix_messages(
     eprintln!("fields file path: {}", fields_file.as_ref().display());
     eprintln!("groups file path: {}", groups_file.as_ref().display());
     eprintln!("messages file path: {}", messages_file.as_ref().display());
-    let fixt_xml = fs::read_to_string(fixt_xml_path)?;
     let fix_xml = fs::read_to_string(fix_xml_path)?;
     let mut dictionary = Dictionary::new();
 
-    log_duration("FIXT XML processed", || {
-        dictionary.process_fixt_xml(&fixt_xml)
-    })?;
+    if let Some(some_fixt_xml_path) = fixt_xml_path {
+        log_duration("FIXT XML processed", || {
+            let fixt_xml = fs::read_to_string(some_fixt_xml_path)?;
+            dictionary.process_fixt_xml(&fixt_xml)
+        })?;
 
-    log_duration("FIXT XML processed", || {
-        dictionary.process_fix_xml(&fix_xml)
-    })?;
+        log_duration("FIX XML processed", || dictionary.process_fix_xml(&fix_xml))?;
+    } else {
+        log_duration("FIX legacy XML processed", || {
+            dictionary.process_legacy_fix_xml(&fix_xml)
+        })?;
+    }
 
     let generator = log_duration("Generator ready", || Generator::new(&dictionary));
 

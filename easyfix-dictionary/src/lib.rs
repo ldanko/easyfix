@@ -547,6 +547,36 @@ impl Dictionary {
         }
     }
 
+    pub fn process_legacy_fix_xml(&mut self, xml: &str) -> Result<()> {
+        let root = Element::parse(xml.as_bytes()).context("Failed to parse FIXT description")?;
+
+        let type_ = root.get_attribute("type")?;
+        if type_ != "FIX" {
+            bail!("Unexpected FIX XML description type `{}`", type_);
+        }
+
+        if self.fix_version.is_some() {
+            bail!("FIX XML already processed");
+        } else {
+            self.fix_version = Some(Version::from_xml(&root)?);
+        }
+
+        let (header, header_groups) =
+            Component::from_header_or_trailer(root.get_child_element("header")?)
+                .context("Failed to process FIX Header")?;
+        self.header = Some(header);
+        self.components.extend(header_groups);
+
+        let (trailer, trailer_groups) = Component::from_header_or_trailer(
+            root.get_child_element("trailer")
+                .context("Failed to process FIX trailer")?,
+        )?;
+        self.trailer = Some(trailer);
+        self.components.extend(trailer_groups);
+
+        self.process_common(&root)
+    }
+
     pub fn process_fixt_xml(&mut self, xml: &str) -> Result<()> {
         let root = Element::parse(xml.as_bytes()).context("Failed to parse FIXT description")?;
 
