@@ -135,6 +135,22 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         );
     }
 
+    /// Force reset of the session
+    ///
+    /// Functionally equivalent to `reset_on_logon/logout/disconnect` settings,
+    /// but triggered manually.
+    ///
+    /// You may call this after [Self::disconnect] if you want to manually reset the connection
+    pub fn reset(&self, session_id: &SessionId) {
+        let active_sessions = self.active_sessions.borrow();
+        let Some(session) = active_sessions.get(session_id) else {
+            warn!("reset: session {session_id} not found");
+            return;
+        };
+
+        session.reset(&mut session.state().borrow_mut());
+    }
+
     async fn server_task_wrapper(
         settings: Settings,
         sessions: Rc<RefCell<SessionsMap<S>>>,

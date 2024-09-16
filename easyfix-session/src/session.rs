@@ -555,6 +555,10 @@ impl<S: MessagesStorage> Session<S> {
         self.sender.disconnect(reason);
     }
 
+    pub(crate) fn reset(&self, state: &mut State<S>) {
+        state.reset();
+    }
+
     #[instrument(level = "trace", skip_all)]
     fn resend_range(&self, state: &mut State<S>, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
         info!("resend range: ({begin_seq_num}, {end_seq_num})");
