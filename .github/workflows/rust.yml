@@ -25,7 +25,10 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Fmt
-      run: cargo fmt --check --verbose
+      run: |
+        cargo fmt --check --verbose
+        cargo clippy -- -D warnings
+
     # Skip for now, because tests are always failing
     # - name: Run tests
     #   run: cargo test --verbose
