@@ -853,7 +853,7 @@ impl UtcTimestamp {
     }
 
     fn timestamp_from_secs_and_nsecs(secs: i64, nsecs: u32) -> DateTime<Utc> {
-        Utc.from_utc_datetime(&DateTime::from_timestamp(secs, nsecs).unwrap().naive_utc())
+        DateTime::from_timestamp(secs, nsecs).unwrap()
     }
 
     /// Creates UtcTimestamp with time precision set to full seconds
