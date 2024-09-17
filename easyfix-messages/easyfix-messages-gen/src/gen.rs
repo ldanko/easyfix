@@ -318,6 +318,7 @@ impl Generator {
         }
 
         quote! {
+        #[allow(unused_imports)]
             use crate::{
                 deserializer::{DeserializeError, Deserializer},
                 fields::{self, basic_types::*, SessionRejectReason},
@@ -367,6 +368,7 @@ impl Generator {
             .collect::<Vec<_>>();
 
         quote! {
+        #[allow(unused_imports)]
             use crate::{
                 deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
                 fields::{self, basic_types::*, SessionRejectReason},
