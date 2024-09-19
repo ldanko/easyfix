@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use chrono::NaiveTime;
 use easyfix_macros::fix_str;
@@ -7,7 +7,7 @@ use easyfix_messages::{
     messages::Header,
 };
 use easyfix_session::{
-    acceptor::Acceptor,
+    acceptor::{Acceptor, TcpConnection},
     application::{AsEvent, FixEvent},
     messages_storage::InMemoryStorage,
     session_id::SessionId,
@@ -19,8 +19,6 @@ use tracing::{error, info};
 
 async fn acceptor() {
     let settings = Settings {
-        host: "127.0.0.1".parse().unwrap(),
-        port: 10050,
         sender_comp_id: "n8_fix_test_server".try_into().unwrap(), //: "easyfix-acceptor".try_into().unwrap(),
         sender_sub_id: None,
         heartbeat_interval: Duration::from_secs(10),
@@ -77,7 +75,10 @@ async fn acceptor() {
     register_session("16");
 
     let mut senders = HashMap::new();
-    acceptor.start();
+    let connection = TcpConnection::new("127.0.0.1:10050".parse::<SocketAddr>().unwrap())
+        .await
+        .unwrap();
+    acceptor.start(connection);
     while let Some(mut entry) = acceptor.next().await {
         match entry.as_event() {
             FixEvent::Created(session_id) => info!("Session created: {}", session_id),

@@ -9,7 +9,7 @@ use easyfix_messages::messages::{FixtMessage, Message};
 use futures_util::{pin_mut, Stream};
 use tokio::{
     self,
-    io::{AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
     time::{timeout, Duration},
@@ -106,7 +106,8 @@ struct Connection<S> {
 }
 
 pub(crate) async fn acceptor_connection<S>(
-    tcp_stream: TcpStream,
+    reader: impl AsyncRead + Unpin,
+    writer: impl AsyncWrite + Unpin,
     settings: Settings,
     sessions: Rc<RefCell<SessionsMap<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
@@ -114,8 +115,7 @@ pub(crate) async fn acceptor_connection<S>(
 ) where
     S: MessagesStorage,
 {
-    let (source, sink) = tcp_stream.into_split();
-    let stream = input_stream(source);
+    let stream = input_stream(reader);
     let logon_timeout =
         settings.auto_disconnect_after_no_logon_received + NO_INBOUND_TIMEOUT_PADDING;
     pin_mut!(stream);
@@ -187,7 +187,7 @@ pub(crate) async fn acceptor_connection<S>(
             )
             .instrument(input_loop_span.clone()),
         connection
-            .output_loop(sink, output_stream, input_closed_rx)
+            .output_loop(writer, output_stream, input_closed_rx)
             .instrument(output_loop_span),
     );
     session_span.in_scope(|| {

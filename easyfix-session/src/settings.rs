@@ -1,4 +1,4 @@
-use std::{net::IpAddr, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
 use chrono::NaiveTime;
 use easyfix_messages::fields::FixString;
@@ -17,10 +17,6 @@ where
 /// FIX Trading Port session configuration.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Settings {
-    /// IP address
-    pub host: IpAddr,
-    /// Port number
-    pub port: u16,
     /// FIX SenderCompID<49> field value for outgoing messages.
     pub sender_comp_id: FixString,
     /// FIX SenderSubID<50> field value for outgoing messages.

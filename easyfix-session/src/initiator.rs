@@ -48,10 +48,10 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
         }
     }
 
-    pub async fn connect(&self) -> Result<(), Error> {
+    pub async fn connect(&self, socket_addr: impl Into<SocketAddr>) -> Result<(), Error> {
         info!("Initiator started");
 
-        let addr = SocketAddr::from((self.settings.host, self.settings.port));
+        let addr = socket_addr.into();
         let tcp_stream = TcpStream::connect(addr).await?;
         tcp_stream.set_nodelay(true)?;
         let emitter = self.emitter.clone();
