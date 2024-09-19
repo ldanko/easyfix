@@ -234,45 +234,7 @@ impl Generator {
             }
             if let Some(values) = field.values() {
                 let name = Ident::new(&field.name().to_case(Case::UpperCamel), Span::call_site());
-                let literal_ctr = |value: &str| match field.type_() {
-                    BasicType::String | BasicType::MultipleStringValue => {
-                        Literal::byte_string(value.as_bytes())
-                    }
-                    BasicType::Char | BasicType::MultipleCharValue => {
-                        Literal::u8_suffixed(value.as_bytes()[0])
-                    }
-                    BasicType::Int => {
-                        Literal::i64_suffixed(value.parse().expect("Wrong enum value"))
-                    }
-                    BasicType::NumInGroup => {
-                        Literal::u8_suffixed(value.parse().expect("Wrong enum value"))
-                    }
-                    type_ => panic!("type {:?} can not be represented as enum", type_),
-                };
-                enums.push(EnumDesc::new(
-                    name,
-                    field.type_(),
-                    values
-                        .iter()
-                        .map(|value| {
-                            (
-                                Ident::new(
-                                    &{
-                                        let mut variant_name =
-                                            value.description().to_case(Case::UpperCamel);
-                                        if variant_name.as_bytes()[0].is_ascii_digit() {
-                                            variant_name.insert(0, '_');
-                                        }
-                                        variant_name
-                                    },
-                                    Span::call_site(),
-                                ),
-                                literal_ctr(value.value()),
-                                Literal::byte_string(value.value().as_bytes()),
-                            )
-                        })
-                        .collect(),
-                ));
+                enums.push(EnumDesc::new(name, field.type_(), values.to_vec()));
             }
         }
 

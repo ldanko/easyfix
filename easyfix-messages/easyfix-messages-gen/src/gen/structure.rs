@@ -297,7 +297,7 @@ impl Struct {
             #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
             #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
             pub struct #name {
-                #(pub #members_definitions,)*
+                #(#members_definitions,)*
             }
 
             impl #name {

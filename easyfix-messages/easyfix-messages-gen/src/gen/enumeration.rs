@@ -1,5 +1,6 @@
-use easyfix_dictionary::BasicType;
-use proc_macro2::{Ident, Literal, TokenStream};
+use convert_case::{Case, Casing};
+use easyfix_dictionary::{BasicType, Value};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
 use crate::gen::member::Type;
@@ -8,15 +9,28 @@ pub struct EnumDesc {
     name: Ident,
     type_: BasicType,
     // (VarianName, VariantValue, VariantValueAsBytes)
-    values: Vec<(Ident, Literal, Literal)>,
+    values: Vec<Value>,
 }
-
 impl EnumDesc {
-    pub fn new(name: Ident, type_: BasicType, values: Vec<(Ident, Literal, Literal)>) -> EnumDesc {
+    pub fn new(name: Ident, type_: BasicType, values: Vec<Value>) -> EnumDesc {
         EnumDesc {
             name,
             type_,
             values,
+        }
+    }
+
+    fn literal_ctr(&self, value: &str) -> Literal {
+        match self.type_ {
+            BasicType::String | BasicType::MultipleStringValue => {
+                Literal::byte_string(value.as_bytes())
+            }
+            BasicType::Char | BasicType::MultipleCharValue => {
+                Literal::u8_suffixed(value.as_bytes()[0])
+            }
+            BasicType::Int => Literal::i64_suffixed(value.parse().expect("Wrong enum value")),
+            BasicType::NumInGroup => Literal::u8_suffixed(value.parse().expect("Wrong enum value")),
+            type_ => panic!("type {:?} can not be represented as enum", type_),
         }
     }
 
@@ -30,10 +44,29 @@ impl EnumDesc {
             BasicType::MultipleCharValue => Type::basic_type(BasicType::Char).gen_type(),
             type_ => panic!("type {:?} can not be used as enumeration", type_),
         };
+        let mut variant_def = Vec::with_capacity(self.values.len());
         let mut variant_name = Vec::with_capacity(self.values.len());
         let mut variant_value = Vec::with_capacity(self.values.len());
         let mut variant_value_as_bytes = Vec::with_capacity(self.values.len());
-        for (v_name, v_value, v_value_as_bytes) in &self.values {
+        for value in &self.values {
+            let v_name = Ident::new(
+                &{
+                    let mut variant_name = value.description().to_case(Case::UpperCamel);
+                    if variant_name.as_bytes()[0].is_ascii_digit() {
+                        variant_name.insert(0, '_');
+                    }
+                    variant_name
+                },
+                Span::call_site(),
+            );
+            let v_value = self.literal_ctr(value.value());
+            let v_value_as_bytes = Literal::byte_string(value.value().as_bytes());
+
+            let variant_doc_comment = format!("Value \"{}\"", value.value());
+            variant_def.push(quote! {
+                #[doc = #variant_doc_comment]
+                #v_name
+            });
             variant_name.push(v_name.clone());
             variant_value.push(v_value.clone());
             variant_value_as_bytes.push(v_value_as_bytes.clone());
@@ -63,7 +96,7 @@ impl EnumDesc {
             #derives
             pub enum #name {
                 #[default]
-                #(#variant_name,)*
+                #(#variant_def,)*
             }
 
             impl #name {

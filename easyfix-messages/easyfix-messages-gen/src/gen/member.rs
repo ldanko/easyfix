@@ -290,13 +290,16 @@ impl SimpleMember {
     fn gen_definition(&self) -> TokenStream {
         let name = &self.name;
         let type_ = self.type_.gen_type();
+        let doc_comment = format!("Tag {}.", self.tag);
         if self.required {
             quote! {
-                #name: #type_
+                #[doc = #doc_comment]
+                pub #name: #type_
             }
         } else {
             quote! {
-                #name: Option<#type_>
+                #[doc = #doc_comment]
+                pub #name: Option<#type_>
             }
         }
     }
