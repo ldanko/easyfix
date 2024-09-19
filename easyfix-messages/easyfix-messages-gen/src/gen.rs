@@ -5,9 +5,10 @@ mod structure;
 use std::{collections::HashMap, rc::Rc};
 
 use convert_case::{Case, Casing};
-use easyfix_dictionary::{BasicType, Dictionary, Member, MemberKind};
+use easyfix_dictionary::{BasicType, Dictionary, Member, MemberKind, ParseRejectReason};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
+use strum::IntoEnumIterator;
 
 use self::structure::MessageProperties;
 use crate::gen::{
@@ -22,6 +23,7 @@ pub struct Generator {
     enums: Vec<EnumDesc>,
     fields_names: Vec<Ident>,
     fields_numbers: Vec<u16>,
+    reject_reason_overrides: HashMap<ParseRejectReason, String>,
 }
 
 fn process_members(
@@ -256,6 +258,7 @@ impl Generator {
             enums,
             fields_names,
             fields_numbers,
+            reject_reason_overrides: dictionary.reject_reason_overrides().clone(),
         }
     }
 
@@ -265,7 +268,31 @@ impl Generator {
             enums.push(enum_.generate());
         }
 
+        let mut reject_reason_map: HashMap<ParseRejectReason, String> = ParseRejectReason::iter()
+            .map(|reject_reason| (reject_reason, reject_reason.as_ref().to_string()))
+            .collect();
+        for (key, value) in self.reject_reason_overrides.clone() {
+            reject_reason_map.insert(key, value);
+        }
+
+        let reject_reason_vector: Vec<TokenStream> = reject_reason_map
+	    .iter()
+	    .map(|(key, value)| {
+		let parse_enum_name = Ident::new(key.as_ref(), Span::call_site());
+		let session_enum_name = Ident::new(value, Span::call_site());
+		quote ! { ParseRejectReason::#parse_enum_name => SessionRejectReason::#session_enum_name, }
+	    })
+	    .collect();
+
         quote! {
+        use crate::deserializer::ParseRejectReason;
+
+        pub fn parse_reject_reason_to_session_reject_reason(input: ParseRejectReason) -> SessionRejectReason {
+        match input {
+            #(#reject_reason_vector)*
+        }
+        }
+
             #(#enums)*
         }
     }
@@ -282,7 +309,7 @@ impl Generator {
         quote! {
         #[allow(unused_imports)]
             use crate::{
-                deserializer::{DeserializeError, Deserializer},
+                deserializer::{DeserializeError, Deserializer, ParseRejectReason},
                 fields::{self, basic_types::*, SessionRejectReason},
                 serializer::Serializer,
             };
@@ -332,7 +359,7 @@ impl Generator {
         quote! {
         #[allow(unused_imports)]
             use crate::{
-                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
+                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage, ParseRejectReason},
                 fields::{self, basic_types::*, SessionRejectReason},
                 groups::*,
                 serializer::Serializer,
@@ -445,6 +472,13 @@ impl Generator {
                     serializer.take()
                 }
 
+                fn parse_msg_type(deserializer: &mut Deserializer<'_>, input: &FixStr) -> Result<MsgType, DeserializeError> {
+                    let Ok(msg_type) = MsgType::try_from(input) else {
+                        return Err(deserializer.reject(Some(35), ParseRejectReason::InvalidMsgtype));
+                    };
+                    Ok(msg_type)
+                }
+
                 pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<FixtMessage>, DeserializeError> {
                     let begin_string = deserializer.begin_string();
                     if begin_string != BEGIN_STRING {
@@ -458,7 +492,8 @@ impl Generator {
                         .deserialize_tag_num()
                         .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
                     {
-                        deserializer.deserialize_msg_type()?
+                        let msg_type_string = deserializer.deserialize_msg_type()?;
+                        Self::parse_msg_type(&mut deserializer, msg_type_string)?
                     } else {
                         return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                     };

@@ -2,7 +2,7 @@ use std::{error::Error, fmt};
 
 use anyhow::Result;
 
-use crate::fields::{basic_types::*, MsgType, SessionRejectReason};
+use crate::fields::basic_types::*;
 
 #[derive(Debug)]
 pub enum DeserializeError {
@@ -13,7 +13,7 @@ pub enum DeserializeError {
         msg_type: Option<FixString>,
         seq_num: SeqNum,
         tag: Option<TagNum>,
-        reason: SessionRejectReason,
+        reason: ParseRejectReason,
     },
 }
 
@@ -52,12 +52,32 @@ impl From<RawMessageError> for DeserializeError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+pub enum ParseRejectReason {
+    ValueIsIncorrect,
+    TagSpecifiedWithoutAValue,
+    IncorrectDataFormatForValue,
+    TagAppearsMoreThanOnce,
+    TagSpecifiedOutOfRequiredOrder,
+    RequiredTagMissing,
+    IncorrectNumingroupCountForRepeatingGroup,
+    TagNotDefinedForThisMessageType,
+    UndefinedTag,
+    RepeatingGroupFieldsOutOfOrder,
+    InvalidTagNumber,
+    InvalidMsgtype,
+    SendingtimeAccuracyProblem,
+    CompidProblem,
+}
+
 #[derive(Debug, thiserror::Error)]
 enum DeserializeErrorInternal {
     #[error("Incomplete")]
     Incomplete,
     #[error("{0:?}")]
-    Error(SessionRejectReason),
+    Error(ParseRejectReason),
 }
 
 fn deserialize_tag<'a>(bytes: &'a [u8], tag: &'a [u8]) -> Result<&'a [u8], RawMessageError> {
@@ -101,14 +121,14 @@ fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInt
             // No control character is allowed
             0x00 | 0x02..=0x1f | 0x80..=0xff => {
                 return Err(DeserializeErrorInternal::Error(
-                    SessionRejectReason::ValueIsIncorrect,
+                    ParseRejectReason::ValueIsIncorrect,
                 ));
             }
             // Except SOH which marks end of tag
             b'\x01' => {
                 if i == 0 {
                     return Err(DeserializeErrorInternal::Error(
-                        SessionRejectReason::TagSpecifiedWithoutAValue,
+                        ParseRejectReason::TagSpecifiedWithoutAValue,
                     ));
                 } else {
                     // SAFETY: Check for valid ASCII values just above
@@ -133,17 +153,17 @@ fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorI
                     .checked_mul(10)
                     .and_then(|v| v.checked_add(Length::from(n - b'0')))
                     .ok_or(DeserializeErrorInternal::Error(
-                        SessionRejectReason::ValueIsIncorrect,
+                        ParseRejectReason::ValueIsIncorrect,
                     ))?;
             }
             b'\x01' => {
                 if i == 0 {
                     return Err(DeserializeErrorInternal::Error(
-                        SessionRejectReason::TagSpecifiedWithoutAValue,
+                        ParseRejectReason::TagSpecifiedWithoutAValue,
                     ));
                 } else if value == 0 {
                     return Err(DeserializeErrorInternal::Error(
-                        SessionRejectReason::ValueIsIncorrect,
+                        ParseRejectReason::ValueIsIncorrect,
                     ));
                 } else {
                     return Ok((&bytes[i + 1..], value));
@@ -151,7 +171,7 @@ fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorI
             }
             _ => {
                 return Err(DeserializeErrorInternal::Error(
-                    SessionRejectReason::IncorrectDataFormatForValue,
+                    ParseRejectReason::IncorrectDataFormatForValue,
                 ))
             }
         }
@@ -227,10 +247,30 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage), RawMessageError>
 // enum GarbledReason
 
 #[derive(Debug)]
-pub struct Deserializer<'de> {
+pub struct DeserializerBuffer<'de> {
     raw_message: RawMessage<'de>,
     buf: &'de [u8],
-    msg_type: Option<MsgType>,
+}
+
+impl<'de> DeserializerBuffer<'de> {
+    pub fn from_raw_message(raw_message: RawMessage<'de>) -> Self {
+        let buf = raw_message.body;
+        Self { raw_message, buf }
+    }
+
+    /// Deserialize alphanumeric free-format strings can include any character
+    /// except control characters.
+    fn deserialize_str(&mut self) -> Result<&'de FixStr, DeserializeErrorInternal> {
+        let (leftover, fix_str) = deserialize_str(self.buf)?;
+        self.buf = leftover;
+        Ok(fix_str)
+    }
+}
+
+#[derive(Debug)]
+pub struct Deserializer<'de> {
+    buffer: DeserializerBuffer<'de>,
+    msg_type: Option<&'de FixStr>,
     seq_num: Option<SeqNum>,
     current_tag: Option<TagNum>,
     // Used to put tag back to deserializer, when switching to deserialization
@@ -240,10 +280,8 @@ pub struct Deserializer<'de> {
 
 impl<'de> Deserializer<'de> {
     pub fn from_raw_message(raw_message: RawMessage) -> Deserializer {
-        let buf = raw_message.body;
         Deserializer {
-            raw_message,
-            buf,
+            buffer: DeserializerBuffer::from_raw_message(raw_message),
             msg_type: None,
             seq_num: None,
             current_tag: None,
@@ -252,15 +290,15 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn begin_string(&self) -> FixString {
-        self.raw_message.begin_string.to_owned()
+        self.buffer.raw_message.begin_string.to_owned()
     }
 
     pub fn body_length(&self) -> Length {
-        self.raw_message.body.len() as Length
+        self.buffer.raw_message.body.len() as Length
     }
 
     pub fn check_sum(&self) -> FixString {
-        FixString::from_ascii_lossy(format!("{:03}", self.raw_message.checksum).into_bytes())
+        FixString::from_ascii_lossy(format!("{:03}", self.buffer.raw_message.checksum).into_bytes())
     }
 
     pub fn set_seq_num(&mut self, seq_num: SeqNum) {
@@ -269,10 +307,10 @@ impl<'de> Deserializer<'de> {
         self.seq_num = Some(seq_num);
     }
 
-    pub fn set_msg_type(&mut self, msg_type: MsgType) {
+    pub fn set_msg_type(&mut self, msg_type_string: &'de FixStr) {
         debug_assert!(self.msg_type.is_none());
 
-        self.msg_type = Some(msg_type);
+        self.msg_type = Some(msg_type_string);
     }
 
     // This may fail when RawData or XmlData fields (or other binary fields)
@@ -281,16 +319,17 @@ impl<'de> Deserializer<'de> {
         let seq_num_tag = b"34=";
 
         let start_index = self
+            .buffer
             .buf
             .windows(seq_num_tag.len())
             .position(|window| window == seq_num_tag)
             .ok_or(DeserializeError::Logout)?;
-        self.buf = &self.buf[start_index + seq_num_tag.len()..];
+        self.buffer.buf = &self.buffer.buf[start_index + seq_num_tag.len()..];
 
         self.deserialize_seq_num()
     }
 
-    pub fn reject(&mut self, tag: Option<TagNum>, reason: SessionRejectReason) -> DeserializeError {
+    pub fn reject(&mut self, tag: Option<TagNum>, reason: ParseRejectReason) -> DeserializeError {
         let seq_num = if let Some(seq_num) = self.seq_num {
             seq_num
         } else {
@@ -321,7 +360,7 @@ impl<'de> Deserializer<'de> {
                     if current_tag_found {
                         return self.reject(
                             Some(*processed_tag),
-                            SessionRejectReason::RepeatingGroupFieldsOutOfOrder,
+                            ParseRejectReason::RepeatingGroupFieldsOutOfOrder,
                         );
                     } else {
                         continue 'outer;
@@ -333,7 +372,7 @@ impl<'de> Deserializer<'de> {
         }
         // This should never happen
         debug_assert!(false);
-        self.reject(None, SessionRejectReason::RepeatingGroupFieldsOutOfOrder)
+        self.reject(None, ParseRejectReason::RepeatingGroupFieldsOutOfOrder)
     }
 
     pub fn put_tag(&mut self, tag: TagNum) {
@@ -341,18 +380,13 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize MsgType
-    pub fn deserialize_msg_type(&mut self) -> Result<MsgType, DeserializeError> {
-        let Ok(value) = self.deserialize_str() else {
-            return Err(self.reject(Some(35), SessionRejectReason::InvalidMsgtype));
-        };
-
-        let Ok(msg_type) = MsgType::try_from(value) else {
-            return Err(self.reject(Some(35), SessionRejectReason::InvalidMsgtype));
-        };
-
-        // Remember MsgType.
-        self.set_msg_type(msg_type);
-        Ok(msg_type)
+    pub fn deserialize_msg_type(&mut self) -> Result<&'de FixStr, DeserializeError> {
+        if let Ok(value) = self.buffer.deserialize_str() {
+            self.msg_type = Some(value);
+            Ok(value)
+        } else {
+            Err(self.reject(Some(35), ParseRejectReason::InvalidMsgtype))
+        }
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
@@ -362,40 +396,38 @@ impl<'de> Deserializer<'de> {
             return Ok(self.tmp_tag.take());
         }
 
-        match self.buf {
+        match self.buffer.buf {
             // End of stream
             [] => return Ok(None),
             // Leading zero
-            [b'0' | b'=', ..] => {
-                return Err(self.reject(None, SessionRejectReason::InvalidTagNumber))
-            }
+            [b'0' | b'=', ..] => return Err(self.reject(None, ParseRejectReason::InvalidTagNumber)),
             _ => {}
         }
 
         let mut value: TagNum = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and self.buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for i in 0..self.buffer.buf.len() {
+            // SAFETY: i is between 0 and self.buffer.buf.len()
+            match unsafe { self.buffer.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as TagNum))
                         // Integer overflow
-                        .ok_or_else(|| self.reject(None, SessionRejectReason::InvalidTagNumber))?;
+                        .ok_or_else(|| self.reject(None, ParseRejectReason::InvalidTagNumber))?;
                 }
                 b'=' => {
                     if value == 0 {
                         return Err(
-                            self.reject(self.current_tag, SessionRejectReason::InvalidTagNumber)
+                            self.reject(self.current_tag, ParseRejectReason::InvalidTagNumber)
                         );
                     } else {
                         self.current_tag = Some(value);
-                        self.buf = &self.buf[i + 1..];
+                        self.buffer.buf = &self.buffer.buf[i + 1..];
                         return Ok(Some(value));
                     }
                 }
                 // Unexpected value
-                _ => return Err(self.reject(None, SessionRejectReason::InvalidTagNumber)),
+                _ => return Err(self.reject(None, ParseRejectReason::InvalidTagNumber)),
             }
         }
 
@@ -413,7 +445,7 @@ impl<'de> Deserializer<'de> {
     ///
     /// Note that int values may contain leading zeros (e.g. “00023” = “23”).
     pub fn deserialize_int(&mut self) -> Result<Int, DeserializeError> {
-        let negative = match self.buf {
+        let negative = match self.buffer.buf {
             // MSG Garbled
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -424,42 +456,42 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             [b'-', b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
+                    ParseRejectReason::IncorrectDataFormatForValue,
                 ))
             }
             [b'-', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 true
             }
             _ => false,
         };
 
         let mut value: Int = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and self.buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for i in 0..self.buffer.buf.len() {
+            // SAFETY: i is between 0 and self.buffer.buf.len()
+            match unsafe { self.buffer.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as Int))
                         .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         })?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    self.buffer.buf = &self.buffer.buf[i + 1..];
                     return Ok(if negative { -value } else { value });
                 }
                 _ => {
                     return Err(self.reject(
                         self.current_tag,
-                        SessionRejectReason::TagSpecifiedWithoutAValue,
+                        ParseRejectReason::TagSpecifiedWithoutAValue,
                     ))
                 }
             }
@@ -474,7 +506,7 @@ impl<'de> Deserializer<'de> {
     /// Deserialize sequence of character digits without commas or decimals.
     /// Value must be positive.
     pub fn deserialize_seq_num(&mut self) -> Result<SeqNum, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             // No more data, MSG Garbled
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -487,9 +519,9 @@ impl<'de> Deserializer<'de> {
         }
 
         let mut value: SeqNum = 0;
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+            match unsafe { self.buffer.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
@@ -497,7 +529,7 @@ impl<'de> Deserializer<'de> {
                         .ok_or(DeserializeError::Logout)?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    self.buffer.buf = &self.buffer.buf[i + 1..];
                     // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
                     return Ok(value);
                 }
@@ -514,7 +546,7 @@ impl<'de> Deserializer<'de> {
     /// Deserialize sequence of character digits without commas or decimals.
     /// Value must be positive.
     pub fn deserialize_num_in_group(&mut self) -> Result<NumInGroup, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             // MSG Garbled
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -525,38 +557,38 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             _ => {}
         }
 
         let mut value: NumInGroup = 0;
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+            match unsafe { self.buffer.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as NumInGroup))
                         .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         })?;
                 }
                 b'\x01' => {
                     if value == 0 {
                         return Err(
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         );
                     } else {
-                        self.buf = &self.buf[i + 1..];
+                        self.buffer.buf = &self.buffer.buf[i + 1..];
                         return Ok(value);
                     }
                 }
                 _ => {
                     return Err(self.reject(
                         self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     ))
                 }
             }
@@ -571,7 +603,7 @@ impl<'de> Deserializer<'de> {
     /// Deserialize sequence of character digits without commas or decimals
     /// (values 1 to 31).
     pub fn deserialize_day_of_month(&mut self) -> Result<DayOfMonth, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             // MSG Garbled
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
@@ -582,35 +614,35 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             [b'0', ..] => {
-                return Err(self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                return Err(self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))
             }
             _ => {}
         };
 
         let mut value: NumInGroup = 0;
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+            match unsafe { self.buffer.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as NumInGroup))
                         .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         })?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    self.buffer.buf = &self.buffer.buf[i + 1..];
                     break;
                 }
                 _ => {
                     return Err(self.reject(
                         self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     ))
                 }
             }
@@ -618,7 +650,7 @@ impl<'de> Deserializer<'de> {
 
         match value {
             1..=31 => Ok(value),
-            _ => Err(self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)),
+            _ => Err(self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)),
         }
     }
 
@@ -634,7 +666,7 @@ impl<'de> Deserializer<'de> {
     /// The number of decimal places used should be a factor of business/market
     /// needs and mutual agreement between counterparties.
     pub fn deserialize_float(&mut self) -> Result<Float, DeserializeError> {
-        let (negative, buf) = match self.buf {
+        let (negative, buf) = match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -644,17 +676,17 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             [b'-', b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
+                    ParseRejectReason::IncorrectDataFormatForValue,
                 ))
             }
             [b'-', buf @ ..] => (true, buf),
-            _ => (false, self.buf),
+            _ => (false, self.buffer.buf),
         };
 
         let mut num: i64 = 0;
@@ -667,7 +699,7 @@ impl<'de> Deserializer<'de> {
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as i64))
                         .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         })?;
                     if let Some(scale) = scale.as_mut() {
                         *scale += 1;
@@ -677,13 +709,13 @@ impl<'de> Deserializer<'de> {
                     if scale.is_some() {
                         return Err(self.reject(
                             self.current_tag,
-                            SessionRejectReason::IncorrectDataFormatForValue,
+                            ParseRejectReason::IncorrectDataFormatForValue,
                         ));
                     }
                     scale = Some(0);
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    self.buffer.buf = &self.buffer.buf[i + 1..];
                     let scale = scale.unwrap_or(0);
                     // TODO: Limit scale (28 or more panics!)
                     return Ok(Decimal::new(if negative { -num } else { num }, scale));
@@ -691,7 +723,7 @@ impl<'de> Deserializer<'de> {
                 _ => {
                     return Err(self.reject(
                         self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     ))
                 }
             }
@@ -729,7 +761,7 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn deserialize_boolean(&mut self) -> Result<Boolean, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             // Empty or missing separator at the end
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
@@ -741,19 +773,19 @@ impl<'de> Deserializer<'de> {
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             [b'Y', b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 Ok(true)
             }
             [b'N', b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 Ok(false)
             }
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
@@ -761,21 +793,21 @@ impl<'de> Deserializer<'de> {
     /// Deserialize any ASCII character except control characters.
     // TODO: [Feature]: Deserialize any ISO/IEC 8859-1 (Latin-1) character except control characters.
     pub fn deserialize_char(&mut self) -> Result<Char, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             // ASCII controll characters range + unused range
             [0x00..=0x1f | 0x80..=0xff, ..] => {
-                Err(self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                Err(self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))
             }
             [n, b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 Ok(*n)
             }
             // Missing separator at the end
@@ -784,7 +816,7 @@ impl<'de> Deserializer<'de> {
             )),
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
@@ -794,7 +826,7 @@ impl<'de> Deserializer<'de> {
     pub fn deserialize_multiple_char_value(
         &mut self,
     ) -> Result<MultipleCharValue, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -804,25 +836,25 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ));
             }
             _ => {}
         }
 
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and input.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
-                let data = &self.buf[0..i];
+            if let b'\x01' = unsafe { self.buffer.buf.get_unchecked(i) } {
+                let data = &self.buffer.buf[0..i];
                 // Skip data and separator
-                self.buf = &self.buf[i + 1..];
+                self.buffer.buf = &self.buffer.buf[i + 1..];
                 let mut result = MultipleCharValue::with_capacity(data.len() / 2 + 1);
                 for chunk in data.chunks(2) {
                     match chunk {
                         [b' '] | [b' ', _] => {
                             return Err(self.reject(
                                 self.current_tag,
-                                SessionRejectReason::IncorrectDataFormatForValue,
+                                ParseRejectReason::IncorrectDataFormatForValue,
                             ))
                         }
                         // Latin-1 controll characters ranges
@@ -830,14 +862,15 @@ impl<'de> Deserializer<'de> {
 
                         // ASCII controll character range + unused range
                         [0x00..=0x1f] | [0x80..=0xff] => {
-                            return Err(self
-                                .reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
+                            return Err(
+                                self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
+                            );
                         }
                         [n] | [n, b' '] => result.push(*n),
                         _ => {
                             return Err(self.reject(
                                 self.current_tag,
-                                SessionRejectReason::IncorrectDataFormatForValue,
+                                ParseRejectReason::IncorrectDataFormatForValue,
                             ));
                         }
                     }
@@ -855,9 +888,9 @@ impl<'de> Deserializer<'de> {
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
     pub fn deserialize_str(&mut self) -> Result<&FixStr, DeserializeError> {
-        match deserialize_str(self.buf) {
+        match deserialize_str(self.buffer.buf) {
             Ok((leftover, fix_str)) => {
-                self.buf = leftover;
+                self.buffer.buf = leftover;
                 Ok(fix_str)
             }
             Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
@@ -881,7 +914,7 @@ impl<'de> Deserializer<'de> {
     pub fn deserialize_multiple_string_value(
         &mut self,
     ) -> Result<MultipleStringValue, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -891,18 +924,18 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ));
             }
             _ => {}
         }
 
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and input.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
-                let data = &self.buf[0..i];
+            if let b'\x01' = unsafe { self.buffer.buf.get_unchecked(i) } {
+                let data = &self.buffer.buf[0..i];
                 // Skip data and separator
-                self.buf = &self.buf[i + 1..];
+                self.buffer.buf = &self.buffer.buf[i + 1..];
                 const DEFAULT_CAPACITY: usize = 4;
                 let mut result = MultipleStringValue::with_capacity(DEFAULT_CAPACITY);
                 for part in data.split(|p| *p == b' ') {
@@ -913,7 +946,7 @@ impl<'de> Deserializer<'de> {
                             0x00..=0x1f | 0x80..=0xff => {
                                 return Err(self.reject(
                                     self.current_tag,
-                                    SessionRejectReason::ValueIsIncorrect,
+                                    ParseRejectReason::ValueIsIncorrect,
                                 ));
                             }
                             n => sub_result.push(*n),
@@ -935,25 +968,25 @@ impl<'de> Deserializer<'de> {
     /// Deserialize ISO 3166-1:2013 Codes for the representation of names of
     /// countries and their subdivision (2-character code).
     pub fn deserialize_country(&mut self) -> Result<Country, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             [_, b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
             bytes @ [_, _, b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 Country::from_bytes(&bytes[0..2]).ok_or_else(|| {
                     self.reject(
                         self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     )
                 })
             }
@@ -968,7 +1001,7 @@ impl<'de> Deserializer<'de> {
             }
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
@@ -976,27 +1009,27 @@ impl<'de> Deserializer<'de> {
     /// Deserialize ISO 4217:2015 Codes for the representation of currencies
     /// and funds (3-character code).
     pub fn deserialize_currency(&mut self) -> Result<Currency, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             bytes @ [_, _, _, b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 Currency::from_bytes(&bytes[0..3]).ok_or_else(|| {
                     self.reject(
                         self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     )
                 })
             }
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
@@ -1005,23 +1038,23 @@ impl<'de> Deserializer<'de> {
     /// – Codes for exchanges and market identification (MIC)
     /// (4-character code).
     pub fn deserialize_exchange(&mut self) -> Result<Exchange, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             [a, b, c, d, b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 // TODO
                 Ok([*a, *b, *c, *d])
             }
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
@@ -1040,23 +1073,23 @@ impl<'de> Deserializer<'de> {
     /// - DD = 01-31
     /// - WW = w1, w2, w3, w4, w5
     pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             [a, b, c, d, e, f, g, h, b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 // TODO
                 Ok([*a, *b, *c, *d, *e, *f, *g, *h].into())
             }
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
@@ -1064,29 +1097,29 @@ impl<'de> Deserializer<'de> {
     /// Deserialize ISO 639-1:2002 Codes for the representation of names
     /// of languages (2-character code).
     pub fn deserialize_language(&mut self) -> Result<Language, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
             ))),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::TagSpecifiedWithoutAValue,
+                ParseRejectReason::TagSpecifiedWithoutAValue,
             )),
             [a, b, b'\x01', buf @ ..] => {
-                self.buf = buf;
+                self.buffer.buf = buf;
                 Ok([*a, *b])
             }
             _ => Err(self.reject(
                 self.current_tag,
-                SessionRejectReason::IncorrectDataFormatForValue,
+                ParseRejectReason::IncorrectDataFormatForValue,
             )),
         }
     }
 
     // Helper for UTC timestamp deserialization.
     fn deserialize_fraction_of_second(&mut self) -> Result<(u32, u8), DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1094,33 +1127,33 @@ impl<'de> Deserializer<'de> {
                 )));
             }
             [b'\x01', ..] => {
-                self.buf = &self.buf[1..];
+                self.buffer.buf = &self.buffer.buf[1..];
                 return Ok((0, 0));
             }
             // Do nothing here, fraction of second will be deserializede below
-            [b'.', ..] => self.buf = &self.buf[1..],
+            [b'.', ..] => self.buffer.buf = &self.buffer.buf[1..],
             _ => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::IncorrectDataFormatForValue,
+                    ParseRejectReason::IncorrectDataFormatForValue,
                 ));
             }
         }
 
         let mut fraction_of_second: u64 = 0;
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+            match unsafe { self.buffer.buf.get_unchecked(i) } {
                 n @ b'0'..=b'9' => {
                     fraction_of_second = fraction_of_second
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as u64))
                         .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         })?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    self.buffer.buf = &self.buffer.buf[i + 1..];
                     let (multiplier, divider) = match i {
                         3 => (1_000_000, 1),
                         6 => (1_000, 1),
@@ -1131,14 +1164,14 @@ impl<'de> Deserializer<'de> {
                         _ => {
                             return Err(self.reject(
                                 self.current_tag,
-                                SessionRejectReason::IncorrectDataFormatForValue,
+                                ParseRejectReason::IncorrectDataFormatForValue,
                             ))
                         }
                     };
                     let adjusted_fraction_of_second = (fraction_of_second * multiplier / divider)
                         .try_into()
                         .map_err(|_| {
-                            self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect)
+                            self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                         });
                     match adjusted_fraction_of_second {
                         Ok(adjusted_fraction_of_second) => {
@@ -1150,7 +1183,7 @@ impl<'de> Deserializer<'de> {
                 _ => {
                     return Err(self.reject(
                         self.current_tag,
-                        SessionRejectReason::IncorrectDataFormatForValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     ));
                 }
             }
@@ -1158,7 +1191,7 @@ impl<'de> Deserializer<'de> {
 
         Err(self.reject(
             self.current_tag,
-            SessionRejectReason::IncorrectDataFormatForValue,
+            ParseRejectReason::IncorrectDataFormatForValue,
         ))
     }
 
@@ -1180,7 +1213,7 @@ impl<'de> Deserializer<'de> {
     ///        milliseconds, 6 digits to convey microseconds, 9 digits
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn deserialize_utc_timestamp(&mut self) -> Result<UtcTimestamp, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1188,7 +1221,7 @@ impl<'de> Deserializer<'de> {
                 )))
             }
             [b'\x01', ..] => {
-                Err(self.reject(self.current_tag, SessionRejectReason::TagSpecifiedWithoutAValue))
+                Err(self.reject(self.current_tag, ParseRejectReason::TagSpecifiedWithoutAValue))
             }
             // Missing separator at the end
             [_] => Err(DeserializeError::GarbledMessage(format!(
@@ -1214,7 +1247,7 @@ impl<'de> Deserializer<'de> {
                 s1 @ b'0'..=b'5', s0 @ b'0'..=b'9',
                 ..
             ] => {
-                self.buf = &self.buf[17..];
+                self.buffer.buf = &self.buffer.buf[17..];
                 let year = (y3 - b'0') as i32 * 1000
                     + (y2 - b'0') as i32 * 100
                     + (y1 - b'0') as i32 * 10
@@ -1222,14 +1255,14 @@ impl<'de> Deserializer<'de> {
                 let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
                 let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
                 let naive_date = NaiveDate::from_ymd_opt(year, month, day)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))?;
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))?;
                 let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
                 let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
                 let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
                 let (fraction_of_second, precision) = self.deserialize_fraction_of_second()?;
                 let naive_date_time = naive_date
                     .and_hms_nano_opt(hour, min, sec, fraction_of_second)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))?;
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))?;
                 let timestamp = Utc.from_utc_datetime(&naive_date_time);
 
                 match precision {
@@ -1240,10 +1273,10 @@ impl<'de> Deserializer<'de> {
                     // XXX: Types from `chrono` crate can't hold
                     //      time at picosecond resolution
                     12 => Ok(UtcTimestamp::with_nanos(timestamp)),
-                    _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+                    _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
                 }
             }
-            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
         }
     }
 
@@ -1265,7 +1298,7 @@ impl<'de> Deserializer<'de> {
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
     ///        // TODO: set precision!
     pub fn deserialize_utc_time_only(&mut self) -> Result<UtcTimeOnly, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1275,7 +1308,7 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             [
@@ -1291,10 +1324,10 @@ impl<'de> Deserializer<'de> {
                 let h = (h1 - b'0') * 10 + (h0 - b'0');
                 let m = (m1 - b'0') * 10 + (m0 - b'0');
                 let s = (s1 - b'0') * 10 + (s0 - b'0');
-                self.buf = &self.buf[9..];
+                self.buffer.buf = &self.buffer.buf[9..];
                 let (ns, precision) = self.deserialize_fraction_of_second()?;
                 let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s.into(), ns)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect));
                 match timestamp {
                     Ok(timestamp) => {
                         match precision {
@@ -1305,7 +1338,7 @@ impl<'de> Deserializer<'de> {
                             // XXX: Types from `chrono` crate can't hold
                             //      time at picosecond resolution
                             12 => Ok(UtcTimeOnly::with_nanos(timestamp)),
-                            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+                            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
                         }
                     },
                     Err(err) => Err(err)
@@ -1317,10 +1350,10 @@ impl<'de> Deserializer<'de> {
                 let h = (h1 - b'0') * 10 + (h0 - b'0');
                 let m = (m1 - b'0') * 10 + (m0 - b'0');
                 let s = 60;
-                self.buf = &self.buf[9..];
+                self.buffer.buf = &self.buffer.buf[9..];
                 let (ns, precision) = self.deserialize_fraction_of_second()?;
                 let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s, ns)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect));
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect));
                 match timestamp {
                     Ok(timestamp) => {
                         match precision {
@@ -1331,13 +1364,13 @@ impl<'de> Deserializer<'de> {
                             // XXX: Types from `chrono` crate can't hold
                             //      time at picosecond resolution
                             12 => Ok(UtcTimeOnly::with_nanos(timestamp)),
-                            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+                            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
                         }
                     },
                     Err(err) => Err(err)
                 }
             }
-            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
         }
     }
 
@@ -1349,14 +1382,14 @@ impl<'de> Deserializer<'de> {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn deserialize_utc_date_only(&mut self) -> Result<UtcDateOnly, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
             }
-            [b'\x01', ..] => Err(self.reject(self.current_tag, SessionRejectReason::TagSpecifiedWithoutAValue)),
+            [b'\x01', ..] => Err(self.reject(self.current_tag, ParseRejectReason::TagSpecifiedWithoutAValue)),
             // Missing separator at the end
             [_] => Err(DeserializeError::GarbledMessage(format!(
                 "missing tag ({:?}) separator",
@@ -1378,11 +1411,11 @@ impl<'de> Deserializer<'de> {
                     + (y0 - b'0') as u16;
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
-                self.buf = &self.buf[9..];
+                self.buffer.buf = &self.buffer.buf[9..];
                 UtcDateOnly::from_ymd_opt(year.into(), month.into(), day.into())
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))
             },
-            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
         }
     }
 
@@ -1397,7 +1430,7 @@ impl<'de> Deserializer<'de> {
     ///
     /// In general only the hour token is non-zero.
     pub fn deserialize_local_mkt_time(&mut self) -> Result<LocalMktTime, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1405,7 +1438,7 @@ impl<'de> Deserializer<'de> {
                 )))
             }
             [b'\x01', ..] => {
-                Err(self.reject(self.current_tag, SessionRejectReason::TagSpecifiedWithoutAValue))
+                Err(self.reject(self.current_tag, ParseRejectReason::TagSpecifiedWithoutAValue))
             }
             // Missing separator at the end
             [_] => Err(DeserializeError::GarbledMessage(format!(
@@ -1429,11 +1462,11 @@ impl<'de> Deserializer<'de> {
                 let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
                 let minute = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
                 let second = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                self.buf = &self.buf[8..];
+                self.buffer.buf = &self.buffer.buf[8..];
                 LocalMktTime::from_hms_opt(hour, minute, second)
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))
             }
-            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
         }
     }
 
@@ -1445,14 +1478,14 @@ impl<'de> Deserializer<'de> {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn deserialize_local_mkt_date(&mut self) -> Result<LocalMktDate, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
                     self.current_tag
                 )))
             }
-            [b'\x01', ..] => Err(self.reject(self.current_tag, SessionRejectReason::TagSpecifiedWithoutAValue)),
+            [b'\x01', ..] => Err(self.reject(self.current_tag, ParseRejectReason::TagSpecifiedWithoutAValue)),
             // Missing separator at the end
             [_] => Err(DeserializeError::GarbledMessage(format!(
                 "missing tag ({:?}) separator",
@@ -1474,11 +1507,11 @@ impl<'de> Deserializer<'de> {
                     + (y0 - b'0') as u16;
                 let month = (m1 - b'0') * 10 + (m0 - b'0');
                 let day = (d1 - b'0') * 10 + (d0 - b'0');
-                self.buf = &self.buf[9..];
+                self.buffer.buf = &self.buffer.buf[9..];
                 LocalMktDate::from_ymd_opt(year.into(), month.into(), day.into())
-                    .ok_or_else(|| self.reject(self.current_tag, SessionRejectReason::ValueIsIncorrect))
+                    .ok_or_else(|| self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect))
             }
-            _ => Err(self.reject(self.current_tag, SessionRejectReason::IncorrectDataFormatForValue)),
+            _ => Err(self.reject(self.current_tag, ParseRejectReason::IncorrectDataFormatForValue)),
         }
     }
 
@@ -1502,7 +1535,7 @@ impl<'de> Deserializer<'de> {
     ///        milliseconds, 6 digits to convey microseconds, 9 digits
     ///        to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn deserialize_tz_timestamp(&mut self) -> Result<TzTimestamp, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1512,7 +1545,7 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             // Missing separator at the end
@@ -1524,12 +1557,12 @@ impl<'de> Deserializer<'de> {
             }
             _ => {}
         }
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and buf.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
+            if let b'\x01' = unsafe { self.buffer.buf.get_unchecked(i) } {
                 // -1 to drop separator, separator on idx 0 is checked separately
-                let data = &self.buf[0..i - 1];
-                self.buf = &self.buf[i + 1..];
+                let data = &self.buffer.buf[0..i - 1];
+                self.buffer.buf = &self.buffer.buf[i + 1..];
                 // TODO
                 return Ok(data.into());
             }
@@ -1552,7 +1585,7 @@ impl<'de> Deserializer<'de> {
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes.
     pub fn deserialize_tz_timeonly(&mut self) -> Result<TzTimeOnly, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1562,7 +1595,7 @@ impl<'de> Deserializer<'de> {
             &[b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             // Missing separator at the end
@@ -1574,12 +1607,12 @@ impl<'de> Deserializer<'de> {
             }
             _ => {}
         }
-        for i in 0..self.buf.len() {
+        for i in 0..self.buffer.buf.len() {
             // SAFETY: i is between 0 and buf.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
+            if let b'\x01' = unsafe { self.buffer.buf.get_unchecked(i) } {
                 // -1 to drop separator, separator on idx 0 is checked separately
-                let data = &self.buf[0..i - 1];
-                self.buf = &self.buf[i + 1..];
+                let data = &self.buffer.buf[0..i - 1];
+                self.buffer.buf = &self.buffer.buf[i + 1..];
                 return Ok(data.into());
             }
         }
@@ -1600,9 +1633,9 @@ impl<'de> Deserializer<'de> {
     /// contained in the associated data field up to but not including
     /// the terminating `<SOH>`.
     pub fn deserialize_length(&mut self) -> Result<Length, DeserializeError> {
-        match deserialize_length(self.buf) {
+        match deserialize_length(self.buffer.buf) {
             Ok((leftover, len)) => {
-                self.buf = leftover;
+                self.buffer.buf = leftover;
                 Ok(len)
             }
             Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
@@ -1620,7 +1653,7 @@ impl<'de> Deserializer<'de> {
     /// Fields of datatype data must be immediately preceded by their
     /// associated Length field.
     pub fn deserialize_data(&mut self, len: usize) -> Result<Data, DeserializeError> {
-        if self.buf.is_empty() {
+        if self.buffer.buf.is_empty() {
             return Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
@@ -1628,7 +1661,7 @@ impl<'de> Deserializer<'de> {
         }
 
         // Data length + separator (SOH)
-        if self.buf.len() < len + 1 {
+        if self.buffer.buf.len() < len + 1 {
             return Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
@@ -1636,7 +1669,7 @@ impl<'de> Deserializer<'de> {
         }
 
         // SAFETY: length checked above
-        if let b'\x01' = unsafe { *self.buf.get_unchecked(len + 1) } {
+        if let b'\x01' = unsafe { *self.buffer.buf.get_unchecked(len + 1) } {
             // Missing separator
             return Err(DeserializeError::GarbledMessage(format!(
                 "missing tag ({:?}) separator",
@@ -1644,9 +1677,9 @@ impl<'de> Deserializer<'de> {
             )));
         }
 
-        let data = &self.buf[0..len];
+        let data = &self.buffer.buf[0..len];
         // Skip data and separator
-        self.buf = &self.buf[len + 1..];
+        self.buffer.buf = &self.buffer.buf[len + 1..];
         Ok(data.into())
     }
 
@@ -1661,7 +1694,7 @@ impl<'de> Deserializer<'de> {
     /// - Fields of datatype XMLData must be immediately preceded by their
     ///   associated Length field.
     pub fn deserialize_xml(&mut self, len: usize) -> Result<XmlData, DeserializeError> {
-        match self.buf {
+        match self.buffer.buf {
             [] => {
                 return Err(DeserializeError::GarbledMessage(format!(
                     "no more data to parse tag {:?}",
@@ -1671,14 +1704,14 @@ impl<'de> Deserializer<'de> {
             [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReason::TagSpecifiedWithoutAValue,
+                    ParseRejectReason::TagSpecifiedWithoutAValue,
                 ))
             }
             _ => {}
         }
 
         // XML length + separator (SOH)
-        if self.buf.len() < len + 1 {
+        if self.buffer.buf.len() < len + 1 {
             return Err(DeserializeError::GarbledMessage(format!(
                 "no more data to parse tag {:?}",
                 self.current_tag
@@ -1686,7 +1719,7 @@ impl<'de> Deserializer<'de> {
         }
 
         // SAFETY: length checked above
-        if let b'\x01' = unsafe { *self.buf.get_unchecked(len + 1) } {
+        if let b'\x01' = unsafe { *self.buffer.buf.get_unchecked(len + 1) } {
             // Missing separator
             return Err(DeserializeError::GarbledMessage(format!(
                 "missing tag ({:?}) separator",
@@ -1694,28 +1727,28 @@ impl<'de> Deserializer<'de> {
             )));
         }
 
-        // TODO: XML validation, SessionRejectReason::XmlValidationError when invalid
-        let xml = &self.buf[0..len];
+        // TODO: XML validation, ParseRejectReason::XmlValidationError when invalid
+        let xml = &self.buffer.buf[0..len];
         // Skip XML and separator
-        self.buf = &self.buf[len + 1..];
+        self.buffer.buf = &self.buffer.buf[len + 1..];
         Ok(xml.into())
     }
 
-    // fn deserialize_tenor(input: &[u8]) -> Result<Tenor, SessionRejectReason>;
+    // fn deserialize_tenor(input: &[u8]) -> Result<Tenor, ParseRejectReason>;
 
     // TODO: it would be nice to have on generic function for all `*_enum`
     //       deserializations
 
     pub fn deserialize_int_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
-        T: TryFrom<Int, Error = SessionRejectReason>,
+        T: TryFrom<Int, Error = ParseRejectReason>,
     {
         T::try_from(self.deserialize_int()?).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
     pub fn deserialize_num_in_group_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
-        T: TryFrom<NumInGroup, Error = SessionRejectReason>,
+        T: TryFrom<NumInGroup, Error = ParseRejectReason>,
     {
         T::try_from(self.deserialize_num_in_group()?)
             .map_err(|reason| self.reject(self.current_tag, reason))
@@ -1723,7 +1756,7 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_char_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
-        T: TryFrom<Char, Error = SessionRejectReason>,
+        T: TryFrom<Char, Error = ParseRejectReason>,
     {
         let value = self.deserialize_char()?;
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
@@ -1731,7 +1764,7 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_string_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
-        for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReason>,
+        for<'a> T: TryFrom<&'a FixStr, Error = ParseRejectReason>,
     {
         let value = self.deserialize_str()?;
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
@@ -1739,7 +1772,7 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_multiple_char_value_enum<T>(&mut self) -> Result<Vec<T>, DeserializeError>
     where
-        T: TryFrom<Char, Error = SessionRejectReason>,
+        T: TryFrom<Char, Error = ParseRejectReason>,
     {
         let values = self.deserialize_multiple_char_value()?;
         let mut result = Vec::with_capacity(values.len());
@@ -1752,7 +1785,7 @@ impl<'de> Deserializer<'de> {
 
     pub fn deserialize_multiple_string_value_enum<T>(&mut self) -> Result<Vec<T>, DeserializeError>
     where
-        for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReason>,
+        for<'a> T: TryFrom<&'a FixStr, Error = ParseRejectReason>,
     {
         let values = self.deserialize_multiple_string_value()?;
         let mut result = Vec::with_capacity(values.len());
@@ -1771,7 +1804,7 @@ mod tests {
     use assert_matches::assert_matches;
     use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 
-    use super::{deserialize_tag, raw_message, Deserializer, RawMessage};
+    use super::{deserialize_tag, raw_message, Deserializer, DeserializerBuffer, RawMessage};
     use crate::{
         deserializer::{deserialize_checksum, RawMessageError},
         fields::{LocalMktDate, Price, TimePrecision},
@@ -1894,8 +1927,7 @@ mod tests {
         };
 
         Deserializer {
-            raw_message,
-            buf: body,
+            buffer: DeserializerBuffer::from_raw_message(raw_message),
             msg_type: None,
             seq_num: Some(1),
             current_tag: None,
@@ -1911,7 +1943,7 @@ mod tests {
             .deserialize_str()
             .expect("failed to deserialize utc timestamp");
         assert_eq!(buf, "lorem ipsum");
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -1922,7 +1954,7 @@ mod tests {
             .deserialize_string()
             .expect("failed to deserialize utc timestamp");
         assert_eq!(buf, "lorem ipsum");
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -1933,14 +1965,14 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time: DateTime<Utc> = Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(2019, 06, 05)
+            &NaiveDate::from_ymd_opt(2019, 6, 5)
                 .unwrap()
                 .and_hms_opt(11, 51, 27)
                 .unwrap(),
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
         assert_eq!(utc_timestamp.precision(), TimePrecision::Secs);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -1951,14 +1983,14 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time = Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(2019, 06, 05)
+            &NaiveDate::from_ymd_opt(2019, 6, 5)
                 .unwrap()
                 .and_hms_milli_opt(11, 51, 27, 848)
                 .unwrap(),
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
         assert_eq!(utc_timestamp.precision(), TimePrecision::Millis);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -1969,14 +2001,14 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time = Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(2019, 06, 05)
+            &NaiveDate::from_ymd_opt(2019, 6, 5)
                 .unwrap()
                 .and_hms_micro_opt(11, 51, 27, 848757)
                 .unwrap(),
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
         assert_eq!(utc_timestamp.precision(), TimePrecision::Micros);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -1987,14 +2019,14 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time = Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(2019, 06, 05)
+            &NaiveDate::from_ymd_opt(2019, 6, 5)
                 .unwrap()
                 .and_hms_nano_opt(11, 51, 27, 848757123)
                 .unwrap(),
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
         assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -2005,14 +2037,14 @@ mod tests {
             .deserialize_utc_timestamp()
             .expect("failed to deserialize utc timestamp");
         let date_time = Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(2019, 06, 05)
+            &NaiveDate::from_ymd_opt(2019, 6, 5)
                 .unwrap()
                 .and_hms_nano_opt(11, 51, 27, 848757123)
                 .unwrap(),
         );
         assert_eq!(utc_timestamp.timestamp(), date_time);
         assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     /// FIXME: it seems that timeonly deserialization has not been working for some time now
@@ -2027,7 +2059,7 @@ mod tests {
         let time: NaiveTime = NaiveTime::from_hms_opt(11, 51, 27).unwrap();
         assert_eq!(utc_timeonly.timestamp(), time);
         assert_eq!(utc_timeonly.precision(), TimePrecision::Secs);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -2041,7 +2073,7 @@ mod tests {
             local_mkt_date,
             LocalMktDate::from_ymd_opt(2022, 5, 30).unwrap()
         );
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buffer.buf, &[b'\x00']);
     }
 
     #[test]
@@ -2063,7 +2095,7 @@ mod tests {
                 .deserialize_price()
                 .expect("failed to deserialize price");
             assert_eq!(price, *value);
-            assert_eq!(deserializer.buf, &[b'\x00']);
+            assert_eq!(deserializer.buffer.buf, &[b'\x00']);
         }
     }
 }

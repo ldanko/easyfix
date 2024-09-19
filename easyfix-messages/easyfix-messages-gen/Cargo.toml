@@ -14,3 +14,6 @@ convert_case = "0.6"
 easyfix-dictionary = { version = "0.3.2", path = "../../easyfix-dictionary" }
 proc-macro2 = "1.0"
 quote = "1.0"
+strum = "0.26"
+strum_macros = "0.26"
+

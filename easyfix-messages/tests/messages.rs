@@ -1,9 +1,9 @@
 use assert_matches::assert_matches;
 use easyfix_messages::{
-    deserializer::DeserializeError,
+    deserializer::{DeserializeError, ParseRejectReason},
     fields::{
-        DefaultApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, SessionRejectReason,
-        ToFixString, Utc, UtcTimestamp,
+        DefaultApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc,
+        UtcTimestamp,
     },
     groups::MsgTypeGrp,
     messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
@@ -146,7 +146,7 @@ fn unknown_msg_type() {
         FixtMessage::from_bytes(msg_str.replace("|", "\x01").as_bytes()),
         Err(DeserializeError::Reject {
             tag: Some(35),
-            reason: SessionRejectReason::InvalidMsgtype,
+            reason: ParseRejectReason::InvalidMsgtype,
             ..
         })
     );
