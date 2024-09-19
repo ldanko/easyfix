@@ -101,7 +101,7 @@ async fn first_msg(
 }
 
 #[derive(Debug)]
-pub(crate) struct Connection<S> {
+struct Connection<S> {
     session: Rc<Session<S>>,
 }
 
@@ -268,7 +268,7 @@ pub(crate) async fn initiator_connection<S>(
 }
 
 impl<S: MessagesStorage> Connection<S> {
-    pub(crate) fn new(session: Rc<Session<S>>) -> Connection<S> {
+    fn new(session: Rc<Session<S>>) -> Connection<S> {
         Connection { session }
     }
 

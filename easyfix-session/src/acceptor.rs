@@ -16,7 +16,7 @@ use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
-    connection::acceptor_connection,
+    io::acceptor_connection,
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
