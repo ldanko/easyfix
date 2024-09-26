@@ -8,6 +8,11 @@ repository = "https://github.com/ldanko/easyfix"
 readme = "README.md"
 edition = "2021"
 
+[features]
+default = []
+serialize = []
+deserialize = []
+
 [dependencies]
 anyhow = { workspace = true }
 convert_case = "0.6"

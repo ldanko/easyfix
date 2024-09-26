@@ -10,8 +10,8 @@ edition = "2021"
 
 [features]
 default = []
-serialize = []
-deserialize = []
+serialize = ["easyfix-messages-gen/serialize"]
+deserialize = ["easyfix-messages-gen/deserialize"]
 
 [dependencies]
 anyhow = { workspace = true }
