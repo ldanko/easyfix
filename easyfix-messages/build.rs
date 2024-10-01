@@ -16,6 +16,7 @@ fn main() {
         out_path.join("generated_fields.rs"),
         out_path.join("generated_groups.rs"),
         out_path.join("generated_messages.rs"),
+        None,
     )
     .expect("failed to generate FIX messages");
 }

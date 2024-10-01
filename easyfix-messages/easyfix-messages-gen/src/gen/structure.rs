@@ -108,7 +108,7 @@ impl Struct {
                     if tag == #first_member_tag && last_run || tag != #first_member_tag && !last_run {
                         return Err(deserializer.reject(
                             Some(num_in_group_tag),
-                            SessionRejectReason::IncorrectNumingroupCountForRepeatingGroup,
+                            ParseRejectReason::IncorrectNumingroupCountForRepeatingGroup,
                         ));
                     }
                     deserializer.put_tag(tag);
@@ -123,7 +123,7 @@ impl Struct {
                             if tag == #first_member_tag && last_run || tag != #first_member_tag && !last_run {
                                 return Err(deserializer.reject(
                                     Some(num_in_group_tag),
-                                    SessionRejectReason::IncorrectNumingroupCountForRepeatingGroup,
+                                    ParseRejectReason::IncorrectNumingroupCountForRepeatingGroup,
                                 ));
                             } else {
                                 deserializer.put_tag(tag);
@@ -167,7 +167,7 @@ impl Struct {
                     // defined as optional)
                     return Err(deserializer.reject(
                         Some(#first_member_tag),
-                        SessionRejectReason::RequiredTagMissing)
+                        ParseRejectReason::RequiredTagMissing)
                     )
                 };
 
@@ -235,9 +235,10 @@ impl Struct {
                         #(#de_match_entries,)*
                         tag => {
                             if FieldTag::from_tag_num(tag).is_some() {
-                                return Err(deserializer.reject(Some(tag), SessionRejectReason::TagNotDefinedForThisMessageType));
+                                return Err(deserializer.reject(Some(tag), ParseRejectReason::TagNotDefinedForThisMessageType));
                             } else {
-                                return Err(deserializer.reject(Some(tag), SessionRejectReason::UndefinedTag));
+                                return Err(deserializer.reject(Some(tag), ParseRejectReason::UndefinedTag
+                ));
                             }
                         },
                     }

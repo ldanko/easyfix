@@ -1,6 +1,7 @@
 mod gen;
 
 use std::{
+    collections::HashMap,
     error::Error,
     fs,
     io::prelude::*,
@@ -9,7 +10,8 @@ use std::{
     time::Instant,
 };
 
-use easyfix_dictionary::Dictionary;
+pub use easyfix_dictionary as dictionary;
+use easyfix_dictionary::{Dictionary, ParseRejectReason};
 use proc_macro2::TokenStream;
 
 use crate::gen::Generator;
@@ -73,12 +75,13 @@ pub fn generate_fix_messages(
     fields_file: impl AsRef<Path>,
     groups_file: impl AsRef<Path>,
     messages_file: impl AsRef<Path>,
+    reject_reason_overrides: Option<HashMap<ParseRejectReason, String>>,
 ) -> std::result::Result<(), Box<dyn std::error::Error + 'static>> {
     eprintln!("fields file path: {}", fields_file.as_ref().display());
     eprintln!("groups file path: {}", groups_file.as_ref().display());
     eprintln!("messages file path: {}", messages_file.as_ref().display());
     let fix_xml = fs::read_to_string(fix_xml_path)?;
-    let mut dictionary = Dictionary::new();
+    let mut dictionary = Dictionary::new(reject_reason_overrides);
 
     if let Some(some_fixt_xml_path) = fixt_xml_path {
         log_duration("FIXT XML processed", || {

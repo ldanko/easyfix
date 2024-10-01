@@ -378,12 +378,12 @@ impl SimpleMember {
         match (&self.type_, self.tag) {
             // TODO: is it OK?
             (_, 8 | 9 | 10 | 35) => Some(quote! {
-                return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
             }),
             // MsgSeqNum
             (_, 34) => Some(quote! {
                 if #name.is_some() {
-                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                    return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                 }
                 let msg_seq_num_value = #deserialize?;
                 deserializer.set_seq_num(msg_seq_num_value);
@@ -391,20 +391,20 @@ impl SimpleMember {
             }),
             (Type::Basic(BasicType::Length), _) => Some(quote! {
                 if #name.is_some() {
-                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                    return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                 }
                 #name = Some(#deserialize?);
             }),
             (Type::Basic(BasicType::NumInGroup), _) => Some(quote! {
-                return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
+                return Err(deserializer.reject(Some(tag), ParseRejectReason::TagSpecifiedOutOfRequiredOrder));
             }),
             (Type::Group(_), _) => None,
             (Type::Basic(BasicType::Data | BasicType::XmlData), _) => Some(quote! {
-                return Err(deserializer.reject(Some(tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
+                return Err(deserializer.reject(Some(tag), ParseRejectReason::TagSpecifiedOutOfRequiredOrder));
             }),
             _ => Some(quote! {
                 if #name.is_some() {
-                    return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                    return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                 }
                 #name = Some(#deserialize?);
             }),
@@ -417,7 +417,7 @@ impl SimpleMember {
         let tag = self.tag;
         if self.required && !matches!(self.tag, 8 | 9 | 10 | 35) {
             quote! {
-                #name: #name.ok_or_else(|| deserializer.reject(Some(#tag), SessionRejectReason::RequiredTagMissing))?
+                #name: #name.ok_or_else(|| deserializer.reject(Some(#tag), ParseRejectReason::RequiredTagMissing))?
             }
         } else {
             quote! {
@@ -606,22 +606,22 @@ impl MemberDesc {
                 let next_member_deserialize = next_member_type.gen_deserialize();
                 Some(quote! {
                     if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                     }
                     // deserialize_data()/deserialize_xml() expects
                     // the name of variable below is `len`
                     let len = #deserialize?;
                     #name = Some(len);
                     if deserializer.deserialize_tag_num()?.ok_or_else(|| {
-                        deserializer.reject(Some(#next_member_tag), SessionRejectReason::RequiredTagMissing)
+                        deserializer.reject(Some(#next_member_tag), ParseRejectReason::RequiredTagMissing)
                     })? != #next_member_tag
                     {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagSpecifiedOutOfRequiredOrder));
+                        return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagSpecifiedOutOfRequiredOrder));
                     }
                     // This should never happen, as error would be
                     // returned in #name.is_some() case.
                     if #next_member_name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                     }
                     #next_member_name = Some(#next_member_deserialize?);
                 })
@@ -645,12 +645,12 @@ impl MemberDesc {
                     Ident::new(&format!("{}_local", group_name), Span::call_site());
                 Some(quote! {
                     if #name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                     }
                     let len = #deserialize?;
                     #name = Some(len);
                     if #group_name.is_some() {
-                        return Err(deserializer.reject(Some(#tag), SessionRejectReason::TagAppearsMoreThanOnce));
+                        return Err(deserializer.reject(Some(#tag), ParseRejectReason::TagAppearsMoreThanOnce));
                     }
                     let num_in_group_tag = #tag;
                     let expected_tags = &[#(#expected_tags),*];
