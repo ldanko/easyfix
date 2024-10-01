@@ -472,13 +472,6 @@ impl Generator {
                     serializer.take()
                 }
 
-                fn parse_msg_type(deserializer: &mut Deserializer<'_>, input: &FixStr) -> Result<MsgType, DeserializeError> {
-                    let Ok(msg_type) = MsgType::try_from(input) else {
-                        return Err(deserializer.reject(Some(35), ParseRejectReason::InvalidMsgtype));
-                    };
-                    Ok(msg_type)
-                }
-
                 pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<FixtMessage>, DeserializeError> {
                     let begin_string = deserializer.begin_string();
                     if begin_string != BEGIN_STRING {
@@ -492,8 +485,12 @@ impl Generator {
                         .deserialize_tag_num()
                         .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {}", e)))?
                     {
-                        let msg_type_string = deserializer.deserialize_msg_type()?;
-                        Self::parse_msg_type(&mut deserializer, msg_type_string)?
+                        let msg_type_range = deserializer.deserialize_msg_type()?;
+                        let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
+                        let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
+                            return Err(deserializer.reject(Some(35), ParseRejectReason::InvalidMsgtype));
+                        };
+                        msg_type
                     } else {
                         return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                     };

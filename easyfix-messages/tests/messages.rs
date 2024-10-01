@@ -151,3 +151,11 @@ fn unknown_msg_type() {
         })
     );
 }
+
+#[test]
+fn known_msg_type() {
+    let msg_str = "8=FIXT.1.1|9=0071|35=0|49=test_sender|56=test_target|34=1|52=20230713-21:55:13.436187000|10=248|";
+
+    let msg = FixtMessage::from_bytes(msg_str.replace("|", "\x01").as_bytes()).unwrap();
+    assert_eq!(msg.header.msg_type, MsgType::Heartbeat);
+}
