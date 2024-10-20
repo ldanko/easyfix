@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
 
-pub use io::{send, send_raw, sender};
+pub use io::{send, send_raw, sender, enable_busywait_timers};
 use tracing::error;
 
 #[derive(Debug, thiserror::Error)]

@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    future::Future,
     io,
     net::SocketAddr,
     pin::Pin,
@@ -16,7 +17,7 @@ use tokio::{
     net::TcpListener,
     task::JoinHandle,
 };
-use tracing::{error, info, info_span, warn, Instrument, Span};
+use tracing::{error, info, info_span, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
@@ -37,7 +38,7 @@ pub trait Connection {
         (
             impl AsyncRead + Unpin + 'static,
             impl AsyncWrite + Unpin + 'static,
-            String,
+            SocketAddr,
         ),
         io::Error,
     >;
@@ -62,14 +63,14 @@ impl Connection for TcpConnection {
         (
             impl AsyncRead + Unpin + 'static,
             impl AsyncWrite + Unpin + 'static,
-            String,
+            SocketAddr,
         ),
         io::Error,
     > {
         let (tcp_stream, peer_addr) = self.listener.accept().await?;
         tcp_stream.set_nodelay(true)?;
         let (reader, writer) = tcp_stream.into_split();
-        Ok((reader, writer, peer_addr.to_string()))
+        Ok((reader, writer, peer_addr))
     }
 }
 
@@ -109,14 +110,14 @@ impl<S: MessagesStorage> SessionsMap<S> {
     }
 }
 
-struct SessionTaskBuider<S> {
+pub struct SessionTask<S> {
     settings: Settings,
     sessions: Rc<RefCell<SessionsMap<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
 }
 
-impl<S> Clone for SessionTaskBuider<S> {
+impl<S> Clone for SessionTask<S> {
     fn clone(&self) -> Self {
         Self {
             settings: self.settings.clone(),
@@ -127,14 +128,14 @@ impl<S> Clone for SessionTaskBuider<S> {
     }
 }
 
-impl<S: MessagesStorage + 'static> SessionTaskBuider<S> {
+impl<S: MessagesStorage + 'static> SessionTask<S> {
     fn new(
         settings: Settings,
         sessions: Rc<RefCell<SessionsMap<S>>>,
         active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
         emitter: Emitter,
-    ) -> SessionTaskBuider<S> {
-        SessionTaskBuider {
+    ) -> SessionTask<S> {
+        SessionTask {
             settings,
             sessions,
             active_sessions,
@@ -142,32 +143,33 @@ impl<S: MessagesStorage + 'static> SessionTaskBuider<S> {
         }
     }
 
-    fn start(
+    pub async fn run(
         self,
+        peer_addr: SocketAddr,
         reader: impl AsyncRead + Unpin + 'static,
         writer: impl AsyncWrite + Unpin + 'static,
-        span: Span,
-    ) -> JoinHandle<()> {
+    ) {
+        let span = info_span!("connection", %peer_addr);
+
         span.in_scope(|| {
             info!("---------------------------------------------------------");
             info!("New connection");
         });
 
-        tokio::task::spawn_local(async move {
-            acceptor_connection(
-                reader,
-                writer,
-                self.settings,
-                self.sessions,
-                self.active_sessions,
-                self.emitter,
-            )
-            .instrument(span.clone())
-            .await;
-            span.in_scope(|| {
-                info!("Connection closed");
-            });
-        })
+        acceptor_connection(
+            reader,
+            writer,
+            self.settings,
+            self.sessions,
+            self.active_sessions,
+            self.emitter,
+        )
+        .instrument(span.clone())
+        .await;
+
+        span.in_scope(|| {
+            info!("Connection closed");
+        });
     }
 }
 
@@ -177,7 +179,7 @@ pub(crate) type ActiveSessionsMap<S> = HashMap<SessionId, Rc<Session<S>>>;
 pub struct Acceptor<S> {
     sessions: Rc<RefCell<SessionsMap<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
-    session_task_builder: SessionTaskBuider<S>,
+    session_task: SessionTask<S>,
     #[pin]
     event_stream: EventStream,
 }
@@ -191,12 +193,12 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         let sessions = Rc::new(RefCell::new(SessionsMap::new(message_storage_builder)));
         let active_sessions = Rc::new(RefCell::new(HashMap::new()));
         let session_task_builder =
-            SessionTaskBuider::new(settings, sessions.clone(), active_sessions.clone(), emitter);
+            SessionTask::new(settings, sessions.clone(), active_sessions.clone(), emitter);
 
         Acceptor {
             sessions,
             active_sessions,
-            session_task_builder,
+            session_task: session_task_builder,
             event_stream,
         }
     }
@@ -212,10 +214,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     }
 
     pub fn start(&self, connection: impl Connection + 'static) -> JoinHandle<()> {
-        tokio::task::spawn_local(Self::server_task(
-            connection,
-            self.session_task_builder.clone(),
-        ))
+        tokio::task::spawn_local(Self::server_task(connection, self.session_task.clone()))
     }
 
     pub fn logout(
@@ -262,21 +261,30 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         session.reset(&mut session.state().borrow_mut());
     }
 
-    async fn server_task(
-        connection: impl Connection + 'static,
-        session_task_builder: SessionTaskBuider<S>,
-    ) {
+    async fn server_task(connection: impl Connection, session_task: SessionTask<S>) {
         info!("Acceptor started");
         let connection = Rc::new(connection);
         loop {
             match connection.accept().await {
                 Ok((reader, writer, peer_addr)) => {
-                    let span = info_span!("connection", peer_addr);
-                    session_task_builder.clone().start(reader, writer, span);
+                    tokio::task::spawn_local(session_task.clone().run(peer_addr, reader, writer));
                 }
                 Err(err) => error!("server task failed to accept incoming connection: {err}"),
             }
         }
+    }
+
+    pub fn session_task(&self) -> SessionTask<S> {
+        self.session_task.clone()
+    }
+
+    pub fn run_session_task(
+        &self,
+        peer_addr: SocketAddr,
+        reader: impl AsyncRead + Unpin + 'static,
+        writer: impl AsyncWrite + Unpin + 'static,
+    ) -> impl Future<Output = ()> {
+        self.session_task.clone().run(peer_addr, reader, writer)
     }
 }
 

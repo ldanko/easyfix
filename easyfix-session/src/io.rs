@@ -12,7 +12,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
-    time::{timeout, Duration},
+    time::Duration,
 };
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, info_span, Instrument};
@@ -33,6 +33,10 @@ use input_stream::{input_stream, InputEvent};
 
 mod output_stream;
 use output_stream::{output_stream, OutputEvent};
+
+mod time;
+pub use time::enable_busywait_timers;
+use time::{timeout, timeout_stream};
 
 static SENDERS: Mutex<Option<HashMap<SessionId, Sender>>> = Mutex::new(None);
 
@@ -167,8 +171,8 @@ pub(crate) async fn acceptor_connection<S>(
         .send(FixEventInternal::Created(session_id.clone()))
         .await;
 
-    let input_stream = stream
-        .timeout(session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING)
+    let input_timeout_duration = session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING;
+    let input_stream = timeout_stream(input_timeout_duration, stream)
         .map(|res| res.unwrap_or(InputEvent::Timeout));
     pin_mut!(input_stream);
 
@@ -239,8 +243,8 @@ pub(crate) async fn initiator_connection<S>(
         .send(FixEventInternal::Created(session_id.clone()))
         .await;
 
-    let input_stream = input_stream(source)
-        .timeout(session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING)
+    let input_timeout_duration = session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING;
+    let input_stream = timeout_stream(input_timeout_duration, input_stream(source))
         .map(|res| res.unwrap_or(InputEvent::Timeout));
     pin_mut!(input_stream);
 
@@ -359,7 +363,7 @@ impl<S: MessagesStorage> Connection<S> {
                         info!("Client disconnected, message will be stored for further resend");
                     } else if let Err(error) = sink.write_all(&msg).await {
                         sink_closed = true;
-                        error!("Output error: {error:?}");
+                        error!("Output write error: {error:?}");
                         // XXX: Don't disconnect now. If IO error happened
                         //      here, it will aslo happen in input loop
                         //      and input loop will trigger disconnection.

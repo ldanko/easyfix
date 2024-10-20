@@ -13,6 +13,7 @@ use tokio::{
 use tokio_stream::StreamExt;
 use tracing::{debug, instrument};
 
+use super::time::timeout_stream;
 use crate::{messages_storage::MessagesStorage, session::Session, DisconnectReason, SenderMsg};
 
 pub(crate) enum OutputEvent {
@@ -98,7 +99,6 @@ pub(crate) fn output_stream<S: MessagesStorage>(
             }
         }
     };
-    stream
-        .timeout(timeout_duration)
-        .map(|res| res.unwrap_or(OutputEvent::Timeout))
+
+    timeout_stream(timeout_duration, stream).map(|res| res.unwrap_or(OutputEvent::Timeout))
 }

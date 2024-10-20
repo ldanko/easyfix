@@ -14,6 +14,7 @@ bytes = "1.6"
 chrono = { workspace = true }
 easyfix-messages = { version = "0.5.7", path = "../easyfix-messages" }
 futures = "0.3"
+futures-core = "0.3.31"
 futures-util = "0.3.26"
 pin-project = "1.1"
 serde = { workspace = true }
