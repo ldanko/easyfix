@@ -13,8 +13,8 @@ members = [
 [workspace.dependencies]
 anyhow = "1.0"
 assert_matches = "1.5"
-async-stream = "0.3.4"
+async-stream = "0.3.6"
 chrono = { version = "0.4.38", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
-tracing = "0.1.37"
+tracing = "0.1.40"

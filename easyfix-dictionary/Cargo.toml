@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-dictionary"
-version = "0.3.3"
+version = "0.4.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - quickfix compatible messages dictionary."
@@ -10,6 +10,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
-xmltree = "0.10"
 strum = "0.26"
 strum_macros = "0.26"
+xmltree = "0.10"
