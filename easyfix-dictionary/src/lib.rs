@@ -1,8 +1,15 @@
 #![feature(type_alias_impl_trait)]
 
-use std::{collections::HashMap, convert::TryFrom, fmt, ops::Deref, str::FromStr};
+use std::{
+    collections::HashMap,
+    convert::{AsRef, TryFrom},
+    fmt,
+    ops::Deref,
+    str::FromStr,
+};
 
 use anyhow::{anyhow, bail, Context as ErrorContext, Result};
+use strum_macros::AsRefStr;
 use xmltree::{Element, XMLNode};
 
 type ElementIterator<'a> = impl Iterator<Item = &'a Element>;
@@ -523,16 +530,19 @@ pub struct Dictionary {
     components_by_name: HashMap<String, Component>,
     fields: HashMap<u16, Field>,
     fields_by_name: HashMap<String, Field>,
+    reject_reason_overrides: HashMap<ParseRejectReason, String>,
 }
 
 impl Default for Dictionary {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl Dictionary {
-    pub fn new() -> Dictionary {
+    pub fn new(
+        optional_reject_reason_overrides: Option<HashMap<ParseRejectReason, String>>,
+    ) -> Dictionary {
         Dictionary {
             fixt_version: None,
             fix_version: None,
@@ -544,6 +554,7 @@ impl Dictionary {
             components_by_name: HashMap::new(),
             fields: HashMap::new(),
             fields_by_name: HashMap::new(),
+            reject_reason_overrides: optional_reject_reason_overrides.unwrap_or_default(),
         }
     }
 
@@ -724,6 +735,28 @@ impl Dictionary {
     pub fn fields_by_name(&self) -> &HashMap<String, Field> {
         &self.fields_by_name
     }
+
+    pub fn reject_reason_overrides(&self) -> &HashMap<ParseRejectReason, String> {
+        &self.reject_reason_overrides
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::EnumIter, AsRefStr, Hash)]
+pub enum ParseRejectReason {
+    ValueIsIncorrect,
+    TagSpecifiedWithoutAValue,
+    IncorrectDataFormatForValue,
+    TagAppearsMoreThanOnce,
+    TagSpecifiedOutOfRequiredOrder,
+    RequiredTagMissing,
+    IncorrectNumingroupCountForRepeatingGroup,
+    TagNotDefinedForThisMessageType,
+    UndefinedTag,
+    RepeatingGroupFieldsOutOfOrder,
+    InvalidTagNumber,
+    InvalidMsgtype,
+    SendingtimeAccuracyProblem,
+    CompidProblem,
 }
 
 #[cfg(test)]

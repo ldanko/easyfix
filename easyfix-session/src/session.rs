@@ -1,10 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 
 use easyfix_messages::{
-    deserializer::DeserializeError,
+    deserializer::{DeserializeError, ParseRejectReason},
     fields::{
-        DefaultApplVerId, EncryptMethod, FixStr, FixString, Int, MsgType, SeqNum,
-        SessionRejectReason, SessionStatus, Utc, UtcTimestamp,
+        parse_reject_reason_to_session_reject_reason, DefaultApplVerId, EncryptMethod, FixStr,
+        FixString, Int, MsgType, SeqNum, SessionRejectReason, SessionStatus, ToFixString, Utc,
+        UtcTimestamp,
     },
     messages::{
         FieldTag, FixtMessage, Heartbeat, Logon, Logout, Message, MsgCat, Reject, ResendRequest,
@@ -32,7 +33,7 @@ enum VerifyError {
     ResendRequest { msg_seq_num: SeqNum },
     #[error("Reject due to {reason:?} (tag={tag:?}, logout={logout})")]
     Reject {
-        reason: SessionRejectReason,
+        reason: ParseRejectReason,
         tag: Option<FieldTag>,
         logout: bool,
     },
@@ -64,7 +65,7 @@ enum VerifyError {
 impl VerifyError {
     fn invalid_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::SendingtimeAccuracyProblem,
+            reason: ParseRejectReason::SendingtimeAccuracyProblem,
             tag: Some(FieldTag::SendingTime),
             logout: false,
         }
@@ -72,7 +73,7 @@ impl VerifyError {
 
     fn invalid_comp_id(field_tag: FieldTag) -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::CompidProblem,
+            reason: ParseRejectReason::CompidProblem,
             tag: Some(field_tag),
             logout: true,
         }
@@ -84,7 +85,7 @@ impl VerifyError {
 
     fn missing_orig_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::RequiredTagMissing,
+            reason: ParseRejectReason::RequiredTagMissing,
             tag: Some(FieldTag::OrigSendingTime),
             logout: false,
         }
@@ -92,7 +93,7 @@ impl VerifyError {
 
     fn invalid_orig_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReason::SendingtimeAccuracyProblem,
+            reason: ParseRejectReason::SendingtimeAccuracyProblem,
             tag: Some(FieldTag::OrigSendingTime),
             logout: true,
         }
@@ -1062,7 +1063,7 @@ impl<S: MessagesStorage> Session<S> {
                     &mut state,
                     Some(msg_type.as_fix_str().to_owned()),
                     msg_seq_num,
-                    reason,
+                    parse_reject_reason_to_session_reject_reason(reason),
                     if let Some(tag) = tag_as_i64 {
                         FixString::from_ascii_lossy(format!("{reason:?} (tag={tag})").into_bytes())
                     } else {
@@ -1075,7 +1076,7 @@ impl<S: MessagesStorage> Session<S> {
                     .send(FixEventInternal::DeserializeError(
                         self.session_id().clone(),
                         DeserializeError::Reject {
-                            msg_type: Some(msg_type.as_fix_str().to_owned()),
+                            msg_type: Some(msg_type.as_fix_str().to_fix_string()),
                             seq_num: msg_seq_num,
                             tag: tag.map(|t| t as u16),
                             reason,
@@ -1238,7 +1239,7 @@ impl<S: MessagesStorage> Session<S> {
                 &mut self.state().borrow_mut(),
                 msg_type.clone(),
                 *seq_num,
-                *reason,
+                parse_reject_reason_to_session_reject_reason(*reason),
                 text,
                 tag.map(Int::from),
             ),

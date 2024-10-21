@@ -129,12 +129,12 @@ impl EnumDesc {
             }
 
             impl TryFrom<#type_> for #name {
-                type Error = SessionRejectReason;
+                type Error = ParseRejectReason;
 
-                fn try_from(input: #type_) -> Result<#name, SessionRejectReason> {
+                fn try_from(input: #type_) -> Result<#name, ParseRejectReason> {
                     #try_from_match_input {
                         #(#variant_value => Ok(#name::#variant_name),)*
-                        _ => Err(SessionRejectReason::ValueIsIncorrect),
+                        _ => Err(ParseRejectReason::ValueIsIncorrect),
                     }
                 }
             }
