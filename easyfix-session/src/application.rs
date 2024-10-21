@@ -1,12 +1,16 @@
 use std::{
+    fmt,
     marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
 
 use easyfix_messages::{
-    deserializer::DeserializeError,
-    fields::{FixString, SeqNum, SessionRejectReason, SessionStatus},
+    deserializer,
+    fields::{
+        parse_reject_reason_to_session_reject_reason, FixString, SeqNum, SessionRejectReason,
+        SessionStatus, TagNum,
+    },
     messages::FixtMessage,
 };
 use futures::Stream;
@@ -15,6 +19,60 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
 use crate::{session_id::SessionId, DisconnectReason, Sender};
+
+//
+#[derive(Debug)]
+pub enum DeserializeError {
+    // TODO: enum maybe?
+    GarbledMessage(String),
+    Logout,
+    Reject {
+        msg_type: Option<FixString>,
+        seq_num: SeqNum,
+        tag: Option<TagNum>,
+        reason: SessionRejectReason,
+    },
+}
+
+impl fmt::Display for DeserializeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeserializeError::GarbledMessage(reason) => write!(f, "garbled message: {}", reason),
+            DeserializeError::Logout => write!(f, "MsgSeqNum missing"),
+            DeserializeError::Reject {
+                tag: Some(tag),
+                reason,
+                ..
+            } => write!(f, "{reason:?} (tag={tag})"),
+            DeserializeError::Reject {
+                tag: None, reason, ..
+            } => write!(f, "{reason:?}"),
+        }
+    }
+}
+
+impl std::error::Error for DeserializeError {}
+
+impl From<deserializer::DeserializeError> for DeserializeError {
+    fn from(error: deserializer::DeserializeError) -> Self {
+        use deserializer::DeserializeError as DeError;
+        match error {
+            DeError::GarbledMessage(reason) => DeserializeError::GarbledMessage(reason),
+            DeError::Logout => DeserializeError::Logout,
+            DeError::Reject {
+                msg_type,
+                seq_num,
+                tag,
+                reason,
+            } => DeserializeError::Reject {
+                msg_type,
+                seq_num,
+                tag,
+                reason: parse_reject_reason_to_session_reject_reason(reason),
+            },
+        }
+    }
+}
 
 pub struct DoNotSend {
     pub gap_fill: bool,

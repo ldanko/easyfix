@@ -3,12 +3,14 @@ use std::io;
 use async_stream::stream;
 use bytes::BytesMut;
 use easyfix_messages::{
-    deserializer::{raw_message, DeserializeError, RawMessageError},
+    deserializer::{self, raw_message, RawMessageError},
     messages::FixtMessage,
 };
 use futures_util::Stream;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tracing::{debug, info, warn};
+
+use crate::application::DeserializeError;
 
 pub enum InputEvent {
     Message(Box<FixtMessage>),
@@ -32,7 +34,9 @@ fn process_garbled_data(buf: &mut BytesMut) {
     info!("dropped {len} bytes of garbled message");
 }
 
-fn parse_message(bytes: &mut BytesMut) -> Result<Option<Box<FixtMessage>>, DeserializeError> {
+fn parse_message(
+    bytes: &mut BytesMut,
+) -> Result<Option<Box<FixtMessage>>, deserializer::DeserializeError> {
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -67,7 +71,9 @@ async fn input_handler(
     match parse_message(buffer) {
         Ok(Some(msg)) => return Ok(Some(InputEvent::Message(msg))),
         Ok(None) => {}
-        Err(error) => return Ok(Some(InputEvent::DeserializeError(error))),
+        // Convert `deserializer::DeserializeError` to `application::DeserializeError`
+        // to prevent leaking ParseRejectReason to user code.
+        Err(error) => return Ok(Some(InputEvent::DeserializeError(error.into()))),
     }
 
     // There is not enough buffered data to read a frame. Attempt to
