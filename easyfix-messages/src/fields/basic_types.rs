@@ -573,7 +573,7 @@ impl PartialEq<String> for FixString {
 
 struct FixStringVisitor;
 
-impl<'de> Visitor<'de> for FixStringVisitor {
+impl Visitor<'_> for FixStringVisitor {
     type Value = FixString;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -697,7 +697,7 @@ where
 
 struct UtcTimestampVisitor;
 
-impl<'de> Visitor<'de> for UtcTimestampVisitor {
+impl Visitor<'_> for UtcTimestampVisitor {
     type Value = UtcTimestamp;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

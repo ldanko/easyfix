@@ -27,6 +27,8 @@ jobs:
     - name: Fmt
       run: |
         cargo fmt --check --verbose
+    - name: Clippy
+      run: |
         cargo clippy -- -D warnings
 
     # Skip for now, because tests are always failing

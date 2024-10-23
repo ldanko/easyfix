@@ -258,7 +258,7 @@ pub struct Deserializer<'de> {
     tmp_tag: Option<TagNum>,
 }
 
-impl<'de> Deserializer<'de> {
+impl Deserializer<'_> {
     pub fn from_raw_message(raw_message: RawMessage) -> Deserializer {
         let buf = raw_message.body;
         Deserializer {

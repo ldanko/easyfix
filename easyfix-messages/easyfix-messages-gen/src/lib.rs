@@ -24,6 +24,7 @@ fn create_source_file(
 
     let output = if true {
         let start = Instant::now();
+        #[expect(clippy::zombie_processes)]
         let mut rustfmt = Command::new("rustfmt")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
