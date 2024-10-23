@@ -212,6 +212,10 @@ impl<S: MessagesStorage> State<S> {
         self.messages_storage.next_target_msg_seq_num()
     }
 
+    pub fn set_next_sender_msg_seq_num(&mut self, seq_num: SeqNum) {
+        self.messages_storage.set_next_sender_msg_seq_num(seq_num)
+    }
+
     pub fn set_next_target_msg_seq_num(&mut self, seq_num: SeqNum) {
         self.messages_storage.set_next_target_msg_seq_num(seq_num)
     }

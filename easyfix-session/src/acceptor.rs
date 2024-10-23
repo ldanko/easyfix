@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use easyfix_messages::fields::{FixString, SessionStatus};
+use easyfix_messages::fields::{FixString, SeqNum, SessionStatus};
 use futures::{self, Stream};
 use pin_project::pin_project;
 use tokio::{
@@ -259,6 +259,32 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         };
 
         session.reset(&mut session.state().borrow_mut());
+    }
+
+    /// Sneder seq_num getter
+    pub fn next_sender_msg_seq_num(&self, session_id: &SessionId) -> SeqNum {
+        let active_sessions = self.active_sessions.borrow();
+        let Some(session) = active_sessions.get(session_id) else {
+            warn!("reset: session {session_id} not found");
+            return 0;
+        };
+
+        let state = session.state().borrow_mut();
+        state.next_sender_msg_seq_num()
+    }
+
+    /// Override sender's next seq_num
+    pub fn set_next_sender_msg_seq_num(&self, session_id: &SessionId, seq_num: SeqNum) {
+        let active_sessions = self.active_sessions.borrow();
+        let Some(session) = active_sessions.get(session_id) else {
+            warn!("reset: session {session_id} not found");
+            return;
+        };
+
+        session
+            .state()
+            .borrow_mut()
+            .set_next_sender_msg_seq_num(seq_num);
     }
 
     async fn server_task(connection: impl Connection, session_task: SessionTask<S>) {
