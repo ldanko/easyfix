@@ -17,7 +17,7 @@ use tokio::{
     net::TcpListener,
     task::JoinHandle,
 };
-use tracing::{error, info, info_span, warn, Instrument};
+use tracing::{error, info, info_span, instrument, warn, Instrument};
 
 use crate::{
     application::{events_channel, AsEvent, Emitter, EventStream},
@@ -261,11 +261,12 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         session.reset(&mut session.state().borrow_mut());
     }
 
-    /// Sneder seq_num getter
+    /// Sender seq_num getter
+    #[instrument(skip(self))]
     pub fn next_sender_msg_seq_num(&self, session_id: &SessionId) -> SeqNum {
         let active_sessions = self.active_sessions.borrow();
         let Some(session) = active_sessions.get(session_id) else {
-            warn!("reset: session {session_id} not found");
+            warn!("session not found");
             return 0;
         };
 
@@ -274,10 +275,11 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     }
 
     /// Override sender's next seq_num
+    #[instrument(skip(self))]
     pub fn set_next_sender_msg_seq_num(&self, session_id: &SessionId, seq_num: SeqNum) {
         let active_sessions = self.active_sessions.borrow();
         let Some(session) = active_sessions.get(session_id) else {
-            warn!("reset: session {session_id} not found");
+            warn!("session not found");
             return;
         };
 
