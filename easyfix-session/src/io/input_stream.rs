@@ -1,6 +1,10 @@
-use std::io;
+use std::{
+    future::Future,
+    io,
+    pin::pin,
+    task::{ready, Context, Poll},
+};
 
-use async_stream::stream;
 use bytes::BytesMut;
 use easyfix_messages::{
     deserializer::{self, raw_message, RawMessageError},
@@ -62,8 +66,8 @@ fn parse_message(
     }
 }
 
-async fn input_handler(
-    stream: &mut (impl AsyncRead + Unpin),
+async fn try_read_fix_msg(
+    source: &mut (impl AsyncRead + Unpin),
     buffer: &mut BytesMut,
 ) -> Result<Option<InputEvent>, Disconnect> {
     // Attempt to parse a frame from the buffered data. If enough data
@@ -81,7 +85,7 @@ async fn input_handler(
     //
     // On success, the number of bytes is returned. `0` indicates "end
     // of stream".
-    match stream.read_buf(buffer).await {
+    match source.read_buf(buffer).await {
         Ok(0) => {
             // The remote closed the connection. For this to be a clean
             // shutdown, there should be no data in the read buffer. If
@@ -100,15 +104,36 @@ async fn input_handler(
     Ok(None)
 }
 
-pub fn input_stream(mut source: impl AsyncRead + Unpin) -> impl Stream<Item = InputEvent> {
-    let mut buffer = BytesMut::with_capacity(4096);
-    stream! {
-        loop {
-            match input_handler(&mut source, &mut buffer).await {
-                Ok(Some(event)) => yield event,
-                Ok(None) => {},
-                Err(_) => break,
-            }
+pub struct InputStream<S> {
+    buffer: BytesMut,
+    source: S,
+}
+
+impl<S> Stream for InputStream<S>
+where
+    S: AsyncRead + Unpin,
+{
+    type Item = InputEvent;
+
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        let future = pin!(try_read_fix_msg(&mut this.source, &mut this.buffer));
+        match ready!(future.poll(cx)) {
+            Ok(Some(event)) => Poll::Ready(Some(event)),
+            Ok(None) => Poll::Pending,
+            Err(_) => Poll::Ready(None),
         }
+    }
+}
+
+pub fn input_stream<S>(source: S) -> InputStream<S>
+where
+    S: AsyncRead + Unpin,
+{
+    InputStream {
+        // TODO: Max MSG size
+        buffer: BytesMut::with_capacity(4096),
+        source,
     }
 }

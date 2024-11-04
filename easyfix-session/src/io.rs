@@ -29,7 +29,7 @@ use crate::{
 };
 
 mod input_stream;
-use input_stream::{input_stream, InputEvent};
+pub use input_stream::{input_stream, InputEvent, InputStream};
 
 mod output_stream;
 use output_stream::{output_stream, OutputEvent};
