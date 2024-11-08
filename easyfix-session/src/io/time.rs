@@ -32,7 +32,7 @@ pub async fn timeout<T>(
 }
 
 #[pin_project(project = TimeoutStreamProj)]
-enum TimeoutStream<S> {
+pub enum TimeoutStream<S> {
     Busywait(#[pin] BusywaitTimeoutStream<S>),
     Tokio(#[pin] tokio_stream::adapters::Timeout<S>),
 }
@@ -51,10 +51,10 @@ impl<S: Stream> Stream for TimeoutStream<S> {
     }
 }
 
-pub fn timeout_stream<T>(
-    duration: Duration,
-    stream: impl Stream<Item = T>,
-) -> impl Stream<Item = Result<T, TimeElapsed>> {
+pub fn timeout_stream<S>(duration: Duration, stream: S) -> TimeoutStream<S>
+where
+    S: Stream,
+{
     if BUSYWAIT_TIMEOUTS.load(Ordering::Relaxed) {
         TimeoutStream::Busywait(BusywaitTimeoutStream::new(stream, duration))
     } else {
@@ -112,7 +112,7 @@ impl Future for Sleep {
     }
 }
 
-#[pin_project::pin_project]
+#[pin_project]
 struct BusywaitTimeout<T> {
     #[pin]
     value: T,
@@ -149,8 +149,8 @@ where
     }
 }
 
-#[pin_project::pin_project]
-struct BusywaitTimeoutStream<S> {
+#[pin_project]
+pub struct BusywaitTimeoutStream<S> {
     #[pin]
     stream: Fuse<S>,
     #[pin]
@@ -160,7 +160,7 @@ struct BusywaitTimeoutStream<S> {
 }
 
 impl<S: Stream> BusywaitTimeoutStream<S> {
-    pub fn new(stream: S, duration: Duration) -> Self {
+    fn new(stream: S, duration: Duration) -> Self {
         BusywaitTimeoutStream {
             stream: stream.fuse(),
             deadline: Sleep::new(duration),

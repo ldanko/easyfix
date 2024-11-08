@@ -34,8 +34,7 @@ pub use input_stream::{input_stream, InputEvent, InputStream};
 mod output_stream;
 use output_stream::{output_stream, OutputEvent};
 
-mod time;
-pub use time::enable_busywait_timers;
+pub mod time;
 use time::{timeout, timeout_stream};
 
 static SENDERS: Mutex<Option<HashMap<SessionId, Sender>>> = Mutex::new(None);
