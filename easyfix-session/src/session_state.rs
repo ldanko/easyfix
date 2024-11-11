@@ -43,6 +43,7 @@ pub(crate) struct State<S> {
     heart_bt_int: Int,
     last_sent_time: Instant,
     last_received_time: Instant,
+    input_timeout_cnt: u32,
 
     disconnected: bool,
 
@@ -73,6 +74,7 @@ impl<S: MessagesStorage> State<S> {
             heart_bt_int: 10,
             last_sent_time: Instant::now(),
             last_received_time: Instant::now(),
+            input_timeout_cnt: 0,
             disconnected: true,
             next_expected_msg_seq_num: 0,
             queue: Messages::new(),
@@ -212,6 +214,10 @@ impl<S: MessagesStorage> State<S> {
         self.messages_storage.next_target_msg_seq_num()
     }
 
+    pub fn set_next_sender_msg_seq_num(&mut self, seq_num: SeqNum) {
+        self.messages_storage.set_next_sender_msg_seq_num(seq_num)
+    }
+
     pub fn set_next_target_msg_seq_num(&mut self, seq_num: SeqNum) {
         self.messages_storage.set_next_target_msg_seq_num(seq_num)
     }
@@ -234,5 +240,13 @@ impl<S: MessagesStorage> State<S> {
 
     pub fn set_disconnected(&mut self, disconnected: bool) {
         self.disconnected = disconnected;
+    }
+
+    pub fn input_timoeut_cnt(&self) -> u32 {
+        self.input_timeout_cnt
+    }
+
+    pub fn set_input_timoeut_cnt(&mut self, timoeut_cnt: u32) {
+        self.input_timeout_cnt = timoeut_cnt;
     }
 }

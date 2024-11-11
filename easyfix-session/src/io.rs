@@ -316,6 +316,7 @@ impl<S: MessagesStorage> Connection<S> {
                         disconnect_reason = dr;
                         break;
                     }
+                    self.session.state().borrow_mut().set_input_timoeut_cnt(0);
                 }
                 InputEvent::DeserializeError(error) => {
                     if let Some(dr) = self.session.on_deserialize_error(error).await {
@@ -329,7 +330,11 @@ impl<S: MessagesStorage> Connection<S> {
                     disconnect_reason = DisconnectReason::IoError;
                     break;
                 }
-                InputEvent::Timeout => self.session.on_in_timeout().await,
+                InputEvent::Timeout => {
+                    if self.session.on_in_timeout().await {
+                        break;
+                    }
+                }
             }
         }
         self.session
