@@ -124,8 +124,8 @@ pub(crate) async fn acceptor_connection<S>(
     pin_mut!(stream);
     let msg = match first_msg(&mut stream, logon_timeout).await {
         Ok(msg) => msg,
-        Err(e) => {
-            error!("failed to establish new session: {e}");
+        Err(err) => {
+            error!("failed to establish new session: {err}");
             return;
         }
     };
@@ -136,7 +136,7 @@ pub(crate) async fn acceptor_connection<S>(
     let sender = Sender::new(sender);
 
     let Some((session_settings, session_state)) = sessions.borrow().get_session(&session_id) else {
-        error!("failed to establish new session: unknown session id");
+        error!("failed to establish new session: unknown session id {session_id}");
         return;
     };
     session_state.borrow_mut().set_disconnected(false);
