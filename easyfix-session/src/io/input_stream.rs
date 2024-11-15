@@ -1,7 +1,6 @@
 use std::{
-    future::Future,
     io,
-    pin::pin,
+    pin::Pin,
     task::{ready, Context, Poll},
 };
 
@@ -11,19 +10,20 @@ use easyfix_messages::{
     messages::FixtMessage,
 };
 use futures_util::Stream;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use pin_project::pin_project;
+use tokio::io::AsyncRead;
+use tokio_util::io::poll_read_buf;
 use tracing::{debug, info, warn};
 
 use crate::application::DeserializeError;
 
+#[derive(Debug)]
 pub enum InputEvent {
     Message(Box<FixtMessage>),
     DeserializeError(DeserializeError),
     IoError(io::Error),
     Timeout,
 }
-
-struct Disconnect;
 
 fn process_garbled_data(buf: &mut BytesMut) {
     let len = buf.len();
@@ -66,46 +66,10 @@ fn parse_message(
     }
 }
 
-async fn try_read_fix_msg(
-    source: &mut (impl AsyncRead + Unpin),
-    buffer: &mut BytesMut,
-) -> Result<Option<InputEvent>, Disconnect> {
-    // Attempt to parse a frame from the buffered data. If enough data
-    // has been buffered, the frame is returned.
-    match parse_message(buffer) {
-        Ok(Some(msg)) => return Ok(Some(InputEvent::Message(msg))),
-        Ok(None) => {}
-        // Convert `deserializer::DeserializeError` to `application::DeserializeError`
-        // to prevent leaking ParseRejectReason to user code.
-        Err(error) => return Ok(Some(InputEvent::DeserializeError(error.into()))),
-    }
-
-    // There is not enough buffered data to read a frame. Attempt to
-    // read more data from the socket.
-    //
-    // On success, the number of bytes is returned. `0` indicates "end
-    // of stream".
-    match source.read_buf(buffer).await {
-        Ok(0) => {
-            // The remote closed the connection. For this to be a clean
-            // shutdown, there should be no data in the read buffer. If
-            // there is, this means that the peer closed the socket while
-            // sending a frame.
-            if buffer.is_empty() {
-                return Err(Disconnect);
-            } else {
-                warn!("Connection reset by peer");
-                return Err(Disconnect);
-            }
-        }
-        Ok(_) => {}
-        Err(error) => return Ok(Some(InputEvent::IoError(error))),
-    }
-    Ok(None)
-}
-
+#[pin_project]
 pub struct InputStream<S> {
     buffer: BytesMut,
+    #[pin]
     source: S,
 }
 
@@ -116,13 +80,46 @@ where
     type Item = InputEvent;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
+        let mut this = self.project();
 
-        let future = pin!(try_read_fix_msg(&mut this.source, &mut this.buffer));
-        match ready!(future.poll(cx)) {
-            Ok(Some(event)) => Poll::Ready(Some(event)),
-            Ok(None) => Poll::Pending,
-            Err(_) => Poll::Ready(None),
+        loop {
+            // Attempt to parse a message from the buffered data.
+            // If enough data has been buffered, the message is returned.
+            match parse_message(this.buffer) {
+                Ok(Some(msg)) => {
+                    return Poll::Ready(Some(InputEvent::Message(msg)));
+                }
+                Ok(None) => {}
+                // Convert `deserializer::DeserializeError` to `application::DeserializeError`
+                // to prevent leaking ParseRejectReason to user code.
+                Err(error) => {
+                    return Poll::Ready(Some(InputEvent::DeserializeError(error.into())));
+                }
+            }
+
+            // There is not enough buffered data to read a message.
+            // Attempt to read more data from the socket.
+            //
+            // On success, the number of bytes is returned. `0` indicates "end
+            // of stream".
+            let future = poll_read_buf(Pin::new(&mut this.source), cx, this.buffer);
+            match ready!(future) {
+                Ok(0) => {
+                    // The remote closed the connection. For this to be a clean
+                    // shutdown, there should be no data in the read buffer. If
+                    // there is, this means that the peer closed the socket while
+                    // sending a frame.
+                    if this.buffer.is_empty() {
+                        info!("Stream closed");
+                        return Poll::Ready(None);
+                    } else {
+                        warn!("Connection reset by peer");
+                        return Poll::Ready(None);
+                    }
+                }
+                Ok(_n) => continue,
+                Err(err) => return Poll::Ready(Some(InputEvent::IoError(err))),
+            }
         }
     }
 }

@@ -21,7 +21,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1.38", features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
 tokio-stream = "0.1"
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = [ "io"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
