@@ -182,18 +182,18 @@ impl<S: Stream> Stream for BusywaitTimeoutStream<S> {
                     this.deadline.reset(*this.duration);
                     *this.poll_deadline = true;
                 }
-                return Poll::Ready(v.map(Ok));
+                Poll::Ready(v.map(Ok))
             }
-            Poll::Pending => {}
-        };
-
-        if *this.poll_deadline {
-            ready!(this.deadline.poll(cx));
-            *this.poll_deadline = false;
-            return Poll::Ready(Some(Err(TimeElapsed(()))));
+            Poll::Pending => {
+                if *this.poll_deadline {
+                    ready!(this.deadline.poll(cx));
+                    *this.poll_deadline = false;
+                    Poll::Ready(Some(Err(TimeElapsed(()))))
+                } else {
+                    Poll::Pending
+                }
+            }
         }
-
-        Poll::Pending
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
