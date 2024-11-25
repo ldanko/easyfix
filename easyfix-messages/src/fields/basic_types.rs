@@ -243,21 +243,48 @@ impl ToOwned for FixStr {
     }
 }
 
-impl PartialEq<[u8]> for FixStr {
-    fn eq(&self, other: &[u8]) -> bool {
-        self.0.eq(other)
-    }
+macro_rules! impl_eq {
+    ($lhs:ty, $lhs_bytes: ident, $rhs: ty, $rhs_bytes: ident) => {
+        impl PartialEq<$rhs> for $lhs {
+            #[inline]
+            fn eq(&self, other: &$rhs) -> bool {
+                PartialEq::eq(self.$lhs_bytes(), other.$rhs_bytes())
+            }
+        }
+
+        impl PartialEq<$lhs> for $rhs {
+            #[inline]
+            fn eq(&self, other: &$lhs) -> bool {
+                PartialEq::eq(self.$rhs_bytes(), other.$lhs_bytes())
+            }
+        }
+    };
 }
 
-impl PartialEq<&[u8]> for FixStr {
-    fn eq(&self, other: &&[u8]) -> bool {
-        self.0.eq(*other)
-    }
-}
+impl_eq!([u8], as_ref, FixStr, as_bytes);
+impl_eq!([u8], as_ref, &FixStr, as_bytes);
+impl_eq!(&[u8], as_ref, FixStr, as_bytes);
+impl_eq!(Vec<u8>, as_slice, FixStr, as_bytes);
+impl_eq!(Vec<u8>, as_slice, &FixStr, as_bytes);
+impl_eq!(str, as_bytes, FixStr, as_bytes);
+impl_eq!(&str, as_bytes, FixStr, as_bytes);
+impl_eq!(str, as_bytes, &FixStr, as_bytes);
+impl_eq!(String, as_bytes, FixStr, as_bytes);
+impl_eq!(String, as_bytes, &FixStr, as_bytes);
+
+impl_eq!([u8], as_ref, FixString, as_bytes);
+impl_eq!(&[u8], as_ref, FixString, as_bytes);
+impl_eq!(Vec<u8>, as_slice, FixString, as_bytes);
+impl_eq!(str, as_bytes, FixString, as_bytes);
+impl_eq!(&str, as_bytes, FixString, as_bytes);
+impl_eq!(String, as_bytes, FixString, as_bytes);
+
+impl_eq!(FixString, as_bytes, FixStr, as_bytes);
+impl_eq!(FixString, as_bytes, &FixStr, as_bytes);
 
 impl<const N: usize> PartialEq<[u8; N]> for FixStr {
     fn eq(&self, other: &[u8; N]) -> bool {
-        self.0.eq(other)
+        self.0.eq(&other[..])
     }
 }
 
@@ -267,27 +294,21 @@ impl<const N: usize> PartialEq<&'_ [u8; N]> for FixStr {
     }
 }
 
-impl PartialEq<Vec<u8>> for FixStr {
-    fn eq(&self, other: &Vec<u8>) -> bool {
+impl<const N: usize> PartialEq<[u8; N]> for &FixStr {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.0.eq(&other[..])
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for FixString {
+    fn eq(&self, other: &[u8; N]) -> bool {
         self.0.eq(other)
     }
 }
 
-impl PartialEq<&str> for FixStr {
-    fn eq(&self, other: &&str) -> bool {
-        self.0.eq(other.as_bytes())
-    }
-}
-
-impl PartialEq<str> for FixStr {
-    fn eq(&self, other: &str) -> bool {
-        self.0.eq(other.as_bytes())
-    }
-}
-
-impl PartialEq<String> for FixStr {
-    fn eq(&self, other: &String) -> bool {
-        self.0.eq(other.as_bytes())
+impl<const N: usize> PartialEq<&'_ [u8; N]> for FixString {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.0.eq(other)
     }
 }
 
@@ -508,66 +529,6 @@ impl<const N: usize> TryFrom<[u8; N]> for FixString {
 impl<const N: usize> From<&[u8; N]> for FixString {
     fn from(input: &[u8; N]) -> FixString {
         FixString(input.as_slice().into())
-    }
-}
-
-impl PartialEq<FixStr> for FixString {
-    fn eq(&self, other: &FixStr) -> bool {
-        self.0.eq(other.as_bytes())
-    }
-}
-
-impl PartialEq<&FixStr> for FixString {
-    fn eq(&self, other: &&FixStr) -> bool {
-        self.0.eq(other.as_bytes())
-    }
-}
-
-impl PartialEq<[u8]> for FixString {
-    fn eq(&self, other: &[u8]) -> bool {
-        self.0.eq(other)
-    }
-}
-
-impl PartialEq<&[u8]> for FixString {
-    fn eq(&self, other: &&[u8]) -> bool {
-        self.0.eq(other)
-    }
-}
-
-impl<const N: usize> PartialEq<[u8; N]> for FixString {
-    fn eq(&self, other: &[u8; N]) -> bool {
-        self.0.eq(other)
-    }
-}
-
-impl<const N: usize> PartialEq<&'_ [u8; N]> for FixString {
-    fn eq(&self, other: &&[u8; N]) -> bool {
-        self.0.eq(other)
-    }
-}
-
-impl PartialEq<Vec<u8>> for FixString {
-    fn eq(&self, other: &Vec<u8>) -> bool {
-        self.0.eq(other)
-    }
-}
-
-impl PartialEq<&str> for FixString {
-    fn eq(&self, other: &&str) -> bool {
-        self.0.eq(other.as_bytes())
-    }
-}
-
-impl PartialEq<str> for FixString {
-    fn eq(&self, other: &str) -> bool {
-        self.0.eq(other.as_bytes())
-    }
-}
-
-impl PartialEq<String> for FixString {
-    fn eq(&self, other: &String) -> bool {
-        self.0.eq(other.as_bytes())
     }
 }
 
