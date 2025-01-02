@@ -625,7 +625,7 @@ impl<S: MessagesStorage> Session<S> {
         // TODO Check it
         trace!("got heartbeat");
 
-        self.verify(message, false, true).await?;
+        self.verify(message, true, true).await?;
 
         self.state.borrow_mut().incr_next_target_msg_seq_num();
         Ok(())
@@ -641,7 +641,7 @@ impl<S: MessagesStorage> Session<S> {
 
         let test_req_id = test_request.test_req_id.clone();
 
-        self.verify(message, false, true).await?;
+        self.verify(message, true, true).await?;
 
         trace!("Send Heartbeat");
         self.send(Box::new(Message::Heartbeat(Heartbeat {
