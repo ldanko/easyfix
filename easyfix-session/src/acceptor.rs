@@ -33,7 +33,7 @@ use crate::{
 #[allow(async_fn_in_trait)]
 pub trait Connection {
     async fn accept(
-        &self,
+        &mut self,
     ) -> Result<
         (
             impl AsyncRead + Unpin + 'static,
@@ -58,7 +58,7 @@ impl TcpConnection {
 
 impl Connection for TcpConnection {
     async fn accept(
-        &self,
+        &mut self,
     ) -> Result<
         (
             impl AsyncRead + Unpin + 'static,
@@ -289,9 +289,8 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             .set_next_sender_msg_seq_num(seq_num);
     }
 
-    async fn server_task(connection: impl Connection, session_task: SessionTask<S>) {
+    async fn server_task(mut connection: impl Connection, session_task: SessionTask<S>) {
         info!("Acceptor started");
-        let connection = Rc::new(connection);
         loop {
             match connection.accept().await {
                 Ok((reader, writer, peer_addr)) => {

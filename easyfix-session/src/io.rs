@@ -29,13 +29,12 @@ use crate::{
 };
 
 mod input_stream;
-use input_stream::{input_stream, InputEvent};
+pub use input_stream::{input_stream, InputEvent, InputStream};
 
 mod output_stream;
 use output_stream::{output_stream, OutputEvent};
 
-mod time;
-pub use time::enable_busywait_timers;
+pub mod time;
 use time::{timeout, timeout_stream};
 
 static SENDERS: Mutex<Option<HashMap<SessionId, Sender>>> = Mutex::new(None);
@@ -125,8 +124,8 @@ pub(crate) async fn acceptor_connection<S>(
     pin_mut!(stream);
     let msg = match first_msg(&mut stream, logon_timeout).await {
         Ok(msg) => msg,
-        Err(e) => {
-            error!("failed to establish new session: {e}");
+        Err(err) => {
+            error!("failed to establish new session: {err}");
             return;
         }
     };
@@ -137,7 +136,7 @@ pub(crate) async fn acceptor_connection<S>(
     let sender = Sender::new(sender);
 
     let Some((session_settings, session_state)) = sessions.borrow().get_session(&session_id) else {
-        error!("failed to establish new session: unknown session id");
+        error!("failed to establish new session: unknown session id {session_id}");
         return;
     };
     session_state.borrow_mut().set_disconnected(false);
@@ -317,6 +316,7 @@ impl<S: MessagesStorage> Connection<S> {
                         disconnect_reason = dr;
                         break;
                     }
+                    self.session.state().borrow_mut().set_input_timoeut_cnt(0);
                 }
                 InputEvent::DeserializeError(error) => {
                     if let Some(dr) = self.session.on_deserialize_error(error).await {
@@ -330,7 +330,11 @@ impl<S: MessagesStorage> Connection<S> {
                     disconnect_reason = DisconnectReason::IoError;
                     break;
                 }
-                InputEvent::Timeout => self.session.on_in_timeout().await,
+                InputEvent::Timeout => {
+                    if self.session.on_in_timeout().await {
+                        break;
+                    }
+                }
             }
         }
         self.session
