@@ -152,7 +152,6 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
         let span = info_span!("connection", %peer_addr);
 
         span.in_scope(|| {
-            info!("---------------------------------------------------------");
             info!("New connection");
         });
 
