@@ -625,7 +625,7 @@ impl<S: MessagesStorage> Session<S> {
         // TODO Check it
         trace!("got heartbeat");
 
-        self.verify(message, false, true).await?;
+        self.verify(message, true, true).await?;
 
         self.state.borrow_mut().incr_next_target_msg_seq_num();
         Ok(())
@@ -641,7 +641,7 @@ impl<S: MessagesStorage> Session<S> {
 
         let test_req_id = test_request.test_req_id.clone();
 
-        self.verify(message, false, true).await?;
+        self.verify(message, true, true).await?;
 
         trace!("Send Heartbeat");
         self.send(Box::new(Message::Heartbeat(Heartbeat {
@@ -1253,8 +1253,17 @@ impl<S: MessagesStorage> Session<S> {
         None
     }
 
-    pub async fn on_in_timeout(self: &Rc<Self>) {
+    pub async fn on_in_timeout(self: &Rc<Self>) -> bool {
         trace!("on_in_timeout");
+
+        let mut state = self.state().borrow_mut();
+        let timeout_cnt_limit = self.settings.auto_disconnect_after_no_heartbeat;
+        let new_timeout_cnt = state.input_timoeut_cnt() + 1;
+        if timeout_cnt_limit > 0 && new_timeout_cnt >= timeout_cnt_limit {
+            warn!("Grace period is over");
+            return true;
+        }
+        state.set_input_timoeut_cnt(new_timeout_cnt);
 
         self.send(Box::new(Message::TestRequest(TestRequest {
             // Use current time as TestReqId as recommended in FIX Session
@@ -1263,6 +1272,8 @@ impl<S: MessagesStorage> Session<S> {
                 format!("{}", Utc::now().format("%Y%m%d-%H:%M:%S.%f")).into_bytes(),
             ),
         })));
+
+        false
     }
 
     pub async fn on_out_timeout(self: &Rc<Self>) {

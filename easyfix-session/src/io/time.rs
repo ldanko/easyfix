@@ -3,7 +3,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
-    task::{self, ready},
+    task::{ready, Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -32,7 +32,7 @@ pub async fn timeout<T>(
 }
 
 #[pin_project(project = TimeoutStreamProj)]
-enum TimeoutStream<S> {
+pub enum TimeoutStream<S> {
     Busywait(#[pin] BusywaitTimeoutStream<S>),
     Tokio(#[pin] tokio_stream::adapters::Timeout<S>),
 }
@@ -40,24 +40,21 @@ enum TimeoutStream<S> {
 impl<S: Stream> Stream for TimeoutStream<S> {
     type Item = Result<S::Item, TimeElapsed>;
 
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.project() {
             TimeoutStreamProj::Busywait(stream) => stream.poll_next(cx),
             TimeoutStreamProj::Tokio(stream) => {
                 let result = ready!(stream.poll_next(cx));
-                task::Poll::Ready(result.map(|r| r.map_err(|_| TimeElapsed(()))))
+                Poll::Ready(result.map(|r| r.map_err(|_| TimeElapsed(()))))
             }
         }
     }
 }
 
-pub fn timeout_stream<T>(
-    duration: Duration,
-    stream: impl Stream<Item = T>,
-) -> impl Stream<Item = Result<T, TimeElapsed>> {
+pub fn timeout_stream<S>(duration: Duration, stream: S) -> TimeoutStream<S>
+where
+    S: Stream,
+{
     if BUSYWAIT_TIMEOUTS.load(Ordering::Relaxed) {
         TimeoutStream::Busywait(BusywaitTimeoutStream::new(stream, duration))
     } else {
@@ -105,17 +102,17 @@ impl Sleep {
 impl Future for Sleep {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.wake_time > Instant::now() {
             cx.waker().wake_by_ref();
-            task::Poll::Pending
+            Poll::Pending
         } else {
-            task::Poll::Ready(())
+            Poll::Ready(())
         }
     }
 }
 
-#[pin_project::pin_project]
+#[pin_project]
 struct BusywaitTimeout<T> {
     #[pin]
     value: T,
@@ -138,22 +135,22 @@ where
 {
     type Output = Result<T::Output, TimeElapsed>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        if let task::Poll::Ready(value) = this.value.poll(cx) {
-            task::Poll::Ready(Ok(value))
+        if let Poll::Ready(value) = this.value.poll(cx) {
+            Poll::Ready(Ok(value))
         } else {
             match this.delay.poll(cx) {
-                task::Poll::Ready(()) => task::Poll::Ready(Err(TimeElapsed(()))),
-                task::Poll::Pending => task::Poll::Pending,
+                Poll::Ready(()) => Poll::Ready(Err(TimeElapsed(()))),
+                Poll::Pending => Poll::Pending,
             }
         }
     }
 }
 
-#[pin_project::pin_project]
-struct BusywaitTimeoutStream<S> {
+#[pin_project]
+pub struct BusywaitTimeoutStream<S> {
     #[pin]
     stream: Fuse<S>,
     #[pin]
@@ -163,7 +160,7 @@ struct BusywaitTimeoutStream<S> {
 }
 
 impl<S: Stream> BusywaitTimeoutStream<S> {
-    pub fn new(stream: S, duration: Duration) -> Self {
+    fn new(stream: S, duration: Duration) -> Self {
         BusywaitTimeoutStream {
             stream: stream.fuse(),
             deadline: Sleep::new(duration),
@@ -176,30 +173,27 @@ impl<S: Stream> BusywaitTimeoutStream<S> {
 impl<S: Stream> Stream for BusywaitTimeoutStream<S> {
     type Item = Result<S::Item, TimeElapsed>;
 
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
         match this.stream.poll_next(cx) {
-            task::Poll::Ready(v) => {
+            Poll::Ready(v) => {
                 if v.is_some() {
                     this.deadline.reset(*this.duration);
                     *this.poll_deadline = true;
                 }
-                return task::Poll::Ready(v.map(Ok));
+                Poll::Ready(v.map(Ok))
             }
-            task::Poll::Pending => {}
-        };
-
-        if *this.poll_deadline {
-            ready!(this.deadline.poll(cx));
-            *this.poll_deadline = false;
-            return task::Poll::Ready(Some(Err(TimeElapsed(()))));
+            Poll::Pending => {
+                if *this.poll_deadline {
+                    ready!(this.deadline.poll(cx));
+                    *this.poll_deadline = false;
+                    Poll::Ready(Some(Err(TimeElapsed(()))))
+                } else {
+                    Poll::Pending
+                }
+            }
         }
-
-        task::Poll::Pending
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
