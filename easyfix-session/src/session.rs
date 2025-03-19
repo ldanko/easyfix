@@ -171,7 +171,11 @@ impl<S: MessagesStorage> Session<S> {
         let max_latency =
             chrono::Duration::from_std(self.session_settings.max_latency).expect("duration");
         if abs_time_diff > max_latency {
-            warn!("SendingTime<52> verification failed: abs_time_diff: {abs_time_diff:?}, max_latency: {max_latency:?}");
+            warn!(
+                ?abs_time_diff,
+                ?max_latency,
+                "SendingTime<52> verification failed"
+            );
             Err(VerifyError::invalid_time())
         } else {
             Ok(())
@@ -294,7 +298,10 @@ impl<S: MessagesStorage> Session<S> {
                     let end_seq_num = *resend_range.end();
 
                     if msg_seq_num >= end_seq_num {
-                        info!("Resend request from {begin_seq_num} to {end_seq_num} has been satisfied");
+                        info!(
+                            begin_seq_num,
+                            end_seq_num, "Resend request has been satisfied"
+                        );
                         self.state.borrow_mut().set_resend_range(None);
                     }
                 }
@@ -327,7 +334,7 @@ impl<S: MessagesStorage> Session<S> {
                         reason,
                         text,
                         ref_tag_id,
-                    })
+                    });
                 }
                 Ok(InputResponderMsg::Logout {
                     session_status,
@@ -338,10 +345,10 @@ impl<S: MessagesStorage> Session<S> {
                         session_status,
                         text,
                         disconnect,
-                    })
+                    });
                 }
                 Ok(InputResponderMsg::Disconnect { reason }) => {
-                    return Err(VerifyError::UserForcedDisconnect { reason })
+                    return Err(VerifyError::UserForcedDisconnect { reason });
                 }
                 Err(_) => {}
             }
@@ -459,7 +466,7 @@ impl<S: MessagesStorage> Session<S> {
         sequence_reset.header.sending_time = UtcTimestamp::now();
         sequence_reset.header.orig_sending_time = Some(sequence_reset.header.sending_time);
 
-        info!("SequenceReset sent (MsgSeqNum: {seq_num}, NewSeqNo: {new_seq_num})");
+        info!(seq_num, new_seq_num, "SequenceReset sent (gap fill)");
         self.send_raw(sequence_reset);
     }
 
@@ -1040,11 +1047,10 @@ impl<S: MessagesStorage> Session<S> {
                     if !self.session_settings.send_redundant_resend_requests
                         && msg_seq_num >= begin_seq_num
                     {
-                        if end_seq_num == 0 {
-                            warn!("ResendRequest from {begin_seq_num} to infinity already sent, suppressing another attempt");
-                        } else {
-                            warn!("ResendRequest from {begin_seq_num} to {end_seq_num} already sent, suppressing another attempt");
-                        }
+                        warn!(
+                            begin_seq_num,
+                            end_seq_num, "ResendRequest already sent, suppressing another attempt"
+                        );
                         return None;
                     }
                 }
