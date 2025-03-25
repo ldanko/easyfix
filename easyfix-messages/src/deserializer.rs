@@ -481,7 +481,7 @@ impl Deserializer<'_> {
                 _ => {
                     return Err(self.reject(
                         self.current_tag,
-                        ParseRejectReason::TagSpecifiedWithoutAValue,
+                        ParseRejectReason::IncorrectDataFormatForValue,
                     ))
                 }
             }
