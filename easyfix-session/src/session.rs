@@ -1182,7 +1182,8 @@ impl<S: MessagesStorage> Session<S> {
                         Responder::new(sender),
                     ))
                     .await;
-                match receiver.await {
+                (receiver.await).ok()
+                /* match receiver.await {
                     Ok(msg) => Some(msg),
                     Err(_gap_fill) => {
                         // TODO: GAP FILL!
@@ -1198,7 +1199,7 @@ impl<S: MessagesStorage> Session<S> {
                         // })))
                         None
                     } // TODO: Err(_no_gap_fill) => None,
-                }
+                } */
             }
         }
     }

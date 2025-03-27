@@ -33,6 +33,7 @@ impl XmlHelper for Element {
             .ok_or_else(|| anyhow!("no `{}` child in `{}` element", child, self.name))
     }
 
+    #[define_opaque(ElementIterator)]
     fn get_child_elements(&self) -> ElementIterator {
         self.children.iter().filter_map(XMLNode::as_element)
     }
