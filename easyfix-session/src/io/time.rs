@@ -198,6 +198,8 @@ impl<S: Stream> Stream for BusywaitTimeoutStream<S> {
                     *this.poll_deadline = false;
                     Poll::Ready(Some(Err(TimeElapsed(()))))
                 } else {
+                    this.deadline.reset(*this.duration);
+                    *this.poll_deadline = true;
                     Poll::Pending
                 }
             }
