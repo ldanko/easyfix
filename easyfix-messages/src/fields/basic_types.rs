@@ -679,10 +679,10 @@ impl Visitor<'_> for UtcTimestampVisitor {
     /// - MM = 00-59,
     /// - SS = 00-60 (60 only if UTC leap second),
     /// - sss* fractions of seconds. The fractions of seconds may be empty when
-    ///   no fractions of seconds are conveyed (in such a case the period
-    ///   is not conveyed), it may include 3 digits to convey
-    ///   milliseconds, 6 digits to convey microseconds, 9 digits
-    ///   to convey nanoseconds, 12 digits to convey picoseconds;
+    ///        no fractions of seconds are conveyed (in such a case the period
+    ///        is not conveyed), it may include 3 digits to convey
+    ///        milliseconds, 6 digits to convey microseconds, 9 digits
+    ///        to convey nanoseconds, 12 digits to convey picoseconds;
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
