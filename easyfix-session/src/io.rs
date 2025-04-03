@@ -337,9 +337,9 @@ impl<S: MessagesStorage> Connection<S> {
                     if self.session.on_in_timeout().await {
                         self.session.send_logout(
                             &mut self.session.state().borrow_mut(),
-                            Some(SessionStatus::SessionLogoutComplete),
+                            Some(SessionStatus::GracePeriodExceeded),
                             Some(FixString::from_ascii_lossy(
-                                b"Grace period is over".to_vec(),
+                                b"Grace period exceeded".to_vec(),
                             )),
                         );
                         break;
