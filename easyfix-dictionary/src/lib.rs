@@ -1,5 +1,3 @@
-#![feature(type_alias_impl_trait)]
-
 use std::{
     collections::HashMap,
     convert::{AsRef, TryFrom},
@@ -12,12 +10,10 @@ use anyhow::{anyhow, bail, Context as ErrorContext, Result};
 use strum_macros::AsRefStr;
 use xmltree::{Element, XMLNode};
 
-type ElementIterator<'a> = impl Iterator<Item = &'a Element>;
-
 trait XmlHelper {
     fn get_attribute(&self, attribute: &str) -> Result<&str>;
     fn get_child_element(&self, child: &str) -> Result<&Element>;
-    fn get_child_elements(&self) -> ElementIterator;
+    fn get_child_elements(&self) -> impl Iterator<Item = &Element>;
 }
 
 impl XmlHelper for Element {
@@ -33,7 +29,7 @@ impl XmlHelper for Element {
             .ok_or_else(|| anyhow!("no `{}` child in `{}` element", child, self.name))
     }
 
-    fn get_child_elements(&self) -> ElementIterator {
+    fn get_child_elements(&self) -> impl Iterator<Item = &Element> {
         self.children.iter().filter_map(XMLNode::as_element)
     }
 }

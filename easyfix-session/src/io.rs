@@ -5,7 +5,10 @@ use std::{
     sync::Mutex,
 };
 
-use easyfix_messages::messages::{FixtMessage, Message};
+use easyfix_messages::{
+    fields::{FixString, SessionStatus},
+    messages::{FixtMessage, Message},
+};
 use futures_util::{pin_mut, Stream};
 use tokio::{
     self,
@@ -332,6 +335,13 @@ impl<S: MessagesStorage> Connection<S> {
                 }
                 InputEvent::Timeout => {
                     if self.session.on_in_timeout().await {
+                        self.session.send_logout(
+                            &mut self.session.state().borrow_mut(),
+                            Some(SessionStatus::SessionLogoutComplete),
+                            Some(FixString::from_ascii_lossy(
+                                b"Grace period is over".to_vec(),
+                            )),
+                        );
                         break;
                     }
                 }
