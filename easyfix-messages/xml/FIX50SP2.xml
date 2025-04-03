@@ -9794,7 +9794,6 @@
    <value enum='8' description='PASSWORD_EXPIRED' />
    <value enum='9' description='RECEIVED_MSG_SEQ_NUM_TOO_LOW' />
    <value enum='10' description='RECEIVED_NEXT_EXPECTED_MSG_SEQ_NUM_TOO_HIGH' />
-   <value enum='106' description='GRACE_PERIOD_EXCEEDED' />
   </field>
   <field number='1410' name='DefaultVerIndicator' type='BOOLEAN' />
   <field number='1411' name='Nested4PartySubIDType' type='INT' />
