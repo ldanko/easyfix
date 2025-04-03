@@ -9,6 +9,7 @@ use std::{
 
 use futures_core::Stream;
 use pin_project::pin_project;
+use tokio::time::interval_at;
 use tokio_stream::{adapters::Fuse, StreamExt};
 
 static BUSYWAIT_TIMEOUTS: AtomicBool = AtomicBool::new(false);
@@ -34,7 +35,7 @@ pub async fn timeout<T>(
 #[pin_project(project = TimeoutStreamProj)]
 pub enum TimeoutStream<S> {
     Busywait(#[pin] BusywaitTimeoutStream<S>),
-    Tokio(#[pin] tokio_stream::adapters::Timeout<S>),
+    Tokio(#[pin] tokio_stream::adapters::TimeoutRepeating<S>),
 }
 
 impl<S: Stream> Stream for TimeoutStream<S> {
@@ -58,7 +59,14 @@ where
     if BUSYWAIT_TIMEOUTS.load(Ordering::Relaxed) {
         TimeoutStream::Busywait(BusywaitTimeoutStream::new(stream, duration))
     } else {
-        TimeoutStream::Tokio(stream.timeout(duration))
+        // skip first tick that would otherwise get timeout to trigger immediately
+        // during first poll operation
+        let timeout_interval_start = tokio::time::Instant::now()
+            .checked_add(duration)
+            .expect("timeout value too long");
+        TimeoutStream::Tokio(
+            stream.timeout_repeating(interval_at(timeout_interval_start, duration)),
+        )
     }
 }
 
@@ -190,6 +198,8 @@ impl<S: Stream> Stream for BusywaitTimeoutStream<S> {
                     *this.poll_deadline = false;
                     Poll::Ready(Some(Err(TimeElapsed(()))))
                 } else {
+                    this.deadline.reset(*this.duration);
+                    *this.poll_deadline = true;
                     Poll::Pending
                 }
             }
