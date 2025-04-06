@@ -65,4 +65,9 @@ pub struct SessionSettings {
 
     // Enable Logout<5> verification.
     pub verify_logout: bool,
+
+    // When enabled, idle session auto-close grace period counter will only
+    // reset when incoming heartbeat's TestReqID tag value matches value
+    // from one of outgoing grace period's TestRequests.
+    pub verify_test_request_id: bool,
 }

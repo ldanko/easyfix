@@ -29,6 +29,7 @@ use crate::{
     session_state::State,
     settings::{SessionSettings, Settings},
     DisconnectReason, Error, Sender, SessionError, NO_INBOUND_TIMEOUT_PADDING,
+    TEST_REQUEST_THRESHOLD,
 };
 
 mod input_stream;
@@ -173,7 +174,7 @@ pub(crate) async fn acceptor_connection<S>(
         .send(FixEventInternal::Created(session_id.clone()))
         .await;
 
-    let input_timeout_duration = session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING;
+    let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
     let input_stream = timeout_stream(input_timeout_duration, stream)
         .map(|res| res.unwrap_or(InputEvent::Timeout));
     pin_mut!(input_stream);
@@ -245,7 +246,7 @@ pub(crate) async fn initiator_connection<S>(
         .send(FixEventInternal::Created(session_id.clone()))
         .await;
 
-    let input_timeout_duration = session.heartbeat_interval() + NO_INBOUND_TIMEOUT_PADDING;
+    let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
     let input_stream = timeout_stream(input_timeout_duration, input_stream(source))
         .map(|res| res.unwrap_or(InputEvent::Timeout));
     pin_mut!(input_stream);
@@ -319,7 +320,6 @@ impl<S: MessagesStorage> Connection<S> {
                         disconnect_reason = dr;
                         break;
                     }
-                    self.session.state().borrow_mut().set_input_timoeut_cnt(0);
                 }
                 InputEvent::DeserializeError(error) => {
                     if let Some(dr) = self.session.on_deserialize_error(error).await {

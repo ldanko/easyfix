@@ -65,6 +65,7 @@ async fn acceptor() {
                 enable_next_expected_msg_seq_num: true,
 
                 verify_logout: true,
+                verify_test_request_id: true,
             },
         );
     };

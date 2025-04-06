@@ -1,7 +1,10 @@
-use std::{collections::BTreeMap, ops::RangeInclusive};
+use std::{
+    collections::{BTreeMap, HashSet},
+    ops::RangeInclusive,
+};
 
 use easyfix_messages::{
-    fields::{Int, SeqNum},
+    fields::{FixString, Int, SeqNum},
     messages::FixtMessage,
 };
 use tokio::time::Instant;
@@ -43,7 +46,6 @@ pub(crate) struct State<S> {
     heart_bt_int: Int,
     last_sent_time: Instant,
     last_received_time: Instant,
-    input_timeout_cnt: u32,
 
     disconnected: bool,
 
@@ -57,6 +59,8 @@ pub(crate) struct State<S> {
 
     queue: Messages,
     messages_storage: S,
+
+    grace_period_test_req_ids: HashSet<FixString>,
 }
 
 impl<S: MessagesStorage> State<S> {
@@ -74,11 +78,11 @@ impl<S: MessagesStorage> State<S> {
             heart_bt_int: 10,
             last_sent_time: Instant::now(),
             last_received_time: Instant::now(),
-            input_timeout_cnt: 0,
             disconnected: true,
             next_expected_msg_seq_num: 0,
             queue: Messages::new(),
             messages_storage,
+            grace_period_test_req_ids: HashSet::new(),
         }
     }
 
@@ -242,11 +246,21 @@ impl<S: MessagesStorage> State<S> {
         self.disconnected = disconnected;
     }
 
-    pub fn input_timoeut_cnt(&self) -> u32 {
-        self.input_timeout_cnt
+    pub fn input_timeout_cnt(&self) -> usize {
+        self.grace_period_test_req_ids.len()
     }
 
-    pub fn set_input_timoeut_cnt(&mut self, timoeut_cnt: u32) {
-        self.input_timeout_cnt = timoeut_cnt;
+    pub fn register_grace_period_test_req_id(&mut self, test_req_id: FixString) {
+        self.grace_period_test_req_ids.insert(test_req_id);
+    }
+
+    pub fn validate_grace_period_test_req_id(&mut self, test_req_id: &FixString) {
+        if self.grace_period_test_req_ids.contains(test_req_id) {
+            self.reset_grace_period();
+        }
+    }
+
+    pub fn reset_grace_period(&mut self) {
+        self.grace_period_test_req_ids.clear();
     }
 }
