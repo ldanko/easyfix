@@ -626,15 +626,28 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     async fn on_heartbeat(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
-        // Got Heartbeat, nothing to do.
-        // If we would like to check if this is response for specific
-        // TestRequest, it should be done here.
-        // TODO Check it
+        // Got Heartbeat, verify against grace period test requests.
         trace!("got heartbeat");
+
+        let Message::Heartbeat(ref heartbeat) = *message.body else {
+            unreachable!();
+        };
+        let test_req_id = if self.session_settings.verify_test_request_id {
+            heartbeat.test_req_id.clone()
+        } else {
+            None
+        };
 
         self.verify(message, true, true).await?;
 
-        self.state.borrow_mut().incr_next_target_msg_seq_num();
+        let mut state = self.state.borrow_mut();
+
+        if let Some(test_req_id) = test_req_id {
+            state.validate_grace_period_test_req_id(&test_req_id);
+        }
+
+        state.incr_next_target_msg_seq_num();
+
         Ok(())
     }
 
@@ -984,6 +997,7 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         if Self::is_logged_on(&state) {
+            state.reset_grace_period();
             drop(state);
             self.emitter
                 .send(FixEventInternal::Logon(
@@ -1147,6 +1161,10 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
+        if !self.session_settings.verify_test_request_id {
+            self.state.borrow_mut().reset_grace_period();
+        }
+
         if let Some(disconnect_reason) = self.on_message_in_impl(msg).await {
             return Some(disconnect_reason);
         }
@@ -1264,20 +1282,19 @@ impl<S: MessagesStorage> Session<S> {
 
         let mut state = self.state().borrow_mut();
         let timeout_cnt_limit = self.settings.auto_disconnect_after_no_heartbeat;
-        let new_timeout_cnt = state.input_timoeut_cnt() + 1;
-        if timeout_cnt_limit > 0 && new_timeout_cnt >= timeout_cnt_limit {
+        if timeout_cnt_limit > 0 && state.input_timeout_cnt() >= timeout_cnt_limit as usize {
             warn!("Grace period is over");
             return true;
         }
-        state.set_input_timoeut_cnt(new_timeout_cnt);
 
-        self.send(Box::new(Message::TestRequest(TestRequest {
-            // Use current time as TestReqId as recommended in FIX Session
-            // Protocol (FIX) Version 1.1 Errata March 2008
-            test_req_id: FixString::from_ascii_lossy(
-                format!("{}", Utc::now().format("%Y%m%d-%H:%M:%S.%f")).into_bytes(),
-            ),
-        })));
+        // Use current time as TestReqId as recommended in FIX Session
+        // Protocol (FIX) Version 1.1 Errata March 2008
+        let test_req_id = FixString::from_ascii_lossy(
+            format!("{}", Utc::now().format("%Y%m%d-%H:%M:%S.%f")).into_bytes(),
+        );
+        state.register_grace_period_test_req_id(test_req_id.clone());
+
+        self.send(Box::new(Message::TestRequest(TestRequest { test_req_id })));
 
         false
     }

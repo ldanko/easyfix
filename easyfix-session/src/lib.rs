@@ -20,6 +20,7 @@ use settings::Settings;
 use tokio::sync::mpsc;
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
+const TEST_REQUEST_THRESHOLD: f32 = 1.2;
 
 use tracing::error;
 
