@@ -60,14 +60,14 @@ pub struct SessionSettings {
     /// Logon message to synchronize session.
     pub enable_next_expected_msg_seq_num: bool,
 
-    // Enable messages persistence.
+    /// Enable messages persistence.
     pub persist: bool,
 
-    // Enable Logout<5> verification.
+    /// Enable Logout<5> verification.
     pub verify_logout: bool,
 
-    // When enabled, idle session auto-close grace period counter will only
-    // reset when incoming heartbeat's TestReqID tag value matches value
-    // from one of outgoing grace period's TestRequests.
+    /// When enabled, idle session auto-close grace period counter will only
+    /// reset when incoming heartbeat's TestReqID tag value matches value
+    /// from one of outgoing grace period's TestRequests.
     pub verify_test_request_id: bool,
 }
