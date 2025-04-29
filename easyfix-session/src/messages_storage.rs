@@ -1,9 +1,9 @@
-use std::{collections::BTreeMap, ops::RangeInclusive};
+use std::{collections::BTreeMap, iter, ops::RangeInclusive};
 
 use easyfix_messages::fields::SeqNum;
 
 pub trait MessagesStorage {
-    fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>>;
+    fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> impl Iterator<Item = &[u8]>;
     fn store(&mut self, seq_num: SeqNum, data: &[u8]);
 
     fn next_sender_msg_seq_num(&self) -> SeqNum;
@@ -39,9 +39,9 @@ impl Default for NullStorage {
 }
 
 impl MessagesStorage for NullStorage {
-    // TODO: Iterator or Stream! Returned Vec can be extremly big (and slow to create)
-    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>> {
-        Vec::new()
+    // TODO: Stream? Returned iterator can be extremly big (and slow to create)
+    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> impl Iterator<Item = &[u8]> {
+        iter::empty()
     }
 
     fn store(&mut self, _seq_num: SeqNum, _data: &[u8]) {}
@@ -79,7 +79,7 @@ impl MessagesStorage for NullStorage {
 pub struct InMemoryStorage {
     next_sender_msg_seq_num: SeqNum,
     next_target_msg_seq_num: SeqNum,
-    mem: BTreeMap<SeqNum, Vec<u8>>,
+    messages: BTreeMap<SeqNum, Vec<u8>>,
 }
 
 impl InMemoryStorage {
@@ -87,7 +87,7 @@ impl InMemoryStorage {
         InMemoryStorage {
             next_sender_msg_seq_num: 1,
             next_target_msg_seq_num: 1,
-            mem: BTreeMap::new(),
+            messages: BTreeMap::new(),
         }
     }
 }
@@ -100,12 +100,12 @@ impl Default for InMemoryStorage {
 
 impl MessagesStorage for InMemoryStorage {
     // TODO: Stream!
-    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>> {
-        Vec::new()
+    fn fetch_range(&mut self, _range: RangeInclusive<SeqNum>) -> impl Iterator<Item = &[u8]> {
+        self.messages.values().map(|v| v.as_slice())
     }
 
     fn store(&mut self, seq_num: SeqNum, data: &[u8]) {
-        self.mem.insert(seq_num, data.to_vec());
+        self.messages.insert(seq_num, data.to_vec());
     }
 
     fn next_sender_msg_seq_num(&self) -> SeqNum {
@@ -135,6 +135,6 @@ impl MessagesStorage for InMemoryStorage {
     fn reset(&mut self) {
         self.next_sender_msg_seq_num = 1;
         self.next_target_msg_seq_num = 1;
-        self.mem.clear();
+        self.messages.clear();
     }
 }

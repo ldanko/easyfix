@@ -202,7 +202,7 @@ impl<S: MessagesStorage> State<S> {
         self.queue.clear();
     }
 
-    pub fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> Vec<Vec<u8>> {
+    pub fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> impl Iterator<Item = &[u8]> {
         self.messages_storage.fetch_range(range)
     }
 

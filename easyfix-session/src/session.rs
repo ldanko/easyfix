@@ -586,16 +586,18 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         let mut gap_fill_range = None;
-        let messages = state.fetch_range(begin_seq_num..=end_seq_num);
-        info!(
-            "fetch messages range from {begin_seq_num} to {end_seq_num}, found {} messages",
-            messages.len()
-        );
-        for msg_str in messages {
+        info!("fetch messages range from {begin_seq_num} to {end_seq_num}");
+        for msg_str in state.fetch_range(begin_seq_num..=end_seq_num) {
             // TODO: log error! and resend as gap fill instead of unwrap
-            let mut msg = FixtMessage::from_bytes(&msg_str).unwrap();
+            let mut msg = match FixtMessage::from_bytes(msg_str) {
+                Ok(msg) => msg,
+                Err(err) => {
+                    error!(%err, "Failed to decode message bytes");
+                    continue;
+                }
+            };
             if msg.resend_as_gap_fill() {
-                info!(
+                trace!(
                     "Message {:?}/{} changed to gap fill",
                     msg.msg_type(),
                     msg.header.msg_seq_num
@@ -605,10 +607,10 @@ impl<S: MessagesStorage> Session<S> {
                     .1 += 1;
             } else {
                 if let Some((begin_seq_num, end_seq_num)) = gap_fill_range.take() {
-                    info!("Resending messages from {begin_seq_num} to {end_seq_num} as gap fill");
+                    trace!("Resending messages from {begin_seq_num} to {end_seq_num} as gap fill");
                     self.send_sequence_reset(begin_seq_num, end_seq_num + 1);
                 }
-                info!(
+                trace!(
                     "Resending message {:?}/{}",
                     msg.msg_type(),
                     msg.header.msg_seq_num
