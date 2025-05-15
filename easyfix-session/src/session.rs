@@ -616,6 +616,8 @@ impl<S: MessagesStorage> Session<S> {
                     msg.header.msg_seq_num
                 );
                 msg.header.orig_sending_time = Some(msg.header.sending_time);
+                // Reset sending_time so that the sending task assigns a new timestamp before serialization
+                msg.header.sending_time = UtcTimestamp::MIN_UTC;
                 msg.header.poss_dup_flag = Some(true);
                 // TODO: emit event!
                 self.send_raw(msg);
