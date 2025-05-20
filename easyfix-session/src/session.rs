@@ -473,14 +473,14 @@ impl<S: MessagesStorage> Session<S> {
     #[instrument(level = "trace", skip_all)]
     fn send_resend_request(&self, state: &mut State<S>, msg_seq_num: SeqNum) {
         let begin_seq_no = state.next_target_msg_seq_num();
-        let end_seq_no = msg_seq_num - 1;
+        let end_seq_no = msg_seq_num.saturating_sub(1);
 
         self.send(Box::new(Message::ResendRequest(ResendRequest {
             begin_seq_no,
             end_seq_no,
         })));
 
-        state.set_resend_range(Some(begin_seq_no..=msg_seq_num - 1));
+        state.set_resend_range(Some(begin_seq_no..=end_seq_no));
     }
 
     /// Send FIX message.
