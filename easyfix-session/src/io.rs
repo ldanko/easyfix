@@ -18,7 +18,7 @@ use tokio::{
     time::Duration,
 };
 use tokio_stream::StreamExt;
-use tracing::{debug, error, info, info_span, Instrument};
+use tracing::{debug, error, info, info_span, Instrument, Span};
 
 use crate::{
     acceptor::{ActiveSessionsMap, SessionsMap},
@@ -157,9 +157,11 @@ pub(crate) async fn acceptor_connection<S>(
         .insert(session_id.clone(), session.clone());
 
     let session_span = info_span!(
+        parent: None,
         "session",
         id = %session_id
     );
+    session_span.follows_from(Span::current());
 
     let input_loop_span = info_span!(parent: &session_span, "in");
     let output_loop_span = info_span!(parent: &session_span, "out");
