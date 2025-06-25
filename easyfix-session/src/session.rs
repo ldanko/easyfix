@@ -437,9 +437,10 @@ impl<S: MessagesStorage> Session<S> {
 
         info!("Message {ref_seq_num} Rejected: {reason:?} (tag={ref_tag_id:?})");
 
-        if !state.logon_received() {
-            // TODO: Error
-        }
+        // XXX: should never happen,
+        //      session is started only when first message was a Logon<A>
+        // if !state.logon_received() {
+        // }
 
         self.send(Box::new(Message::Reject(Reject {
             ref_seq_num,
@@ -1056,7 +1057,9 @@ impl<S: MessagesStorage> Session<S> {
 
         match result {
             Ok(()) => return None,
-            Err(VerifyError::Duplicate) => {}
+            Err(VerifyError::Duplicate) => {
+                // Duplicate can be ignored
+            }
             Err(VerifyError::ResendRequest { msg_seq_num }) => {
                 if let Some(resend_range) = self.state.borrow().resend_range() {
                     let begin_seq_num = *resend_range.start();
