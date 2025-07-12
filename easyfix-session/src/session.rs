@@ -214,24 +214,38 @@ impl<S: MessagesStorage> Session<S> {
             && state.next_sender_msg_seq_num() == 1
     }
 
-    // current implementation is more readable than clippy proposal
-    #[allow(clippy::if_same_then_else)]
+    #[instrument(skip_all, err)]
     fn check_logon_state(state: &State<S>, msg_type: MsgType) -> Result<(), VerifyError> {
         if (msg_type == MsgType::Logon && state.reset_sent()) || state.reset_received() {
+            trace!("Allowed: Logon with ResetSeqNumFlag(141)=Y sent or received");
             Ok(())
-        } else if (msg_type == MsgType::Logon && !state.logon_received())
-            || (msg_type != MsgType::Logon && state.logon_received())
-        {
+        } else if msg_type == MsgType::Logon && !state.logon_received() {
+            trace!("Allowed: First Logon in session (Logon not received yet)");
+            Ok(())
+        } else if msg_type != MsgType::Logon && state.logon_received() {
+            trace!("Allowed: Message after Logon received");
             Ok(())
         } else if msg_type == MsgType::Logout && state.logon_sent() {
+            trace!("Allowed: Logout after Logon sent");
             Ok(())
         } else if msg_type != MsgType::Logout && state.logout_sent() {
+            trace!("Allowed: Message after Logout sent");
             Ok(())
         } else if msg_type == MsgType::SequenceReset {
+            trace!("Allowed: SequenceReset<4>");
             Ok(())
         } else if msg_type == MsgType::Reject {
+            trace!("Allowed: Reject<3>");
             Ok(())
         } else {
+            warn!(
+                state.reset_sent = state.reset_sent(),
+                state.reset_received = state.reset_received(),
+                state.logon_received = state.logon_received(),
+                state.logon_sent = state.logon_sent(),
+                state.logout_sent = state.logout_sent(),
+                "Not allowed: Invalid session state",
+            );
             Err(VerifyError::InvalidLogonState)
         }
     }
@@ -519,7 +533,10 @@ impl<S: MessagesStorage> Session<S> {
     #[expect(clippy::await_holding_refcell_ref)]
     // Make sure `state` is dropped before await points, see
     // https://github.com/rust-lang/rust-clippy/issues/6353
+    #[instrument(skip_all)]
     pub(crate) async fn emit_logout(&self, reason: DisconnectReason) {
+        info!(?reason);
+
         let mut state = self.state.borrow_mut();
 
         if state.logon_received() || state.logon_sent() {
@@ -533,16 +550,22 @@ impl<S: MessagesStorage> Session<S> {
                     reason,
                 ))
                 .await;
+        } else {
+            info!(
+                "Logout not emitted: session was never established \
+                (neither Logon received nor Logon sent)"
+            );
         }
     }
 
+    #[instrument(skip_all)]
     pub(crate) fn disconnect(&self, state: &mut State<S>, reason: DisconnectReason) {
         if state.disconnected() {
             info!("already disconnected");
             return;
         }
 
-        info!("disconnecting");
+        info!(?reason);
         state.set_disconnected(true);
 
         // XXX: Emit logout in connection handler instead of here,
@@ -850,6 +873,8 @@ impl<S: MessagesStorage> Session<S> {
 
         let msg_seq_num = message.header.msg_seq_num;
 
+        self.verify(message, false, true).await?;
+
         let enable_next_expected_msg_seq_num =
             self.session_settings.enable_next_expected_msg_seq_num
                 && next_expected_msg_seq_num.is_some();
@@ -874,8 +899,6 @@ impl<S: MessagesStorage> Session<S> {
         if !initiate && self.session_settings.reset_on_logon {
             self.state.borrow_mut().reset();
         }
-
-        self.verify(message, false, true).await?;
 
         let mut state = self.state.borrow_mut();
 
