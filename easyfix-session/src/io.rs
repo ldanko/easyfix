@@ -143,6 +143,12 @@ pub(crate) async fn acceptor_connection<S>(
         error!("failed to establish new session: unknown session id {session_id}");
         return;
     };
+    if !session_state.borrow_mut().disconnected()
+        || active_sessions.borrow().contains_key(&session_id)
+    {
+        error!(%session_id, "Session already active");
+        return;
+    }
     session_state.borrow_mut().set_disconnected(false);
     register_sender(session_id.clone(), sender.clone());
     let session = Rc::new(Session::new(
@@ -194,7 +200,7 @@ pub(crate) async fn acceptor_connection<S>(
                 input_closed_tx,
                 force_disconnection_with_reason
             )
-            .instrument(input_loop_span.clone()),
+            .instrument(input_loop_span),
         connection
             .output_loop(writer, output_stream, input_closed_rx)
             .instrument(output_loop_span),

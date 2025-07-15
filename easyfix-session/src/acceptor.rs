@@ -232,8 +232,8 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     }
 
     pub fn disconnect(&self, session_id: &SessionId) {
-        let active_sessions = self.active_sessions.borrow();
-        let Some(session) = active_sessions.get(session_id) else {
+        let mut active_sessions = self.active_sessions.borrow_mut();
+        let Some(session) = active_sessions.remove(session_id) else {
             warn!("logout: session {session_id} not found");
             return;
         };
