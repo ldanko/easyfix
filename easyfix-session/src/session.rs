@@ -268,12 +268,13 @@ impl<S: MessagesStorage> Session<S> {
         let msg_seq_num = msg.header.msg_seq_num;
 
         let state = self.state.borrow();
+        let reset_received = state.reset_received();
 
         Self::check_logon_state(&state, msg.header.msg_type)?;
         self.check_sending_time(sending_time)?;
         self.check_comp_id(sender_comp_id, target_comp_id)?;
 
-        if check_too_high && Self::is_target_too_high(&state, msg_seq_num) {
+        if check_too_high && !reset_received && Self::is_target_too_high(&state, msg_seq_num) {
             warn!(
                 "Target MsgSeqNum too high, expected {}, got {msg_seq_num}",
                 state.next_target_msg_seq_num()
@@ -281,7 +282,7 @@ impl<S: MessagesStorage> Session<S> {
             drop(state);
             self.state.borrow_mut().enqueue_msg(msg);
             Err(VerifyError::target_seq_num_too_high(msg_seq_num))
-        } else if check_too_low && Self::is_target_too_low(&state, msg_seq_num) {
+        } else if check_too_low && !reset_received && Self::is_target_too_low(&state, msg_seq_num) {
             if msg.header.poss_dup_flag.unwrap_or(false) {
                 if msg_type != MsgType::SequenceReset {
                     let Some(orig_sending_time) = msg.header.orig_sending_time else {
@@ -296,7 +297,10 @@ impl<S: MessagesStorage> Session<S> {
                 warn!("Target too low (duplicate)");
                 Err(VerifyError::Duplicate)
             } else {
-                error!("Target too low");
+                error!(
+                    expected_msg_seq_num = state.next_target_msg_seq_num(),
+                    "Target too low"
+                );
                 Err(VerifyError::SeqNumTooLow {
                     msg_seq_num,
                     next_target_msg_seq_num: state.next_target_msg_seq_num(),
@@ -869,6 +873,10 @@ impl<S: MessagesStorage> Session<S> {
         if !self.is_logon_time(message.header.sending_time) {
             error!("Received logon outside of valid logon time");
             return Ok(Some(DisconnectReason::InvalidLogonState));
+        }
+
+        if reset_seq_num_flag {
+            self.state.borrow_mut().set_reset_received(true);
         }
 
         let msg_seq_num = message.header.msg_seq_num;
