@@ -267,7 +267,7 @@ impl<S: MessagesStorage> Session<S> {
         let sending_time = msg.header.sending_time;
         let msg_seq_num = msg.header.msg_seq_num;
 
-        let state = self.state.borrow();
+        let mut state = self.state.borrow_mut();
         let reset_received = state.reset_received();
 
         Self::check_logon_state(&state, msg.header.msg_type)?;
@@ -279,8 +279,7 @@ impl<S: MessagesStorage> Session<S> {
                 "Target MsgSeqNum too high, expected {}, got {msg_seq_num}",
                 state.next_target_msg_seq_num()
             );
-            drop(state);
-            self.state.borrow_mut().enqueue_msg(msg);
+            state.enqueue_msg(msg);
             Err(VerifyError::target_seq_num_too_high(msg_seq_num))
         } else if check_too_low && !reset_received && Self::is_target_too_low(&state, msg_seq_num) {
             if msg.header.poss_dup_flag.unwrap_or(false) {
@@ -307,10 +306,7 @@ impl<S: MessagesStorage> Session<S> {
                 })
             }
         } else {
-            let resend_range_opt = state.resend_range();
-            drop(state);
-
-            if let Some(resend_range) = resend_range_opt {
+            if let Some(resend_range) = state.resend_range() {
                 if check_too_high {
                     let begin_seq_num = *resend_range.start();
                     let end_seq_num = *resend_range.end();
@@ -320,10 +316,11 @@ impl<S: MessagesStorage> Session<S> {
                             begin_seq_num,
                             end_seq_num, "Resend request has been satisfied"
                         );
-                        self.state.borrow_mut().set_resend_range(None);
+                        state.reset_resend_range();
                     }
                 }
             }
+            drop(state);
 
             let (sender, receiver) = tokio::sync::oneshot::channel();
             match msg.msg_cat() {
