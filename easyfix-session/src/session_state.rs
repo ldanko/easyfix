@@ -19,6 +19,10 @@ impl Messages {
         Messages(BTreeMap::new())
     }
 
+    fn first_seq(&self) -> Option<SeqNum> {
+        self.0.keys().next().copied()
+    }
+
     fn enqueue(&mut self, seq_num: SeqNum, msg: Box<FixtMessage>) {
         self.0.insert(seq_num, msg);
     }
@@ -140,8 +144,12 @@ impl<S: MessagesStorage> State<S> {
         self.test_request = test_request;
     }
 
-    pub fn set_resend_range(&mut self, resend_range: Option<RangeInclusive<SeqNum>>) {
-        self.resend_range = resend_range;
+    pub fn set_resend_range(&mut self, resend_range: RangeInclusive<SeqNum>) {
+        self.resend_range = Some(resend_range);
+    }
+
+    pub fn reset_resend_range(&mut self) {
+        self.resend_range = None;
     }
 
     pub fn resend_range(&self) -> Option<RangeInclusive<SeqNum>> {
@@ -177,7 +185,7 @@ impl<S: MessagesStorage> State<S> {
     /// high on logon and tag 789 is supported.
     pub fn set_reset_range_from_last_expected_logon_next_seq_num(&mut self) {
         // we have already requested all msgs from nextExpectedMsgSeqNum to infinity
-        self.set_resend_range(Some(self.next_expected_msg_seq_num..=0));
+        self.set_resend_range(self.next_expected_msg_seq_num..=0);
         // clean up the variable (not really needed)
         self.next_expected_msg_seq_num = 0;
     }
@@ -190,8 +198,14 @@ impl<S: MessagesStorage> State<S> {
         self.next_expected_msg_seq_num != 0
     }
 
+    #[instrument(skip_all)]
     pub fn enqueue_msg(&mut self, msg: Box<FixtMessage>) {
+        trace!(msg_seq_num = msg.header.msg_seq_num, msg_type = ?msg.msg_type());
         self.queue.enqueue(msg.header.msg_seq_num, msg);
+    }
+
+    pub fn lowest_queued_seq_num(&self) -> Option<SeqNum> {
+        self.queue.first_seq()
     }
 
     pub fn retrieve_msg(&mut self) -> Option<Box<FixtMessage>> {

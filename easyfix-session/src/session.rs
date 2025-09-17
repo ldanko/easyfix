@@ -6,21 +6,21 @@ use easyfix_messages::{
         SessionRejectReason, SessionStatus, ToFixString, Utc, UtcTimestamp,
     },
     messages::{
-        FieldTag, FixtMessage, Heartbeat, Logon, Logout, Message, MsgCat, Reject, ResendRequest,
-        SequenceReset, TestRequest,
+        FieldTag, FixtMessage, Header, Heartbeat, Logon, Logout, Message, MsgCat, Reject,
+        ResendRequest, SequenceReset, TestRequest,
     },
 };
 use tokio::time::{Duration, Instant};
-use tracing::{error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
+    DisconnectReason, Sender,
     application::{DeserializeError, Emitter, FixEventInternal, InputResponderMsg, Responder},
     messages_storage::MessagesStorage,
     new_header, new_trailer,
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
-    DisconnectReason, Sender,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -486,17 +486,41 @@ impl<S: MessagesStorage> Session<S> {
         self.send_raw(sequence_reset);
     }
 
-    #[instrument(level = "trace", skip_all)]
-    fn send_resend_request(&self, state: &mut State<S>, msg_seq_num: SeqNum) {
+    #[instrument(level = "trace", skip_all, fields(too_high_msg_seq_num))]
+    fn send_resend_request(&self, state: &mut State<S>, too_high_msg_seq_num: SeqNum) {
         let begin_seq_no = state.next_target_msg_seq_num();
-        let end_seq_no = msg_seq_num.saturating_sub(1);
+        let mut end_seq_no = too_high_msg_seq_num.saturating_sub(1);
+
+        if let Some(queued_lowest) = state.lowest_queued_seq_num() {
+            if queued_lowest > begin_seq_no {
+                let new_end_seq_no = queued_lowest.saturating_sub(1);
+                if new_end_seq_no < end_seq_no {
+                    trace!(
+                        new_end_seq_no = queued_lowest,
+                        prev_end_seq_no = end_seq_no,
+                        "clamping resend request upper bound to queued gap"
+                    );
+                    end_seq_no = new_end_seq_no;
+                }
+            }
+        }
+
+        if begin_seq_no > end_seq_no {
+            trace!(
+                begin_seq_no,
+                "ResendRequest suppressed; queued messages cover the gap"
+            );
+            return;
+        }
+
+        trace!(begin_seq_no, end_seq_no);
 
         self.send(Box::new(Message::ResendRequest(ResendRequest {
             begin_seq_no,
             end_seq_no,
         })));
 
-        state.set_resend_range(Some(begin_seq_no..=end_seq_no));
+        state.set_resend_range(begin_seq_no..=end_seq_no);
     }
 
     /// Send FIX message.
@@ -731,17 +755,20 @@ impl<S: MessagesStorage> Session<S> {
 
         if Self::is_target_too_high(&state, msg_seq_num) {
             // XXX: This message will be ignored during queued messages
-            //      processing, it's enqueued only to omaintain proper
-            //      sequence numbers.
+            //      processing, it's enqueued only to maintain proper sequence
+            //      numbers.
             state.enqueue_msg(Box::new(FixtMessage {
-                header: Box::new(new_header(MsgType::ResendRequest)),
+                header: Box::new(Header {
+                    msg_seq_num,
+                    ..new_header(MsgType::ResendRequest)
+                }),
                 body: Box::new(Message::ResendRequest(ResendRequest {
                     begin_seq_no,
                     end_seq_no,
                 })),
                 trailer: Box::new(new_trailer()),
             }));
-            self.send_resend_request(&mut state, msg_seq_num);
+            return Err(VerifyError::ResendRequest { msg_seq_num });
         } else if state.next_target_msg_seq_num() == msg_seq_num {
             state.incr_next_target_msg_seq_num();
         }
@@ -985,11 +1012,10 @@ impl<S: MessagesStorage> Session<S> {
                 // No need to clone input message. Pass empty message
                 // as it will be skipped during enqueued messages processing.
                 Box::new(FixtMessage {
-                    header: {
-                        let mut header = Box::new(new_header(MsgType::Logon));
-                        header.msg_seq_num = msg_seq_num;
-                        header
-                    },
+                    header: Box::new(Header {
+                        msg_seq_num,
+                        ..new_header(MsgType::Logon)
+                    }),
                     body: Box::new(Message::Logon(Logon::default())),
                     trailer: Box::new(new_trailer()),
                 }),
@@ -1098,11 +1124,14 @@ impl<S: MessagesStorage> Session<S> {
                     {
                         warn!(
                             begin_seq_num,
-                            end_seq_num, "ResendRequest already sent, suppressing another attempt"
+                            end_seq_num,
+                            too_high_msg_seq_num = msg_seq_num,
+                            "ResendRequest already sent, suppressing another attempt"
                         );
                         return None;
                     }
                 }
+
                 self.send_resend_request(&mut self.state.borrow_mut(), msg_seq_num);
             }
             Err(VerifyError::Reject {
@@ -1208,9 +1237,10 @@ impl<S: MessagesStorage> Session<S> {
                 break;
             };
 
-            info!("Processing queued message {}", msg.header.msg_seq_num);
+            debug!("Processing queued message {}", msg.header.msg_seq_num);
 
             if matches!(msg.msg_type(), MsgType::Logon | MsgType::ResendRequest) {
+                debug!(msg_type = ?msg.msg_type(), "message already processed");
                 // Logon and ResendRequest processing has already been done,
                 // just increment the target sequence nummber.
                 self.state.borrow_mut().incr_next_target_msg_seq_num();
