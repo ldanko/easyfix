@@ -586,30 +586,24 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    #[instrument(skip_all)]
+    #[instrument(
+        skip_all,
+        fields(?reason, reset = self.session_settings.reset_on_disconnect),
+        ret
+    )]
     pub(crate) fn disconnect(&self, state: &mut State<S>, reason: DisconnectReason) {
         if state.disconnected() {
             info!("already disconnected");
             return;
         }
 
-        info!(?reason);
-        state.set_disconnected(true);
-
         // XXX: Emit logout in connection handler instead of here,
         //      so `Logout` event will be delivered after Logout
         //      message instead of randomly before or after.
         // self.emit_logout().await;
 
-        state.set_logout_sent(false);
-        state.set_reset_received(false);
-        state.set_reset_sent(false);
-        if self.session_settings.reset_on_disconnect {
-            state.reset();
-        }
+        state.disconnect(self.session_settings.reset_on_disconnect);
 
-        state.set_resend_range(None);
-        state.clear_queue();
         self.sender.disconnect(reason);
     }
 

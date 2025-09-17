@@ -8,6 +8,7 @@ use easyfix_messages::{
     messages::FixtMessage,
 };
 use tokio::time::Instant;
+use tracing::{instrument, trace};
 
 use crate::messages_storage::MessagesStorage;
 
@@ -250,6 +251,21 @@ impl<S: MessagesStorage> State<S> {
 
     pub fn reset(&mut self) {
         self.messages_storage.reset();
+    }
+
+    pub fn disconnect(&mut self, reset: bool) {
+        self.set_disconnected(true);
+
+        self.set_logout_sent(false);
+        self.set_reset_received(false);
+        self.set_reset_sent(false);
+        self.set_last_expected_logon_next_seq_num(0);
+        if reset {
+            self.reset();
+        }
+
+        self.reset_resend_range();
+        self.clear_queue();
     }
 
     pub fn disconnected(&self) -> bool {
