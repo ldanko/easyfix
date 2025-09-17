@@ -98,6 +98,38 @@ impl VerifyError {
     }
 }
 
+impl From<InputResponderMsg> for VerifyError {
+    fn from(msg: InputResponderMsg) -> VerifyError {
+        match msg {
+            InputResponderMsg::Reject {
+                ref_msg_type,
+                ref_seq_num,
+                reason,
+                text,
+                ref_tag_id,
+            } => VerifyError::UserForcedReject {
+                ref_msg_type,
+                ref_seq_num,
+                reason,
+                text,
+                ref_tag_id,
+            },
+            InputResponderMsg::Logout {
+                session_status,
+                text,
+                disconnect,
+            } => VerifyError::UserForcedLogout {
+                session_status,
+                text,
+                disconnect,
+            },
+            InputResponderMsg::Disconnect { reason } => {
+                VerifyError::UserForcedDisconnect { reason }
+            }
+        }
+    }
+}
+
 trait MessageExt {
     fn resend_as_gap_fill(&self) -> bool;
 }
@@ -335,37 +367,8 @@ impl<S: MessagesStorage> Session<S> {
                         .await
                 }
             }
-            match receiver.await {
-                Ok(InputResponderMsg::Reject {
-                    ref_msg_type,
-                    ref_seq_num,
-                    reason,
-                    text,
-                    ref_tag_id,
-                }) => {
-                    return Err(VerifyError::UserForcedReject {
-                        ref_msg_type,
-                        ref_seq_num,
-                        reason,
-                        text,
-                        ref_tag_id,
-                    });
-                }
-                Ok(InputResponderMsg::Logout {
-                    session_status,
-                    text,
-                    disconnect,
-                }) => {
-                    return Err(VerifyError::UserForcedLogout {
-                        session_status,
-                        text,
-                        disconnect,
-                    });
-                }
-                Ok(InputResponderMsg::Disconnect { reason }) => {
-                    return Err(VerifyError::UserForcedDisconnect { reason });
-                }
-                Err(_) => {}
+            if let Ok(input_responder_message) = receiver.await {
+                return Err(input_responder_message.into());
             }
 
             Ok(())
