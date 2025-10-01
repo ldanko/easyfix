@@ -5,7 +5,7 @@ use easyfix_dictionary::{MsgCat, MsgType};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-use crate::gen::member::MemberDesc;
+use super::member::MemberDesc;
 
 pub struct MessageProperties {
     pub msg_cat: MsgCat,

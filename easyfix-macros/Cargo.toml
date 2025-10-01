@@ -6,7 +6,7 @@ license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - macros."
 repository = "https://github.com/ldanko/easyfix"
 readme = "README.md"
-edition = "2021"
+edition = "2024"
 
 [lib]
 proc-macro = true

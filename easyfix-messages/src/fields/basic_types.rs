@@ -2,13 +2,13 @@ use std::{borrow, fmt, mem, ops};
 
 use chrono::Timelike;
 pub use chrono::{
-    format::{DelayedFormat, StrftimeItems},
     DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
+    format::{DelayedFormat, StrftimeItems},
 };
 pub use rust_decimal::Decimal;
 use serde::{
-    de::{self, Visitor},
     Deserialize, Deserializer, Serialize, Serializer,
+    de::{self, Visitor},
 };
 
 pub type Int = i64;
@@ -171,7 +171,7 @@ impl FixStr {
     pub const unsafe fn from_ascii_unchecked(buf: &[u8]) -> &FixStr {
         // SAFETY: the caller must guarantee that the bytes `buf` are valid ASCII.
         // Also relies on `&FixStr` and `&[u8]` having the same layout.
-        mem::transmute(buf)
+        unsafe { mem::transmute(buf) }
     }
 
     pub const fn as_utf8(&self) -> &str {
@@ -690,22 +690,30 @@ impl Visitor<'_> for UtcTimestampVisitor {
         match value.as_bytes() {
             [
                 // Year
-                y3 @ b'0'..=b'9', y2 @ b'0'..=b'9', y1 @ b'0'..=b'9', y0 @ b'0'..=b'9',
+                y3 @ b'0'..=b'9',
+                y2 @ b'0'..=b'9',
+                y1 @ b'0'..=b'9',
+                y0 @ b'0'..=b'9',
                 // Month
-                m1 @ b'0'..=b'1', m0 @ b'0'..=b'9',
+                m1 @ b'0'..=b'1',
+                m0 @ b'0'..=b'9',
                 // Day
-                d1 @ b'0'..=b'3', d0 @ b'0'..=b'9',
+                d1 @ b'0'..=b'3',
+                d0 @ b'0'..=b'9',
                 b'-',
                 // Hour
-                h1 @ b'0'..=b'2', h0 @ b'0'..=b'9',
+                h1 @ b'0'..=b'2',
+                h0 @ b'0'..=b'9',
                 b':',
                 // Minute
-                mm1 @ b'0'..=b'5', mm0 @ b'0'..=b'9',
+                mm1 @ b'0'..=b'5',
+                mm0 @ b'0'..=b'9',
                 b':',
                 // TODO: leap second!
                 // Second
-                s1 @ b'0'..=b'5', s0 @ b'0'..=b'9',
-                ..
+                s1 @ b'0'..=b'5',
+                s0 @ b'0'..=b'9',
+                ..,
             ] => {
                 let value = &value[17..];
                 let year = (y3 - b'0') as i32 * 1000
@@ -719,7 +727,8 @@ impl Visitor<'_> for UtcTimestampVisitor {
                 let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
                 let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
                 let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                let (fraction_of_second, precision) = deserialize_fraction_of_second(value.as_bytes())?;
+                let (fraction_of_second, precision) =
+                    deserialize_fraction_of_second(value.as_bytes())?;
                 let naive_date_time = naive_date
                     .and_hms_nano_opt(hour, min, sec, fraction_of_second)
                     .ok_or_else(|| de::Error::custom("incorrecct data format for UtcTimestamp"))?;
@@ -768,6 +777,7 @@ impl PartialEq for UtcTimestamp {
 
 impl Eq for UtcTimestamp {}
 
+#[expect(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for UtcTimestamp {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.timestamp.cmp(&other.timestamp))
@@ -865,7 +875,7 @@ impl UtcTimestamp {
     }
 
     /// Formats timestamp with precision set inside the struct
-    pub fn format_precisely(&self) -> DelayedFormat<StrftimeItems> {
+    pub fn format_precisely(&self) -> DelayedFormat<StrftimeItems<'_>> {
         match self.precision {
             TimePrecision::Secs => self.format("%Y%m%d-%H:%M:%S"),
             TimePrecision::Millis => self.format("%Y%m%d-%H:%M:%S%.3f"),

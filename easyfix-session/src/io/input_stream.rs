@@ -1,12 +1,12 @@
 use std::{
     io,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 
 use bytes::BytesMut;
 use easyfix_messages::{
-    deserializer::{self, raw_message, RawMessageError},
+    deserializer::{self, RawMessageError, raw_message},
     messages::FixtMessage,
 };
 use futures_util::Stream;

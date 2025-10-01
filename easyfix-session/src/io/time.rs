@@ -3,14 +3,14 @@ use std::{
     future::Future,
     pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
     time::{Duration, Instant},
 };
 
 use futures_core::Stream;
 use pin_project::pin_project;
 use tokio::time::interval_at;
-use tokio_stream::{adapters::Fuse, StreamExt};
+use tokio_stream::{StreamExt, adapters::Fuse};
 
 static BUSYWAIT_TIMEOUTS: AtomicBool = AtomicBool::new(false);
 

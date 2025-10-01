@@ -8,8 +8,8 @@ use std::{
 use easyfix_messages::{
     deserializer,
     fields::{
-        parse_reject_reason_to_session_reject_reason, FixString, SeqNum, SessionRejectReason,
-        SessionStatus, TagNum,
+        FixString, SeqNum, SessionRejectReason, SessionStatus, TagNum,
+        parse_reject_reason_to_session_reject_reason,
     },
     messages::FixtMessage,
 };
@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
-use crate::{session_id::SessionId, DisconnectReason, Sender};
+use crate::{DisconnectReason, Sender, session_id::SessionId};
 
 //
 #[derive(Debug)]
@@ -199,16 +199,15 @@ pub(crate) enum FixEventInternal {
 
 impl Drop for FixEventInternal {
     fn drop(&mut self) {
-        if let FixEventInternal::AppMsgOut(ref mut msg, ref mut responder)
-        | FixEventInternal::AdmMsgOut(ref mut msg, ref mut responder) = self
+        if let &mut FixEventInternal::AppMsgOut(ref mut msg, ref mut responder)
+        | &mut FixEventInternal::AdmMsgOut(ref mut msg, ref mut responder) = self
+            && let Some(sender) = responder.sender.take()
         {
-            if let Some(sender) = responder.sender.take() {
-                if responder.change_to_gap_fill {
-                    // TODO: GapFill HERE!
-                    sender.send(msg.take().unwrap()).unwrap();
-                } else {
-                    sender.send(msg.take().unwrap()).unwrap();
-                }
+            if responder.change_to_gap_fill {
+                // TODO: GapFill HERE!
+                sender.send(msg.take().unwrap()).unwrap();
+            } else {
+                sender.send(msg.take().unwrap()).unwrap();
             }
         }
     }

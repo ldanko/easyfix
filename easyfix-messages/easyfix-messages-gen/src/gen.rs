@@ -10,11 +10,10 @@ use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use strum::IntoEnumIterator;
 
-use self::structure::MessageProperties;
-use crate::gen::{
+use self::{
     enumeration::EnumDesc,
     member::{MemberDesc, SimpleMember},
-    structure::Struct,
+    structure::{MessageProperties, Struct},
 };
 
 pub struct Generator {

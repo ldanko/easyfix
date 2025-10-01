@@ -6,7 +6,7 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::{anyhow, bail, Context as ErrorContext, Result};
+use anyhow::{Context as ErrorContext, Result, anyhow, bail};
 use strum_macros::AsRefStr;
 use xmltree::{Element, XMLNode};
 
@@ -442,9 +442,10 @@ impl FromStr for MsgType {
             [b0 @ b'0'..=b'9' | b0 @ b'A'..=b'Z' | b0 @ b'a'..=b'z'] => {
                 Ok(MsgType(MsgTypeBuf::Short([*b0])))
             }
-            [b0 @ b'0'..=b'9' | b0 @ b'A'..=b'Z' | b0 @ b'a'..=b'z', b1 @ b'0'..=b'9' | b1 @ b'A'..=b'Z' | b1 @ b'a'..=b'z'] => {
-                Ok(MsgType(MsgTypeBuf::Long([*b0, *b1])))
-            }
+            [
+                b0 @ b'0'..=b'9' | b0 @ b'A'..=b'Z' | b0 @ b'a'..=b'z',
+                b1 @ b'0'..=b'9' | b1 @ b'A'..=b'Z' | b1 @ b'a'..=b'z',
+            ] => Ok(MsgType(MsgTypeBuf::Long([*b0, *b1]))),
             [_] | [_, _] => Err(anyhow!("Incorrect MsgType value: {}", s)),
             _ => Err(anyhow!("MsgType (`{}`) too long ({}`", s, s.len())),
         }

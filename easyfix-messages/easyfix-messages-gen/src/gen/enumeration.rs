@@ -3,7 +3,7 @@ use easyfix_dictionary::{BasicType, Value};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use crate::gen::member::Type;
+use super::member::Type;
 
 pub struct EnumDesc {
     name: Ident,

@@ -6,7 +6,7 @@ use easyfix_messages::{
         UtcTimestamp,
     },
     groups::MsgTypeGrp,
-    messages::{FixtMessage, Header, Heartbeat, Logon, Message, Trailer, BEGIN_STRING},
+    messages::{BEGIN_STRING, FixtMessage, Header, Heartbeat, Logon, Message, Trailer},
 };
 
 fn header(msg_type: MsgType) -> Box<Header> {

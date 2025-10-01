@@ -2,17 +2,17 @@ use std::{cell::RefCell, collections::HashMap, net::SocketAddr, rc::Rc};
 
 use pin_project::pin_project;
 use tokio::net::TcpStream;
-use tracing::{info, info_span, Instrument};
+use tracing::{Instrument, info, info_span};
 
 use crate::{
-    application::{events_channel, Emitter, EventStream},
+    Error,
+    application::{Emitter, EventStream, events_channel},
     io::initiator_connection,
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
-    Error,
 };
 
 // TODO: Same as in Acceptor, not need for duplicate

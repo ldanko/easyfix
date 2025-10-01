@@ -3,7 +3,7 @@ use std::rc::Rc;
 use async_stream::stream;
 use easyfix_messages::{
     fields::UtcTimestamp,
-    messages::{FixtMessage, BEGIN_STRING},
+    messages::{BEGIN_STRING, FixtMessage},
 };
 use futures_util::Stream;
 use tokio::{
@@ -14,7 +14,7 @@ use tokio_stream::StreamExt;
 use tracing::{debug, instrument};
 
 use super::time::timeout_stream;
-use crate::{messages_storage::MessagesStorage, session::Session, DisconnectReason, SenderMsg};
+use crate::{DisconnectReason, SenderMsg, messages_storage::MessagesStorage, session::Session};
 
 pub(crate) enum OutputEvent {
     Message(Vec<u8>),

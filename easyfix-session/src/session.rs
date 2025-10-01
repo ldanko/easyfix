@@ -338,18 +338,18 @@ impl<S: MessagesStorage> Session<S> {
                 })
             }
         } else {
-            if let Some(resend_range) = state.resend_range() {
-                if check_too_high {
-                    let begin_seq_num = *resend_range.start();
-                    let end_seq_num = *resend_range.end();
+            if let Some(resend_range) = state.resend_range()
+                && check_too_high
+            {
+                let begin_seq_num = *resend_range.start();
+                let end_seq_num = *resend_range.end();
 
-                    if msg_seq_num >= end_seq_num {
-                        info!(
-                            begin_seq_num,
-                            end_seq_num, "Resend request has been satisfied"
-                        );
-                        state.reset_resend_range();
-                    }
+                if msg_seq_num >= end_seq_num {
+                    info!(
+                        begin_seq_num,
+                        end_seq_num, "Resend request has been satisfied"
+                    );
+                    state.reset_resend_range();
                 }
             }
             drop(state);
@@ -494,17 +494,17 @@ impl<S: MessagesStorage> Session<S> {
         let begin_seq_no = state.next_target_msg_seq_num();
         let mut end_seq_no = too_high_msg_seq_num.saturating_sub(1);
 
-        if let Some(queued_lowest) = state.lowest_queued_seq_num() {
-            if queued_lowest > begin_seq_no {
-                let new_end_seq_no = queued_lowest.saturating_sub(1);
-                if new_end_seq_no < end_seq_no {
-                    trace!(
-                        new_end_seq_no = queued_lowest,
-                        prev_end_seq_no = end_seq_no,
-                        "clamping resend request upper bound to queued gap"
-                    );
-                    end_seq_no = new_end_seq_no;
-                }
+        if let Some(queued_lowest) = state.lowest_queued_seq_num()
+            && queued_lowest > begin_seq_no
+        {
+            let new_end_seq_no = queued_lowest.saturating_sub(1);
+            if new_end_seq_no < end_seq_no {
+                trace!(
+                    new_end_seq_no = queued_lowest,
+                    prev_end_seq_no = end_seq_no,
+                    "clamping resend request upper bound to queued gap"
+                );
+                end_seq_no = new_end_seq_no;
             }
         }
 
@@ -935,26 +935,26 @@ impl<S: MessagesStorage> Session<S> {
 
         let next_sender_msg_num_at_logon_received = state.next_sender_msg_seq_num();
 
-        if enable_next_expected_msg_seq_num {
-            if let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num {
-                let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
-                // Is the 789 we received too high ??
-                if next_expected_msg_seq_num > next_sender_msg_seq_num {
-                    // can't resend what we never sent! something unrecoverable has happened.
-                    let error_msg = format!(
-                        "NextExpectedMsgSeqNum<789> too high \
+        if enable_next_expected_msg_seq_num
+            && let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num
+        {
+            let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
+            // Is the 789 we received too high ??
+            if next_expected_msg_seq_num > next_sender_msg_seq_num {
+                // can't resend what we never sent! something unrecoverable has happened.
+                let error_msg = format!(
+                    "NextExpectedMsgSeqNum<789> too high \
                             (expected {next_sender_msg_seq_num}, \
                              got {next_expected_msg_seq_num})",
-                    );
-                    error!(error_msg);
-                    let err = FixString::from_ascii_lossy(error_msg.into_bytes());
-                    self.send_logout(
-                        &mut state,
-                        Some(SessionStatus::ReceivedNextExpectedMsgSeqNumTooHigh),
-                        Some(err),
-                    );
-                    return Ok(Some(DisconnectReason::InvalidLogonState));
-                }
+                );
+                error!(error_msg);
+                let err = FixString::from_ascii_lossy(error_msg.into_bytes());
+                self.send_logout(
+                    &mut state,
+                    Some(SessionStatus::ReceivedNextExpectedMsgSeqNumTooHigh),
+                    Some(err),
+                );
+                return Ok(Some(DisconnectReason::InvalidLogonState));
             }
         }
 
@@ -1022,32 +1022,32 @@ impl<S: MessagesStorage> Session<S> {
             state.incr_next_target_msg_seq_num();
         }
 
-        if enable_next_expected_msg_seq_num {
-            if let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num {
-                // is the 789 lower (we checked for higher previously) than our next message after receiving the logon
-                if next_expected_msg_seq_num != next_sender_msg_num_at_logon_received {
-                    let mut end_seq_no = next_sender_msg_num_at_logon_received;
+        if enable_next_expected_msg_seq_num
+            && let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num
+        {
+            // is the 789 lower (we checked for higher previously) than our next message after receiving the logon
+            if next_expected_msg_seq_num != next_sender_msg_num_at_logon_received {
+                let mut end_seq_no = next_sender_msg_num_at_logon_received;
 
-                    // TODO: self.resend_range() will handle this !!!
-                    if !self.session_settings.persist {
-                        end_seq_no += 1;
-                        let next = state.next_sender_msg_seq_num();
-                        if end_seq_no > next {
-                            end_seq_no = next;
-                        }
-                        info!(
-                            "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num}, \
-                             TO: {next_sender_msg_num_at_logon_received} will be reset"
-                        );
-                        self.send_sequence_reset(next_expected_msg_seq_num, end_seq_no);
-                    } else {
-                        // resend missed messages
-                        info!(
-                            "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num} \
-                             TO: {next_sender_msg_num_at_logon_received} will be resent"
-                        );
-                        self.resend_range(&mut state, next_expected_msg_seq_num, end_seq_no)
+                // TODO: self.resend_range() will handle this !!!
+                if !self.session_settings.persist {
+                    end_seq_no += 1;
+                    let next = state.next_sender_msg_seq_num();
+                    if end_seq_no > next {
+                        end_seq_no = next;
                     }
+                    info!(
+                        "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num}, \
+                             TO: {next_sender_msg_num_at_logon_received} will be reset"
+                    );
+                    self.send_sequence_reset(next_expected_msg_seq_num, end_seq_no);
+                } else {
+                    // resend missed messages
+                    info!(
+                        "Received implicit ResendRequest via Logon FROM: {next_expected_msg_seq_num} \
+                             TO: {next_sender_msg_num_at_logon_received} will be resent"
+                    );
+                    self.resend_range(&mut state, next_expected_msg_seq_num, end_seq_no)
                 }
             }
         }
@@ -1268,6 +1268,7 @@ impl<S: MessagesStorage> Session<S> {
                         Responder::new(sender),
                     ))
                     .await;
+                #[expect(clippy::manual_ok_err)]
                 match receiver.await {
                     Ok(msg) => Some(msg),
                     Err(_gap_fill) => {

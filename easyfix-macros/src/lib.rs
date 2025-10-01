@@ -2,7 +2,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, LitStr};
+use syn::{LitStr, parse_macro_input};
 
 const fn is_non_control_ascii_char(byte: u8) -> bool {
     byte > 0x1f && byte < 0x80

@@ -17,17 +17,17 @@ use tokio::{
     net::TcpListener,
     task::JoinHandle,
 };
-use tracing::{error, info, info_span, instrument, warn, Instrument};
+use tracing::{Instrument, error, info, info_span, instrument, warn};
 
 use crate::{
-    application::{events_channel, AsEvent, Emitter, EventStream},
+    DisconnectReason, Settings,
+    application::{AsEvent, Emitter, EventStream, events_channel},
     io::acceptor_connection,
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
     session_state::State as SessionState,
     settings::SessionSettings,
-    DisconnectReason, Settings,
 };
 
 #[allow(async_fn_in_trait)]

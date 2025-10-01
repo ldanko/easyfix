@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
     rc::Rc,
     sync::Mutex,
 };
@@ -9,7 +9,7 @@ use easyfix_messages::{
     fields::{FixString, SessionStatus},
     messages::{FixtMessage, Message},
 };
-use futures_util::{pin_mut, Stream};
+use futures_util::{Stream, pin_mut};
 use tokio::{
     self,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -18,9 +18,11 @@ use tokio::{
     time::Duration,
 };
 use tokio_stream::StreamExt;
-use tracing::{debug, error, info, info_span, Instrument, Span};
+use tracing::{Instrument, Span, debug, error, info, info_span};
 
 use crate::{
+    DisconnectReason, Error, NO_INBOUND_TIMEOUT_PADDING, Sender, SessionError,
+    TEST_REQUEST_THRESHOLD,
     acceptor::{ActiveSessionsMap, SessionsMap},
     application::{Emitter, FixEventInternal},
     messages_storage::MessagesStorage,
@@ -28,15 +30,13 @@ use crate::{
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
-    DisconnectReason, Error, Sender, SessionError, NO_INBOUND_TIMEOUT_PADDING,
-    TEST_REQUEST_THRESHOLD,
 };
 
 mod input_stream;
-pub use input_stream::{input_stream, InputEvent, InputStream};
+pub use input_stream::{InputEvent, InputStream, input_stream};
 
 mod output_stream;
-use output_stream::{output_stream, OutputEvent};
+use output_stream::{OutputEvent, output_stream};
 
 pub mod time;
 use time::{timeout, timeout_stream};
@@ -405,10 +405,8 @@ impl<S: MessagesStorage> Connection<S> {
                     // inplementation, at this point no new messages
                     // can be send.
                     info!("Client disconnected");
-                    if !sink_closed {
-                        if let Err(e) = sink.flush().await {
-                            error!("final flush failed: {e}");
-                        }
+                    if !sink_closed && let Err(e) = sink.flush().await {
+                        error!("final flush failed: {e}");
                     }
                     disconnect_reason = reason;
                 }
