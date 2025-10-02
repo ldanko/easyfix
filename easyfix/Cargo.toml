@@ -1,6 +1,6 @@
 [package]
 name = "easyfix"
-version = "0.12.9"
+version = "0.13.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) engine."
@@ -14,7 +14,7 @@ serialize-messages = ["easyfix-messages/serialize"]
 deserialize-messages = ["easyfix-messages/deserialize"]
 
 [dependencies]
-easyfix-dictionary = { version = "0.4.1", path = "../easyfix-dictionary" }
-easyfix-macros = { version = "0.1.2", path = "../easyfix-macros" }
-easyfix-messages = { version = "0.6.3", path = "../easyfix-messages" }
-easyfix-session = { version = "0.9.9", path = "../easyfix-session" }
+easyfix-dictionary = { version = "0.4.2", path = "../easyfix-dictionary" }
+easyfix-macros = { version = "0.1.3", path = "../easyfix-macros" }
+easyfix-messages = { version = "0.6.4", path = "../easyfix-messages" }
+easyfix-session = { version = "0.10.0", path = "../easyfix-session" }
