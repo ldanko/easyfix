@@ -42,22 +42,24 @@ enum VerifyError {
         msg_seq_num: SeqNum,
         next_target_msg_seq_num: SeqNum,
     },
-    #[error("User rejected ({reason:?}: {text})")]
-    UserForcedReject {
+    #[error("Rejected by application ({reason:?}: {text})")]
+    ApplicationForcedReject {
         ref_msg_type: FixString,
         ref_seq_num: SeqNum,
         reason: SessionRejectReason,
         text: FixString,
         ref_tag_id: Option<i64>,
     },
-    #[error("User rejected with Logout<5> ({})", .text.as_ref().map(FixString::as_utf8).unwrap_or_default())]
-    UserForcedLogout {
+    #[error("Rejected by application with Logout<5> ({})", .text.as_ref().map(FixString::as_utf8).unwrap_or_default())]
+    ApplicationForcedLogout {
         session_status: Option<SessionStatus>,
         text: Option<FixString>,
         disconnect: bool,
     },
-    #[error("User disconnected: {reason:?}")]
-    UserForcedDisconnect { reason: Option<String> },
+    #[error("Disconnected by application: {reason:?}")]
+    ApplicationForcedDisconnect { reason: Option<String> },
+    #[error("Message processing aborted by application")]
+    ApplicationAbortedProcessing,
 }
 
 impl VerifyError {
@@ -101,13 +103,14 @@ impl VerifyError {
 impl From<InputResponderMsg> for VerifyError {
     fn from(msg: InputResponderMsg) -> VerifyError {
         match msg {
+            InputResponderMsg::Ignore => VerifyError::ApplicationAbortedProcessing,
             InputResponderMsg::Reject {
                 ref_msg_type,
                 ref_seq_num,
                 reason,
                 text,
                 ref_tag_id,
-            } => VerifyError::UserForcedReject {
+            } => VerifyError::ApplicationForcedReject {
                 ref_msg_type,
                 ref_seq_num,
                 reason,
@@ -118,13 +121,13 @@ impl From<InputResponderMsg> for VerifyError {
                 session_status,
                 text,
                 disconnect,
-            } => VerifyError::UserForcedLogout {
+            } => VerifyError::ApplicationForcedLogout {
                 session_status,
                 text,
                 disconnect,
             },
             InputResponderMsg::Disconnect { reason } => {
-                VerifyError::UserForcedDisconnect { reason }
+                VerifyError::ApplicationForcedDisconnect { reason }
             }
         }
     }
@@ -1180,14 +1183,14 @@ impl<S: MessagesStorage> Session<S> {
                 error!("disconnecting because of invalid logon state");
                 return Some(DisconnectReason::InvalidLogonState);
             }
-            Err(VerifyError::UserForcedReject {
+            Err(VerifyError::ApplicationForcedReject {
                 ref_msg_type,
                 ref_seq_num,
                 reason,
                 text,
                 ref_tag_id,
             }) => {
-                warn!("User rejected ({reason:?}: {text})");
+                warn!("Rejected by application ({reason:?}: {text})");
                 self.send_reject(
                     &mut self.state().borrow_mut(),
                     Some(ref_msg_type),
@@ -1197,24 +1200,27 @@ impl<S: MessagesStorage> Session<S> {
                     ref_tag_id,
                 );
             }
-            Err(VerifyError::UserForcedLogout {
+            Err(VerifyError::ApplicationForcedLogout {
                 session_status,
                 text,
                 disconnect,
             }) => {
                 error!(
-                    "User rejected with Logout<5> ({})",
+                    "Rejected by application with Logout<5> ({})",
                     text.as_ref().map(FixString::as_utf8).unwrap_or_default()
                 );
                 let mut state = self.state.borrow_mut();
                 self.send_logout(&mut state, session_status, text);
                 if disconnect {
-                    return Some(DisconnectReason::UserForcedDisconnect);
+                    return Some(DisconnectReason::ApplicationForcedDisconnect);
                 }
             }
-            Err(VerifyError::UserForcedDisconnect { reason }) => {
-                error!("User disconnected: {reason:?}");
-                return Some(DisconnectReason::UserForcedDisconnect);
+            Err(VerifyError::ApplicationForcedDisconnect { reason }) => {
+                error!("Disconnected by application: {reason:?}");
+                return Some(DisconnectReason::ApplicationForcedDisconnect);
+            }
+            Err(VerifyError::ApplicationAbortedProcessing) => {
+                self.state().borrow_mut().incr_next_target_msg_seq_num();
             }
         }
 

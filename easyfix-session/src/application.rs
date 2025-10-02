@@ -80,9 +80,7 @@ pub struct DoNotSend {
 
 #[derive(Debug)]
 pub(crate) enum InputResponderMsg {
-    // RejectLogon {
-    //     reason: Option<String>,
-    // },
+    Ignore,
     Reject {
         ref_msg_type: FixString,
         ref_seq_num: SeqNum,
@@ -112,6 +110,10 @@ impl<'a> InputResponder<'a> {
             sender,
             phantom_ref: PhantomData,
         }
+    }
+
+    pub fn ignore(self) {
+        self.sender.send(InputResponderMsg::Ignore).unwrap();
     }
 
     pub fn reject(

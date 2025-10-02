@@ -47,8 +47,8 @@ pub enum DisconnectReason {
     LocalRequestedLogout,
     /// Logout requested remotely
     RemoteRequestedLogout,
-    /// Disconnect forced by User code
-    UserForcedDisconnect,
+    /// Disconnect forced by Application code
+    ApplicationForcedDisconnect,
     /// Received message without MsgSeqNum
     MsgSeqNumNotFound,
     /// Received message with MsgSeqNum too low

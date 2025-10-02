@@ -240,7 +240,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
 
         session.disconnect(
             &mut session.state().borrow_mut(),
-            DisconnectReason::UserForcedDisconnect,
+            DisconnectReason::ApplicationForcedDisconnect,
         );
     }
 
