@@ -190,9 +190,10 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     fn check_sending_time(&self, sending_time: UtcTimestamp) -> Result<(), VerifyError> {
-        if !self.session_settings.check_latency {
+        let Some(max_latency) = self.session_settings.max_latency else {
             return Ok(());
-        }
+        };
+        let max_latency = chrono::Duration::from_std(max_latency).expect("duration");
 
         // neg implementation for chrono::Duration modifies secs value,
         // so abs value has to be calculated manually
@@ -203,8 +204,6 @@ impl<S: MessagesStorage> Session<S> {
         } else {
             sending_timestamp - now
         };
-        let max_latency =
-            chrono::Duration::from_std(self.session_settings.max_latency).expect("duration");
         if abs_time_diff > max_latency {
             warn!(
                 ?abs_time_diff,

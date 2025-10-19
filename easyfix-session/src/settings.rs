@@ -43,8 +43,11 @@ pub struct SessionSettings {
 
     pub send_redundant_resend_requests: bool,
     pub check_comp_id: bool,
-    pub check_latency: bool,
-    pub max_latency: Duration,
+
+    /// Maximum allowed difference between message SendingTime(52) and current
+    /// time. If `None`, SendingTime is not validated. If `Some`, messages with
+    /// SendingTime differing by more than this duration are rejected.
+    pub max_latency: Option<Duration>,
 
     pub reset_on_logon: bool,
     pub reset_on_logout: bool,
