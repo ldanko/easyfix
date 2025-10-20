@@ -29,11 +29,11 @@ enum VerifyError {
     Duplicate,
     #[error("Too high target sequence number {msg_seq_num}")]
     ResendRequest { msg_seq_num: SeqNum },
-    #[error("Reject due to {reason:?} (tag={tag:?}, logout={logout})")]
+    #[error("Reject due to {reason:?} (tag={tag:?}, disconnect_reason={disconnect_reason:?})")]
     Reject {
         reason: SessionRejectReason,
         tag: Option<FieldTag>,
-        logout: bool,
+        disconnect_reason: Option<DisconnectReason>,
     },
     #[error("Invalid logon state")]
     InvalidLogonState,
@@ -67,7 +67,7 @@ impl VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::SendingtimeAccuracyProblem,
             tag: Some(FieldTag::SendingTime),
-            logout: false,
+            disconnect_reason: None,
         }
     }
 
@@ -75,7 +75,7 @@ impl VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::CompidProblem,
             tag: Some(field_tag),
-            logout: true,
+            disconnect_reason: Some(DisconnectReason::InvalidCompId),
         }
     }
 
@@ -87,7 +87,7 @@ impl VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::RequiredTagMissing,
             tag: Some(FieldTag::OrigSendingTime),
-            logout: false,
+            disconnect_reason: None,
         }
     }
 
@@ -95,7 +95,7 @@ impl VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReason::SendingtimeAccuracyProblem,
             tag: Some(FieldTag::OrigSendingTime),
-            logout: true,
+            disconnect_reason: Some(DisconnectReason::InvalidOrigSendingTime),
         }
     }
 }
@@ -1135,7 +1135,7 @@ impl<S: MessagesStorage> Session<S> {
             Err(VerifyError::Reject {
                 reason,
                 tag,
-                logout,
+                disconnect_reason,
             }) => {
                 let mut state = self.state().borrow_mut();
                 let tag_as_i64 = tag.map(|t| t as i64);
@@ -1164,8 +1164,9 @@ impl<S: MessagesStorage> Session<S> {
                     ))
                     .await;
 
-                if logout {
+                if let Some(disconnect_reason) = disconnect_reason {
                     self.send_logout(&mut state, None, None);
+                    return Some(disconnect_reason);
                 }
             }
             Err(e @ VerifyError::SeqNumTooLow { .. }) => {
