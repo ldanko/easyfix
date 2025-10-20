@@ -417,7 +417,6 @@ impl<S: MessagesStorage> Session<S> {
         })));
 
         state.set_last_received_time(Instant::now());
-        state.set_test_request(0);
         state.set_logon_sent(true);
     }
 

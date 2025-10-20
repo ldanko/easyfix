@@ -41,12 +41,11 @@ impl Messages {
 pub(crate) struct State<S> {
     enabled: bool,
     received_logon: bool,
-    sent_logout: bool,
-    sent_logon: bool,
-    sent_reset: bool,
+    logon_sent: bool,
+    logout_sent: bool,
+    reset_sent: bool,
     reset_received: bool,
     initiate: bool,
-    test_request: Int,
     resend_range: Option<RangeInclusive<SeqNum>>,
     heart_bt_int: Int,
     last_sent_time: Instant,
@@ -73,12 +72,11 @@ impl<S: MessagesStorage> State<S> {
         State {
             enabled: true,
             received_logon: false,
-            sent_logout: false,
-            sent_logon: false,
-            sent_reset: false,
+            logon_sent: false,
+            logout_sent: false,
+            reset_sent: false,
             reset_received: false,
             initiate: false,
-            test_request: 0,
             resend_range: None,
             heart_bt_int: 10,
             last_sent_time: Instant::now(),
@@ -105,20 +103,20 @@ impl<S: MessagesStorage> State<S> {
         self.received_logon = logon_received;
     }
 
-    pub fn logout_sent(&self) -> bool {
-        self.sent_logout
-    }
-
-    pub fn set_logout_sent(&mut self, logout_sent: bool) {
-        self.sent_logout = logout_sent;
-    }
-
     pub fn logon_sent(&self) -> bool {
-        self.sent_logon
+        self.logon_sent
     }
 
     pub fn set_logon_sent(&mut self, logon_sent: bool) {
-        self.sent_logon = logon_sent;
+        self.logon_sent = logon_sent;
+    }
+
+    pub fn logout_sent(&self) -> bool {
+        self.logout_sent
+    }
+
+    pub fn set_logout_sent(&mut self, logout_sent: bool) {
+        self.logout_sent = logout_sent;
     }
 
     pub fn reset_received(&self) -> bool {
@@ -130,19 +128,15 @@ impl<S: MessagesStorage> State<S> {
     }
 
     pub fn reset_sent(&self) -> bool {
-        self.sent_reset
+        self.reset_sent
     }
 
     pub fn set_reset_sent(&mut self, reset_sent: bool) {
-        self.sent_reset = reset_sent;
+        self.reset_sent = reset_sent;
     }
 
     pub fn initiate(&self) -> bool {
         self.initiate
-    }
-
-    pub fn set_test_request(&mut self, test_request: Int) {
-        self.test_request = test_request;
     }
 
     pub fn set_resend_range(&mut self, resend_range: RangeInclusive<SeqNum>) {
