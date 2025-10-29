@@ -323,21 +323,21 @@ impl<S: MessagesStorage> Connection<S> {
             }
             match event {
                 InputEvent::Message(msg) => {
-                    if let Some(dr) = self.session.on_message_in(msg).await {
-                        info!("disconnect ({dr:?}), exit input processing");
-                        disconnect_reason = dr;
+                    if let Some(reason) = self.session.on_message_in(msg).await {
+                        info!(?reason, "disconnect, exit input processing");
+                        disconnect_reason = reason;
                         break;
                     }
                 }
                 InputEvent::DeserializeError(error) => {
-                    if let Some(dr) = self.session.on_deserialize_error(error).await {
-                        info!("disconnect ({dr:?}), exit input processing");
-                        disconnect_reason = dr;
+                    if let Some(reason) = self.session.on_deserialize_error(error).await {
+                        info!(?reason, "disconnect, exit input processing");
+                        disconnect_reason = reason;
                         break;
                     }
                 }
                 InputEvent::IoError(error) => {
-                    error!("Input error: {error:?}");
+                    error!(%error, "Input error");
                     disconnect_reason = DisconnectReason::IoError;
                     break;
                 }
@@ -385,7 +385,7 @@ impl<S: MessagesStorage> Connection<S> {
                         info!("Client disconnected, message will be stored for further resend");
                     } else if let Err(error) = sink.write_all(&msg).await {
                         sink_closed = true;
-                        error!("Output write error: {error:?}");
+                        error!(%error, "Output write error");
                         // XXX: Don't disconnect now. If IO error happened
                         //      here, it will aslo happen in input loop
                         //      and input loop will trigger disconnection.
@@ -405,8 +405,8 @@ impl<S: MessagesStorage> Connection<S> {
                     // inplementation, at this point no new messages
                     // can be send.
                     info!("Client disconnected");
-                    if !sink_closed && let Err(e) = sink.flush().await {
-                        error!("final flush failed: {e}");
+                    if !sink_closed && let Err(error) = sink.flush().await {
+                        error!(%error, "final flush failed");
                     }
                     disconnect_reason = reason;
                 }
@@ -421,6 +421,9 @@ impl<S: MessagesStorage> Connection<S> {
         // input_loop finished, so no more messages can be added to output
         // queue.
         let _ = input_closed_rx.await;
+        if let Err(error) = sink.shutdown().await {
+            error!(%error, "connection shutdown failed")
+        }
         info!("disconnect, exit output processing");
     }
 }
