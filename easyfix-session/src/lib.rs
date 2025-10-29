@@ -63,6 +63,8 @@ pub enum DisconnectReason {
     Disconnected,
     /// I/O Error
     IoError,
+    /// Logout timeout
+    LogoutTimeout,
 }
 
 #[derive(Debug)]

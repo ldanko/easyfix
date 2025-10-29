@@ -19,7 +19,7 @@ jobs:
     - name: Install nightly
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: nightly-2024-10-10
+        toolchain: nightly-2025-09-16
         override: true
         components: rustfmt, clippy
     - name: Build

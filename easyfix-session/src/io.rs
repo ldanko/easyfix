@@ -308,8 +308,16 @@ impl<S: MessagesStorage> Connection<S> {
         }
 
         let mut disconnect_reason = DisconnectReason::Disconnected;
+        let mut logout_timeout = None;
 
-        while let Some(event) = input_stream.next().await {
+        while let Some(event) =
+            timeout(logout_timeout.unwrap_or(Duration::MAX), input_stream.next())
+                .await
+                .unwrap_or(Some(InputEvent::LogoutTimeout))
+        {
+            if logout_timeout.is_none() {
+                logout_timeout = self.session.logout_timeout();
+            }
             // Don't accept new messages if session is disconnected.
             if self.session.state().borrow().disconnected() {
                 info!("session disconnected, exit input processing");
@@ -352,6 +360,11 @@ impl<S: MessagesStorage> Connection<S> {
                         );
                         break;
                     }
+                }
+                InputEvent::LogoutTimeout => {
+                    info!("Logout timeout");
+                    disconnect_reason = DisconnectReason::LogoutTimeout;
+                    break;
                 }
             }
         }

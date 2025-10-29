@@ -23,6 +23,7 @@ pub enum InputEvent {
     DeserializeError(DeserializeError),
     IoError(io::Error),
     Timeout,
+    LogoutTimeout,
 }
 
 fn process_garbled_data(buf: &mut BytesMut) {

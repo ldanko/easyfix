@@ -31,6 +31,10 @@ pub struct Settings {
     /// How many times `TestRequest<1> `is sent when inbound timeout is reached,
     /// before connection is dropped.
     pub auto_disconnect_after_no_heartbeat: u32,
+    /// Timeout for waiting for Logout<5> acknowledgment during graceful
+    /// session termination. If exceeded, the session terminates forcefully.
+    #[serde(deserialize_with = "duration_from_seconds")]
+    pub auto_disconnect_after_no_logout: Duration,
 }
 
 #[derive(Clone, Debug, Deserialize)]

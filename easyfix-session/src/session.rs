@@ -1393,6 +1393,12 @@ impl<S: MessagesStorage> Session<S> {
 
     pub fn heartbeat_interval(&self) -> Duration {
         Duration::from_secs(self.heartbeat_interval.get())
+    }
 
+    pub fn logout_timeout(&self) -> Option<Duration> {
+        self.state
+            .borrow()
+            .logon_sent()
+            .then_some(self.settings.auto_disconnect_after_no_logout)
     }
 }
