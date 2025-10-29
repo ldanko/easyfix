@@ -4,7 +4,7 @@ use std::{
 };
 
 use easyfix_messages::{
-    fields::{FixString, Int, SeqNum},
+    fields::{FixString, SeqNum},
     messages::FixtMessage,
 };
 use tokio::time::Instant;
@@ -47,7 +47,6 @@ pub(crate) struct State<S> {
     reset_received: bool,
     initiate: bool,
     resend_range: Option<RangeInclusive<SeqNum>>,
-    heart_bt_int: Int,
     last_sent_time: Instant,
     last_received_time: Instant,
 
@@ -78,7 +77,6 @@ impl<S: MessagesStorage> State<S> {
             reset_received: false,
             initiate: false,
             resend_range: None,
-            heart_bt_int: 10,
             last_sent_time: Instant::now(),
             last_received_time: Instant::now(),
             disconnected: true,
@@ -149,14 +147,6 @@ impl<S: MessagesStorage> State<S> {
 
     pub fn resend_range(&self) -> Option<RangeInclusive<SeqNum>> {
         self.resend_range.clone()
-    }
-
-    pub fn heart_bt_int(&self) -> Int {
-        self.heart_bt_int
-    }
-
-    pub fn set_heart_bt_int(&mut self, heart_bt_int: Int) {
-        self.heart_bt_int = heart_bt_int;
     }
 
     pub fn set_last_sent_time(&mut self, last_sent_time: Instant) {

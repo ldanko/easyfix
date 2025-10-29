@@ -55,6 +55,10 @@ pub enum DisconnectReason {
     MsgSeqNumTooLow,
     /// Invalid logon state
     InvalidLogonState,
+    /// Invalid COMP ID
+    InvalidCompId,
+    /// Invalid OrigSendingTime
+    InvalidOrigSendingTime,
     /// Remote side disconnected
     Disconnected,
     /// I/O Error

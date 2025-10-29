@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use easyfix_messages::{
     fields::{
@@ -152,6 +155,8 @@ pub(crate) struct Session<S> {
     settings: Settings,
     session_settings: SessionSettings,
     emitter: Emitter,
+    // Not in SessionState as I/O layer asks for this value often
+    heartbeat_interval: Cell<u64>,
 }
 
 impl<S: MessagesStorage> Session<S> {
@@ -162,12 +167,16 @@ impl<S: MessagesStorage> Session<S> {
         sender: Sender,
         emitter: Emitter,
     ) -> Session<S> {
+        let heartbeat_interval = settings
+            .heartbeat_interval
+            .unwrap_or(settings.auto_disconnect_after_no_logout.as_secs());
         Session {
             state,
             settings,
             session_settings,
             sender,
             emitter,
+            heartbeat_interval: Cell::new(heartbeat_interval),
         }
     }
 
@@ -385,7 +394,7 @@ impl<S: MessagesStorage> Session<S> {
         self.send(Box::new(Message::Logon(Logon {
             // encrypt_method: EncryptMethod::None,
             encrypt_method: EncryptMethod::NoneOther,
-            heart_bt_int: state.heart_bt_int(),
+            heart_bt_int: self.heartbeat_interval.get().try_into().unwrap_or(Int::MAX),
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num: if self.session_settings.enable_next_expected_msg_seq_num {
                 let next_expected_msg_seq_num = state.next_sender_msg_seq_num();
@@ -406,8 +415,7 @@ impl<S: MessagesStorage> Session<S> {
 
         self.send(Box::new(Message::Logon(Logon {
             encrypt_method: EncryptMethod::NoneOther,
-            // TODO: option to use predefined OR the value from Logon request
-            heart_bt_int: state.heart_bt_int(),
+            heart_bt_int: self.heartbeat_interval.get().try_into().unwrap_or(Int::MAX),
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
             // TODO: if self.session_settings.session_id().is_fixt()
@@ -965,8 +973,17 @@ impl<S: MessagesStorage> Session<S> {
             !Self::is_target_too_high(&state, msg_seq_num) || self.session_settings.reset_on_logon;
 
         if !state.initiate() || (state.reset_received() && !state.reset_sent()) {
-            state.set_heart_bt_int(heart_bt_int);
             info!("Received logon request");
+            if self.settings.heartbeat_interval.is_none() {
+                if heart_bt_int <= 0 {
+                    return Err(VerifyError::Reject {
+                        reason: SessionRejectReason::ValueIsIncorrect,
+                        tag: Some(FieldTag::HeartBtInt),
+                        disconnect_reason: None,
+                    });
+                }
+                self.heartbeat_interval.set(heart_bt_int as u64);
+            }
 
             if enable_next_expected_msg_seq_num {
                 let mut next_expected_target_num = state.next_target_msg_seq_num();
@@ -1375,11 +1392,7 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     pub fn heartbeat_interval(&self) -> Duration {
-        // TODO: logon.heartbeat_interval, value from settings is for n8 only (implement as Reject
-        // on Logon)
+        Duration::from_secs(self.heartbeat_interval.get())
 
-        //let inbound_test_request_timeout_duration =
-        //    self.settings.heartbeat_interval + NO_INBOUND_TIMEOUT_PADDING;
-        self.settings.heartbeat_interval
     }
 }

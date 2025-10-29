@@ -23,9 +23,8 @@ pub struct Settings {
     pub sender_sub_id: Option<FixString>,
     /// Timeout \[s\] for inbound/outbound messages. When reached, `TestRequest<1>`
     /// is sent when inbound message is missing or `Heartbeat<0>` is sent when
-    /// outbound message is missing.
-    #[serde(deserialize_with = "duration_from_seconds")]
-    pub heartbeat_interval: Duration,
+    /// outbound message is missing. If not set value from Logon<A> will be used.
+    pub heartbeat_interval: Option<u64>,
     /// Timeout \[s\] for `Logon<A>` message, when reached, connection is dropped.
     #[serde(deserialize_with = "duration_from_seconds")]
     pub auto_disconnect_after_no_logon_received: Duration,
