@@ -4,6 +4,7 @@
 //! - The `Dictionary` struct for accessing fields, components, and messages
 //! - The `DictionaryBuilder` for configuring and creating dictionaries
 //! - Type definitions for FIX protocol elements (Message, Component, Group, etc.)
+//! - FIX protocol constants (`ParseRejectReason`, `MsgType`, etc.)
 //! - Error handling for dictionary operations
 
 use std::{
@@ -23,11 +24,62 @@ pub use crate::xml::{BasicType, Field, FixType, MsgCat, MsgType, Value};
 #[cfg(test)]
 mod tests;
 
-/// Enumeration of standard FIX protocol session reject reasons.
+// ============================================================================
+// FIX Protocol Constants
+// ============================================================================
+//
+// The types in this section are FIX protocol constants used during runtime
+// message parsing, not during dictionary parsing/loading. They are placed
+// here because easyfix-dictionary serves as common ground between:
+// - The deserializer (runtime message parsing)
+// - Generated message code (auto-generated from XML specs)
+// - Multiple FIX specification versions in the same application
+//
+// This separation enables a clean multi-spec architecture where deserializers
+// don't depend on auto-generated code, allowing users to have multiple FIX
+// specification crates without circular dependencies.
+
+/// Standard FIX protocol session reject reasons.
 ///
 /// These values correspond to the standard session-level reject reasons
-/// defined in the FIX protocol specification. They are used for validation
-/// and error reporting during message parsing.
+/// defined in the FIX protocol specification (SessionRejectReason field).
+/// They are used during **runtime message parsing** to indicate why a FIX
+/// message was rejected.
+///
+/// # Architecture Note
+///
+/// This type is placed in `easyfix-dictionary` (rather than with the deserializer
+/// or in generated code) because it serves as a **common protocol constant**
+/// accessible to:
+///
+/// - **Message deserializers** - Report parsing errors without depending on generated code
+/// - **Generated message code** - May include auto-generated `SessionRejectReason` enums
+/// - **Multiple FIX specs** - Different spec versions can share this common type
+///
+/// This design allows deserializers to be decoupled from auto-generated messages,
+/// enabling applications to use multiple FIX specification versions (e.g., different
+/// specs for different exchanges) without circular dependencies.
+///
+/// # Usage
+///
+/// Users typically map from `ParseRejectReason` to their generated
+/// `SessionRejectReason` enum when constructing Reject messages:
+///
+/// ```ignore
+/// match parse_error {
+///     ParseRejectReason::RequiredTagMissing => {
+///         SessionRejectReason::RequiredTagMissing
+///     }
+///     // ... other mappings
+/// }
+/// ```
+///
+/// # Relation to Dictionary
+///
+/// Despite being in the `easyfix-dictionary` crate, this enum is **not** used
+/// for dictionary validation or parsing. It's a FIX protocol constant that lives
+/// here for architectural reasons (shared infrastructure between deserializer
+/// and generated code).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::EnumIter, AsRefStr, Hash)]
 pub enum ParseRejectReason {
     /// The value specified is incorrect for the field
@@ -59,6 +111,10 @@ pub enum ParseRejectReason {
     /// CompID problem (SenderCompID or TargetCompID)
     CompidProblem,
 }
+
+// ============================================================================
+// Error Types
+// ============================================================================
 
 /// Errors that can occur during dictionary operations.
 ///
