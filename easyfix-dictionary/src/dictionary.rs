@@ -154,10 +154,34 @@ pub enum Error {
     CircularReferenceFound(String),
 }
 
-/// Definition of a member within a FIX message, component, or group.
+/// The shared definition of a field, component, or group.
 ///
-/// A member can be a field, component, or group. This enum provides
-/// a unified way to reference any of these types within a container.
+/// This enum represents **what** a member is, separate from **how** it's used.
+/// Definitions are wrapped in `Rc<>` to enable sharing across multiple references.
+///
+/// # Why `Rc<>`?
+///
+/// In FIX dictionaries, components and groups are typically defined once but
+/// referenced many times. For example, a component like "Instrument" or "Parties"
+/// might appear in dozens of different message types. Using `Rc<>` allows:
+///
+/// - **Memory efficiency**: The definition exists in memory only once
+/// - **Consistency**: All references see the same definition
+/// - **Shared ownership**: Multiple messages can reference the same component
+///
+/// # Relationship with `Member`
+///
+/// A `MemberDefinition` represents the **definition** (what it is), while a
+/// `Member` combines this definition with **usage context** (whether it's
+/// required in a particular message/component).
+///
+/// ```text
+/// Component Definition (1x in memory)
+///       ↓
+///       ├─→ Member in Message A (required=true)
+///       ├─→ Member in Message B (required=false)
+///       └─→ Member in Message C (required=true)
+/// ```
 #[derive(Clone, Debug)]
 pub enum MemberDefinition {
     /// A field member (primitive element)
@@ -183,11 +207,35 @@ impl MemberDefinition {
     }
 }
 
-/// Describes a member instance within a message, component, or group.
+/// A member reference within a message, component, or group.
 ///
-/// A member combines a definition (field, component, or group) with a
-/// requirement flag that indicates whether this member is mandatory
-/// in its parent container.
+/// This struct represents a **usage** of a field, component, or group,
+/// which is separate from its **definition**. This separation is important
+/// because:
+///
+/// - **Definitions are shared**: A component like "Instrument" or "Parties"
+///   is defined once but may be used in many different messages
+/// - **Usage varies**: The same component can be required in one message
+///   but optional in another
+///
+/// # Example
+///
+/// A component might be required in one context:
+/// ```text
+/// <message name='NewOrderSingle'>
+///   <component name='Instrument' required='Y' />
+/// </message>
+/// ```
+///
+/// But optional in another:
+/// ```text
+/// <message name='OrderCancelRequest'>
+///   <component name='Instrument' required='N' />
+/// </message>
+/// ```
+///
+/// Both messages share the same component definition (via `Rc`), but each
+/// has its own `Member` instance with a different `required` flag.
 #[derive(Clone, Debug)]
 pub struct Member {
     /// Whether this member is required (mandatory) in its parent container
@@ -211,6 +259,65 @@ impl Member {
     /// Required members must be present in valid FIX messages.
     pub fn required(&self) -> bool {
         self.required
+    }
+
+    /// Returns the name of this member
+    ///
+    /// This is a convenience method that delegates to the underlying definition.
+    /// Works for fields, components, and groups.
+    pub fn name(&self) -> &str {
+        self.definition.name()
+    }
+
+    /// Returns this member as a field reference if it is a field
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Field)` if this member is a field, `None` otherwise
+    pub fn as_field(&self) -> Option<&Field> {
+        match &self.definition {
+            MemberDefinition::Field(field) => Some(field),
+            _ => None,
+        }
+    }
+
+    /// Returns this member as a component reference if it is a component
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Component)` if this member is a component, `None` otherwise
+    pub fn as_component(&self) -> Option<&Component> {
+        match &self.definition {
+            MemberDefinition::Component(component) => Some(component),
+            _ => None,
+        }
+    }
+
+    /// Returns this member as a group reference if it is a group
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Group)` if this member is a group, `None` otherwise
+    pub fn as_group(&self) -> Option<&Group> {
+        match &self.definition {
+            MemberDefinition::Group(group) => Some(group),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this member is a field
+    pub fn is_field(&self) -> bool {
+        matches!(self.definition, MemberDefinition::Field(_))
+    }
+
+    /// Returns true if this member is a component
+    pub fn is_component(&self) -> bool {
+        matches!(self.definition, MemberDefinition::Component(_))
+    }
+
+    /// Returns true if this member is a group
+    pub fn is_group(&self) -> bool {
+        matches!(self.definition, MemberDefinition::Group(_))
     }
 }
 
