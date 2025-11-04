@@ -1425,7 +1425,7 @@ fn test_message_lookups() {
     assert_matches!(heartbeat.msg_cat(), MsgCat::Admin);
 
     // Look up message by type - check if it exists first
-    let Some(test_req) = dictionary.message_by_id(b"1") else {
+    let Some(test_req) = dictionary.message_by_type(b"1") else {
         panic!("MsgType '1' message not found");
     };
     assert_eq!(test_req.name(), "TestRequest");
@@ -1444,7 +1444,7 @@ fn test_message_lookups() {
 
     // Check non-existent message
     assert!(dictionary.message_by_name("NonExistentMessage").is_none());
-    assert!(dictionary.message_by_id(b"X").is_none());
+    assert!(dictionary.message_by_type(b"X").is_none());
 
     // Enumerate messages
     let all_messages = dictionary.messages().count();

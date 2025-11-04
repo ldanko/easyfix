@@ -219,12 +219,33 @@ impl Member {
 /// A group is a collection of fields, components, and/or nested groups
 /// that can appear multiple times within a message. Each group has a
 /// counter field that specifies how many instances of the group appear.
+///
+/// # QuickFIX Naming Convention
+///
+/// In QuickFIX XML dictionaries, groups follow a naming convention:
+/// - The counter field uses the "No" prefix: `NoHops`, `NoLegs`, `NoPartyIDs`
+/// - The group name omits the prefix: `Hops`, `Legs`, `PartyIDs`
+///
+/// ## Example
+///
+/// From the XML:
+/// ```xml
+/// <group name='NoHops' required='N'>
+///   <field name='HopCompID' required='N' />
+///   <field name='HopSendingTime' required='N' />
+/// </group>
+/// ```
+///
+/// Creates a `Group` with:
+/// - `name()` returns `"Hops"`
+/// - `num_in_group()` returns the field `"NoHops"` (tag 627)
+/// - `members()` contains `HopCompID` and `HopSendingTime`
 #[derive(Debug)]
 pub struct Group {
-    /// Name of the group
+    /// Name of the group (without "No" prefix)
     name: String,
 
-    /// The NumInGroup field that counts instances of this group
+    /// The NumInGroup counter field (with "No" prefix)
     num_in_group: Rc<Field>,
 
     /// Members (fields, components, and nested groups) within this group
@@ -570,22 +591,74 @@ impl MembersDb {
         Ok(component)
     }
 
+    /// Creates a group from the XML representation.
+    ///
+    /// # QuickFIX Group Naming Convention
+    ///
+    /// QuickFIX XML dictionaries use a specific naming convention for repeating groups:
+    /// - The **counter field** is prefixed with "No" (e.g., "NoHops", "NoLegs", "NoPartyIDs")
+    /// - The **group name** itself omits the "No" prefix (e.g., "Hops", "Legs", "PartyIDs")
+    ///
+    /// ## Example from FIXT11.xml:
+    /// ```xml
+    /// <header>
+    ///   <group name='NoHops' required='N'>
+    ///     <field name='HopCompID' required='N' />
+    ///     <field name='HopSendingTime' required='N' />
+    ///     <field name='HopRefID' required='N' />
+    ///   </group>
+    /// </header>
+    /// ```
+    ///
+    /// This creates:
+    /// - A group named **"Hops"** (without "No" prefix)
+    /// - With a counter field **"NoHops"** (tag 627, NumInGroup type)
+    /// - Containing three fields: HopCompID, HopSendingTime, HopRefID
+    ///
+    /// ## Special Case: Component-Wrapped Groups
+    ///
+    /// When a component contains only a single group, the group inherits the component's name:
+    /// ```xml
+    /// <component name='Parties'>
+    ///   <group name='NoPartyIDs' required='N'>
+    ///     <field name='PartyID' required='Y'/>
+    ///     <field name='PartyRole' required='Y'/>
+    ///   </group>
+    /// </component>
+    /// ```
+    /// Here, the group will be named **"Parties"** (from the component), not "PartyIDs".
+    ///
+    /// # Arguments
+    ///
+    /// * `raw_group` - The XML group definition
+    /// * `parent_component` - Optional component name when the group is wrapped by a single-member component
+    /// * `visited` - Set of already visited components/groups for circular reference detection
+    ///
+    /// # Returns
+    ///
+    /// Returns `Rc<Group>` on success, or an error if:
+    /// - A circular reference is detected
+    /// - Referenced fields don't exist
+    /// - The group has no members
     fn create_group(
         &mut self,
         raw_group: xml::Group,
         parent_component: Option<&str>,
         visited: &mut HashSet<String>,
     ) -> Result<Rc<Group>, Error> {
+        // Determine the group name using QuickFIX convention
         let group_name = if let Some(parent_component) = parent_component {
-            // parent component has
+            // Use parent component name when component contains only this group
             parent_component.to_owned()
         } else if raw_group.name.starts_with("No") {
+            // Strip "No" prefix per QuickFIX convention: "NoHops" -> "Hops"
             let group_name = raw_group.name[2..].to_owned();
             if !visited.insert(group_name.clone()) {
                 return Err(Error::CircularReferenceFound(group_name));
             }
             group_name
         } else {
+            // Use name as-is if it doesn't follow "No" convention
             let group_name = raw_group.name.clone();
             if !visited.insert(group_name.clone()) {
                 return Err(Error::CircularReferenceFound(group_name));
@@ -1411,17 +1484,17 @@ impl Dictionary {
         self.messages_by_name.get(name).map(|v| &**v)
     }
 
-    /// Looks up a message by message type bytes
+    /// Looks up a message by message type
     ///
     /// # Arguments
     ///
-    /// * `id` - The message type bytes to look up (e.g., b"0" for Heartbeat)
+    /// * `msg_type` - The message type to look up (e.g., b"0" for Heartbeat, b"8" for ExecutionReport)
     ///
     /// # Returns
     ///
     /// An Option containing a reference to the Message if found
-    pub fn message_by_id(&self, id: &[u8]) -> Option<&Message> {
-        self.messages_by_id.get(id).map(|v| &**v)
+    pub fn message_by_type(&self, msg_type: &[u8]) -> Option<&Message> {
+        self.messages_by_id.get(msg_type).map(|v| &**v)
     }
 
     /// Returns an iterator over all messages in this dictionary
