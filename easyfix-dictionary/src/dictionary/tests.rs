@@ -352,6 +352,84 @@ fn test_version_begin_string() {
     assert_eq!(Version::FIXT11.begin_string(), "FIXT.1.1");
 }
 
+#[test]
+fn test_version_from_str() {
+    use std::str::FromStr;
+
+    // Test parsing all standard FIX versions
+    assert_eq!(Version::from_str("FIX.2.7").unwrap(), Version::FIX27);
+    assert_eq!(Version::from_str("FIX.3.0").unwrap(), Version::FIX30);
+    assert_eq!(Version::from_str("FIX.4.0").unwrap(), Version::FIX40);
+    assert_eq!(Version::from_str("FIX.4.1").unwrap(), Version::FIX41);
+    assert_eq!(Version::from_str("FIX.4.2").unwrap(), Version::FIX42);
+    assert_eq!(Version::from_str("FIX.4.3").unwrap(), Version::FIX43);
+    assert_eq!(Version::from_str("FIX.4.4").unwrap(), Version::FIX44);
+    assert_eq!(Version::from_str("FIX.5.0").unwrap(), Version::FIX50);
+    assert_eq!(Version::from_str("FIX.5.0SP1").unwrap(), Version::FIX50SP1);
+    assert_eq!(Version::from_str("FIX.5.0SP2").unwrap(), Version::FIX50SP2);
+    assert_eq!(Version::from_str("FIXT.1.1").unwrap(), Version::FIXT11);
+
+    // Test roundtrip: version -> string -> version
+    for version in Version::known_versions() {
+        let begin_string = version.begin_string();
+        let parsed = Version::from_str(&begin_string).unwrap();
+        assert_eq!(*version, parsed, "Roundtrip failed for {}", begin_string);
+    }
+}
+
+#[test]
+fn test_version_from_str_errors() {
+    use std::str::FromStr;
+
+    // Invalid format
+    assert_matches!(
+        Version::from_str("FIX"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+    assert_matches!(
+        Version::from_str("FIX.4"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+    assert_matches!(
+        Version::from_str("FIX.4.4.0"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+
+    // Invalid protocol type
+    assert_matches!(
+        Version::from_str("FIXP.4.4"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+    assert_matches!(
+        Version::from_str("FOO.4.4"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+
+    // Invalid numbers
+    assert_matches!(
+        Version::from_str("FIX.X.4"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+    assert_matches!(
+        Version::from_str("FIX.4.X"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+    assert_matches!(
+        Version::from_str("FIX.5.0SPX"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+
+    // Valid format but unknown version
+    assert_matches!(
+        Version::from_str("FIX.9.9"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+    assert_matches!(
+        Version::from_str("FIX.5.0SP99"),
+        Err(Error::Builder(BuilderError::UnknownVersion(_)))
+    );
+}
+
 // Builder tests
 
 #[test]
@@ -525,7 +603,7 @@ fn test_incompatible_versions() {
         .with_fix_xml(fix44_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::IncommpatibleVersion));
+    assert_matches!(result, Err(Error::Builder(BuilderError::IncompatibleVersion)));
 }
 
 #[test]
@@ -559,7 +637,7 @@ fn test_unknown_version_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::UnknownVersion(_)));
+    assert_matches!(result, Err(Error::Builder(BuilderError::UnknownVersion(_))));
 }
 
 #[test]
@@ -593,7 +671,7 @@ fn test_unknown_field_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::UnknownField(name)) if name == "UnknownField");
+    assert_matches!(result, Err(Error::Validation(ValidationError::UnknownField(name))) if name == "UnknownField");
 }
 
 #[test]
@@ -626,7 +704,7 @@ fn test_unknown_component_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::UnknownComponent(name)) if name == "UnknownComponent");
+    assert_matches!(result, Err(Error::Validation(ValidationError::UnknownComponent(name))) if name == "UnknownComponent");
 }
 
 #[test]
@@ -662,7 +740,7 @@ fn test_duplicated_field_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::DuplicatedField(name)) if name == "TestReqID");
+    assert_matches!(result, Err(Error::Validation(ValidationError::DuplicatedField(name))) if name == "TestReqID");
 }
 
 #[test]
@@ -700,7 +778,7 @@ fn test_duplicated_message_name_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::DuplicatedMessageName(name)) if name == "Heartbeat");
+    assert_matches!(result, Err(Error::Validation(ValidationError::DuplicatedMessageName(name))) if name == "Heartbeat");
 }
 
 #[test]
@@ -738,7 +816,7 @@ fn test_duplicated_message_type_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::DuplicatedMessageType(msg_type)) if msg_type.as_str() == "0");
+    assert_matches!(result, Err(Error::Validation(ValidationError::DuplicatedMessageType(msg_type))) if msg_type.as_str() == "0");
 }
 
 #[test]
@@ -775,7 +853,7 @@ fn test_empty_container_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::EmptyContainer(name)) if name == "EmptyComponent");
+    assert_matches!(result, Err(Error::Validation(ValidationError::EmptyContainer(name))) if name == "EmptyComponent");
 }
 
 #[test]
@@ -808,7 +886,7 @@ fn test_empty_message_error() {
         .with_fix_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::EmptyMessage(name)) if name == "Heartbeat");
+    assert_matches!(result, Err(Error::Validation(ValidationError::EmptyMessage(name))) if name == "Heartbeat");
 }
 
 #[test]
@@ -846,7 +924,7 @@ fn test_unexpected_message_category_error() {
         .with_fixt_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::UnexpectedMessageCategory(MsgCat::App, name)) if name == "NewOrder");
+    assert_matches!(result, Err(Error::Validation(ValidationError::UnexpectedMessageCategory(MsgCat::App, name)) if name == "NewOrder");
 }
 
 #[test]
