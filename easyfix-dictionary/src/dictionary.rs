@@ -4,6 +4,7 @@
 //! - The `Dictionary` struct for accessing fields, components, and messages
 //! - The `DictionaryBuilder` for configuring and creating dictionaries
 //! - Type definitions for FIX protocol elements (Message, Component, Group, etc.)
+//! - FIX protocol constants (`ParseRejectReason`, `MsgType`, etc.)
 //! - Error handling for dictionary operations
 
 use std::{
@@ -11,6 +12,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     rc::Rc,
+    str::FromStr,
 };
 
 use quick_xml::de::from_str;
@@ -22,11 +24,23 @@ pub use crate::xml::{BasicType, Field, FixType, MsgCat, MsgType, Value};
 #[cfg(test)]
 mod tests;
 
-/// Enumeration of standard FIX protocol session reject reasons.
+// ============================================================================
+// FIX Protocol Constants
+// ============================================================================
+//
+// Types in this section are FIX protocol constants for runtime message parsing.
+// They live here as shared infrastructure between deserializers and generated
+// message code, enabling multi-spec architectures without circular dependencies.
+
+/// Standard FIX protocol session reject reasons for runtime message parsing.
 ///
-/// These values correspond to the standard session-level reject reasons
-/// defined in the FIX protocol specification. They are used for validation
-/// and error reporting during message parsing.
+/// These correspond to SessionRejectReason field values in the FIX specification.
+/// Placed in `easyfix-dictionary` (not with deserializer or generated code) to
+/// serve as common ground between multiple FIX spec crates, preventing circular
+/// dependencies.
+///
+/// Users typically map from this to their generated `SessionRejectReason` when
+/// constructing Reject messages.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, strum_macros::EnumIter, AsRefStr, Hash)]
 pub enum ParseRejectReason {
     /// The value specified is incorrect for the field
@@ -59,20 +73,41 @@ pub enum ParseRejectReason {
     CompidProblem,
 }
 
+// ============================================================================
+// Error Types
+// ============================================================================
+
 /// Errors that can occur during dictionary operations.
 ///
-/// This enum represents all possible errors that can occur when parsing,
-/// validating, or accessing a FIX dictionary.
+/// This enum organizes errors into categories based on their source:
+/// - I/O and parsing errors
+/// - Dictionary validation errors
+/// - Builder configuration errors
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Input/output error during file operations
-    #[error("IO error")]
-    IoError(#[from] io::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
 
     /// XML parsing error when reading dictionary files
-    #[error("XML parse error")]
-    ParseError(#[from] quick_xml::de::DeError),
+    #[error("XML parsing error: {0}")]
+    XmlParse(#[from] quick_xml::de::DeError),
 
+    /// Dictionary validation failed
+    #[error("Validation error: {0}")]
+    Validation(#[from] ValidationError),
+
+    /// Dictionary builder configuration error
+    #[error("Builder error: {0}")]
+    Builder(#[from] BuilderError),
+}
+
+/// Errors related to dictionary structure and content validation.
+///
+/// These errors indicate problems with the dictionary's structure, such as
+/// missing references, duplicates, or invalid relationships between elements.
+#[derive(Debug, thiserror::Error)]
+pub enum ValidationError {
     /// Referenced field was not found in the dictionary
     #[error("Unknown field {0}")]
     UnknownField(String),
@@ -101,10 +136,6 @@ pub enum Error {
     #[error("Duplicated message type {0}")]
     DuplicatedMessageType(MsgType),
 
-    /// FIX version not recognized or supported
-    #[error("Unknown version {}", .0.begin_string())]
-    UnknownVersion(Version),
-
     /// Component or group has no members defined
     #[error("Component/group {0} has no members")]
     EmptyContainer(String),
@@ -117,29 +148,21 @@ pub enum Error {
     #[error("Unexpected message category {0:?} ({1})")]
     UnexpectedMessageCategory(MsgCat, String),
 
-    /// No dictionary was specified in the builder
-    #[error("Unspecified dictionary")]
-    UnspecifiedDictionary,
-
-    /// Incompatible FIX version combinations
-    #[error("Incompatible version")]
-    IncommpatibleVersion,
-
     /// Field was defined in the dictionary but not used in any message, component, or group
-    /// 
+    ///
     /// This error only occurs when strict validation is enabled with `with_strict_check(true)`.
     #[error("Unused field {0}({1})")]
     UnusedField(String, u16),
 
     /// Component was defined in the dictionary but not used in any message or other component
-    /// 
+    ///
     /// This error only occurs when strict validation is enabled with `with_strict_check(true)`.
     #[error("Unused component {0}")]
     UnusedComponent(String),
 
     /// A required standard field in the header/trailer has incorrect properties
     ///
-    /// This error occurs when a required FIX field (like BeginString or BodyLength) 
+    /// This error occurs when a required FIX field (like BeginString or BodyLength)
     /// has the wrong name, tag number, or data type in the dictionary.
     /// This error only occurs when strict validation is enabled with `with_strict_check(true)`.
     #[error("Invalid required field {0}({1}) [{2:?}]")]
@@ -150,14 +173,57 @@ pub enum Error {
     /// This error occurs when components or groups reference each other in a way that
     /// creates an infinite loop. For example, if Component A contains Component B, and
     /// Component B contains Component A, this would create a circular reference.
-    #[error("Circular reference found {0}")]
-    CircularReferenceFound(String),
+    #[error("Circular reference found: {0}")]
+    CircularReference(String),
 }
 
-/// Definition of a member within a FIX message, component, or group.
+/// Errors related to dictionary builder configuration.
 ///
-/// A member can be a field, component, or group. This enum provides
-/// a unified way to reference any of these types within a container.
+/// These errors indicate problems with how the dictionary builder is being used,
+/// such as missing required configuration or incompatible version combinations.
+#[derive(Debug, thiserror::Error)]
+pub enum BuilderError {
+    /// FIX version not recognized or supported
+    #[error("Unknown version {}", .0.begin_string())]
+    UnknownVersion(Version),
+
+    /// No dictionary was specified in the builder
+    #[error("No dictionary specified")]
+    Unspecified,
+
+    /// Incompatible FIX version combinations
+    #[error("Incompatible version combination")]
+    IncompatibleVersion,
+}
+
+/// The shared definition of a field, component, or group.
+///
+/// This enum represents **what** a member is, separate from **how** it's used.
+/// Definitions are wrapped in `Rc<>` to enable sharing across multiple references.
+///
+/// # Why `Rc<>`?
+///
+/// In FIX dictionaries, components and groups are typically defined once but
+/// referenced many times. For example, a component like "Instrument" or "Parties"
+/// might appear in dozens of different message types. Using `Rc<>` allows:
+///
+/// - **Memory efficiency**: The definition exists in memory only once
+/// - **Consistency**: All references see the same definition
+/// - **Shared ownership**: Multiple messages can reference the same component
+///
+/// # Relationship with `Member`
+///
+/// A `MemberDefinition` represents the **definition** (what it is), while a
+/// `Member` combines this definition with **usage context** (whether it's
+/// required in a particular message/component).
+///
+/// ```text
+/// Component Definition (1x in memory)
+///       ↓
+///       ├─→ Member in Message A (required=true)
+///       ├─→ Member in Message B (required=false)
+///       └─→ Member in Message C (required=true)
+/// ```
 #[derive(Clone, Debug)]
 pub enum MemberDefinition {
     /// A field member (primitive element)
@@ -183,11 +249,35 @@ impl MemberDefinition {
     }
 }
 
-/// Describes a member instance within a message, component, or group.
+/// A member reference within a message, component, or group.
 ///
-/// A member combines a definition (field, component, or group) with a
-/// requirement flag that indicates whether this member is mandatory
-/// in its parent container.
+/// This struct represents a **usage** of a field, component, or group,
+/// which is separate from its **definition**. This separation is important
+/// because:
+///
+/// - **Definitions are shared**: A component like "Instrument" or "Parties"
+///   is defined once but may be used in many different messages
+/// - **Usage varies**: The same component can be required in one message
+///   but optional in another
+///
+/// # Example
+///
+/// A component might be required in one context:
+/// ```text
+/// <message name='NewOrderSingle'>
+///   <component name='Instrument' required='Y' />
+/// </message>
+/// ```
+///
+/// But optional in another:
+/// ```text
+/// <message name='OrderCancelRequest'>
+///   <component name='Instrument' required='N' />
+/// </message>
+/// ```
+///
+/// Both messages share the same component definition (via `Rc`), but each
+/// has its own `Member` instance with a different `required` flag.
 #[derive(Clone, Debug)]
 pub struct Member {
     /// Whether this member is required (mandatory) in its parent container
@@ -211,6 +301,65 @@ impl Member {
     /// Required members must be present in valid FIX messages.
     pub fn required(&self) -> bool {
         self.required
+    }
+
+    /// Returns the name of this member
+    ///
+    /// This is a convenience method that delegates to the underlying definition.
+    /// Works for fields, components, and groups.
+    pub fn name(&self) -> &str {
+        self.definition.name()
+    }
+
+    /// Returns this member as a field reference if it is a field
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Field)` if this member is a field, `None` otherwise
+    pub fn as_field(&self) -> Option<&Field> {
+        match &self.definition {
+            MemberDefinition::Field(field) => Some(field),
+            _ => None,
+        }
+    }
+
+    /// Returns this member as a component reference if it is a component
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Component)` if this member is a component, `None` otherwise
+    pub fn as_component(&self) -> Option<&Component> {
+        match &self.definition {
+            MemberDefinition::Component(component) => Some(component),
+            _ => None,
+        }
+    }
+
+    /// Returns this member as a group reference if it is a group
+    ///
+    /// # Returns
+    ///
+    /// `Some(&Group)` if this member is a group, `None` otherwise
+    pub fn as_group(&self) -> Option<&Group> {
+        match &self.definition {
+            MemberDefinition::Group(group) => Some(group),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this member is a field
+    pub fn is_field(&self) -> bool {
+        matches!(self.definition, MemberDefinition::Field(_))
+    }
+
+    /// Returns true if this member is a component
+    pub fn is_component(&self) -> bool {
+        matches!(self.definition, MemberDefinition::Component(_))
+    }
+
+    /// Returns true if this member is a group
+    pub fn is_group(&self) -> bool {
+        matches!(self.definition, MemberDefinition::Group(_))
     }
 }
 
@@ -455,7 +604,7 @@ impl Version {
         };
 
         if !Version::known_versions().contains(&version) {
-            return Err(Error::UnknownVersion(version));
+            return Err(Error::Builder(BuilderError::UnknownVersion(version)));
         }
 
         Ok(version)
@@ -491,6 +640,9 @@ impl Version {
         self.servicepack
     }
 
+    /// Returns the BeginString representation of this version
+    ///
+    /// Formats the version as it appears in FIX messages (e.g., "FIX.4.4", "FIXT.1.1", "FIX.5.0SP2").
     pub fn begin_string(&self) -> String {
         if self.servicepack == 0 {
             // Basic format is TYPE.MAJOR.MINOR
@@ -502,6 +654,135 @@ impl Version {
                 self.fix_type, self.major, self.minor, self.servicepack
             )
         }
+    }
+}
+
+impl FromStr for Version {
+    type Err = Error;
+
+    /// Parse a BeginString value into a Version
+    ///
+    /// Accepts strings in the format:
+    /// - "FIX.MAJOR.MINOR" (e.g., "FIX.4.4")
+    /// - "FIXT.MAJOR.MINOR" (e.g., "FIXT.1.1")
+    /// - "FIX.MAJOR.MINORSPx" (e.g., "FIX.5.0SP2")
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use easyfix_dictionary::Version;
+    /// use std::str::FromStr;
+    ///
+    /// let v1 = Version::from_str("FIX.4.4").unwrap();
+    /// assert_eq!(v1, Version::FIX44);
+    ///
+    /// let v2 = Version::from_str("FIXT.1.1").unwrap();
+    /// assert_eq!(v2, Version::FIXT11);
+    ///
+    /// let v3 = Version::from_str("FIX.5.0SP2").unwrap();
+    /// assert_eq!(v3, Version::FIX50SP2);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Builder(BuilderError::UnknownVersion` if:
+    /// - The string format is invalid
+    /// - The version numbers cannot be parsed
+    /// - The version is not in the list of known FIX versions
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Split by '.' to get parts
+        let parts: Vec<&str> = s.split('.').collect();
+
+        if parts.len() != 3 {
+            // Create a dummy version for the error message
+            let dummy = Version {
+                fix_type: FixType::Fix,
+                major: 0,
+                minor: 0,
+                servicepack: 0,
+            };
+            return Err(Error::Builder(BuilderError::UnknownVersion(dummy)));
+        }
+
+        // Parse FIX type (FIX or FIXT)
+        let fix_type = match parts[0] {
+            "FIX" => FixType::Fix,
+            "FIXT" => FixType::Fixt,
+            _ => {
+                let dummy = Version {
+                    fix_type: FixType::Fix,
+                    major: 0,
+                    minor: 0,
+                    servicepack: 0,
+                };
+                return Err(Error::Builder(BuilderError::UnknownVersion(dummy)));
+            }
+        };
+
+        // Parse major version
+        let major = parts[1].parse::<u8>().map_err(|_| {
+            Error::Builder(BuilderError::UnknownVersion(Version {
+                fix_type,
+                major: 0,
+                minor: 0,
+                servicepack: 0,
+            })
+        })?;
+
+        // Parse minor version and optional service pack
+        let minor_and_sp = parts[2];
+        let (minor, servicepack) = if let Some(sp_pos) = minor_and_sp.find("SP") {
+            // Has service pack: "0SP2"
+            let minor_str = &minor_and_sp[..sp_pos];
+            let sp_str = &minor_and_sp[sp_pos + 2..];
+
+            let minor = minor_str.parse::<u8>().map_err(|_| {
+                Error::Builder(BuilderError::UnknownVersion(Version {
+                    fix_type,
+                    major,
+                    minor: 0,
+                    servicepack: 0,
+                })
+            })?;
+
+            let sp = sp_str.parse::<u8>().map_err(|_| {
+                Error::Builder(BuilderError::UnknownVersion(Version {
+                    fix_type,
+                    major,
+                    minor,
+                    servicepack: 0,
+                })
+            })?;
+
+            (minor, sp)
+        } else {
+            // No service pack
+            let minor = minor_and_sp.parse::<u8>().map_err(|_| {
+                Error::Builder(BuilderError::UnknownVersion(Version {
+                    fix_type,
+                    major,
+                    minor: 0,
+                    servicepack: 0,
+                })
+            })?;
+
+            (minor, 0)
+        };
+
+        // Create version
+        let version = Version {
+            fix_type,
+            major,
+            minor,
+            servicepack,
+        };
+
+        // Validate it's a known version
+        if !Version::known_versions().contains(&version) {
+            return Err(Error::Builder(BuilderError::UnknownVersion(version)));
+        }
+
+        Ok(version)
     }
 }
 
@@ -522,7 +803,7 @@ impl MembersDb {
         let mut raw_fields_map = HashMap::with_capacity(raw_fields.len());
         for field in raw_fields {
             if !names.insert(field.name.clone()) {
-                return Err(Error::DuplicatedField(field.name.clone()));
+                return Err(Error::Validation(ValidationError::DuplicatedField(field.name.clone())))
             }
             raw_fields_map.insert(field.name.clone(), field);
         }
@@ -530,7 +811,7 @@ impl MembersDb {
         let mut raw_components_map = HashMap::with_capacity(raw_components.len());
         for comp in raw_components {
             if !names.insert(comp.name.clone()) {
-                return Err(Error::DuplicatedComponent(comp.name.clone()));
+                return Err(Error::Validation(ValidationError::DuplicatedComponent(comp.name.clone())))
             }
             raw_components_map.insert(comp.name.clone(), comp);
         }
@@ -552,7 +833,7 @@ impl MembersDb {
         let (field_name, field) = self
             .raw_fields
             .remove_entry(name)
-            .ok_or_else(|| Error::UnknownField(name.to_owned()))?;
+            .ok_or_else(|| Error::Validation(ValidationError::UnknownField(name.to_owned())))?;
         let field = Rc::new(field);
         self.fields.insert(field_name, field.clone());
 
@@ -565,7 +846,7 @@ impl MembersDb {
         visited: &mut HashSet<String>,
     ) -> Result<Rc<Component>, Error> {
         if !visited.insert(name.clone()) {
-            return Err(Error::CircularReferenceFound(name));
+            return Err(Error::Validation(ValidationError::CircularReference(name)))
         }
         if let Some(component) = self.components.get(&name) {
             return Ok(component.clone());
@@ -574,9 +855,9 @@ impl MembersDb {
         let raw_component = self
             .raw_components
             .remove(&name)
-            .ok_or_else(|| Error::UnknownComponent(name.clone()))?;
+            .ok_or_else(|| Error::Validation(ValidationError::UnknownComponent(name.clone())))?;
         if raw_component.members.is_empty() {
-            return Err(Error::EmptyContainer(name));
+            return Err(Error::Validation(ValidationError::EmptyContainer(name)))
         }
 
         let mut branch_visited = visited.clone();
@@ -654,14 +935,14 @@ impl MembersDb {
             // Strip "No" prefix per QuickFIX convention: "NoHops" -> "Hops"
             let group_name = raw_group.name[2..].to_owned();
             if !visited.insert(group_name.clone()) {
-                return Err(Error::CircularReferenceFound(group_name));
+                return Err(Error::Validation(ValidationError::CircularReference(group_name)))
             }
             group_name
         } else {
             // Use name as-is if it doesn't follow "No" convention
             let group_name = raw_group.name.clone();
             if !visited.insert(group_name.clone()) {
-                return Err(Error::CircularReferenceFound(group_name));
+                return Err(Error::Validation(ValidationError::CircularReference(group_name)))
             }
             group_name
         };
@@ -678,7 +959,7 @@ impl MembersDb {
             .insert(group.name.clone(), group.clone())
             .is_some()
         {
-            return Err(Error::DuplicatedGroup(group.name.clone()));
+            return Err(Error::Validation(ValidationError::DuplicatedGroup(group.name.clone())))
         }
 
         visited.remove(&group.name);
@@ -750,7 +1031,7 @@ impl MembersDb {
     fn create_message(&mut self, msg: xml::Message) -> Result<Message, Error> {
         let members = self.create_members(msg.members, None)?;
         if members.is_empty() {
-            return Err(Error::EmptyMessage(msg.name));
+            return Err(Error::Validation(ValidationError::EmptyMessage(msg.name)))
         }
 
         Ok(Message {
@@ -763,9 +1044,9 @@ impl MembersDb {
 
     fn check_unused_elements(&self) -> Result<(), Error> {
         if let Some(field) = self.raw_fields.values().next() {
-            Err(Error::UnusedField(field.name.clone(), field.number))
+            Err(Error::Validation(ValidationError::UnusedField(field.name.clone(), field.number)))
         } else if let Some(component) = self.raw_components.values().next() {
-            Err(Error::UnusedComponent(component.name.clone()))
+            Err(Error::Validation(ValidationError::UnusedComponent(component.name.clone())))
         } else {
             Ok(())
         }
@@ -780,7 +1061,7 @@ impl MembersDb {
         let mut raw_components = std::mem::take(&mut self.raw_components);
         for (name, raw_component) in raw_components.drain() {
             if raw_component.members.is_empty() {
-                return Err(Error::EmptyContainer(name));
+                return Err(Error::Validation(ValidationError::EmptyContainer(name)))
             }
             let members = self.create_members(raw_component.members, Some(&name))?;
             let component = Rc::new(Component { name, members });
@@ -826,20 +1107,20 @@ fn read_raw_fixt_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
     let version = Version::from_raw_dictionary(&raw_dictionary)?;
 
     if !version.is_fixt() || version < Version::FIXT11 {
-        return Err(Error::IncommpatibleVersion);
+        return Err(Error::Builder(BuilderError::IncompatibleVersion));
     }
     if raw_dictionary.header.members.is_empty() {
-        return Err(Error::EmptyContainer("Header".into()));
+        return Err(Error::Validation(ValidationError::EmptyContainer("Header".into())))
     }
     if raw_dictionary.trailer.members.is_empty() {
-        return Err(Error::EmptyContainer("Trailer".into()));
+        return Err(Error::Validation(ValidationError::EmptyContainer("Trailer".into())))
     }
     if let Some(msg) = raw_dictionary
         .messages
         .iter()
         .find(|msg| !matches!(msg.msg_cat, MsgCat::Admin))
     {
-        return Err(Error::UnexpectedMessageCategory(
+        return Err(Error::Validation(ValidationError::UnexpectedMessageCategory(
             msg.msg_cat,
             msg.name.clone(),
         ));
@@ -853,30 +1134,30 @@ fn read_raw_fix_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
     let version = Version::from_raw_dictionary(&raw_dictionary)?;
 
     if !version.is_fix() {
-        return Err(Error::IncommpatibleVersion);
+        return Err(Error::Builder(BuilderError::IncompatibleVersion));
     } else if version >= Version::FIX50 {
         if !raw_dictionary.header.members.is_empty() {
-            return Err(Error::EmptyContainer("Header".into()));
+            return Err(Error::Validation(ValidationError::EmptyContainer("Header".into())))
         }
         if !raw_dictionary.trailer.members.is_empty() {
-            return Err(Error::EmptyContainer("Trailer".into()));
+            return Err(Error::Validation(ValidationError::EmptyContainer("Trailer".into())))
         }
         if let Some(msg) = raw_dictionary
             .messages
             .iter()
             .find(|msg| !matches!(msg.msg_cat, MsgCat::App))
         {
-            return Err(Error::UnexpectedMessageCategory(
+            return Err(Error::Validation(ValidationError::UnexpectedMessageCategory(
                 msg.msg_cat,
                 msg.name.clone(),
             ));
         }
     } else {
         if raw_dictionary.header.members.is_empty() {
-            return Err(Error::EmptyContainer("Header".into()));
+            return Err(Error::Validation(ValidationError::EmptyContainer("Header".into())))
         }
         if raw_dictionary.trailer.members.is_empty() {
-            return Err(Error::EmptyContainer("Trailer".into()));
+            return Err(Error::Validation(ValidationError::EmptyContainer("Trailer".into())))
         }
     }
 
@@ -982,7 +1263,7 @@ impl DictionaryBuilder {
     /// parsing fails.
     pub fn build(self) -> Result<Dictionary, Error> {
         match (self.fixt_xml_path, self.fix_xml_paths.as_slice()) {
-            (None, []) => Err(Error::UnspecifiedDictionary),
+            (None, []) => Err(Error::Builder(BuilderError::Unspecified)),
             (None, [fix_xml_path]) => {
                 // Legacy FIX version
                 let dict = read_raw_fix_dictionary(fix_xml_path)?;
@@ -999,7 +1280,7 @@ impl DictionaryBuilder {
                     Ok(dictionary)
                 }
             }
-            (None, [_, ..]) => Err(Error::IncommpatibleVersion),
+            (None, [_, ..]) => Err(Error::Builder(BuilderError::IncompatibleVersion)),
             (Some(fixt_xml_path), fix_xml_paths) => {
                 let fixt = read_raw_fixt_dictionary(&fixt_xml_path)?;
                 let mut fixt_dict = Dictionary::from_raw_dictionary(
@@ -1011,7 +1292,7 @@ impl DictionaryBuilder {
                 for fix_xml_path in fix_xml_paths {
                     let fix = read_raw_fix_dictionary(fix_xml_path)?;
                     if fix.major < 5 {
-                        return Err(Error::IncommpatibleVersion);
+                        return Err(Error::Builder(BuilderError::IncompatibleVersion));
                     }
                     let mut subdict = Dictionary::from_raw_dictionary(
                         fix,
@@ -1098,7 +1379,7 @@ fn check_required_fields(
         if version.is_fix() && version >= Version::FIX50 {
             // Header must be empty for FIX 5.0 and higher as it is defined in FIXT dictionary
         } else {
-            return Err(Error::EmptyContainer("Header".into()));
+            return Err(Error::Validation(ValidationError::EmptyContainer("Header".into())))
         }
     } else if header.members.len() < REQUIRED_IN_ORDER.len() + REQUIRED_OUT_OF_ORDER.len() {
     }
@@ -1107,7 +1388,7 @@ fn check_required_fields(
 
     for (expected_name, expected_tag, expected_type) in REQUIRED_IN_ORDER {
         let Some(field) = iter.next() else {
-            return Err(Error::UnknownField(expected_name.to_string()));
+            return Err(Error::Validation(ValidationError::UnknownField(expected_name.to_string()));
         };
 
         if !matches!(
@@ -1117,7 +1398,7 @@ fn check_required_fields(
                     && field.number == expected_tag
                     && field.data_type == expected_type)
         {
-            return Err(Error::InvalidRequiredField(
+            return Err(Error::Validation(ValidationError::InvalidRequiredField(
                 expected_name.to_string(),
                 expected_tag,
                 expected_type,
@@ -1133,7 +1414,7 @@ fn check_required_fields(
                     && field.number == 10
                     && field.data_type == BasicType::String)
         {
-            return Err(Error::InvalidRequiredField(
+            return Err(Error::Validation(ValidationError::InvalidRequiredField(
                 "CheckSum".to_string(),
                 10,
                 BasicType::String,
@@ -1170,10 +1451,10 @@ impl Dictionary {
         for raw_msg in raw_dictionary.messages {
             let msg = Rc::new(member_db.create_message(raw_msg)?);
             if let Some(msg) = messages_by_name.insert(msg.name.clone(), msg.clone()) {
-                return Err(Error::DuplicatedMessageName(msg.name.clone()));
+                return Err(Error::Validation(ValidationError::DuplicatedMessageName(msg.name.clone())))
             }
             if let Some(msg) = messages_by_id.insert(msg.msg_type, msg) {
-                return Err(Error::DuplicatedMessageType(msg.msg_type));
+                return Err(Error::Validation(ValidationError::DuplicatedMessageType(msg.msg_type)))
             }
         }
 
@@ -1232,7 +1513,7 @@ impl Dictionary {
         // Get the component
         let component = components_map
             .get(component_name)
-            .ok_or_else(|| Error::UnknownComponent(component_name.to_owned()))?;
+            .ok_or_else(|| Error::Validation(ValidationError::UnknownComponent(component_name.to_owned()))?;
 
         // Process each member of the component
         for member in &component.members {
