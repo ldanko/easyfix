@@ -726,7 +726,7 @@ impl FromStr for Version {
                 major: 0,
                 minor: 0,
                 servicepack: 0,
-            })
+            }))
         })?;
 
         // Parse minor version and optional service pack
@@ -742,7 +742,7 @@ impl FromStr for Version {
                     major,
                     minor: 0,
                     servicepack: 0,
-                })
+                }))
             })?;
 
             let sp = sp_str.parse::<u8>().map_err(|_| {
@@ -751,7 +751,7 @@ impl FromStr for Version {
                     major,
                     minor,
                     servicepack: 0,
-                })
+                }))
             })?;
 
             (minor, sp)
@@ -763,7 +763,7 @@ impl FromStr for Version {
                     major,
                     minor: 0,
                     servicepack: 0,
-                })
+                }))
             })?;
 
             (minor, 0)
@@ -1123,7 +1123,7 @@ fn read_raw_fixt_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
         return Err(Error::Validation(ValidationError::UnexpectedMessageCategory(
             msg.msg_cat,
             msg.name.clone(),
-        ));
+        )))
     }
 
     Ok(raw_dictionary)
@@ -1150,7 +1150,7 @@ fn read_raw_fix_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
             return Err(Error::Validation(ValidationError::UnexpectedMessageCategory(
                 msg.msg_cat,
                 msg.name.clone(),
-            ));
+            )))
         }
     } else {
         if raw_dictionary.header.members.is_empty() {
@@ -1388,7 +1388,7 @@ fn check_required_fields(
 
     for (expected_name, expected_tag, expected_type) in REQUIRED_IN_ORDER {
         let Some(field) = iter.next() else {
-            return Err(Error::Validation(ValidationError::UnknownField(expected_name.to_string()));
+            return Err(Error::Validation(ValidationError::UnknownField(expected_name.to_string())))
         };
 
         if !matches!(
@@ -1402,7 +1402,7 @@ fn check_required_fields(
                 expected_name.to_string(),
                 expected_tag,
                 expected_type,
-            ));
+            )))
         }
     }
 
@@ -1418,7 +1418,7 @@ fn check_required_fields(
                 "CheckSum".to_string(),
                 10,
                 BasicType::String,
-            ));
+            )))
         }
     }
 
@@ -1513,7 +1513,7 @@ impl Dictionary {
         // Get the component
         let component = components_map
             .get(component_name)
-            .ok_or_else(|| Error::Validation(ValidationError::UnknownComponent(component_name.to_owned()))?;
+            .ok_or_else(|| Error::Validation(ValidationError::UnknownComponent(component_name.to_owned())))?;
 
         // Process each member of the component
         for member in &component.members {

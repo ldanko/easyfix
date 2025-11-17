@@ -924,7 +924,7 @@ fn test_unexpected_message_category_error() {
         .with_fixt_xml(test_file.path())
         .build();
 
-    assert_matches!(result, Err(Error::Validation(ValidationError::UnexpectedMessageCategory(MsgCat::App, name)) if name == "NewOrder");
+    assert_matches!(result, Err(Error::Validation(ValidationError::UnexpectedMessageCategory(MsgCat::App, name))) if name == "NewOrder");
 }
 
 #[test]
@@ -1327,7 +1327,7 @@ fn test_circular_references() {
     // Should fail with nesting level exceeded or similar error
     assert_matches!(
         result,
-        Err(Error::CircularReferenceFound(_)),
+        Err(Error::Validation(ValidationError::CircularReference(_))),
         "Circular component references should cause an error"
     );
 }
@@ -1612,7 +1612,7 @@ fn test_builder_with_strict_check_unused_field() {
         .with_fix_xml(test_file.path())
         .with_strict_check(true)
         .build();
-    assert_matches!(result, Err(Error::UnusedField(name, tag)) if name == "UnusedField" && tag == 999);
+    assert_matches!(result, Err(Error::Validation(ValidationError::UnusedField(name, tag))) if name == "UnusedField" && tag == 999);
 }
 
 #[test]
@@ -1674,7 +1674,7 @@ fn test_builder_with_strict_check_unused_component() {
         .with_fix_xml(test_file.path())
         .with_strict_check(true)
         .build();
-    assert_matches!(result, Err(Error::UnusedField(name, _)) if name == "UnusedCompField");
+    assert_matches!(result, Err(Error::Validation(ValidationError::UnusedField(name, _))) if name == "UnusedCompField");
 }
 
 #[test]
@@ -1727,7 +1727,7 @@ fn test_builder_with_strict_invalid_header() {
         .build();
     assert_matches!(
         result,
-        Err(Error::InvalidRequiredField(name, _, _)) if name == "BeginString",
+        Err(Error::Validation(ValidationError::InvalidRequiredField(name, _, _))) if name == "BeginString",
         "Expected InvalidRequiredField error for BeginString"
     );
 }
@@ -1770,5 +1770,532 @@ fn test_header_trailer() {
             assert_eq!(field.name, "CheckSum");
         }
         _ => panic!("Expected field member"),
+    }
+}
+
+// ============================================================================
+// Member type checking and accessor methods tests
+// ============================================================================
+
+#[test]
+fn test_member_type_checking_methods() {
+    let fix44_file = setup_fix44_file();
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(fix44_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    let test_request = dictionary
+        .message_by_name("TestRequest")
+        .expect("TestRequest message not found");
+
+    // TestRequest has: TestReqID field and TestComponent component
+    for member in test_request.members() {
+        match member.name() {
+            "TestReqID" => {
+                assert!(member.is_field(), "TestReqID should be a field");
+                assert!(!member.is_component(), "TestReqID should not be a component");
+                assert!(!member.is_group(), "TestReqID should not be a group");
+            }
+            "TestComponent" => {
+                assert!(!member.is_field(), "TestComponent should not be a field");
+                assert!(member.is_component(), "TestComponent should be a component");
+                assert!(!member.is_group(), "TestComponent should not be a group");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn test_member_accessor_methods() {
+    let fix44_file = setup_fix44_file();
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(fix44_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    let test_request = dictionary
+        .message_by_name("TestRequest")
+        .expect("TestRequest message not found");
+
+    for member in test_request.members() {
+        match member.name() {
+            "TestReqID" => {
+                // Should return Some for as_field()
+                let field = member.as_field().expect("as_field() should return Some");
+                assert_eq!(field.name, "TestReqID");
+                assert_eq!(field.number, 112);
+
+                // Should return None for as_component() and as_group()
+                assert!(member.as_component().is_none(), "as_component() should return None for field");
+                assert!(member.as_group().is_none(), "as_group() should return None for field");
+            }
+            "TestComponent" => {
+                // Should return Some for as_component()
+                let component = member.as_component().expect("as_component() should return Some");
+                assert_eq!(component.name(), "TestComponent");
+
+                // Should return None for as_field() and as_group()
+                assert!(member.as_field().is_none(), "as_field() should return None for component");
+                assert!(member.as_group().is_none(), "as_group() should return None for component");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn test_member_accessor_methods_with_group() {
+    // Create a dictionary with a group
+    let xml_with_group = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <group name='NoTestGroup' required='N'>
+                <field name='TestField' required='Y'/>
+              </group>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='NoTestGroup' number='100' type='NUMINGROUP'/>
+            <field name='TestField' number='101' type='STRING'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("group_test.xml", xml_with_group);
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    let heartbeat = dictionary
+        .message_by_name("Heartbeat")
+        .expect("Heartbeat message not found");
+
+    // Find the group member
+    let group_member = heartbeat.members().iter().find(|m| m.is_group()).expect("Group not found");
+
+    // Should return Some for as_group()
+    let group = group_member.as_group().expect("as_group() should return Some");
+    assert_eq!(group.name(), "TestGroup");
+
+    // Should return None for as_field() and as_component()
+    assert!(group_member.as_field().is_none(), "as_field() should return None for group");
+    assert!(group_member.as_component().is_none(), "as_component() should return None for group");
+}
+
+// ============================================================================
+// ParseRejectReason tests
+// ============================================================================
+
+#[test]
+fn test_parse_reject_reason_enum() {
+    use strum::IntoEnumIterator;
+
+    // Test that all ParseRejectReason variants are accessible
+    let reasons: Vec<ParseRejectReason> = ParseRejectReason::iter().collect();
+
+    // Should have all 14 variants defined in the spec
+    assert_eq!(reasons.len(), 14);
+
+    // Check that specific variants exist
+    assert!(reasons.contains(&ParseRejectReason::ValueIsIncorrect));
+    assert!(reasons.contains(&ParseRejectReason::RequiredTagMissing));
+    assert!(reasons.contains(&ParseRejectReason::TagNotDefinedForThisMessageType));
+    assert!(reasons.contains(&ParseRejectReason::UndefinedTag));
+    assert!(reasons.contains(&ParseRejectReason::InvalidMsgtype));
+}
+
+#[test]
+fn test_parse_reject_reason_as_ref_str() {
+    // Test AsRefStr trait implementation
+    assert_eq!(ParseRejectReason::ValueIsIncorrect.as_ref(), "ValueIsIncorrect");
+    assert_eq!(ParseRejectReason::TagSpecifiedWithoutAValue.as_ref(), "TagSpecifiedWithoutAValue");
+    assert_eq!(ParseRejectReason::RequiredTagMissing.as_ref(), "RequiredTagMissing");
+    assert_eq!(ParseRejectReason::InvalidMsgtype.as_ref(), "InvalidMsgtype");
+}
+
+#[test]
+fn test_parse_reject_reason_hash() {
+    use std::collections::HashSet;
+
+    // Test that ParseRejectReason can be used as HashMap key
+    let mut reasons = HashSet::new();
+    reasons.insert(ParseRejectReason::RequiredTagMissing);
+    reasons.insert(ParseRejectReason::ValueIsIncorrect);
+
+    assert!(reasons.contains(&ParseRejectReason::RequiredTagMissing));
+    assert!(reasons.contains(&ParseRejectReason::ValueIsIncorrect));
+    assert!(!reasons.contains(&ParseRejectReason::UndefinedTag));
+}
+
+// ============================================================================
+// Group lookup and naming convention tests
+// ============================================================================
+
+#[test]
+fn test_group_lookup() {
+    let xml_with_group = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <group name='NoTestItems' required='N'>
+                <field name='TestField' required='Y'/>
+              </group>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='NoTestItems' number='100' type='NUMINGROUP'/>
+            <field name='TestField' number='101' type='STRING'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("group_lookup.xml", xml_with_group);
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // Group should be accessible by name (without "No" prefix)
+    let group = dictionary.group("TestItems").expect("Group not found");
+    assert_eq!(group.name(), "TestItems");
+
+    // Check num_in_group field
+    let num_in_group = group.num_in_group();
+    assert_eq!(num_in_group.name, "NoTestItems");
+    assert_eq!(num_in_group.number, 100);
+
+    // Check group members
+    assert_eq!(group.members().len(), 1);
+    let member = &group.members()[0];
+    assert!(member.is_field());
+    let field = member.as_field().unwrap();
+    assert_eq!(field.name, "TestField");
+
+    // Non-existent group should return None
+    assert!(dictionary.group("NonExistentGroup").is_none());
+}
+
+#[test]
+fn test_group_naming_convention() {
+    // Test QuickFIX naming convention: "NoXxx" -> "Xxx"
+    let xml = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <group name='NoHops' required='N'>
+                <field name='HopCompID' required='N'/>
+              </group>
+              <group name='NoPartyIDs' required='N'>
+                <field name='PartyID' required='Y'/>
+              </group>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='NoHops' number='627' type='NUMINGROUP'/>
+            <field name='HopCompID' number='628' type='STRING'/>
+            <field name='NoPartyIDs' number='453' type='NUMINGROUP'/>
+            <field name='PartyID' number='448' type='STRING'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("naming_convention.xml", xml);
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // "NoHops" group should be named "Hops"
+    let hops = dictionary.group("Hops").expect("Hops group not found");
+    assert_eq!(hops.name(), "Hops");
+    assert_eq!(hops.num_in_group().name, "NoHops");
+    assert_eq!(hops.num_in_group().number, 627);
+
+    // "NoPartyIDs" group should be named "PartyIDs"
+    let parties = dictionary.group("PartyIDs").expect("PartyIDs group not found");
+    assert_eq!(parties.name(), "PartyIDs");
+    assert_eq!(parties.num_in_group().name, "NoPartyIDs");
+    assert_eq!(parties.num_in_group().number, 453);
+}
+
+#[test]
+fn test_component_with_single_group() {
+    // Test the special case where a component contains only one group
+    // The group should inherit the component's name
+    let xml = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <component name='Parties' required='N'/>
+            </message>
+          </messages>
+          <components>
+            <component name='Parties'>
+              <group name='NoPartyIDs' required='N'>
+                <field name='PartyID' required='Y'/>
+                <field name='PartyRole' required='Y'/>
+              </group>
+            </component>
+          </components>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='NoPartyIDs' number='453' type='NUMINGROUP'/>
+            <field name='PartyID' number='448' type='STRING'/>
+            <field name='PartyRole' number='452' type='INT'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("single_group_component.xml", xml);
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // The group should be named "Parties" (from the component), not "PartyIDs"
+    let parties = dictionary.group("Parties").expect("Parties group not found");
+    assert_eq!(parties.name(), "Parties");
+    assert_eq!(parties.num_in_group().name, "NoPartyIDs");
+    assert_eq!(parties.num_in_group().number, 453);
+    assert_eq!(parties.members().len(), 2);
+}
+
+// ============================================================================
+// Iterator tests
+// ============================================================================
+
+#[test]
+fn test_fields_iterator() {
+    let fix44_file = setup_fix44_file();
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(fix44_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // Collect all fields
+    let fields: Vec<&Field> = dictionary.fields().collect();
+    assert_eq!(fields.len(), 6);
+
+    // Check that we can find specific fields
+    assert!(fields.iter().any(|f| f.name == "BeginString"));
+    assert!(fields.iter().any(|f| f.name == "MsgType"));
+    assert!(fields.iter().any(|f| f.number == 112)); // TestReqID
+}
+
+#[test]
+fn test_messages_iterator() {
+    let fix44_file = setup_fix44_file();
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(fix44_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // Collect all messages
+    let messages: Vec<&Message> = dictionary.messages().collect();
+    assert_eq!(messages.len(), 2);
+
+    // Check that we can find specific messages
+    assert!(messages.iter().any(|m| m.name() == "Heartbeat"));
+    assert!(messages.iter().any(|m| m.name() == "TestRequest"));
+}
+
+#[test]
+fn test_components_iterator() {
+    let fix44_file = setup_fix44_file();
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(fix44_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // Collect all components
+    let components: Vec<&Component> = dictionary.components().collect();
+    assert_eq!(components.len(), 1);
+
+    // Check that we can find specific components
+    assert!(components.iter().any(|c| c.name() == "TestComponent"));
+}
+
+#[test]
+fn test_groups_iterator() {
+    let xml_with_groups = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <group name='NoGroup1' required='N'>
+                <field name='Field1' required='Y'/>
+              </group>
+              <group name='NoGroup2' required='N'>
+                <field name='Field2' required='Y'/>
+              </group>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='NoGroup1' number='100' type='NUMINGROUP'/>
+            <field name='Field1' number='101' type='STRING'/>
+            <field name='NoGroup2' number='102' type='NUMINGROUP'/>
+            <field name='Field2' number='103' type='STRING'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("groups_iterator.xml", xml_with_groups);
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    // Collect all groups
+    let groups: Vec<&Group> = dictionary.groups().collect();
+    assert_eq!(groups.len(), 2);
+
+    // Check that we can find specific groups
+    assert!(groups.iter().any(|g| g.name() == "Group1"));
+    assert!(groups.iter().any(|g| g.name() == "Group2"));
+}
+
+// ============================================================================
+// Error Display tests
+// ============================================================================
+
+#[test]
+fn test_error_display() {
+    // Test Error enum Display implementation
+    let error = Error::Validation(ValidationError::UnknownField("TestField".to_string()));
+    assert_eq!(error.to_string(), "Validation error: Unknown field TestField");
+
+    let error = Error::Builder(BuilderError::Unspecified);
+    assert_eq!(error.to_string(), "Builder error: No dictionary specified");
+
+    let error = Error::Validation(ValidationError::DuplicatedField("TestField".to_string()));
+    assert_eq!(error.to_string(), "Validation error: Duplicated field TestField");
+}
+
+#[test]
+fn test_validation_error_display() {
+    // Test ValidationError Display implementation
+    let error = ValidationError::UnknownField("TestField".to_string());
+    assert_eq!(error.to_string(), "Unknown field TestField");
+
+    let error = ValidationError::UnknownComponent("TestComponent".to_string());
+    assert_eq!(error.to_string(), "Unknown component TestComponent");
+
+    let error = ValidationError::EmptyContainer("TestContainer".to_string());
+    assert_eq!(error.to_string(), "Component/group TestContainer has no members");
+
+    let error = ValidationError::UnusedField("TestField".to_string(), 999);
+    assert_eq!(error.to_string(), "Unused field TestField(999)");
+
+    let error = ValidationError::CircularReference("ComponentA".to_string());
+    assert_eq!(error.to_string(), "Circular reference found: ComponentA");
+}
+
+#[test]
+fn test_builder_error_display() {
+    // Test BuilderError Display implementation
+    let error = BuilderError::Unspecified;
+    assert_eq!(error.to_string(), "No dictionary specified");
+
+    let error = BuilderError::IncompatibleVersion;
+    assert_eq!(error.to_string(), "Incompatible version combination");
+
+    let error = BuilderError::UnknownVersion(Version::FIX44);
+    assert_eq!(error.to_string(), "Unknown version FIX.4.4");
+}
+
+// ============================================================================
+// MemberDefinition tests
+// ============================================================================
+
+#[test]
+fn test_member_definition_name() {
+    let fix44_file = setup_fix44_file();
+    let dictionary = DictionaryBuilder::new()
+        .with_fix_xml(fix44_file.path())
+        .build()
+        .expect("Failed to build dictionary");
+
+    let test_request = dictionary
+        .message_by_name("TestRequest")
+        .expect("TestRequest message not found");
+
+    for member in test_request.members() {
+        let definition = member.definition();
+        let name_from_definition = definition.name();
+        let name_from_member = member.name();
+
+        // Both should return the same name
+        assert_eq!(name_from_definition, name_from_member);
     }
 }
