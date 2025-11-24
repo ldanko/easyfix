@@ -1,4 +1,7 @@
-use std::rc::Rc;
+use std::{
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use async_stream::stream;
 use easyfix_messages::{
@@ -6,10 +9,7 @@ use easyfix_messages::{
     messages::{BEGIN_STRING, FixtMessage},
 };
 use futures_util::Stream;
-use tokio::{
-    sync::mpsc::UnboundedReceiver,
-    time::{Duration, Instant},
-};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::StreamExt;
 use tracing::{debug, instrument};
 

@@ -3,6 +3,7 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     rc::Rc,
     sync::Mutex,
+    time::Duration,
 };
 
 use easyfix_messages::{
@@ -15,7 +16,6 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
-    time::Duration,
 };
 use tokio_stream::StreamExt;
 use tracing::{Instrument, Span, debug, error, info, info_span};
@@ -39,7 +39,7 @@ mod output_stream;
 use output_stream::{OutputEvent, output_stream};
 
 pub mod time;
-use time::{timeout, timeout_stream};
+use time::{timeout, timeout_at, timeout_stream};
 
 static SENDERS: Mutex<Option<HashMap<SessionId, Sender>>> = Mutex::new(None);
 
@@ -308,16 +308,22 @@ impl<S: MessagesStorage> Connection<S> {
         }
 
         let mut disconnect_reason = DisconnectReason::Disconnected;
-        let mut logout_timeout = None;
+        let mut logout_deadline = None;
 
-        while let Some(event) =
-            timeout(logout_timeout.unwrap_or(Duration::MAX), input_stream.next())
-                .await
-                .unwrap_or(Some(InputEvent::LogoutTimeout))
-        {
-            if logout_timeout.is_none() {
-                logout_timeout = self.session.logout_timeout();
+        let mut next_item = async || {
+            if logout_deadline.is_none() {
+                logout_deadline = self.session.logout_deadline();
             }
+            if let Some(logout_deadline) = logout_deadline {
+                timeout_at(logout_deadline, input_stream.next())
+                    .await
+                    .unwrap_or(Some(InputEvent::LogoutTimeout))
+            } else {
+                input_stream.next().await
+            }
+        };
+
+        while let Some(event) = next_item().await {
             // Don't accept new messages if session is disconnected.
             if self.session.state().borrow().disconnected() {
                 info!("session disconnected, exit input processing");

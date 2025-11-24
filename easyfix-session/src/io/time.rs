@@ -19,6 +19,15 @@ pub fn enable_busywait_timers(enable_busywait: bool) {
     BUSYWAIT_TIMEOUTS.store(enable_busywait, Ordering::Relaxed);
 }
 
+fn far_future() -> Instant {
+    // Roughly 30 years from now.
+    // API does not provide a way to obtain max `Instant`
+    // or convert specific date in the future to instant.
+    // 1000 years overflows on macOS, 100 years overflows on FreeBSD.
+    // See tokio sources (src/tokio/time/instant.rs)
+    Instant::now() + Duration::from_secs(86400 * 365 * 30)
+}
+
 pub async fn timeout<T>(
     duration: Duration,
     future: impl Future<Output = T>,
@@ -27,6 +36,19 @@ pub async fn timeout<T>(
         BusywaitTimeout::new(future, duration).await
     } else {
         tokio::time::timeout(duration, future)
+            .await
+            .map_err(|_| TimeElapsed(()))
+    }
+}
+
+pub async fn timeout_at<T>(
+    deadline: Instant,
+    future: impl Future<Output = T>,
+) -> Result<T, TimeElapsed> {
+    if BUSYWAIT_TIMEOUTS.load(Ordering::Relaxed) {
+        BusywaitTimeout::with_deadline(future, deadline).await
+    } else {
+        tokio::time::timeout_at(deadline.into(), future)
             .await
             .map_err(|_| TimeElapsed(()))
     }
@@ -63,7 +85,7 @@ where
         // during first poll operation
         let timeout_interval_start = tokio::time::Instant::now()
             .checked_add(duration)
-            .expect("timeout value too long");
+            .unwrap_or_else(|| far_future().into());
         TimeoutStream::Tokio(
             stream.timeout_repeating(interval_at(timeout_interval_start, duration)),
         )
@@ -96,14 +118,18 @@ impl Sleep {
         Sleep {
             wake_time: Instant::now()
                 .checked_add(duration)
-                .expect("sleep time too long"),
+                .unwrap_or_else(far_future),
         }
+    }
+
+    fn with_wake_time(wake_time: Instant) -> Sleep {
+        Sleep { wake_time }
     }
 
     fn reset(&mut self, duration: Duration) {
         self.wake_time = Instant::now()
             .checked_add(duration)
-            .expect("sleep time too long");
+            .unwrap_or_else(far_future)
     }
 }
 
@@ -133,6 +159,13 @@ impl<T> BusywaitTimeout<T> {
         BusywaitTimeout {
             value,
             delay: Sleep::new(delay),
+        }
+    }
+
+    pub fn with_deadline(value: T, deadline: Instant) -> BusywaitTimeout<T> {
+        BusywaitTimeout {
+            value,
+            delay: Sleep::with_wake_time(deadline),
         }
     }
 }

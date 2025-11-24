@@ -1,6 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 use easyfix_messages::{
@@ -13,7 +14,6 @@ use easyfix_messages::{
         ResendRequest, SequenceReset, TestRequest,
     },
 };
-use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
@@ -271,7 +271,7 @@ impl<S: MessagesStorage> Session<S> {
         } else if msg_type == MsgType::Logout && state.logon_sent() {
             trace!("Allowed: Logout after Logon sent");
             Ok(())
-        } else if msg_type != MsgType::Logout && state.logout_sent() {
+        } else if msg_type != MsgType::Logout && state.logout_sent_time().is_some() {
             trace!("Allowed: Message after Logout sent");
             Ok(())
         } else if msg_type == MsgType::SequenceReset {
@@ -286,7 +286,7 @@ impl<S: MessagesStorage> Session<S> {
                 state.reset_received = state.reset_received(),
                 state.logon_received = state.logon_received(),
                 state.logon_sent = state.logon_sent(),
-                state.logout_sent = state.logout_sent(),
+                state.logout_sent = ?state.logout_sent_time(),
                 "Not allowed: Invalid session state",
             );
             Err(VerifyError::InvalidLogonState)
@@ -442,7 +442,7 @@ impl<S: MessagesStorage> Session<S> {
             text,
             ..Default::default()
         })));
-        state.set_logout_sent(true);
+        state.set_logout_sent_time(true);
     }
 
     fn send_reject(
@@ -838,7 +838,7 @@ impl<S: MessagesStorage> Session<S> {
         }
 
         let mut state = self.state.borrow_mut();
-        let disconnect_reason = if state.logout_sent() {
+        let disconnect_reason = if state.logout_sent_time().is_some() {
             info!("received logout response");
             DisconnectReason::LocalRequestedLogout
         } else {
@@ -1395,10 +1395,14 @@ impl<S: MessagesStorage> Session<S> {
         Duration::from_secs(self.heartbeat_interval.get())
     }
 
-    pub fn logout_timeout(&self) -> Option<Duration> {
-        self.state
-            .borrow()
-            .logon_sent()
-            .then_some(self.settings.auto_disconnect_after_no_logout)
+    pub fn logout_deadline(&self) -> Option<Instant> {
+        let logout_sent_time = self.state.borrow().logout_sent_time()?;
+
+        Some(
+            logout_sent_time
+                .checked_add(self.settings.auto_disconnect_after_no_logout)
+                // better disconnect immediately than panic on overflow
+                .unwrap_or(logout_sent_time),
+        )
     }
 }

@@ -1,13 +1,13 @@
 use std::{
     collections::{BTreeMap, HashSet},
     ops::RangeInclusive,
+    time::Instant,
 };
 
 use easyfix_messages::{
     fields::{FixString, SeqNum},
     messages::FixtMessage,
 };
-use tokio::time::Instant;
 use tracing::{instrument, trace};
 
 use crate::messages_storage::MessagesStorage;
@@ -42,7 +42,7 @@ pub(crate) struct State<S> {
     enabled: bool,
     received_logon: bool,
     logon_sent: bool,
-    logout_sent: bool,
+    logout_sent_time: Option<Instant>,
     reset_sent: bool,
     reset_received: bool,
     initiate: bool,
@@ -72,7 +72,7 @@ impl<S: MessagesStorage> State<S> {
             enabled: true,
             received_logon: false,
             logon_sent: false,
-            logout_sent: false,
+            logout_sent_time: None,
             reset_sent: false,
             reset_received: false,
             initiate: false,
@@ -109,12 +109,16 @@ impl<S: MessagesStorage> State<S> {
         self.logon_sent = logon_sent;
     }
 
-    pub fn logout_sent(&self) -> bool {
-        self.logout_sent
+    pub fn logout_sent_time(&self) -> Option<Instant> {
+        self.logout_sent_time
     }
 
-    pub fn set_logout_sent(&mut self, logout_sent: bool) {
-        self.logout_sent = logout_sent;
+    pub fn set_logout_sent_time(&mut self, logout_sent: bool) {
+        if logout_sent {
+            self.logout_sent_time = Some(Instant::now());
+        } else {
+            self.logout_sent_time = None;
+        }
     }
 
     pub fn reset_received(&self) -> bool {
@@ -240,7 +244,7 @@ impl<S: MessagesStorage> State<S> {
     pub fn disconnect(&mut self, reset: bool) {
         self.set_disconnected(true);
 
-        self.set_logout_sent(false);
+        self.set_logout_sent_time(false);
         self.set_reset_received(false);
         self.set_reset_sent(false);
         self.set_last_expected_logon_next_seq_num(0);
