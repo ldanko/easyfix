@@ -17,7 +17,7 @@ use tokio::{
     net::TcpListener,
     task::JoinHandle,
 };
-use tracing::{Instrument, error, info, info_span, instrument, warn};
+use tracing::{Instrument, error, info, info_span, instrument};
 
 use crate::{
     DisconnectReason, Settings,
