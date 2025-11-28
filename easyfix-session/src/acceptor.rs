@@ -30,6 +30,14 @@ use crate::{
     settings::SessionSettings,
 };
 
+#[derive(Debug, thiserror::Error)]
+pub enum AcceptorError {
+    #[error("Unknown session")]
+    UnknownSession,
+    #[error("Session active")]
+    SessionActive,
+}
+
 #[allow(async_fn_in_trait)]
 pub trait Connection {
     async fn accept(
@@ -89,15 +97,13 @@ impl<S: MessagesStorage> SessionsMap<S> {
         }
     }
 
-    #[rustfmt::skip]
     pub fn register_session(&mut self, session_id: SessionId, session_settings: SessionSettings) {
+        let storage = (self.message_storage_builder)(&session_id);
         self.map.insert(
             session_id.clone(),
             (
                 session_settings,
-                Rc::new(RefCell::new(SessionState::new(
-                    (self.message_storage_builder)(&session_id),
-                ))),
+                Rc::new(RefCell::new(SessionState::new(storage))),
             ),
         );
     }
@@ -107,6 +113,10 @@ impl<S: MessagesStorage> SessionsMap<S> {
         session_id: &SessionId,
     ) -> Option<(SessionSettings, Rc<RefCell<SessionState<S>>>)> {
         self.map.get(session_id).cloned()
+    }
+
+    fn contains(&self, session_id: &SessionId) -> bool {
+        self.map.contains_key(session_id)
     }
 }
 
@@ -191,13 +201,13 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         let (emitter, event_stream) = events_channel();
         let sessions = Rc::new(RefCell::new(SessionsMap::new(message_storage_builder)));
         let active_sessions = Rc::new(RefCell::new(HashMap::new()));
-        let session_task_builder =
+        let session_task =
             SessionTask::new(settings, sessions.clone(), active_sessions.clone(), emitter);
 
         Acceptor {
             sessions,
             active_sessions,
-            session_task: session_task_builder,
+            session_task,
             event_stream,
         }
     }
@@ -216,32 +226,46 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         tokio::task::spawn_local(Self::server_task(connection, self.session_task.clone()))
     }
 
+    pub fn is_session_active(&self, session_id: &SessionId) -> Result<bool, AcceptorError> {
+        if self.active_sessions.borrow().contains_key(session_id) {
+            Ok(true)
+        } else if self.sessions.borrow().contains(session_id) {
+            Ok(false)
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
+    }
+
     pub fn logout(
         &self,
         session_id: &SessionId,
         session_status: Option<SessionStatus>,
         reason: Option<FixString>,
-    ) {
-        let active_sessions = self.active_sessions.borrow();
-        let Some(session) = active_sessions.get(session_id) else {
-            warn!("logout: session {session_id} not found");
-            return;
-        };
-
-        session.send_logout(&mut session.state().borrow_mut(), session_status, reason);
+    ) -> Result<(), AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
+            session.send_logout(&mut session.state().borrow_mut(), session_status, reason);
+            Ok(())
+        } else if self.sessions.borrow().contains(session_id) {
+            // Already logged out
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
     }
 
-    pub fn disconnect(&self, session_id: &SessionId) {
-        let mut active_sessions = self.active_sessions.borrow_mut();
-        let Some(session) = active_sessions.remove(session_id) else {
-            warn!("logout: session {session_id} not found");
-            return;
-        };
-
-        session.disconnect(
-            &mut session.state().borrow_mut(),
-            DisconnectReason::ApplicationForcedDisconnect,
-        );
+    pub fn disconnect(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow_mut().remove(session_id) {
+            session.disconnect(
+                &mut session.state().borrow_mut(),
+                DisconnectReason::ApplicationForcedDisconnect,
+            );
+            Ok(())
+        } else if self.sessions.borrow().contains(session_id) {
+            // Already disconnected
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
     }
 
     /// Force reset of the session
@@ -249,43 +273,68 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     /// Functionally equivalent to `reset_on_logon/logout/disconnect` settings,
     /// but triggered manually.
     ///
-    /// You may call this after [Self::disconnect] if you want to manually reset the connection
-    pub fn reset(&self, session_id: &SessionId) {
-        let active_sessions = self.active_sessions.borrow();
-        let Some(session) = active_sessions.get(session_id) else {
-            warn!("reset: session {session_id} not found");
-            return;
-        };
+    /// Returns [`AcceptorError::SessionActive`] if the session is still active.
+    /// In that case, call [Self::disconnect] or [Self::logout] first and wait
+    /// for the session to fully terminate before retrying.
+    #[instrument(skip_all, fields(session_id=%session_id) ret)]
+    pub fn reset(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
+        if self.active_sessions.borrow().contains_key(session_id) {
+            Err(AcceptorError::SessionActive)
+        } else if let Some((_, session_state)) = self.sessions.borrow().get_session(session_id) {
+            session_state.borrow_mut().reset();
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
+    }
 
-        session.reset(&mut session.state().borrow_mut());
+    // TODO: temporary solution, remove when diconnect will be synchronized
+    #[instrument(skip_all, fields(session_id=%session_id) ret)]
+    pub fn force_reset(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
+            session.state().borrow_mut().reset();
+            Ok(())
+        } else if let Some((_, session_state)) = self.sessions.borrow().get_session(session_id) {
+            session_state.borrow_mut().reset();
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
     }
 
     /// Sender seq_num getter
-    #[instrument(skip(self))]
-    pub fn next_sender_msg_seq_num(&self, session_id: &SessionId) -> SeqNum {
-        let active_sessions = self.active_sessions.borrow();
-        let Some(session) = active_sessions.get(session_id) else {
-            warn!("session not found");
-            return 0;
-        };
-
-        let state = session.state().borrow_mut();
-        state.next_sender_msg_seq_num()
+    #[instrument(skip_all, fields(session_id=%session_id) ret)]
+    pub fn next_sender_msg_seq_num(&self, session_id: &SessionId) -> Result<SeqNum, AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
+            Ok(session.state().borrow().next_sender_msg_seq_num())
+        } else if let Some((_, session_state)) = self.sessions.borrow().get_session(session_id) {
+            Ok(session_state.borrow().next_sender_msg_seq_num())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
     }
 
     /// Override sender's next seq_num
-    #[instrument(skip(self))]
-    pub fn set_next_sender_msg_seq_num(&self, session_id: &SessionId, seq_num: SeqNum) {
-        let active_sessions = self.active_sessions.borrow();
-        let Some(session) = active_sessions.get(session_id) else {
-            warn!("session not found");
-            return;
-        };
-
-        session
-            .state()
-            .borrow_mut()
-            .set_next_sender_msg_seq_num(seq_num);
+    #[instrument(skip_all, fields(session_id=%session_id, seq_num) ret)]
+    pub fn set_next_sender_msg_seq_num(
+        &self,
+        session_id: &SessionId,
+        seq_num: SeqNum,
+    ) -> Result<(), AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
+            session
+                .state()
+                .borrow_mut()
+                .set_next_sender_msg_seq_num(seq_num);
+            Ok(())
+        } else if let Some((_, session_state)) = self.sessions.borrow().get_session(session_id) {
+            session_state
+                .borrow_mut()
+                .set_next_sender_msg_seq_num(seq_num);
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
     }
 
     async fn server_task(mut connection: impl Connection, session_task: SessionTask<S>) {
