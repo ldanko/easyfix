@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     future::Future,
     io,
@@ -17,7 +17,7 @@ use tokio::{
     net::TcpListener,
     task::JoinHandle,
 };
-use tracing::{Instrument, error, info, info_span, instrument};
+use tracing::{Instrument, error, info, info_span, instrument, warn};
 
 use crate::{
     DisconnectReason, Settings,
@@ -125,6 +125,7 @@ pub struct SessionTask<S> {
     sessions: Rc<RefCell<SessionsMap<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
+    enabled: Rc<Cell<bool>>,
 }
 
 impl<S> Clone for SessionTask<S> {
@@ -134,6 +135,7 @@ impl<S> Clone for SessionTask<S> {
             sessions: self.sessions.clone(),
             active_sessions: self.active_sessions.clone(),
             emitter: self.emitter.clone(),
+            enabled: self.enabled.clone(),
         }
     }
 }
@@ -144,12 +146,14 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
         sessions: Rc<RefCell<SessionsMap<S>>>,
         active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
         emitter: Emitter,
+        enabled: Rc<Cell<bool>>,
     ) -> SessionTask<S> {
         SessionTask {
             settings,
             sessions,
             active_sessions,
             emitter,
+            enabled,
         }
     }
 
@@ -165,16 +169,21 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
             info!("New connection");
         });
 
-        acceptor_connection(
-            reader,
-            writer,
-            self.settings,
-            self.sessions,
-            self.active_sessions,
-            self.emitter,
-        )
-        .instrument(span.clone())
-        .await;
+        if self.enabled.get() {
+            acceptor_connection(
+                reader,
+                writer,
+                self.settings,
+                self.sessions,
+                self.active_sessions,
+                self.emitter,
+                self.enabled,
+            )
+            .instrument(span.clone())
+            .await;
+        } else {
+            span.in_scope(|| warn!("Acceptor is disabled"))
+        }
 
         span.in_scope(|| {
             info!("Connection closed");
@@ -191,6 +200,7 @@ pub struct Acceptor<S> {
     session_task: SessionTask<S>,
     #[pin]
     event_stream: EventStream,
+    enabled: Rc<Cell<bool>>,
 }
 
 impl<S: MessagesStorage + 'static> Acceptor<S> {
@@ -201,14 +211,51 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         let (emitter, event_stream) = events_channel();
         let sessions = Rc::new(RefCell::new(SessionsMap::new(message_storage_builder)));
         let active_sessions = Rc::new(RefCell::new(HashMap::new()));
-        let session_task =
-            SessionTask::new(settings, sessions.clone(), active_sessions.clone(), emitter);
+        let enabled = Rc::new(Cell::new(true));
+        let session_task = SessionTask::new(
+            settings,
+            sessions.clone(),
+            active_sessions.clone(),
+            emitter,
+            enabled.clone(),
+        );
 
         Acceptor {
             sessions,
             active_sessions,
             session_task,
             event_stream,
+            enabled,
+        }
+    }
+
+    pub fn enable(&self) {
+        info!("acceptor enabled");
+        self.enabled.set(true);
+    }
+
+    pub fn disable(&self) {
+        info!("acceptor disabled");
+        self.enabled.set(false);
+        for (_, session) in self.active_sessions.borrow_mut().drain() {
+            session.disconnect(
+                &mut session.state().borrow_mut(),
+                DisconnectReason::ApplicationForcedDisconnect,
+            );
+        }
+    }
+
+    pub fn disable_with_logout(
+        &self,
+        session_status: Option<SessionStatus>,
+        reason: Option<FixString>,
+    ) {
+        info!("acceptor disabled with logout");
+        self.enabled.set(false);
+        for (_, session) in self.active_sessions.borrow_mut().drain() {
+            let mut state = session.state().borrow_mut();
+            session.send_logout(&mut state, session_status, reason.clone());
+            session.disconnect(&mut state, DisconnectReason::ApplicationForcedDisconnect);
         }
     }
 
@@ -262,6 +309,27 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             Ok(())
         } else if self.sessions.borrow().contains(session_id) {
             // Already disconnected
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
+    }
+
+    pub fn disconnect_with_logout(
+        &self,
+        session_id: &SessionId,
+        session_status: Option<SessionStatus>,
+        reason: Option<FixString>,
+    ) -> Result<(), AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
+            session.send_logout(&mut session.state().borrow_mut(), session_status, reason);
+            session.disconnect(
+                &mut session.state().borrow_mut(),
+                DisconnectReason::ApplicationForcedDisconnect,
+            );
+            Ok(())
+        } else if self.sessions.borrow().contains(session_id) {
+            // Already logged out
             Ok(())
         } else {
             Err(AcceptorError::UnknownSession)

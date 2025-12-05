@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, hash_map::Entry},
     rc::Rc,
     sync::Mutex,
@@ -18,7 +18,7 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_stream::StreamExt;
-use tracing::{Instrument, Span, debug, error, info, info_span};
+use tracing::{Instrument, Span, debug, error, info, info_span, warn};
 
 use crate::{
     DisconnectReason, Error, NO_INBOUND_TIMEOUT_PADDING, Sender, SessionError,
@@ -119,6 +119,7 @@ pub(crate) async fn acceptor_connection<S>(
     sessions: Rc<RefCell<SessionsMap<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
+    enabled: Rc<Cell<bool>>,
 ) where
     S: MessagesStorage,
 {
@@ -129,18 +130,25 @@ pub(crate) async fn acceptor_connection<S>(
     let msg = match first_msg(&mut stream, logon_timeout).await {
         Ok(msg) => msg,
         Err(err) => {
-            error!("failed to establish new session: {err}");
+            error!(%err, "failed to establish new session");
             return;
         }
     };
+
     let session_id = SessionId::from_input_msg(&msg);
-    debug!("first_msg: {msg:?}");
+    debug!(first_msg = ?msg);
+
+    // XXX: there should be no await point between active_sessions.insert below
+    if !enabled.get() {
+        warn!("Acceptor is disabled, drop connection");
+        return;
+    }
 
     let (sender, receiver) = mpsc::unbounded_channel();
     let sender = Sender::new(sender);
 
     let Some((session_settings, session_state)) = sessions.borrow().get_session(&session_id) else {
-        error!("failed to establish new session: unknown session id {session_id}");
+        error!(%session_id, "failed to establish new session: unknown session id");
         return;
     };
     if !session_state.borrow_mut().disconnected()
@@ -158,6 +166,7 @@ pub(crate) async fn acceptor_connection<S>(
         sender,
         emitter.clone(),
     ));
+
     active_sessions
         .borrow_mut()
         .insert(session_id.clone(), session.clone());
