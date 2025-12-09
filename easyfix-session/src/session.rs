@@ -157,6 +157,7 @@ pub(crate) struct Session<S> {
     emitter: Emitter,
     // Not in SessionState as I/O layer asks for this value often
     heartbeat_interval: Cell<u64>,
+    disconnect_notify: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl<S: MessagesStorage> Session<S> {
@@ -166,6 +167,7 @@ impl<S: MessagesStorage> Session<S> {
         state: Rc<RefCell<State<S>>>,
         sender: Sender,
         emitter: Emitter,
+        disconnect_notify_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Session<S> {
         let heartbeat_interval = settings
             .heartbeat_interval
@@ -177,6 +179,7 @@ impl<S: MessagesStorage> Session<S> {
             sender,
             emitter,
             heartbeat_interval: Cell::new(heartbeat_interval),
+            disconnect_notify: RefCell::new(Some(disconnect_notify_tx)),
         }
     }
 
@@ -614,6 +617,11 @@ impl<S: MessagesStorage> Session<S> {
         state.disconnect(self.session_settings.reset_on_disconnect);
 
         self.sender.disconnect(reason);
+
+        // Notify input loop to exit immediately
+        if let Some(tx) = self.disconnect_notify.borrow_mut().take() {
+            let _ = tx.send(());
+        }
     }
 
     #[instrument(level = "trace", skip_all)]

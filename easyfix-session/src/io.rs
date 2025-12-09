@@ -15,7 +15,7 @@ use tokio::{
     self,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 use tokio_stream::StreamExt;
 use tracing::{Instrument, Span, debug, error, info, info_span, warn};
@@ -159,12 +159,16 @@ pub(crate) async fn acceptor_connection<S>(
     }
     session_state.borrow_mut().set_disconnected(false);
     register_sender(session_id.clone(), sender.clone());
+
+    let (disconnect_tx, disconnect_rx) = oneshot::channel();
+
     let session = Rc::new(Session::new(
         settings,
         session_settings,
         session_state,
         sender,
         emitter.clone(),
+        disconnect_tx,
     ));
 
     active_sessions
@@ -200,14 +204,15 @@ pub(crate) async fn acceptor_connection<S>(
     pin_mut!(output_stream);
 
     let connection = Connection::new(session);
-    let (input_closed_tx, input_closed_rx) = tokio::sync::oneshot::channel();
+    let (input_closed_tx, input_closed_rx) = oneshot::channel();
 
     tokio::join!(
         connection
             .input_loop(
                 input_stream,
                 input_closed_tx,
-                force_disconnection_with_reason
+                force_disconnection_with_reason,
+                disconnect_rx,
             )
             .instrument(input_loop_span),
         connection
@@ -238,6 +243,8 @@ pub(crate) async fn initiator_connection<S>(
     let (sender, receiver) = mpsc::unbounded_channel();
     let sender = Sender::new(sender);
 
+    let (disconnect_tx, disconnect_rx) = oneshot::channel();
+
     register_sender(session_id.clone(), sender.clone());
     let session = Rc::new(Session::new(
         settings,
@@ -245,6 +252,7 @@ pub(crate) async fn initiator_connection<S>(
         state,
         sender,
         emitter.clone(),
+        disconnect_tx,
     ));
     active_sessions
         .borrow_mut()
@@ -276,11 +284,11 @@ pub(crate) async fn initiator_connection<S>(
     session.send_logon_request(&mut session.state().borrow_mut());
 
     let connection = Connection::new(session);
-    let (input_closed_tx, input_closed_rx) = tokio::sync::oneshot::channel();
+    let (input_closed_tx, input_closed_rx) = oneshot::channel();
 
     tokio::join!(
         connection
-            .input_loop(input_stream, input_closed_tx, None)
+            .input_loop(input_stream, input_closed_tx, None, disconnect_rx)
             .instrument(input_loop_span),
         connection
             .output_loop(sink, output_stream, input_closed_rx)
@@ -299,8 +307,9 @@ impl<S: MessagesStorage> Connection<S> {
     async fn input_loop(
         &self,
         mut input_stream: impl Stream<Item = InputEvent> + Unpin,
-        input_closed_tx: tokio::sync::oneshot::Sender<()>,
+        input_closed_tx: oneshot::Sender<()>,
         force_disconnection_with_reason: Option<DisconnectReason>,
+        mut disconnect_rx: oneshot::Receiver<()>,
     ) {
         if let Some(disconnect_reason) = force_disconnection_with_reason {
             self.session
@@ -332,7 +341,25 @@ impl<S: MessagesStorage> Connection<S> {
             }
         };
 
-        while let Some(event) = next_item().await {
+        loop {
+            let event = tokio::select! {
+                // Wait for network input
+                event = next_item() => {
+                    if let Some(event) = event {
+                        event
+                    } else {
+                        break
+                    }
+                }
+
+                // Wait for disconnect signal from Session::disconnect()
+                _ = &mut disconnect_rx => {
+                    info!("Disconnect signaled, exiting input loop");
+                    disconnect_reason = DisconnectReason::ApplicationForcedDisconnect;
+                    break;
+                }
+            };
+
             // Don't accept new messages if session is disconnected.
             if self.session.state().borrow().disconnected() {
                 info!("session disconnected, exit input processing");
@@ -341,9 +368,10 @@ impl<S: MessagesStorage> Connection<S> {
                 // See `fn send()` and `fn send_raw()` from session.rs.
                 input_closed_tx
                     .send(())
-                    .expect("Failed to notify about closed inpout");
+                    .expect("Failed to notify about closed input");
                 return;
             }
+
             match event {
                 InputEvent::Message(msg) => {
                     if let Some(reason) = self.session.on_message_in(msg).await {
@@ -398,7 +426,7 @@ impl<S: MessagesStorage> Connection<S> {
         &self,
         mut sink: impl AsyncWrite + Unpin,
         mut output_stream: impl Stream<Item = OutputEvent> + Unpin,
-        input_closed_rx: tokio::sync::oneshot::Receiver<()>,
+        input_closed_rx: oneshot::Receiver<()>,
     ) {
         let mut sink_closed = false;
         let mut disconnect_reason = DisconnectReason::Disconnected;
