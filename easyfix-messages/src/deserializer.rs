@@ -119,7 +119,7 @@ fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInt
     for (i, b) in bytes.iter().enumerate() {
         match b {
             // No control character is allowed
-            0x00 | 0x02..=0x1f | 0x80..=0xff => {
+            0x00 | 0x02..=0x1f | 0x7f..=0xff => {
                 return Err(DeserializeErrorInternal::Error(
                     ParseRejectReason::ValueIsIncorrect,
                 ));
@@ -851,7 +851,7 @@ impl Deserializer<'_> {
                         // [0x00..=0x1f] | [0x80..=0x9f] | [0x00..=0x1f, _] | [0x80..=0x9f, _] => {
 
                         // ASCII controll character range + unused range
-                        [0x00..=0x1f] | [0x80..=0xff] => {
+                        [0x00..=0x1f] | [0x7f..=0xff] => {
                             return Err(
                                 self.reject(self.current_tag, ParseRejectReason::ValueIsIncorrect)
                             );
@@ -1790,9 +1790,6 @@ impl Deserializer<'_> {
     }
 
     // fn deserialize_tenor(input: &[u8]) -> Result<Tenor, ParseRejectReason>;
-
-    // TODO: it would be nice to have on generic function for all `*_enum`
-    //       deserializations
 
     pub fn deserialize_int_enum<T>(&mut self) -> Result<T, DeserializeError>
     where
