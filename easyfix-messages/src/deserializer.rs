@@ -119,7 +119,7 @@ fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInt
     for (i, b) in bytes.iter().enumerate() {
         match b {
             // No control character is allowed
-            0x00 | 0x02..=0x1f | 0x80..=0xff => {
+            0x00 | 0x02..=0x1f | 0x7f..=0xff => {
                 return Err(DeserializeErrorInternal::Error(
                     ParseRejectReason::ValueIsIncorrect,
                 ));
