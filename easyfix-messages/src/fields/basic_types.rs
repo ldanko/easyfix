@@ -111,7 +111,7 @@ impl fmt::Display for FixStringError {
 impl std::error::Error for FixStringError {}
 
 const fn is_non_control_ascii_char(byte: u8) -> bool {
-    byte > 0x1f && byte < 0x80
+    byte > 0x1f && byte < 0x7f
 }
 
 impl FixStr {
@@ -961,6 +961,20 @@ mod tests {
     fn fix_string_fail_on_out_of_range_character() {
         let buf = b"Hello\x85world!".to_vec();
         assert!(FixString::from_ascii(buf).is_err());
+    }
+
+    #[test]
+    fn fix_string_fail_on_del_character() {
+        // 0x7F (DEL) is a control character despite being above the 0x00-0x1F range
+        let buf = b"Hello\x7fworld!".to_vec();
+        assert!(FixString::from_ascii(buf).is_err());
+    }
+
+    #[test]
+    fn fix_string_accept_tilde() {
+        // 0x7E (~) is the highest valid printable ASCII character, just below DEL
+        let buf = b"Hello~world!".to_vec();
+        assert!(FixString::from_ascii(buf).is_ok());
     }
 
     #[test]
