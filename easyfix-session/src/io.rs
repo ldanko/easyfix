@@ -346,6 +346,7 @@ impl<S: MessagesStorage> Connection<S> {
                 // Wait for network input
                 event = next_item() => {
                     if let Some(event) = event {
+                        // Don't process event here, it won't be cancel-safe
                         event
                     } else {
                         break
