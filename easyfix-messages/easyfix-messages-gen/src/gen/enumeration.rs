@@ -1,5 +1,5 @@
 use convert_case::{Case, Casing};
-use easyfix_dictionary::{BasicType, Value};
+use easyfix_dictionary::{BasicType, Variant};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
@@ -8,15 +8,14 @@ use super::member::Type;
 pub struct EnumDesc {
     name: Ident,
     type_: BasicType,
-    // (VarianName, VariantValue, VariantValueAsBytes)
-    values: Vec<Value>,
+    variants: Vec<Variant>,
 }
 impl EnumDesc {
-    pub fn new(name: Ident, type_: BasicType, values: Vec<Value>) -> EnumDesc {
+    pub fn new(name: Ident, type_: BasicType, variants: Vec<Variant>) -> EnumDesc {
         EnumDesc {
             name,
             type_,
-            values,
+            variants,
         }
     }
 
@@ -44,14 +43,14 @@ impl EnumDesc {
             BasicType::MultipleCharValue => Type::basic_type(BasicType::Char).gen_type(),
             type_ => panic!("type {:?} can not be used as enumeration", type_),
         };
-        let mut variant_def = Vec::with_capacity(self.values.len());
-        let mut variant_name = Vec::with_capacity(self.values.len());
-        let mut variant_value = Vec::with_capacity(self.values.len());
-        let mut variant_value_as_bytes = Vec::with_capacity(self.values.len());
-        for value in &self.values {
+        let mut variant_def = Vec::with_capacity(self.variants.len());
+        let mut variant_name = Vec::with_capacity(self.variants.len());
+        let mut variant_value = Vec::with_capacity(self.variants.len());
+        let mut variant_value_as_bytes = Vec::with_capacity(self.variants.len());
+        for value in &self.variants {
             let v_name = Ident::new(
                 &{
-                    let mut variant_name = value.description().to_case(Case::UpperCamel);
+                    let mut variant_name = value.name().to_case(Case::UpperCamel);
                     if variant_name.as_bytes()[0].is_ascii_digit() {
                         variant_name.insert(0, '_');
                     }

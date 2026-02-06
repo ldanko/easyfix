@@ -5,7 +5,9 @@ mod structure;
 use std::{collections::HashMap, rc::Rc};
 
 use convert_case::{Case, Casing};
-use easyfix_dictionary::{BasicType, Dictionary, Member, MemberKind, ParseRejectReason};
+use easyfix_dictionary::{
+    BasicType, Dictionary, Field, Member, MemberDefinition, ParseRejectReason, Version,
+};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 use strum::IntoEnumIterator;
@@ -27,101 +29,73 @@ pub struct Generator {
 
 fn process_members(
     members: &[Member],
-    dictionary: &Dictionary,
     members_descs: &mut Vec<MemberDesc>,
     groups: &mut HashMap<String, Struct>,
 ) {
-    let mut members = members.iter().peekable();
-    while let Some(member) = members.next() {
-        match member.kind() {
-            MemberKind::Component => {
-                let component = dictionary
-                    .component(member.name())
-                    .expect("unknown component");
-                if let Some(number_of_elements) = component.number_of_elements() {
-                    let number_of_elements_field = dictionary
-                        .fields_by_name()
-                        .get(number_of_elements.name())
-                        .expect("unknown field");
-                    let mut group_members = Vec::new();
-                    process_members(component.members(), dictionary, &mut group_members, groups);
-                    assert_eq!(component.name(), member.name(), "Componen t name mismatch");
+    for member in members {
+        match member.definition() {
+            MemberDefinition::Group(group) => {
+                let mut group_members = Vec::new();
+                process_members(group.members(), &mut group_members, groups);
+                assert_eq!(group.name(), member.name(), "Component name mismatch");
 
-                    members_descs.push(MemberDesc::group(
-                        SimpleMember::num_in_group(
-                            number_of_elements.name(),
-                            number_of_elements_field.number(),
-                            // When component holding group is required, group is also required, so `num in group` field is also required
-                            member.required(),
-                            // number_of_elements.required(),
-                        ),
-                        SimpleMember::group(
-                            member.name(),
-                            number_of_elements_field.number(),
-                            member.required(),
-                            // number_of_elements.required(),
-                        ),
-                        group_members
-                            .iter()
-                            .filter(|member| matches!(member, MemberDesc::Simple(_)))
-                            //.map(|member| (member.tag_num(), member.required()))
-                            .map(|member| member.tag_num())
-                            .collect(),
-                    ));
-                    members_descs.push(MemberDesc::Simple(SimpleMember::group(
-                        member.name(),
-                        number_of_elements_field.number(),
+                members_descs.push(MemberDesc::group(
+                    SimpleMember::num_in_group(
+                        group.num_in_group().name(),
+                        group.num_in_group().number(),
+                        // When component holding group is required, group is also required, so `num in group` field is also required
                         member.required(),
                         // number_of_elements.required(),
-                    )));
+                    ),
+                    SimpleMember::group(
+                        member.name(),
+                        group.num_in_group().number(),
+                        member.required(),
+                        // number_of_elements.required(),
+                    ),
+                    group_members
+                        .iter()
+                        .filter(|member| matches!(member, MemberDesc::Simple(_)))
+                        //.map(|member| (member.tag_num(), member.required()))
+                        .map(|member| member.tag_num())
+                        .collect(),
+                ));
+                members_descs.push(MemberDesc::Simple(SimpleMember::group(
+                    member.name(),
+                    group.num_in_group().number(),
+                    member.required(),
+                    // number_of_elements.required(),
+                )));
 
-                    groups
-                        .entry(component.name().to_owned())
-                        .or_insert_with(|| Struct::new(component.name(), group_members, None));
-                } else {
-                    process_members(component.members(), dictionary, members_descs, groups);
-                }
+                groups
+                    .entry(group.name().to_owned())
+                    .or_insert_with(|| Struct::new(group.name(), group_members, None));
             }
-            MemberKind::Field => {
-                let field = dictionary
-                    .fields_by_name()
-                    .get(member.name())
-                    .ok_or_else(|| format!("unknown field `{}`", member.name()))
-                    .unwrap();
-
-                match field.type_() {
-                    BasicType::Length => {
-                        // Do not skip peeked value, it must be procesed separately
-                        // to generate code for TagSpecifiedOutOfRequiredOrdern rejects.
-                        if let Some(next_member) = members.peek() {
-                            let next_field = dictionary
-                                .fields_by_name()
-                                .get(next_member.name())
-                                .expect("unknown field");
-                            if let BasicType::Data | BasicType::XmlData = next_field.type_() {
-                                members_descs.push(MemberDesc::custom_length(
-                                    SimpleMember::length(
-                                        member.name(),
-                                        field.number(),
-                                        member.required(),
-                                    ),
-                                    SimpleMember::field(
-                                        next_member.name(),
-                                        next_field.number(),
-                                        next_member.required(),
-                                        next_field.type_(),
-                                    ),
-                                ));
-                            } else {
-                                members_descs.push(MemberDesc::simple(
-                                    member.name(),
-                                    field.number(),
-                                    member.required(),
-                                    field.type_(),
-                                ))
-                            }
-                        }
-                    }
+            MemberDefinition::RawData { length, data } => {
+                members_descs.push(MemberDesc::custom_length(
+                    SimpleMember::length(length.name(), length.number(), member.required()),
+                    SimpleMember::field(
+                        data.name(),
+                        data.number(),
+                        member.required(),
+                        data.data_type(),
+                    ),
+                ));
+                // Data/XmlData field must also be registered as a Simple member
+                // to generate TagSpecifiedOutOfRequiredOrder reject when it
+                // appears without the preceding Length tag.
+                members_descs.push(MemberDesc::simple(
+                    data.name(),
+                    data.number(),
+                    member.required(),
+                    data.data_type(),
+                ));
+            }
+            MemberDefinition::Component(component) => {
+                process_members(component.members(), members_descs, groups);
+            }
+            MemberDefinition::Field(field) => {
+                match field.data_type() {
                     // Special case, to no create enumerations for boolean values
                     BasicType::Boolean => members_descs.push(MemberDesc::simple(
                         member.name(),
@@ -130,15 +104,15 @@ fn process_members(
                         BasicType::Boolean,
                     )),
                     type_ => {
-                        if let Some(_values) = field.values() {
-                            members_descs.push(MemberDesc::enumeration(
+                        if field.variants().is_empty() {
+                            members_descs.push(MemberDesc::simple(
                                 member.name(),
                                 field.number(),
                                 member.required(),
                                 type_,
                             ))
                         } else {
-                            members_descs.push(MemberDesc::simple(
+                            members_descs.push(MemberDesc::enumeration(
                                 member.name(),
                                 field.number(),
                                 member.required(),
@@ -154,62 +128,38 @@ fn process_members(
 
 impl Generator {
     pub fn new(dictionary: &Dictionary) -> Generator {
-        let (protocol, version) = if let Some(fixt_version) = dictionary.fixt_version() {
-            ("FIXT", fixt_version)
-        } else if let Some(fix_version) = dictionary.fix_version() {
-            ("FIX", fix_version)
-        } else {
-            panic!("Neither FIX nor FIXT version defined");
-        };
-        let begin_string = if version.service_pack() == 0 {
-            format!("{}.{}.{}", protocol, version.major(), version.minor())
-        } else {
-            format!(
-                "{}.{}.{}SP{}",
-                protocol,
-                version.major(),
-                version.minor(),
-                version.service_pack()
-            )
-        }
-        .into_bytes();
+        let begin_string = dictionary.version().begin_string().into_bytes();
 
         let mut structs = Vec::new();
         let mut groups = HashMap::new();
 
-        let header = dictionary.header().expect("Missing FIX header definition");
+        let header = dictionary.header();
         let header_members = {
             let mut header_members = Vec::new();
-            process_members(
-                header.members(),
-                dictionary,
-                &mut header_members,
-                &mut groups,
-            );
+            process_members(header.members(), &mut header_members, &mut groups);
             structs.push(Struct::new(header.name(), header_members.clone(), None));
             Rc::new(header_members)
         };
 
-        let trailer = dictionary
-            .trailer()
-            .expect("Missing FIX trailer definition");
+        let trailer = dictionary.trailer();
         let trailer_members = {
             let mut trailer_members = Vec::new();
-            process_members(
-                trailer.members(),
-                dictionary,
-                &mut trailer_members,
-                &mut groups,
-            );
+            process_members(trailer.members(), &mut trailer_members, &mut groups);
             structs.push(Struct::new(trailer.name(), trailer_members.clone(), None));
             Rc::new(trailer_members)
         };
 
-        for msg in dictionary.messages().values() {
+        let app_dictionary = dictionary.subdictionary(Version::FIX50SP2);
+
+        let all_messages = dictionary
+            .messages()
+            .chain(app_dictionary.into_iter().flat_map(|d| d.messages()));
+
+        for msg in all_messages {
             let mut members_descs = Vec::with_capacity(1 + msg.members().len() + 1);
             {
                 //members_descs.push(MemberDesc::header());
-                process_members(msg.members(), dictionary, &mut members_descs, &mut groups);
+                process_members(msg.members(), &mut members_descs, &mut groups);
                 //members_descs.push(MemberDesc::trailer());
             }
 
@@ -227,19 +177,34 @@ impl Generator {
 
         structs.extend(groups.into_values());
 
-        let mut enums = Vec::new();
-        for field in dictionary.fields().values() {
-            // Don't map booleans into YES/NO enumeration
-            if let BasicType::Boolean = field.type_() {
-                continue;
-            }
-            if let Some(values) = field.values() {
-                let name = Ident::new(&field.name().to_case(Case::UpperCamel), Span::call_site());
-                enums.push(EnumDesc::new(name, field.type_(), values.to_vec()));
+        // Collect all fields from FIXT dictionary and FIX50SP2 subdictionary, deduped by tag number
+        let mut all_fields_map: HashMap<u16, &Field> = HashMap::new();
+        for field in dictionary.fields() {
+            all_fields_map.entry(field.number()).or_insert(field);
+        }
+        if let Some(app_dict) = app_dictionary {
+            for field in app_dict.fields() {
+                all_fields_map.entry(field.number()).or_insert(field);
             }
         }
 
-        let mut fields = dictionary.fields().values().collect::<Vec<_>>();
+        let mut enums = Vec::new();
+        for field in all_fields_map.values() {
+            // Don't map booleans into YES/NO enumeration
+            if let BasicType::Boolean = field.data_type() {
+                continue;
+            }
+            if !field.variants().is_empty() {
+                let name = Ident::new(&field.name().to_case(Case::UpperCamel), Span::call_site());
+                enums.push(EnumDesc::new(
+                    name,
+                    field.data_type(),
+                    field.variants().to_vec(),
+                ));
+            }
+        }
+
+        let mut fields: Vec<&Field> = all_fields_map.into_values().collect();
         fields.sort_by_key(|f| f.number());
         let (fields_names, fields_numbers) = fields
             .iter()

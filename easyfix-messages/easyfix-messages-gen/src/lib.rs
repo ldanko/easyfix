@@ -11,7 +11,7 @@ use std::{
 };
 
 pub use easyfix_dictionary as dictionary;
-use easyfix_dictionary::{Dictionary, ParseRejectReason};
+use easyfix_dictionary::{DictionaryBuilder, ParseRejectReason};
 use proc_macro2::TokenStream;
 
 use crate::r#gen::Generator;
@@ -77,26 +77,23 @@ pub fn generate_fix_messages(
     groups_file: impl AsRef<Path>,
     messages_file: impl AsRef<Path>,
     reject_reason_overrides: Option<HashMap<ParseRejectReason, String>>,
-) -> std::result::Result<(), Box<dyn std::error::Error + 'static>> {
+) -> Result<(), Box<dyn std::error::Error + 'static>> {
     eprintln!("fields file path: {}", fields_file.as_ref().display());
     eprintln!("groups file path: {}", groups_file.as_ref().display());
     eprintln!("messages file path: {}", messages_file.as_ref().display());
-    let fix_xml = fs::read_to_string(fix_xml_path)?;
-    let mut dictionary = Dictionary::new(reject_reason_overrides);
+
+    let mut builder = DictionaryBuilder::new()
+        .with_fix_xml(fix_xml_path.as_ref())
+        .with_strict_check(true);
 
     if let Some(some_fixt_xml_path) = fixt_xml_path {
-        log_duration("FIXT XML processed", || {
-            let fixt_xml = fs::read_to_string(some_fixt_xml_path)?;
-            dictionary.process_fixt_xml(&fixt_xml)
-        })?;
-
-        log_duration("FIX XML processed", || dictionary.process_fix_xml(&fix_xml))?;
-    } else {
-        log_duration("FIX legacy XML processed", || {
-            dictionary.process_legacy_fix_xml(&fix_xml)
-        })?;
+        builder = builder.with_fixt_xml(some_fixt_xml_path.as_ref());
+    }
+    if let Some(reject_reason_overrides) = reject_reason_overrides {
+        builder = builder.with_custom_rejection_reason(reject_reason_overrides);
     }
 
+    let dictionary = builder.build()?;
     let generator = log_duration("Generator ready", || Generator::new(&dictionary));
 
     create_source_file(
