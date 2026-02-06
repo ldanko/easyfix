@@ -50,17 +50,10 @@ fn heartbeat_ok() {
 #[test]
 fn logon_msg_type_grp_no_present() {
     let msg = fixt_message(Box::new(Message::Logon(Logon {
-        encrypt_method: EncryptMethod::NoneOther,
+        encrypt_method: EncryptMethod::None,
         heart_bt_int: 30,
-        raw_data: None,
-        reset_seq_num_flag: None,
-        next_expected_msg_seq_num: None,
-        max_message_size: None,
-        test_message_indicator: None,
-        username: None,
-        password: None,
         default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
-        msg_type_grp: None,
+        ..Default::default()
     })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
@@ -69,34 +62,22 @@ fn logon_msg_type_grp_no_present() {
 #[test]
 fn logon_msg_type_grp_present_with_two_entries_1() {
     let msg = fixt_message(Box::new(Message::Logon(Logon {
-        encrypt_method: EncryptMethod::NoneOther,
+        encrypt_method: EncryptMethod::None,
         heart_bt_int: 30,
-        raw_data: None,
-        reset_seq_num_flag: None,
-        next_expected_msg_seq_num: None,
-        max_message_size: None,
-        test_message_indicator: None,
-        username: None,
-        password: None,
         default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         msg_type_grp: Some(vec![
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
                 msg_direction: Some(MsgDirection::Send),
-                ref_appl_ver_id: None,
-                ref_appl_ext_id: None,
-                ref_cstm_appl_ver_id: None,
-                default_ver_indicator: None,
+                ..Default::default()
             },
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
                 msg_direction: Some(MsgDirection::Receive),
-                ref_appl_ver_id: None,
-                ref_appl_ext_id: None,
-                ref_cstm_appl_ver_id: None,
-                default_ver_indicator: None,
+                ..Default::default()
             },
         ]),
+        ..Default::default()
     })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
@@ -105,34 +86,22 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
 #[test]
 fn logon_msg_type_grp_present_with_two_entries_2() {
     let msg = fixt_message(Box::new(Message::Logon(Logon {
-        encrypt_method: EncryptMethod::NoneOther,
+        encrypt_method: EncryptMethod::None,
         heart_bt_int: 30,
-        raw_data: None,
-        reset_seq_num_flag: None,
-        next_expected_msg_seq_num: None,
-        max_message_size: None,
-        test_message_indicator: None,
-        username: None,
-        password: None,
         default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         msg_type_grp: Some(vec![
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
-                msg_direction: None,
-                ref_appl_ver_id: None,
-                ref_appl_ext_id: None,
-                ref_cstm_appl_ver_id: None,
                 default_ver_indicator: Some(true),
+                ..Default::default()
             },
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
-                msg_direction: None,
-                ref_appl_ver_id: None,
-                ref_appl_ext_id: None,
-                ref_cstm_appl_ver_id: None,
                 default_ver_indicator: Some(false),
+                ..Default::default()
             },
         ]),
+        ..Default::default()
     })));
     let serialized = msg.serialize();
     FixtMessage::from_bytes(&serialized).expect("Deserialization failed");
