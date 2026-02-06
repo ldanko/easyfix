@@ -21,9 +21,10 @@ async fn acceptor() {
     let settings = Settings {
         sender_comp_id: "n8_fix_test_server".try_into().unwrap(), //: "easyfix-acceptor".try_into().unwrap(),
         sender_sub_id: None,
-        heartbeat_interval: Duration::from_secs(10),
+        heartbeat_interval: Some(10),
         auto_disconnect_after_no_logon_received: Duration::from_secs(3),
         auto_disconnect_after_no_heartbeat: 3,
+        auto_disconnect_after_no_logout: Duration::from_secs(5),
     };
 
     let mut acceptor = Acceptor::new(settings.clone(), Box::new(|_| InMemoryStorage::new()));
@@ -52,8 +53,7 @@ async fn acceptor() {
 
                 send_redundant_resend_requests: false,
                 check_comp_id: true,
-                check_latency: true,
-                max_latency: Duration::from_secs(120),
+                max_latency: Some(Duration::from_secs(120)),
 
                 reset_on_logon: false,
                 reset_on_logout: false,
