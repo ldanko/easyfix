@@ -10,3 +10,5 @@ Cargo.lock
 **/*.rs.bk
 
 Session.vim
+
+**/.claude/settings.local.json
