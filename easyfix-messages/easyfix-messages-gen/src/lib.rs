@@ -1,5 +1,3 @@
-mod r#gen;
-
 use std::{
     collections::HashMap,
     error::Error,
@@ -14,7 +12,8 @@ pub use easyfix_dictionary as dictionary;
 use easyfix_dictionary::{DictionaryBuilder, ParseRejectReason};
 use proc_macro2::TokenStream;
 
-use crate::r#gen::Generator;
+mod code_gen;
+use code_gen::Generator;
 
 fn create_source_file(
     tokens_stream: TokenStream,

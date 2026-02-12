@@ -1,78 +1,77 @@
 use convert_case::{Case, Casing};
-use easyfix_dictionary::{BasicType, Variant};
+use easyfix_dictionary::Variant;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use super::member::Type;
+use super::member::EnumerableType;
 
-pub struct EnumDesc {
+fn variant_ident(name: &str) -> Ident {
+    let mut variant_name = name.to_case(Case::UpperCamel);
+    if variant_name.as_bytes()[0].is_ascii_digit() {
+        variant_name.insert(0, '_');
+    }
+    Ident::new(&variant_name, Span::call_site())
+}
+
+pub struct EnumCodeGen {
     name: Ident,
-    type_: BasicType,
+    tag: u16,
+    enumerable_type: EnumerableType,
     variants: Vec<Variant>,
 }
-impl EnumDesc {
-    pub fn new(name: Ident, type_: BasicType, variants: Vec<Variant>) -> EnumDesc {
-        EnumDesc {
-            name,
-            type_,
+impl EnumCodeGen {
+    pub fn new(
+        name: &str,
+        tag: u16,
+        enumerable_type: EnumerableType,
+        variants: Vec<Variant>,
+    ) -> EnumCodeGen {
+        EnumCodeGen {
+            name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
+            tag,
+            enumerable_type,
             variants,
         }
     }
 
-    fn literal_ctr(&self, value: &str) -> Literal {
-        match self.type_ {
-            BasicType::String | BasicType::MultipleStringValue => {
-                Literal::byte_string(value.as_bytes())
-            }
-            BasicType::Char | BasicType::MultipleCharValue => {
-                Literal::u8_suffixed(value.as_bytes()[0])
-            }
-            BasicType::Int => Literal::i64_suffixed(value.parse().expect("Wrong enum value")),
-            BasicType::NumInGroup => Literal::u8_suffixed(value.parse().expect("Wrong enum value")),
-            type_ => panic!("type {:?} can not be represented as enum", type_),
-        }
+    pub fn tag(&self) -> u16 {
+        self.tag
     }
 
     pub fn generate(&self) -> TokenStream {
         let name = &self.name;
-        let type_ = match self.type_ {
-            t @ (BasicType::Int | BasicType::NumInGroup | BasicType::Char) => {
-                Type::basic_type(t).gen_type()
-            }
-            BasicType::String | BasicType::MultipleStringValue => quote! { &FixStr },
-            BasicType::MultipleCharValue => Type::basic_type(BasicType::Char).gen_type(),
-            type_ => panic!("type {:?} can not be used as enumeration", type_),
+        let try_from_type = match self.enumerable_type {
+            EnumerableType::Int => quote! { Int },
+            EnumerableType::NumInGroup => quote! { NumInGroup },
+            EnumerableType::Char => quote! { Char },
+            EnumerableType::String | EnumerableType::MultipleStringValue => quote! { &FixStr },
+            EnumerableType::MultipleCharValue => quote! { Char },
         };
         let mut variant_def = Vec::with_capacity(self.variants.len());
         let mut variant_name = Vec::with_capacity(self.variants.len());
-        let mut variant_value = Vec::with_capacity(self.variants.len());
         let mut variant_value_as_bytes = Vec::with_capacity(self.variants.len());
-        for value in &self.variants {
-            let v_name = Ident::new(
-                &{
-                    let mut variant_name = value.name().to_case(Case::UpperCamel);
-                    if variant_name.as_bytes()[0].is_ascii_digit() {
-                        variant_name.insert(0, '_');
-                    }
-                    variant_name
-                },
-                Span::call_site(),
-            );
-            let v_value = self.literal_ctr(value.value());
-            let v_value_as_bytes = Literal::byte_string(value.value().as_bytes());
+        for variant in &self.variants {
+            let v_name = variant_ident(variant.name());
+            let v_value_as_bytes = Literal::byte_string(variant.value().as_bytes());
+            // TODO: check in easyfix-dictionary if variant value can be expressed as FixString
+            // (no utf-8, no control characteres, etc), if not check here before using it in
+            // FixStr::from_ascii_unchecked
 
-            let variant_doc_comment = format!("Value \"{}\"", value.value());
+            let variant_doc_comment = format!("Value \"{}\"", variant.value());
             variant_def.push(quote! {
                 #[doc = #variant_doc_comment]
                 #v_name
             });
-            variant_name.push(v_name.clone());
-            variant_value.push(v_value.clone());
-            variant_value_as_bytes.push(v_value_as_bytes.clone());
+            variant_name.push(v_name);
+            variant_value_as_bytes.push(v_value_as_bytes);
         }
+        let variant_value = self
+            .variants
+            .iter()
+            .map(|variant| self.enumerable_type.literal(variant.value()));
         let try_from_match_input = if matches!(
-            self.type_,
-            BasicType::String | BasicType::MultipleStringValue
+            self.enumerable_type,
+            EnumerableType::String | EnumerableType::MultipleStringValue
         ) {
             quote! { match input.as_bytes() }
         } else {
@@ -99,6 +98,7 @@ impl EnumDesc {
             }
 
             impl #name {
+                // TODO: try_*
                 pub const fn from_bytes(input: &[u8]) -> Option<#name> {
                     match input {
                         #(#variant_value_as_bytes => Some(#name::#variant_name),)*
@@ -106,6 +106,7 @@ impl EnumDesc {
                     }
                 }
 
+                // TODO: try_*
                 pub const fn from_fix_str(input: &FixStr) -> Option<#name> {
                     #name::from_bytes(input.as_bytes())
                 }
@@ -117,6 +118,7 @@ impl EnumDesc {
                 }
 
                 pub const fn as_fix_str(&self) -> &'static FixStr {
+                    // Safety: value was checked when it was generated
                     unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
                 }
             }
@@ -127,10 +129,10 @@ impl EnumDesc {
                 }
             }
 
-            impl TryFrom<#type_> for #name {
+            impl TryFrom<#try_from_type> for #name {
                 type Error = ParseRejectReason;
 
-                fn try_from(input: #type_) -> Result<#name, ParseRejectReason> {
+                fn try_from(input: #try_from_type) -> Result<#name, ParseRejectReason> {
                     #try_from_match_input {
                         #(#variant_value => Ok(#name::#variant_name),)*
                         _ => Err(ParseRejectReason::ValueIsIncorrect),
