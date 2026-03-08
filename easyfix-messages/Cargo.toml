@@ -16,6 +16,7 @@ deserialize = ["easyfix-messages-gen/deserialize"]
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
+easyfix-core = { version = "0.1.0", path = "../easyfix-core" }
 itoa = "1.0"
 rust_decimal = { version = "1.36", default-features = false }
 serde = { workspace = true }

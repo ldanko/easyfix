@@ -1,7 +1,6 @@
-pub mod country;
-pub mod currency;
-pub mod deserializer;
 pub mod fields;
 pub mod groups;
 pub mod messages;
-pub mod serializer;
+
+// Re-export from easyfix-core.
+pub use easyfix_core::{country, currency, deserializer, fix_format, serializer};

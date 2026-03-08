@@ -2,7 +2,12 @@ use std::io::Write;
 
 use tracing::warn;
 
-use crate::fields::basic_types::*;
+use crate::basic_types::{
+    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, Float, Int,
+    Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
+    MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum,
+    TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+};
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
 const MAX_MSG_SIZE: usize = 4096;

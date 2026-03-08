@@ -11,6 +11,8 @@ use serde::{
     de::{self, Visitor},
 };
 
+pub use crate::{country::Country, currency::Currency};
+
 pub type Int = i64;
 pub type TagNum = u16;
 pub type SeqNum = u32;
@@ -38,7 +40,6 @@ pub struct FixStr([u8]);
 
 pub type MultipleStringValue = Vec<FixString>;
 
-pub use crate::{country::Country, currency::Currency};
 pub type Exchange = [u8; 4];
 // TODO: don't use Vec here
 pub type MonthYear = Vec<u8>;
@@ -53,7 +54,7 @@ pub enum TimePrecision {
     Nanos = 9,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct UtcTimestamp {
     timestamp: DateTime<Utc>,
     precision: TimePrecision,
@@ -319,7 +320,7 @@ impl<const N: usize> PartialEq<&'_ [u8; N]> for FixString {
 #[macro_export]
 macro_rules! fix_format {
     ($($arg:tt)*) => {{
-        FixString::from_ascii_lossy(std::format!($($arg)*).into_bytes())
+        $crate::basic_types::FixString::from_ascii_lossy(std::format!($($arg)*).into_bytes())
     }}
 }
 
@@ -806,7 +807,15 @@ impl UtcTimestamp {
         timestamp: DateTime::<Utc>::MIN_UTC,
         precision: TimePrecision::Nanos,
     };
+}
 
+impl Default for UtcTimestamp {
+    fn default() -> Self {
+        UtcTimestamp::MIN_UTC
+    }
+}
+
+impl UtcTimestamp {
     /// Creates UtcTimestamp that represents current date and time with default precision
     pub fn now() -> UtcTimestamp {
         UtcTimestamp::with_precision(Utc::now(), TimePrecision::default())
@@ -944,6 +953,224 @@ impl UtcTimeOnly {
 
     pub fn precision(&self) -> TimePrecision {
         self.precision
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MsgType (tag 35) — compact 1-2 byte representation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum MsgTypeError {
+    #[error("Empty message type")]
+    Empty,
+    #[error("Invalid character in message type: {0}")]
+    InvalidChar(u8),
+    #[error("Message type too long: expected 1-2 bytes, got {0}")]
+    TooLong(usize),
+}
+
+fn is_valid_msg_type_char(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z')
+}
+
+/// Trait for types whose value can be used as a MsgType field value.
+/// Implemented by `MsgTypeBase` (in core) and the generated
+/// `MsgType` enum (in easyfix-messages).
+pub trait MsgTypeValue {
+    fn raw_value(&self) -> MsgTypeField;
+}
+
+/// Compact, `Copy` newtype wrapping a validated MsgType raw value.
+///
+/// Stores 1-2 ASCII alphanumeric bytes inline. Single-byte values use
+/// `0` as sentinel in the second position.
+///
+/// `Borrow<[u8]>` returns only the live bytes (enables `HashMap<MsgTypeField, _>`
+/// lookup by `&[u8]`). `Hash` is implemented manually to hash only the live
+/// bytes, satisfying the `Borrow` contract.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct MsgTypeField {
+    buf: [u8; 2],
+}
+
+impl std::hash::Hash for MsgTypeField {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_bytes().hash(state);
+    }
+}
+
+impl<T: MsgTypeValue> From<T> for MsgTypeField {
+    fn from(v: T) -> Self {
+        v.raw_value()
+    }
+}
+
+impl MsgTypeField {
+    /// Construct from a 1-2 byte raw MsgType value. Used internally by
+    /// `MsgTypeBase::raw_value()`.
+    pub(crate) const fn from_raw(buf: [u8; 2]) -> Self {
+        MsgTypeField { buf }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<MsgTypeField, MsgTypeError> {
+        match bytes {
+            [] => Err(MsgTypeError::Empty),
+            [b0] => {
+                if is_valid_msg_type_char(*b0) {
+                    Ok(MsgTypeField { buf: [*b0, 0] })
+                } else {
+                    Err(MsgTypeError::InvalidChar(*b0))
+                }
+            }
+            [b0, b1] => {
+                if !is_valid_msg_type_char(*b0) {
+                    Err(MsgTypeError::InvalidChar(*b0))
+                } else if !is_valid_msg_type_char(*b1) {
+                    Err(MsgTypeError::InvalidChar(*b1))
+                } else {
+                    Ok(MsgTypeField { buf: [*b0, *b1] })
+                }
+            }
+            bytes => Err(MsgTypeError::TooLong(bytes.len())),
+        }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        match self.buf {
+            [_, 0] => &self.buf[..1],
+            [_, _] => &self.buf,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        // SAFETY: We validate during construction that all bytes are ASCII
+        //         alphanumeric (0-9, a-z, A-Z), which are all valid UTF-8
+        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+    }
+
+    pub fn as_fix_str(&self) -> &FixStr {
+        // SAFETY: MsgType bytes are ASCII alphanumeric (0x30-0x39, 0x41-0x5A,
+        //         0x61-0x7A), all within the valid FixStr range (0x20-0x7E)
+        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+    }
+}
+
+impl fmt::Debug for MsgTypeField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MsgTypeField(\"{}\")", self.as_str())
+    }
+}
+
+impl fmt::Display for MsgTypeField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl borrow::Borrow<[u8]> for MsgTypeField {
+    fn borrow(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl std::str::FromStr for MsgTypeField {
+    type Err = MsgTypeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        MsgTypeField::from_bytes(s.as_bytes())
+    }
+}
+
+impl Serialize for MsgTypeField {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for MsgTypeField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct MsgTypeFieldVisitor;
+
+        impl<'de> de::Visitor<'de> for MsgTypeFieldVisitor {
+            type Value = MsgTypeField;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string with 1-2 alphanumeric characters")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                MsgTypeField::from_bytes(value.as_bytes())
+                    .map_err(|e| de::Error::custom(e.to_string()))
+            }
+        }
+
+        deserializer.deserialize_str(MsgTypeFieldVisitor)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SessionStatus (tag 1409)
+// ---------------------------------------------------------------------------
+
+/// Trait for types whose value can be used as a SessionStatus field value.
+/// Implemented by `SessionStatusBase` (in core) and the generated
+/// `SessionStatus` enum (in easyfix-messages).
+pub trait SessionStatusValue {
+    fn raw_value(&self) -> Int;
+}
+
+/// Newtype wrapping a validated SessionStatus raw value.
+/// Can only be constructed from types implementing `SessionStatusValue`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionStatusField(Int);
+
+impl<T: SessionStatusValue> From<T> for SessionStatusField {
+    fn from(v: T) -> Self {
+        Self(v.raw_value())
+    }
+}
+
+impl SessionStatusField {
+    pub fn into_inner(self) -> Int {
+        self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SessionRejectReason (tag 373)
+// ---------------------------------------------------------------------------
+
+/// Trait for types whose value can be used as a SessionRejectReason field value.
+/// Implemented by `SessionRejectReasonBase` (in core) and the generated
+/// `SessionRejectReason` enum (in easyfix-messages).
+pub trait SessionRejectReasonValue {
+    fn raw_value(&self) -> Int;
+}
+
+/// Newtype wrapping a validated SessionRejectReason raw value.
+/// Can only be constructed from types implementing `SessionRejectReasonValue`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SessionRejectReasonField(Int);
+
+impl<T: SessionRejectReasonValue> From<T> for SessionRejectReasonField {
+    fn from(v: T) -> Self {
+        Self(v.raw_value())
+    }
+}
+
+impl SessionRejectReasonField {
+    pub fn into_inner(self) -> Int {
+        self.0
     }
 }
 

@@ -1,0 +1,20 @@
+[package]
+name = "easyfix-core"
+version = "0.1.0"
+authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
+license = "MIT"
+description = "Easy FIX (Financial Information Exchange) toolset - core types."
+repository = "https://github.com/ldanko/easyfix"
+edition = "2024"
+
+[dependencies]
+chrono = { workspace = true }
+easyfix-macros = { version = "0.1.3", path = "../easyfix-macros" }
+itoa = "1.0"
+rust_decimal = { version = "1.36", default-features = false }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+assert_matches = { workspace = true }

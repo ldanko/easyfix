@@ -5,10 +5,11 @@ use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 
 use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
+    basic_types::{FixStr, LocalMktDate, Price, TimePrecision},
     deserializer::{RawMessageError, deserialize_checksum},
-    fields::{LocalMktDate, Price, TimePrecision},
-    messages::BEGIN_STRING,
 };
+
+const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(b"FIXT.1.1") };
 
 #[test]
 fn deserialize_tag_ok() {
@@ -118,7 +119,7 @@ fn raw_message_from_chunks_ok() {
     }
 }
 
-fn deserializer(body: &[u8]) -> Deserializer {
+fn deserializer(body: &[u8]) -> Deserializer<'_> {
     let raw_message = RawMessage {
         begin_string: BEGIN_STRING,
         body,

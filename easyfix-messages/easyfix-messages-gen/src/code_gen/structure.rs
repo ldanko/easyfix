@@ -88,9 +88,7 @@ pub struct Trailer {
 
 impl Trailer {
     pub fn new(members: Vec<Member>) -> Trailer {
-        Trailer {
-            members,
-        }
+        Trailer { members }
     }
 
     fn generate_deserialize(&self) -> TokenStream {
@@ -310,11 +308,7 @@ pub struct MessageCodeGen {
 }
 
 impl MessageCodeGen {
-    pub fn new(
-        name: &str,
-        body_members: Vec<Member>,
-        msg_cat: MsgCat,
-    ) -> MessageCodeGen {
+    pub fn new(name: &str, body_members: Vec<Member>, msg_cat: MsgCat) -> MessageCodeGen {
         MessageCodeGen {
             name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
             body_members,
