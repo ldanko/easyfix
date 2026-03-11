@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, net::SocketAddr, rc::Rc};
 
+use easyfix_messages::messages::FixtMessage;
 use pin_project::pin_project;
 use tokio::net::TcpStream;
 use tracing::{Instrument, info, info_span};
@@ -23,7 +24,7 @@ pub struct Initiator<S: MessagesStorage> {
     id: SessionId,
     settings: Settings,
     session_settings: SessionSettings,
-    state: Rc<RefCell<State<S>>>,
+    state: Rc<RefCell<State<S, FixtMessage>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
     #[pin]

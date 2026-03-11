@@ -9,7 +9,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use easyfix_messages::fields::{FixString, SeqNum, SessionStatus};
+use easyfix_core::base_enums::SessionStatusField;
+use easyfix_messages::{
+    fields::{FixString, SeqNum},
+    messages::FixtMessage,
+};
 use futures::{self, Stream};
 use pin_project::pin_project;
 use tokio::{
@@ -82,7 +86,8 @@ impl Connection for TcpConnection {
     }
 }
 
-type SessionMapInternal<S> = HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<S>>>)>;
+type SessionMapInternal<S> =
+    HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<S, FixtMessage>>>)>;
 
 pub struct SessionsMap<S> {
     map: SessionMapInternal<S>,
@@ -111,7 +116,7 @@ impl<S: MessagesStorage> SessionsMap<S> {
     pub(crate) fn get_session(
         &self,
         session_id: &SessionId,
-    ) -> Option<(SessionSettings, Rc<RefCell<SessionState<S>>>)> {
+    ) -> Option<(SessionSettings, Rc<RefCell<SessionState<S, FixtMessage>>>)> {
         self.map.get(session_id).cloned()
     }
 
@@ -247,7 +252,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
 
     pub fn disable_with_logout(
         &self,
-        session_status: Option<SessionStatus>,
+        session_status: Option<SessionStatusField>,
         reason: Option<FixString>,
     ) {
         info!("acceptor disabled with logout");
@@ -286,7 +291,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     pub fn logout(
         &self,
         session_id: &SessionId,
-        session_status: Option<SessionStatus>,
+        session_status: Option<SessionStatusField>,
         reason: Option<FixString>,
     ) -> Result<(), AcceptorError> {
         if let Some(session) = self.active_sessions.borrow().get(session_id) {
@@ -318,7 +323,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     pub fn disconnect_with_logout(
         &self,
         session_id: &SessionId,
-        session_status: Option<SessionStatus>,
+        session_status: Option<SessionStatusField>,
         reason: Option<FixString>,
     ) -> Result<(), AcceptorError> {
         if let Some(session) = self.active_sessions.borrow().get(session_id) {

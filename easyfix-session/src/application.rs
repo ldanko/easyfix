@@ -5,12 +5,10 @@ use std::{
     task::{Context, Poll},
 };
 
+use easyfix_core::base_enums::{SessionRejectReasonField, SessionStatusField};
 use easyfix_messages::{
     deserializer,
-    fields::{
-        FixString, SeqNum, SessionRejectReason, SessionStatus, TagNum,
-        parse_reject_reason_to_session_reject_reason,
-    },
+    fields::{FixString, SeqNum, TagNum, parse_reject_reason_to_session_reject_reason},
     messages::FixtMessage,
 };
 use futures::Stream;
@@ -30,7 +28,7 @@ pub enum DeserializeError {
         msg_type: Option<FixString>,
         seq_num: SeqNum,
         tag: Option<TagNum>,
-        reason: SessionRejectReason,
+        reason: SessionRejectReasonField,
     },
 }
 
@@ -68,7 +66,7 @@ impl From<deserializer::DeserializeError> for DeserializeError {
                 msg_type,
                 seq_num,
                 tag,
-                reason: parse_reject_reason_to_session_reject_reason(reason),
+                reason: parse_reject_reason_to_session_reject_reason(reason).into(),
             },
         }
     }
@@ -84,12 +82,12 @@ pub(crate) enum InputResponderMsg {
     Reject {
         ref_msg_type: FixString,
         ref_seq_num: SeqNum,
-        reason: SessionRejectReason,
+        reason: SessionRejectReasonField,
         text: FixString,
         ref_tag_id: Option<i64>,
     },
     Logout {
-        session_status: Option<SessionStatus>,
+        session_status: Option<SessionStatusField>,
         text: Option<FixString>,
         disconnect: bool,
     },
@@ -120,7 +118,7 @@ impl<'a> InputResponder<'a> {
         self,
         ref_msg_type: FixString,
         ref_seq_num: SeqNum,
-        reason: SessionRejectReason,
+        reason: SessionRejectReasonField,
         text: FixString,
         ref_tag_id: Option<i64>,
     ) {
@@ -137,7 +135,7 @@ impl<'a> InputResponder<'a> {
 
     pub fn logout(
         self,
-        session_status: Option<SessionStatus>,
+        session_status: Option<SessionStatusField>,
         text: Option<FixString>,
         disconnect: bool,
     ) {

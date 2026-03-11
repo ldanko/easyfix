@@ -6,8 +6,9 @@ use std::{
     time::Duration,
 };
 
+use easyfix_core::base_enums::SessionStatusBase;
 use easyfix_messages::{
-    fields::{FixString, SessionStatus},
+    fields::FixString,
     messages::{FixtMessage, Message},
 };
 use futures_util::{Stream, pin_mut};
@@ -85,7 +86,7 @@ pub fn send(session_id: &SessionId, msg: Box<Message>) -> Result<(), Box<Message
 }
 
 pub fn send_raw(msg: Box<FixtMessage>) -> Result<(), Box<FixtMessage>> {
-    if let Some(sender) = sender(&SessionId::from_input_msg(&msg)) {
+    if let Some(sender) = sender(&SessionId::from_input(&*msg)) {
         sender.send_raw(msg)
     } else {
         Err(msg)
@@ -135,7 +136,7 @@ pub(crate) async fn acceptor_connection<S>(
         }
     };
 
-    let session_id = SessionId::from_input_msg(&msg);
+    let session_id = SessionId::from_input(&*msg);
     debug!(first_msg = ?msg);
 
     // XXX: there should be no await point between active_sessions.insert below
@@ -230,7 +231,7 @@ pub(crate) async fn initiator_connection<S>(
     tcp_stream: TcpStream,
     settings: Settings,
     session_settings: SessionSettings,
-    state: Rc<RefCell<State<S>>>,
+    state: Rc<RefCell<State<S, FixtMessage>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
 ) where
@@ -397,7 +398,7 @@ impl<S: MessagesStorage> Connection<S> {
                     if self.session.on_in_timeout().await {
                         self.session.send_logout(
                             &mut self.session.state().borrow_mut(),
-                            Some(SessionStatus::SessionLogoutComplete),
+                            Some(SessionStatusBase::SessionLogoutComplete.into()),
                             Some(FixString::from_ascii_lossy(
                                 b"Grace period is over".to_vec(),
                             )),

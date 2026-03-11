@@ -93,7 +93,7 @@ async fn acceptor() {
             }
             FixEvent::AppMsgIn(mut msg, _responder) => {
                 info!("App input msg: {:?}", msg.msg_type());
-                let session_id = SessionId::from_input_msg(&msg);
+                let session_id = SessionId::from_input(&*msg);
                 reverse_route(&mut msg.header);
                 let _ = senders.get(&session_id).unwrap().send_raw(msg);
             }

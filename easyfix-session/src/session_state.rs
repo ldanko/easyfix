@@ -1,22 +1,21 @@
 use std::{
     collections::{BTreeMap, HashSet},
+    fmt::Debug,
     ops::RangeInclusive,
     time::Instant,
 };
 
-use easyfix_messages::{
-    fields::{FixString, SeqNum},
-    messages::FixtMessage,
-};
+use easyfix_core::message::HeaderAccess;
+use easyfix_messages::fields::{FixString, SeqNum};
 use tracing::{instrument, trace};
 
 use crate::messages_storage::MessagesStorage;
 
 #[derive(Debug)]
-struct Messages(BTreeMap<SeqNum, Box<FixtMessage>>);
+struct Messages<M: Debug>(BTreeMap<SeqNum, Box<M>>);
 
-impl Messages {
-    fn new() -> Messages {
+impl<M: Debug> Messages<M> {
+    fn new() -> Messages<M> {
         Messages(BTreeMap::new())
     }
 
@@ -24,11 +23,11 @@ impl Messages {
         self.0.keys().next().copied()
     }
 
-    fn enqueue(&mut self, seq_num: SeqNum, msg: Box<FixtMessage>) {
+    fn enqueue(&mut self, seq_num: SeqNum, msg: Box<M>) {
         self.0.insert(seq_num, msg);
     }
 
-    fn retrieve(&mut self, seq_num: SeqNum) -> Option<Box<FixtMessage>> {
+    fn retrieve(&mut self, seq_num: SeqNum) -> Option<Box<M>> {
         self.0.remove(&seq_num)
     }
 
@@ -38,7 +37,7 @@ impl Messages {
 }
 
 #[derive(Debug)]
-pub(crate) struct State<S> {
+pub(crate) struct State<S, M: Debug> {
     enabled: bool,
     received_logon: bool,
     logon_sent: bool,
@@ -60,14 +59,14 @@ pub(crate) struct State<S> {
     /// This value is used to populate the resendRange if necessary.
     next_expected_msg_seq_num: SeqNum,
 
-    queue: Messages,
+    queue: Messages<M>,
     messages_storage: S,
 
     grace_period_test_req_ids: HashSet<FixString>,
 }
 
-impl<S: MessagesStorage> State<S> {
-    pub(crate) fn new(messages_storage: S) -> State<S> {
+impl<S: MessagesStorage, M: Debug + HeaderAccess> State<S, M> {
+    pub(crate) fn new(messages_storage: S) -> State<S, M> {
         State {
             enabled: true,
             received_logon: false,
@@ -188,16 +187,17 @@ impl<S: MessagesStorage> State<S> {
     }
 
     #[instrument(skip_all)]
-    pub fn enqueue_msg(&mut self, msg: Box<FixtMessage>) {
-        trace!(msg_seq_num = msg.header.msg_seq_num, msg_type = ?msg.msg_type());
-        self.queue.enqueue(msg.header.msg_seq_num, msg);
+    pub fn enqueue_msg(&mut self, msg: Box<M>) {
+        let seq_num = msg.msg_seq_num();
+        trace!(msg_seq_num = seq_num, msg_type = ?msg.msg_type2());
+        self.queue.enqueue(seq_num, msg);
     }
 
     pub fn lowest_queued_seq_num(&self) -> Option<SeqNum> {
         self.queue.first_seq()
     }
 
-    pub fn retrieve_msg(&mut self) -> Option<Box<FixtMessage>> {
+    pub fn retrieve_msg(&mut self) -> Option<Box<M>> {
         self.queue.retrieve(self.next_target_msg_seq_num())
     }
 
