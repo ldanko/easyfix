@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     error::Error,
     fs,
     io::prelude::*,
@@ -9,7 +8,7 @@ use std::{
 };
 
 pub use easyfix_dictionary as dictionary;
-use easyfix_dictionary::{DictionaryBuilder, ParseRejectReason};
+use easyfix_dictionary::DictionaryBuilder;
 use proc_macro2::TokenStream;
 
 mod code_gen;
@@ -75,7 +74,6 @@ pub fn generate_fix_messages(
     fields_file: impl AsRef<Path>,
     groups_file: impl AsRef<Path>,
     messages_file: impl AsRef<Path>,
-    reject_reason_overrides: Option<HashMap<ParseRejectReason, String>>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
     eprintln!("fields file path: {}", fields_file.as_ref().display());
     eprintln!("groups file path: {}", groups_file.as_ref().display());
@@ -88,10 +86,6 @@ pub fn generate_fix_messages(
     if let Some(some_fixt_xml_path) = fixt_xml_path {
         builder = builder.with_fixt_xml(some_fixt_xml_path.as_ref());
     }
-    if let Some(reject_reason_overrides) = reject_reason_overrides {
-        builder = builder.with_custom_rejection_reason(reject_reason_overrides);
-    }
-
     let dictionary = builder.build()?;
     let generator = log_duration("Generator ready", || Generator::new(&dictionary));
 

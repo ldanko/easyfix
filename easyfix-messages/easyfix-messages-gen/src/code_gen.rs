@@ -1,24 +1,30 @@
-use std::{collections::HashMap, rc::Rc};
+use std::collections::HashMap;
 
 use convert_case::{Case, Casing};
-use easyfix_dictionary::{self as dict, Dictionary, ParseRejectReason, Version};
+use easyfix_dictionary::{self as dict, Dictionary, Version};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
-use strum::IntoEnumIterator;
 
+mod admin;
 mod enumeration;
+mod group;
+mod header;
 mod member;
+mod message;
 mod message_enum;
-mod structure;
+mod trailer;
 
 use self::{
     enumeration::EnumCodeGen,
+    group::GroupCodeGen,
+    header::Header,
     member::{EnumerableType, Member},
-    structure::{GroupCodeGen, Header, MessageCodeGen, Trailer},
+    message::MessageCodeGen,
+    trailer::Trailer,
 };
 
 pub struct Generator {
-    begin_string: Vec<u8>,
+    version: Version,
     header: Header,
     trailer: Trailer,
     messages: Vec<MessageCodeGen>,
@@ -26,7 +32,6 @@ pub struct Generator {
     enums: Vec<EnumCodeGen>,
     fields_names: Vec<Ident>,
     fields_numbers: Vec<u16>,
-    reject_reason_overrides: HashMap<ParseRejectReason, String>,
 }
 
 fn convert_members(members: &[dict::Member]) -> Vec<Member> {
@@ -38,8 +43,6 @@ impl Generator {
         let dictionary = dictionary
             .flatten()
             .expect("Failed to flatten dictionary components");
-
-        let begin_string = dictionary.version().begin_string().into_bytes();
 
         let header = Header::new(convert_members(dictionary.header().members()));
         let trailer = Trailer::new(convert_members(dictionary.trailer().members()));
@@ -137,8 +140,10 @@ impl Generator {
             })
             .unzip();
 
+        let version = dictionary.version();
+
         Generator {
-            begin_string,
+            version,
             header,
             trailer,
             messages,
@@ -146,36 +151,22 @@ impl Generator {
             enums,
             fields_names,
             fields_numbers,
-            reject_reason_overrides: dictionary.reject_reason_overrides().clone(),
         }
     }
 
     pub fn generate_fields(&self) -> TokenStream {
         let enums = self.enums.iter().map(|enum_| enum_.generate());
-
-        let reject_reason_vector = ParseRejectReason::iter().map(|reason| {
-            let parse_enum_name = Ident::new(reason.as_ref(), Span::call_site());
-            let session_name = self
-                .reject_reason_overrides
-                .get(&reason)
-                .map(|s| s.as_str())
-                .unwrap_or_else(|| reason.as_ref());
-            let session_enum_name = Ident::new(session_name, Span::call_site());
-            quote! {
-                ParseRejectReason::#parse_enum_name => SessionRejectReason::#session_enum_name,
-            }
-        });
+        let base_enum_conversions = self
+            .enums
+            .iter()
+            .map(|enum_| enum_.generate_base_enum_conversion());
 
         quote! {
-            use crate::deserializer::ParseRejectReason;
-
-            pub fn parse_reject_reason_to_session_reject_reason(input: ParseRejectReason) -> SessionRejectReason {
-                match input {
-                    #(#reject_reason_vector)*
-                }
-            }
+            use easyfix_core::base_messages::{EncryptMethodBase, SessionRejectReasonBase};
 
             #(#enums)*
+
+            #(#base_enum_conversions)*
         }
     }
 
@@ -183,12 +174,23 @@ impl Generator {
         let groups_defs = self.groups.iter().map(|group| group.generate());
 
         quote! {
-        #[allow(unused_imports)]
+            #[allow(unused_imports)]
             use crate::{
-                deserializer::{DeserializeError, Deserializer, ParseRejectReason},
-                fields::{self, basic_types::*, SessionRejectReason},
+                deserializer::{DeserializeError, Deserializer},
+                fields::{
+                    self,
+                    basic_types::{
+                        Amt, Boolean, Char, Country, Currency, Data, Exchange, FixString,
+                        Float, Int, Language, Length, LocalMktDate, MonthYear,
+                        MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
+                        Price, PriceOffset, Qty, SeqNum, TzTimeOnly, TzTimestamp,
+                        UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+                    },
+                    SessionRejectReason,
+                },
                 serializer::Serializer,
             };
+            use easyfix_core::base_messages::SessionRejectReasonBase;
 
             #(#groups_defs)*
         }
@@ -198,8 +200,11 @@ impl Generator {
         let mut msg_names = Vec::new();
 
         // Generate Header and Trailer
-        let header_def = self.header.generate();
+        let header_def = self.header.generate(self.version);
         let trailer_def = self.trailer.generate();
+
+        let admin_base_conversions =
+            admin::generate_admin_base_conversions(&self.messages, self.version);
 
         let structs_defs = self.messages.iter().map(|msg| msg.generate());
 
@@ -208,7 +213,7 @@ impl Generator {
             msg_names.push(msg.name());
         }
 
-        let begin_string = Literal::byte_string(&self.begin_string);
+        let begin_string = Literal::byte_string(&self.version.begin_string().into_bytes());
         let field_tag_def =
             message_enum::generate_field_tag(&self.fields_names, &self.fields_numbers);
         let message_enum_def = message_enum::generate_message_enum(&msg_names);
@@ -217,12 +222,32 @@ impl Generator {
         quote! {
             #[allow(unused_imports)]
             use crate::{
-                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage, ParseRejectReason},
-                fields::{self, basic_types::*, SessionRejectReason},
+                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
+                fields::{
+                    self,
+                    basic_types::{
+                        Amt, Boolean, Char, Country, Currency, Data, Exchange, FixStr,
+                        FixString, Float, Int, Language, Length, LocalMktDate, MonthYear,
+                        MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue,
+                        NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum,
+                        SessionRejectReasonField, SessionStatusField, TagNum, ToFixString,
+                        TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp,
+                        XmlData,
+                    },
+                    SessionRejectReason,
+                },
                 groups::*,
                 serializer::Serializer,
             };
+            use std::borrow::Cow;
             use std::fmt;
+            use easyfix_core::base_messages::{
+                AdminBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
+                RejectBase, ResendRequestBase, SessionRejectReasonBase, SequenceResetBase,
+                TestRequestBase,
+            };
+            use easyfix_core::message::{HeaderAccess, SessionMessage};
+            pub use easyfix_core::message::MsgCat;
 
             pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(#begin_string) };
 
@@ -235,6 +260,8 @@ impl Generator {
             #trailer_def
 
             #(#structs_defs)*
+
+            #admin_base_conversions
 
             #message_enum_def
 

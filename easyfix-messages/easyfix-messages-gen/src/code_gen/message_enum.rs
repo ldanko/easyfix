@@ -1,6 +1,8 @@
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
+use super::admin;
+
 /// Generate the `FieldTag` enum and its impls.
 pub fn generate_field_tag(fields_names: &[Ident], fields_numbers: &[u16]) -> TokenStream {
     let fields_names_as_bytes = fields_names
@@ -50,14 +52,17 @@ pub fn generate_field_tag(fields_names: &[Ident], fields_numbers: &[u16]) -> Tok
     }
 }
 
-/// Generate the `Message` enum with serialize/deserialize dispatch,
+/// Generate the `Body` enum with serialize/deserialize dispatch,
 /// From impls, msg_type(), and msg_cat().
 pub fn generate_message_enum(names: &[&Ident]) -> TokenStream {
+    let admin_base_dispatch = admin::generate_admin_base_dispatch();
+    let names_str = names.iter().map(|name| Literal::string(&name.to_string()));
+
     let impl_from_msg = names.iter().map(|name| {
         quote! {
-            impl From<#name> for Message {
-                fn from(msg: #name) -> Message {
-                    Message::#name(msg)
+            impl From<#name> for Body {
+                fn from(msg: #name) -> Body {
+                    Body::#name(msg)
                 }
             }
         }
@@ -68,21 +73,21 @@ pub fn generate_message_enum(names: &[&Ident]) -> TokenStream {
         #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
         #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
         #[allow(clippy::large_enum_variant)]
-        pub enum Message {
+        pub enum Body {
             #(#names(#names),)*
         }
 
-        impl Message {
+        impl Body {
             fn serialize(&self, serializer: &mut Serializer) {
                 match self {
-                    #(Message::#names(msg) => msg.serialize(serializer),)*
+                    #(Body::#names(msg) => msg.serialize(serializer),)*
                 }
             }
 
             fn deserialize(
                 deserializer: &mut Deserializer,
                 msg_type: MsgType
-            ) -> Result<Box<Message>, DeserializeError> {
+            ) -> Result<Box<Body>, DeserializeError> {
                 match msg_type {
                     #(
                         MsgType::#names => Ok(#names::deserialize(deserializer)?),
@@ -92,43 +97,43 @@ pub fn generate_message_enum(names: &[&Ident]) -> TokenStream {
 
             pub const fn msg_type(&self) -> MsgType {
                 match self {
-                    #(Message::#names(_) => MsgType::#names,)*
+                    #(Body::#names(_) => MsgType::#names,)*
                 }
             }
 
             pub const fn msg_cat(&self) -> MsgCat {
                 match self {
-                    #(Message::#names(msg) => msg.msg_cat(),)*
+                    #(Body::#names(msg) => msg.msg_cat(),)*
                 }
             }
+
+            pub const fn name(&self) -> &'static str {
+                match self {
+                    #(Body::#names(_) => #names_str,)*
+                }
+            }
+
+            #admin_base_dispatch
         }
 
         #(#impl_from_msg)*
     }
 }
 
-/// Generate the `FixtMessage` struct and its impls.
+/// Generate the `Message` struct and its impls.
 pub fn generate_fixt_message() -> TokenStream {
     quote! {
         #[derive(Clone, Debug)]
         #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
         #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
-        pub struct FixtMessage {
-            pub header: Box<Header>,
-            pub body: Box<Message>,
-            pub trailer: Box<Trailer>,
+        pub struct Message {
+            pub header: Header,
+            pub body: Box<Body>,
+            pub trailer: Trailer,
         }
 
-        impl FixtMessage {
-            pub fn serialize(&self) -> Vec<u8> {
-                let mut serializer = Serializer::new();
-                self.header.serialize(&mut serializer);
-                self.body.serialize(&mut serializer);
-                self.trailer.serialize(&mut serializer);
-                serializer.take()
-            }
-
-            pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<FixtMessage>, DeserializeError> {
+        impl Message {
+            pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
                 let begin_string = deserializer.begin_string();
                 if begin_string != BEGIN_STRING {
                     return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
@@ -144,46 +149,46 @@ pub fn generate_fixt_message() -> TokenStream {
                     let msg_type_range = deserializer.deserialize_msg_type()?;
                     let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
                     let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
-                        return Err(deserializer.reject(Some(35), ParseRejectReason::InvalidMsgtype));
+                        return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
                     };
                     msg_type
                 } else {
                     return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                 };
 
-                let header = Header::deserialize(&mut deserializer, begin_string, body_length, msg_type)
+                let header = Header::deserialize(&mut deserializer, begin_string, body_length)
                     .map_err(|err| {
                         if let DeserializeError::Reject { reason, .. } = err
-                            && matches!(reason, ParseRejectReason::RequiredTagMissing)
+                            && reason == SessionRejectReasonBase::RequiredTagMissing
                             && let Ok(Some(tag)) = deserializer.deserialize_tag_num()
                         {
                             deserializer
-                                .reject(Some(tag), ParseRejectReason::TagSpecifiedOutOfRequiredOrder)
+                                .reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder)
                         } else {
                             err
                         }
                     })?;
 
-                let body = Message::deserialize(&mut deserializer, msg_type)?;
+                let body = Body::deserialize(&mut deserializer, msg_type)?;
 
                 let trailer = Trailer::deserialize(&mut deserializer)?;
 
-                Ok(Box::new(FixtMessage {
+                Ok(Box::new(Message {
                     header,
                     body,
-                    trailer
+                    trailer,
                 }))
             }
 
-            pub fn from_raw_message(raw_message: RawMessage) -> Result<Box<FixtMessage>, DeserializeError> {
+            pub fn from_raw_message(raw_message: RawMessage) -> Result<Box<Message>, DeserializeError> {
                 let deserializer = Deserializer::from_raw_message(raw_message);
-                FixtMessage::deserialize(deserializer)
+                Message::deserialize(deserializer)
             }
 
-            pub fn from_bytes(input: &[u8]) -> Result<Box<FixtMessage>, DeserializeError> {
+            pub fn from_bytes(input: &[u8]) -> Result<Box<Message>, DeserializeError> {
                 let (_, raw_msg) = raw_message(input)?;
                 let deserializer = Deserializer::from_raw_message(raw_msg);
-                FixtMessage::deserialize(deserializer)
+                Message::deserialize(deserializer)
             }
 
             // TODO: Like chrono::Format::DelayedFormat
@@ -200,9 +205,60 @@ pub fn generate_fixt_message() -> TokenStream {
             pub const fn msg_type(&self) -> MsgType {
                 self.body.msg_type()
             }
+        }
 
-            pub const fn msg_cat(&self) -> MsgCat {
+        impl SessionMessage for Message {
+            fn from_raw_message(raw: RawMessage<'_>) -> Result<Self, DeserializeError> {
+                let deserializer = Deserializer::from_raw_message(raw);
+                Ok(*Message::deserialize(deserializer)?)
+            }
+
+            fn serialize(&self) -> Vec<u8> {
+                let mut serializer = Serializer::new();
+                // Framing tags (8, 9, 35) are written here, not in Header::serialize().
+                // Tag 8: BeginString
+                serializer.output_mut().extend_from_slice(b"8=");
+                serializer.serialize_string(&self.header.begin_string);
+                serializer.output_mut().push(b'\x01');
+                // Tag 9: BodyLength (placeholder, patched by serialize_checksum)
+                serializer.serialize_body_len();
+                // Tag 35: MsgType (derived from body, not stored in Header)
+                serializer.output_mut().extend_from_slice(b"35=");
+                serializer.serialize_enum(&self.body.msg_type());
+                serializer.output_mut().push(b'\x01');
+                // Remaining header fields (34, 49, 52, etc.)
+                self.header.serialize(&mut serializer);
+                self.body.serialize(&mut serializer);
+                self.trailer.serialize(&mut serializer);
+                serializer.take()
+            }
+
+            fn header(&self) -> HeaderBase<'_> {
+                HeaderBase::from(&self.header)
+            }
+
+            fn try_as_admin(&self) -> Option<AdminBase<'_>> {
+                self.body.try_as_admin_base()
+            }
+
+            fn msg_type(&self) -> MsgTypeField {
+                self.body.msg_type().raw_value()
+            }
+
+            fn msg_cat(&self) -> MsgCat {
                 self.body.msg_cat()
+            }
+
+            fn name(&self) -> &'static str {
+                self.body.name()
+            }
+
+            fn from_admin(header: HeaderBase<'static>, admin: AdminBase<'static>) -> Self {
+                Message {
+                    header: Header::from(header),
+                    body: Box::new(Body::from(admin)),
+                    trailer: Trailer::default(),
+                }
             }
         }
     }

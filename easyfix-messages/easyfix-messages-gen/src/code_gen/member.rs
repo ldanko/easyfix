@@ -110,6 +110,18 @@ impl EnumerableType {
         }
     }
 
+    /// Returns the underlying `BasicType` this enumerable type was created from.
+    pub fn to_basic_type(&self) -> BasicType {
+        match self {
+            EnumerableType::Int => BasicType::Int,
+            EnumerableType::NumInGroup => BasicType::NumInGroup,
+            EnumerableType::Char => BasicType::Char,
+            EnumerableType::String => BasicType::String,
+            EnumerableType::MultipleCharValue => BasicType::MultipleCharValue,
+            EnumerableType::MultipleStringValue => BasicType::MultipleStringValue,
+        }
+    }
+
     fn is_multiple(&self) -> bool {
         matches!(self, Self::MultipleCharValue | Self::MultipleStringValue)
     }
@@ -504,11 +516,11 @@ impl Field {
                 | SpecialTag::MsgType,
             ) => quote! {
                 // this tags was processed separately
-                return Err(deserializer.reject(Some(#num), ParseRejectReason::TagAppearsMoreThanOnce));
+                return Err(deserializer.reject(Some(#num), SessionRejectReasonBase::TagAppearsMoreThanOnce));
             },
             Some(SpecialTag::MsgSeqNum) => quote! {
                 if #name.is_some() {
-                    return Err(deserializer.reject(Some(#num), ParseRejectReason::TagAppearsMoreThanOnce));
+                    return Err(deserializer.reject(Some(#num), SessionRejectReasonBase::TagAppearsMoreThanOnce));
                 }
                 let msg_seq_num_value = #deserialize?;
                 deserializer.set_seq_num(msg_seq_num_value);
@@ -516,7 +528,7 @@ impl Field {
             },
             None => quote! {
                 if #name.is_some() {
-                    return Err(deserializer.reject(Some(#num), ParseRejectReason::TagAppearsMoreThanOnce));
+                    return Err(deserializer.reject(Some(#num), SessionRejectReasonBase::TagAppearsMoreThanOnce));
                 }
                 #name = Some(#deserialize?);
             },
@@ -536,10 +548,10 @@ impl Field {
     /// ```rust,ignore
     /// Logon {
     ///     encrypt_method: encrypt_method.ok_or_else(|| {
-    ///         deserializer.reject(Some(98u16), ParseRejectReason::RequiredTagMissing)
+    ///         deserializer.reject(Some(98u16), SessionRejectReasonBase::RequiredTagMissing)
     ///     })?,
     ///     heart_bt_int: heart_bt_int.ok_or_else(|| {
-    ///         deserializer.reject(Some(108u16), ParseRejectReason::RequiredTagMissing)
+    ///         deserializer.reject(Some(108u16), SessionRejectReasonBase::RequiredTagMissing)
     ///     })?,
     ///     raw_data,
     ///     reset_seq_num_flag,
@@ -553,7 +565,7 @@ impl Field {
             SpecialTag::from_tag(self.number).is_some_and(|s| s.skips_required_check());
         if required && !skips_required {
             quote! {
-                #name: #name.ok_or_else(|| deserializer.reject(Some(#num), ParseRejectReason::RequiredTagMissing))?
+                #name: #name.ok_or_else(|| deserializer.reject(Some(#num), SessionRejectReasonBase::RequiredTagMissing))?
             }
         } else {
             quote! {
@@ -684,20 +696,20 @@ impl RawData {
         };
         quote! {
             if #len_name.is_some() {
-                return Err(deserializer.reject(Some(#len_num), ParseRejectReason::TagAppearsMoreThanOnce));
+                return Err(deserializer.reject(Some(#len_num), SessionRejectReasonBase::TagAppearsMoreThanOnce));
             }
             let len = deserializer.deserialize_length()?;
             #len_name = Some(len);
             if deserializer.deserialize_tag_num()?.ok_or_else(|| {
-                deserializer.reject(Some(#data_num), ParseRejectReason::RequiredTagMissing)
+                deserializer.reject(Some(#data_num), SessionRejectReasonBase::RequiredTagMissing)
             })? != #data_num
             {
-                return Err(deserializer.reject(Some(#len_num), ParseRejectReason::TagSpecifiedOutOfRequiredOrder));
+                return Err(deserializer.reject(Some(#len_num), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
             }
             // This should never happen, as error would be
             // returned in #name.is_some() case.
             if #data_name.is_some() {
-                return Err(deserializer.reject(Some(#len_num), ParseRejectReason::TagAppearsMoreThanOnce));
+                return Err(deserializer.reject(Some(#len_num), SessionRejectReasonBase::TagAppearsMoreThanOnce));
             }
             #data_name = Some(#raw_data_deserialize(len as usize)?);
         }
@@ -712,7 +724,7 @@ impl RawData {
             quote! { #len_num => { #dv } },
             quote! {
                 #data_num => {
-                    return Err(deserializer.reject(Some(tag), ParseRejectReason::TagSpecifiedOutOfRequiredOrder));
+                    return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
                 }
             },
         ]
@@ -724,7 +736,7 @@ impl RawData {
         let data_num = self.data_number;
         if required {
             quote! {
-                #data_name: #data_name.ok_or_else(|| deserializer.reject(Some(#data_num), ParseRejectReason::RequiredTagMissing))?
+                #data_name: #data_name.ok_or_else(|| deserializer.reject(Some(#data_num), SessionRejectReasonBase::RequiredTagMissing))?
             }
         } else {
             quote! {
@@ -845,12 +857,12 @@ impl Group {
         let deserialize = quote! { #data_type::deserialize(deserializer, num_in_group_tag, expected_tags, last_run) };
         quote! {
             if #num_in_gropup_name.is_some() {
-                return Err(deserializer.reject(Some(#num_in_group_number), ParseRejectReason::TagAppearsMoreThanOnce));
+                return Err(deserializer.reject(Some(#num_in_group_number), SessionRejectReasonBase::TagAppearsMoreThanOnce));
             }
             let len = deserializer.deserialize_num_in_group()?;
             #num_in_gropup_name = Some(len);
             if #name.is_some() {
-                return Err(deserializer.reject(Some(#num_in_group_number), ParseRejectReason::TagAppearsMoreThanOnce));
+                return Err(deserializer.reject(Some(#num_in_group_number), SessionRejectReasonBase::TagAppearsMoreThanOnce));
             }
             let num_in_group_tag = #num_in_group_number;
             let expected_tags = &[#(#expected_tags),*];
@@ -877,7 +889,7 @@ impl Group {
         let num = &self.num_in_group_number;
         if required {
             quote! {
-                #name: #name.ok_or_else(|| deserializer.reject(Some(#num), ParseRejectReason::RequiredTagMissing))?
+                #name: #name.ok_or_else(|| deserializer.reject(Some(#num), SessionRejectReasonBase::RequiredTagMissing))?
             }
         } else {
             quote! {
@@ -987,6 +999,19 @@ impl Member {
 
     pub fn tag_num(&self) -> u16 {
         self.definition.tag_num()
+    }
+
+    /// Check if this member is a field with the specified underlying basic type.
+    /// Works for both plain fields and enum fields (checks the enum's backing type).
+    /// Returns false for groups or raw data.
+    pub fn has_basic_type(&self, expected: BasicType) -> bool {
+        match &*self.definition {
+            MemberDefinition::Field(field) => match &field.data_type {
+                DataType::BasicType(BasicTypeCodeGen(bt)) => *bt == expected,
+                DataType::EnumerableType(_, et) => et.to_basic_type() == expected,
+            },
+            _ => false,
+        }
     }
 
     /// Generate member definition for use in structs definitions.
