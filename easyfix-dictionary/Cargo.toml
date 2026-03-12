@@ -10,6 +10,7 @@ edition = "2024"
 rust-version = "1.85.0"
 
 [dependencies]
+easyfix-core = { version = "0.1.0", path = "../easyfix-core" }
 quick-xml = { version = "0.37.2", features = ["serialize"] }
 serde = { workspace = true }
 thiserror = { workspace = true }

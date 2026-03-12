@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use assert_matches::assert_matches;
 use quick_xml::de::from_str;
 

@@ -7,15 +7,9 @@
 //! - XML-based structures (Field, Component, Group, etc.)
 //! - Serialization/deserialization helpers for FIX-specific formats
 
-use std::{
-    borrow::Borrow,
-    fmt,
-    hash::Hash,
-    ops::Deref,
-    str::{self, FromStr},
-};
+use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(test)]
 mod tests;
@@ -241,149 +235,7 @@ pub enum MsgCat {
     App,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum MsgTypeError {
-    #[error("Empty message type")]
-    Empty,
-    #[error("Invalid character in message type: {0}")]
-    InvalidChar(u8),
-    #[error("Message type too long: expected 1-2 bytes, got {0}")]
-    TooLong(usize),
-}
-
-// Helper function to check MsgType validity
-fn is_valid_char(byte: u8) -> bool {
-    matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z')
-}
-
-#[derive(Clone, Copy, Eq)]
-pub struct MsgType {
-    buf: [u8; 2],
-}
-
-impl MsgType {
-    pub fn from_bytes(bytes: &[u8]) -> Result<MsgType, MsgTypeError> {
-        match bytes {
-            [] => Err(MsgTypeError::Empty),
-            [b0] => {
-                if is_valid_char(*b0) {
-                    Ok(MsgType { buf: [*b0, 0] })
-                } else {
-                    Err(MsgTypeError::InvalidChar(*b0))
-                }
-            }
-            [b0, b1] => {
-                if !is_valid_char(*b0) {
-                    Err(MsgTypeError::InvalidChar(*b0))
-                } else if !is_valid_char(*b1) {
-                    Err(MsgTypeError::InvalidChar(*b1))
-                } else {
-                    Ok(MsgType { buf: [*b0, *b1] })
-                }
-            }
-            bytes => Err(MsgTypeError::TooLong(bytes.len())),
-        }
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        match self.buf {
-            [_, 0] => &self.buf[..1],
-            [_, _] => &self.buf,
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        // SAFETY: We validate during construction that all bytes are ASCII
-        //         alphanumeric (0-9, a-z, A-Z), which are all valid UTF-8
-        //         characters
-        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
-    }
-}
-
-impl fmt::Debug for MsgType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("MsgType(\"{}\")", self.as_str()))
-    }
-}
-
-impl fmt::Display for MsgType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl Deref for MsgType {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_bytes()
-    }
-}
-
-impl Borrow<[u8]> for MsgType {
-    fn borrow(&self) -> &[u8] {
-        self.as_bytes()
-    }
-}
-
-impl FromStr for MsgType {
-    type Err = MsgTypeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        MsgType::from_bytes(s.as_bytes())
-    }
-}
-
-impl PartialEq for MsgType {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_bytes() == other.as_bytes()
-    }
-}
-
-impl Hash for MsgType {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_bytes().hash(state);
-    }
-}
-
-impl Serialize for MsgType {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Convert MsgType to string and serialize
-        let bytes = self.as_bytes();
-        let s = str::from_utf8(bytes).map_err(ser::Error::custom)?;
-        serializer.serialize_str(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for MsgType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // Define a visitor for deserializing into MsgType
-        struct MsgTypeVisitor;
-
-        impl<'de> de::Visitor<'de> for MsgTypeVisitor {
-            type Value = MsgType;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string with 1-2 alphanumeric characters")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                MsgType::from_bytes(value.as_bytes()).map_err(|e| de::Error::custom(e.to_string()))
-            }
-        }
-
-        deserializer.deserialize_str(MsgTypeVisitor)
-    }
-}
+pub use easyfix_core::basic_types::MsgTypeField as MsgType;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
