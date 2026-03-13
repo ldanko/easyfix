@@ -9,10 +9,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use easyfix_core::base_enums::SessionStatusField;
-use easyfix_messages::{
-    fields::{FixString, SeqNum},
-    messages::FixtMessage,
+use easyfix_core::{
+    basic_types::{FixString, SeqNum, SessionStatusField},
+    message::SessionMessage,
 };
 use futures::{self, Stream};
 use pin_project::pin_project;
@@ -86,16 +85,13 @@ impl Connection for TcpConnection {
     }
 }
 
-type SessionMapInternal<S> =
-    HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<S, FixtMessage>>>)>;
-
-pub struct SessionsMap<S> {
-    map: SessionMapInternal<S>,
+pub struct SessionsMap<M, S> {
+    map: HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<M, S>>>)>,
     message_storage_builder: Box<dyn Fn(&SessionId) -> S>,
 }
 
-impl<S: MessagesStorage> SessionsMap<S> {
-    fn new(message_storage_builder: Box<dyn Fn(&SessionId) -> S>) -> SessionsMap<S> {
+impl<M: SessionMessage, S: MessagesStorage> SessionsMap<M, S> {
+    fn new(message_storage_builder: Box<dyn Fn(&SessionId) -> S>) -> SessionsMap<M, S> {
         SessionsMap {
             map: HashMap::new(),
             message_storage_builder,
@@ -116,7 +112,7 @@ impl<S: MessagesStorage> SessionsMap<S> {
     pub(crate) fn get_session(
         &self,
         session_id: &SessionId,
-    ) -> Option<(SessionSettings, Rc<RefCell<SessionState<S, FixtMessage>>>)> {
+    ) -> Option<(SessionSettings, Rc<RefCell<SessionState<M, S>>>)> {
         self.map.get(session_id).cloned()
     }
 
@@ -125,15 +121,15 @@ impl<S: MessagesStorage> SessionsMap<S> {
     }
 }
 
-pub struct SessionTask<S> {
+pub struct SessionTask<M: SessionMessage, S> {
     settings: Settings,
-    sessions: Rc<RefCell<SessionsMap<S>>>,
-    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
-    emitter: Emitter,
+    sessions: Rc<RefCell<SessionsMap<M, S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<M, S>>>,
+    emitter: Emitter<M>,
     enabled: Rc<Cell<bool>>,
 }
 
-impl<S> Clone for SessionTask<S> {
+impl<M: SessionMessage, S> Clone for SessionTask<M, S> {
     fn clone(&self) -> Self {
         Self {
             settings: self.settings.clone(),
@@ -145,14 +141,14 @@ impl<S> Clone for SessionTask<S> {
     }
 }
 
-impl<S: MessagesStorage + 'static> SessionTask<S> {
+impl<M: SessionMessage + 'static, S: MessagesStorage + 'static> SessionTask<M, S> {
     fn new(
         settings: Settings,
-        sessions: Rc<RefCell<SessionsMap<S>>>,
-        active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
-        emitter: Emitter,
+        sessions: Rc<RefCell<SessionsMap<M, S>>>,
+        active_sessions: Rc<RefCell<ActiveSessionsMap<M, S>>>,
+        emitter: Emitter<M>,
         enabled: Rc<Cell<bool>>,
-    ) -> SessionTask<S> {
+    ) -> SessionTask<M, S> {
         SessionTask {
             settings,
             sessions,
@@ -196,23 +192,23 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
     }
 }
 
-pub(crate) type ActiveSessionsMap<S> = HashMap<SessionId, Rc<Session<S>>>;
+pub(crate) type ActiveSessionsMap<M, S> = HashMap<SessionId, Rc<Session<M, S>>>;
 
 #[pin_project]
-pub struct Acceptor<S> {
-    sessions: Rc<RefCell<SessionsMap<S>>>,
-    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
-    session_task: SessionTask<S>,
+pub struct Acceptor<M: SessionMessage, S> {
+    sessions: Rc<RefCell<SessionsMap<M, S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<M, S>>>,
+    session_task: SessionTask<M, S>,
     #[pin]
-    event_stream: EventStream,
+    event_stream: EventStream<M>,
     enabled: Rc<Cell<bool>>,
 }
 
-impl<S: MessagesStorage + 'static> Acceptor<S> {
+impl<M: SessionMessage + 'static, S: MessagesStorage + 'static> Acceptor<M, S> {
     pub fn new(
         settings: Settings,
         message_storage_builder: Box<dyn Fn(&SessionId) -> S>,
-    ) -> Acceptor<S> {
+    ) -> Acceptor<M, S> {
         let (emitter, event_stream) = events_channel();
         let sessions = Rc::new(RefCell::new(SessionsMap::new(message_storage_builder)));
         let active_sessions = Rc::new(RefCell::new(HashMap::new()));
@@ -270,7 +266,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             .register_session(session_id, session_settings);
     }
 
-    pub fn sessions_map(&self) -> Rc<RefCell<SessionsMap<S>>> {
+    pub fn sessions_map(&self) -> Rc<RefCell<SessionsMap<M, S>>> {
         self.sessions.clone()
     }
 
@@ -410,7 +406,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         }
     }
 
-    async fn server_task(mut connection: impl Connection, session_task: SessionTask<S>) {
+    async fn server_task(mut connection: impl Connection, session_task: SessionTask<M, S>) {
         info!("Acceptor started");
         loop {
             match connection.accept().await {
@@ -422,7 +418,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         }
     }
 
-    pub fn session_task(&self) -> SessionTask<S> {
+    pub fn session_task(&self) -> SessionTask<M, S> {
         self.session_task.clone()
     }
 
@@ -436,8 +432,8 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     }
 }
 
-impl<S: MessagesStorage> Stream for Acceptor<S> {
-    type Item = impl AsEvent;
+impl<M: SessionMessage, S: MessagesStorage> Stream for Acceptor<M, S> {
+    type Item = impl AsEvent<M>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.event_stream).poll_next(cx)

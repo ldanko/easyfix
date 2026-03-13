@@ -5,11 +5,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use easyfix_core::base_enums::{SessionRejectReasonField, SessionStatusField};
-use easyfix_messages::{
-    deserializer,
-    fields::{FixString, SeqNum, TagNum, parse_reject_reason_to_session_reject_reason},
-    messages::FixtMessage,
+use easyfix_core::{
+    basic_types::{FixString, SeqNum, SessionRejectReasonField, SessionStatusField},
+    deserializer::DeserializeError,
 };
 use futures::Stream;
 use tokio::sync::{mpsc, oneshot};
@@ -17,60 +15,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
 use crate::{DisconnectReason, Sender, session_id::SessionId};
-
-//
-#[derive(Debug)]
-pub enum DeserializeError {
-    // TODO: enum maybe?
-    GarbledMessage(String),
-    Logout,
-    Reject {
-        msg_type: Option<FixString>,
-        seq_num: SeqNum,
-        tag: Option<TagNum>,
-        reason: SessionRejectReasonField,
-    },
-}
-
-impl fmt::Display for DeserializeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DeserializeError::GarbledMessage(reason) => write!(f, "garbled message: {}", reason),
-            DeserializeError::Logout => write!(f, "MsgSeqNum missing"),
-            DeserializeError::Reject {
-                tag: Some(tag),
-                reason,
-                ..
-            } => write!(f, "{reason:?} (tag={tag})"),
-            DeserializeError::Reject {
-                tag: None, reason, ..
-            } => write!(f, "{reason:?}"),
-        }
-    }
-}
-
-impl std::error::Error for DeserializeError {}
-
-impl From<deserializer::DeserializeError> for DeserializeError {
-    fn from(error: deserializer::DeserializeError) -> Self {
-        use deserializer::DeserializeError as DeError;
-        match error {
-            DeError::GarbledMessage(reason) => DeserializeError::GarbledMessage(reason),
-            DeError::Logout => DeserializeError::Logout,
-            DeError::Reject {
-                msg_type,
-                seq_num,
-                tag,
-                reason,
-            } => DeserializeError::Reject {
-                msg_type,
-                seq_num,
-                tag,
-                reason: parse_reject_reason_to_session_reject_reason(reason).into(),
-            },
-        }
-    }
-}
 
 pub struct DoNotSend {
     pub gap_fill: bool,
@@ -156,13 +100,13 @@ impl<'a> InputResponder<'a> {
 }
 
 #[derive(Debug)]
-pub struct Responder {
-    sender: Option<oneshot::Sender<Box<FixtMessage>>>,
+pub struct Responder<M> {
+    sender: Option<oneshot::Sender<Box<M>>>,
     change_to_gap_fill: bool,
 }
 
-impl Responder {
-    pub(crate) fn new(sender: oneshot::Sender<Box<FixtMessage>>) -> Responder {
+impl<M> Responder<M> {
+    pub(crate) fn new(sender: oneshot::Sender<Box<M>>) -> Responder<M> {
         Responder {
             sender: Some(sender),
             change_to_gap_fill: false,
@@ -180,24 +124,18 @@ impl Responder {
 }
 
 #[derive(Debug)]
-pub(crate) enum FixEventInternal {
+pub(crate) enum FixEventInternal<M: fmt::Debug> {
     Created(SessionId),
-    Logon(SessionId, Option<Sender>),
+    Logon(SessionId, Option<Sender<M>>),
     Logout(SessionId, DisconnectReason),
-    AppMsgIn(
-        Option<Box<FixtMessage>>,
-        Option<oneshot::Sender<InputResponderMsg>>,
-    ),
-    AdmMsgIn(
-        Option<Box<FixtMessage>>,
-        Option<oneshot::Sender<InputResponderMsg>>,
-    ),
-    AppMsgOut(Option<Box<FixtMessage>>, Responder),
-    AdmMsgOut(Option<Box<FixtMessage>>, Responder),
+    AppMsgIn(Option<Box<M>>, Option<oneshot::Sender<InputResponderMsg>>),
+    AdmMsgIn(Option<Box<M>>, Option<oneshot::Sender<InputResponderMsg>>),
+    AppMsgOut(Option<Box<M>>, Responder<M>),
+    AdmMsgOut(Option<Box<M>>, Responder<M>),
     DeserializeError(SessionId, DeserializeError),
 }
 
-impl Drop for FixEventInternal {
+impl<M: fmt::Debug> Drop for FixEventInternal<M> {
     fn drop(&mut self) {
         if let &mut FixEventInternal::AppMsgOut(ref mut msg, ref mut responder)
         | &mut FixEventInternal::AdmMsgOut(ref mut msg, ref mut responder) = self
@@ -213,31 +151,31 @@ impl Drop for FixEventInternal {
     }
 }
 
-/// FIX protolol events.
+/// FIX protocol events.
 #[derive(Debug)]
-pub enum FixEvent<'a> {
+pub enum FixEvent<'a, M> {
     /// Session created.
     Created(&'a SessionId),
 
-    /// Successfull Logon<A> messages exchange.
+    /// Successful Logon<A> messages exchange.
     ///
     /// Use `Sender` to send messages to connected peer.
-    Logon(&'a SessionId, Sender),
+    Logon(&'a SessionId, Sender<M>),
 
     /// Session disconnected.
     Logout(&'a SessionId, DisconnectReason),
 
     /// New application message received.
     ///
-    /// Use `InputResponder` to reject the message or to force logut or
+    /// Use `InputResponder` to reject the message or to force logout or
     /// disconnection.
-    AppMsgIn(Box<FixtMessage>, InputResponder<'a>),
+    AppMsgIn(Box<M>, InputResponder<'a>),
 
     /// New administration message received.
     ///
-    /// Use `InputResponder` to reject the message or to force logut or
+    /// Use `InputResponder` to reject the message or to force logout or
     /// disconnection.
-    AdmMsgIn(Box<FixtMessage>, InputResponder<'a>),
+    AdmMsgIn(Box<M>, InputResponder<'a>),
 
     /// Application message is ready to be send.
     ///
@@ -246,7 +184,7 @@ pub enum FixEvent<'a> {
     /// This event may happen after session disconnection when output queue
     /// still has messages to send. In such case all messages will be stored
     /// and will be available thorough ResendRequest<2>.
-    AppMsgOut(&'a mut FixtMessage, &'a mut Responder), // TODO: Try pass by value but bind named
+    AppMsgOut(&'a mut M, &'a mut Responder<M>), // TODO: Try pass by value but bind named
 
     /// Administration message is ready to be send.
     ///
@@ -255,23 +193,23 @@ pub enum FixEvent<'a> {
     /// This event may happen after session disconnection when output queue
     /// still has messages to send. In such case all messages will be stored
     /// and will be available thorough ResendRequest<2>.
-    AdmMsgOut(&'a mut FixtMessage),
+    AdmMsgOut(&'a mut M),
 
     /// Failed to deserialize input message.
     DeserializeError(&'a SessionId, &'a DeserializeError),
 }
 
 #[derive(Debug)]
-pub struct EventStream {
-    receiver: ReceiverStream<FixEventInternal>,
+pub struct EventStream<M: fmt::Debug> {
+    receiver: ReceiverStream<FixEventInternal<M>>,
 }
 
 #[derive(Debug)]
-pub struct Emitter {
-    inner: mpsc::Sender<FixEventInternal>,
+pub struct Emitter<M: fmt::Debug> {
+    inner: mpsc::Sender<FixEventInternal<M>>,
 }
 
-impl Clone for Emitter {
+impl<M: fmt::Debug> Clone for Emitter<M> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -279,15 +217,15 @@ impl Clone for Emitter {
     }
 }
 
-impl Emitter {
-    pub(crate) async fn send(&self, event: FixEventInternal) {
+impl<M: fmt::Debug> Emitter<M> {
+    pub(crate) async fn send(&self, event: FixEventInternal<M>) {
         if let Err(_e) = self.inner.send(event).await {
             error!("Failed to send msg")
         }
     }
 }
 
-pub(crate) fn events_channel() -> (Emitter, EventStream) {
+pub(crate) fn events_channel<M: fmt::Debug>() -> (Emitter<M>, EventStream<M>) {
     let (sender, receiver) = mpsc::channel(16);
 
     (
@@ -301,16 +239,16 @@ pub(crate) fn events_channel() -> (Emitter, EventStream) {
 mod private {
     pub trait Sealed {}
 
-    impl Sealed for super::FixEventInternal {}
+    impl<M: std::fmt::Debug> Sealed for super::FixEventInternal<M> {}
 }
 
 /// This trait is sealed and not meant to be implemented outside of the current crate.
-pub trait AsEvent: private::Sealed {
-    fn as_event(&mut self) -> FixEvent<'_>;
+pub trait AsEvent<M: fmt::Debug>: private::Sealed {
+    fn as_event(&mut self) -> FixEvent<'_, M>;
 }
 
-impl AsEvent for FixEventInternal {
-    fn as_event(&mut self) -> FixEvent<'_> {
+impl<M: fmt::Debug> AsEvent<M> for FixEventInternal<M> {
+    fn as_event(&mut self) -> FixEvent<'_, M> {
         match self {
             FixEventInternal::Created(id) => FixEvent::Created(id),
             FixEventInternal::Logon(id, sender) => FixEvent::Logon(id, sender.take().unwrap()),
@@ -324,9 +262,11 @@ impl AsEvent for FixEventInternal {
                 InputResponder::new(sender.take().unwrap()),
             ),
             FixEventInternal::AppMsgOut(msg, resp) => {
-                FixEvent::AppMsgOut(msg.as_mut().unwrap(), resp)
+                FixEvent::AppMsgOut(msg.as_mut().unwrap().as_mut(), resp)
             }
-            FixEventInternal::AdmMsgOut(msg, _) => FixEvent::AdmMsgOut(msg.as_mut().unwrap()),
+            FixEventInternal::AdmMsgOut(msg, _) => {
+                FixEvent::AdmMsgOut(msg.as_mut().unwrap().as_mut())
+            }
             FixEventInternal::DeserializeError(session_id, deserialize_error) => {
                 FixEvent::DeserializeError(session_id, deserialize_error)
             }
@@ -334,8 +274,8 @@ impl AsEvent for FixEventInternal {
     }
 }
 
-impl Stream for EventStream {
-    type Item = impl AsEvent;
+impl<M: fmt::Debug> Stream for EventStream<M> {
+    type Item = impl AsEvent<M>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.receiver).poll_next(cx)

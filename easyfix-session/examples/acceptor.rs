@@ -1,11 +1,8 @@
 use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use chrono::NaiveTime;
-use easyfix_macros::fix_str;
-use easyfix_messages::{
-    fields::{FixStr, FixString},
-    messages::Header,
-};
+use easyfix_core::{basic_types::FixString, fix_str};
+use easyfix_messages::messages::{Header, Message};
 use easyfix_session::{
     acceptor::{Acceptor, TcpConnection},
     application::{AsEvent, FixEvent},
@@ -27,7 +24,8 @@ async fn acceptor() {
         auto_disconnect_after_no_logout: Duration::from_secs(5),
     };
 
-    let mut acceptor = Acceptor::new(settings.clone(), Box::new(|_| InMemoryStorage::new()));
+    let mut acceptor: Acceptor<Message, _> =
+        Acceptor::new(settings.clone(), Box::new(|_| InMemoryStorage::new()));
     let begin_string = FixString::from_ascii_lossy(b"FIXT.1.1".to_vec());
     let sender_comp_id = settings.sender_comp_id.clone();
     let fix_string = |s: &str| FixString::from_ascii_lossy(s.as_bytes().to_vec());

@@ -1,13 +1,14 @@
 use std::{
     io,
+    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll, ready},
 };
 
 use bytes::BytesMut;
-use easyfix_messages::{
-    deserializer::{self, RawMessageError, raw_message},
-    messages::FixtMessage,
+use easyfix_core::{
+    deserializer::{self, DeserializeError, RawMessageError, raw_message},
+    message::SessionMessage,
 };
 use futures_util::Stream;
 use pin_project::pin_project;
@@ -15,11 +16,9 @@ use tokio::io::AsyncRead;
 use tokio_util::io::poll_read_buf;
 use tracing::{debug, info, warn};
 
-use crate::application::DeserializeError;
-
 #[derive(Debug)]
-pub enum InputEvent {
-    Message(Box<FixtMessage>),
+pub enum InputEvent<M> {
+    Message(Box<M>),
     DeserializeError(DeserializeError),
     IoError(io::Error),
     Timeout,
@@ -39,9 +38,9 @@ fn process_garbled_data(buf: &mut BytesMut) {
     info!("dropped {len} bytes of garbled message");
 }
 
-fn parse_message(
+fn parse_message<M: SessionMessage>(
     bytes: &mut BytesMut,
-) -> Result<Option<Box<FixtMessage>>, deserializer::DeserializeError> {
+) -> Result<Option<Box<M>>, deserializer::DeserializeError> {
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -54,7 +53,7 @@ fn parse_message(
 
     match raw_message(bytes) {
         Ok((leftover, raw_msg)) => {
-            let result = FixtMessage::from_raw_message(raw_msg).map(Some);
+            let result = M::from_raw_message(raw_msg).map(|msg| Some(Box::new(msg)));
             let leftover_len = leftover.len();
             bytes.split_to(src_len - leftover_len).freeze();
             result
@@ -68,17 +67,19 @@ fn parse_message(
 }
 
 #[pin_project]
-pub struct InputStream<S> {
+pub struct InputStream<S, M> {
     buffer: BytesMut,
     #[pin]
     source: S,
+    _message: PhantomData<fn() -> M>,
 }
 
-impl<S> Stream for InputStream<S>
+impl<S, M> Stream for InputStream<S, M>
 where
     S: AsyncRead + Unpin,
+    M: SessionMessage,
 {
-    type Item = InputEvent;
+    type Item = InputEvent<M>;
 
     fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
@@ -86,15 +87,13 @@ where
         loop {
             // Attempt to parse a message from the buffered data.
             // If enough data has been buffered, the message is returned.
-            match parse_message(this.buffer) {
+            match parse_message::<M>(this.buffer) {
                 Ok(Some(msg)) => {
                     return Poll::Ready(Some(InputEvent::Message(msg)));
                 }
                 Ok(None) => {}
-                // Convert `deserializer::DeserializeError` to `application::DeserializeError`
-                // to prevent leaking ParseRejectReason to user code.
                 Err(error) => {
-                    return Poll::Ready(Some(InputEvent::DeserializeError(error.into())));
+                    return Poll::Ready(Some(InputEvent::DeserializeError(error)));
                 }
             }
 
@@ -125,13 +124,15 @@ where
     }
 }
 
-pub fn input_stream<S>(source: S) -> InputStream<S>
+pub fn input_stream<S, M>(source: S) -> InputStream<S, M>
 where
     S: AsyncRead + Unpin,
+    M: SessionMessage,
 {
     InputStream {
         // TODO: Max MSG size
         buffer: BytesMut::with_capacity(4096),
         source,
+        _message: PhantomData,
     }
 }

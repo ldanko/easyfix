@@ -10,19 +10,15 @@ pub mod session_id;
 mod session_state;
 pub mod settings;
 
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
-use easyfix_messages::{
-    fields::{FixString, MsgType, UtcTimestamp},
-    messages::{FixtMessage, Header, Message, Trailer},
-};
+use easyfix_core::message::SessionMessage;
 use settings::Settings;
 use tokio::sync::mpsc;
+use tracing::error;
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
 const TEST_REQUEST_THRESHOLD: f32 = 1.2;
-
-use tracing::error;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -68,45 +64,57 @@ pub enum DisconnectReason {
 }
 
 #[derive(Debug)]
-pub(crate) enum SenderMsg {
-    Msg(Box<FixtMessage>),
+pub(crate) enum SenderMsg<M> {
+    Msg(Box<M>),
     Disconnect(DisconnectReason),
 }
 
-#[derive(Clone, Debug)]
-pub struct Sender {
-    inner: mpsc::UnboundedSender<SenderMsg>,
+pub struct Sender<M> {
+    inner: mpsc::UnboundedSender<SenderMsg<M>>,
 }
 
-impl Sender {
+impl<M> Clone for Sender<M> {
+    fn clone(&self) -> Self {
+        Sender {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<M> fmt::Debug for Sender<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sender")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<M: SessionMessage> Sender<M> {
     /// Create new `Sender` instance.
-    pub(crate) fn new(writer: mpsc::UnboundedSender<SenderMsg>) -> Sender {
+    pub(crate) fn new(writer: mpsc::UnboundedSender<SenderMsg<M>>) -> Sender<M> {
         Sender { inner: writer }
     }
 
-    /// Send FIXT message.
+    // TODO: rename send_raw to send once the old send(Box<Message>) is removed
+    /// Send message.
     ///
-    /// All header and trailer fields can be also adjusted when handing
-    /// `FixEvent::AppMsgOut` and `FixEvent::AdmMsgOut`.
-    ///
-    /// Before serialziation following header fields will be filled:
+    /// Before serialization following header fields will be filled:
     /// - begin_string (if not empty)
-    /// - msg_type
     /// - sender_comp_id (if not empty)
     /// - target_comp_id (if not empty)
     /// - sending_time (if eq UtcTimestamp::MIN_UTC)
     /// - msg_seq_num (if eq 0)
     ///
     /// The checksum(10) field value is always ignored - it is computed and set
-    /// after serialziation.
-    pub fn send_raw(&self, msg: Box<FixtMessage>) -> Result<(), Box<FixtMessage>> {
+    /// after serialization.
+    pub fn send_raw(&self, msg: Box<M>) -> Result<(), Box<M>> {
         if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)) {
             match msg.0 {
                 SenderMsg::Msg(msg) => {
+                    let msg_type = msg.msg_type();
                     error!(
-                        "failed to send {:?}<{}> message, receiver closed or dropped",
-                        msg.msg_type(),
-                        msg.msg_type().as_fix_str()
+                        "failed to send {msg_type:?}<{}> message, receiver closed or dropped",
+                        msg_type.as_fix_str()
                     );
                     Err(msg)
                 }
@@ -115,22 +123,6 @@ impl Sender {
         } else {
             Ok(())
         }
-    }
-
-    /// Send FIX message.
-    ///
-    /// FIXT message will be constructed internally using default values
-    /// for Header and Trailer.
-    ///
-    /// All header and trailer fields can be also adjusted when handing
-    /// `FixEvent::AppMsgOut` and `FixEvent::AdmMsgOut`.
-    pub fn send(&self, msg: Box<Message>) -> Result<(), Box<FixtMessage>> {
-        let msg = Box::new(FixtMessage {
-            header: Box::new(new_header(msg.msg_type())),
-            body: msg,
-            trailer: Box::new(new_trailer()),
-        });
-        self.send_raw(msg)
     }
 
     /// Send disconnect message.
@@ -142,19 +134,4 @@ impl Sender {
             error!("failed to disconnect, receiver closed or dropped");
         }
     }
-}
-
-pub fn new_header(msg_type: MsgType) -> Header {
-    // XXX: all required fields overwritten before serialization (if not set)
-    Header {
-        begin_string: FixString::new(),
-        msg_type,
-        sending_time: UtcTimestamp::MIN_UTC,
-        ..Default::default()
-    }
-}
-
-pub fn new_trailer() -> Trailer {
-    // XXX: all required fields overwritten before serialization
-    Trailer::default()
 }

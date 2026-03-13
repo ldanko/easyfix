@@ -6,32 +6,40 @@ use std::{
 };
 
 use easyfix_core::{
-    base_enums::{
-        EncryptMethodBase, SessionRejectReasonBase, SessionRejectReasonField, SessionStatusBase,
-        SessionStatusField,
-    },
     base_messages::{
-        AdminBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase, ResendRequestBase,
-        SequenceResetBase, TestRequestBase,
+        AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
+        MsgTypeBase, RejectBase, ResendRequestBase, SequenceResetBase, SessionRejectReasonBase,
+        SessionStatusBase, TestRequestBase,
     },
-    message::HeaderAccess,
-    msg_type::{MsgTypeBase, MsgTypeField},
-};
-use easyfix_messages::{
-    fields::{DefaultApplVerId, FixStr, FixString, Int, MsgType, SeqNum, Utc, UtcTimestamp},
-    messages::{FieldTag, FixtMessage, Header, Message, MsgCat},
+    basic_types::{
+        FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, SessionStatusField,
+        TagNum, Utc, UtcTimestamp,
+    },
+    deserializer::{DeserializeError, raw_message},
+    fix_str,
+    message::{MsgCat, SessionMessage},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
     DisconnectReason, Sender,
-    application::{DeserializeError, Emitter, FixEventInternal, InputResponderMsg, Responder},
+    application::{Emitter, FixEventInternal, InputResponderMsg, Responder},
     messages_storage::MessagesStorage,
-    new_header, new_trailer,
     session_id::SessionId,
     session_state::State,
     settings::{SessionSettings, Settings},
 };
+
+// TODO: should be configurable per session, not hardcoded.
+const DEFAULT_APPL_VER_ID: &FixStr = fix_str!("9");
+
+// Tag numbers used by session-level validation.
+const TAG_NEW_SEQ_NO: TagNum = 36;
+const TAG_SENDER_COMP_ID: TagNum = 49;
+const TAG_SENDING_TIME: TagNum = 52;
+const TAG_TARGET_COMP_ID: TagNum = 56;
+const TAG_HEART_BT_INT: TagNum = 108;
+const TAG_ORIG_SENDING_TIME: TagNum = 122;
 
 #[derive(Debug, thiserror::Error)]
 enum VerifyError {
@@ -42,7 +50,7 @@ enum VerifyError {
     #[error("Reject due to {reason:?} (tag={tag:?}, disconnect_reason={disconnect_reason:?})")]
     Reject {
         reason: SessionRejectReasonBase,
-        tag: Option<FieldTag>,
+        tag: Option<TagNum>,
         disconnect_reason: Option<DisconnectReason>,
     },
     #[error("Invalid logon state")]
@@ -58,7 +66,7 @@ enum VerifyError {
         ref_seq_num: SeqNum,
         reason: SessionRejectReasonField,
         text: FixString,
-        ref_tag_id: Option<i64>,
+        ref_tag_id: Option<Int>,
     },
     #[error("Rejected by application with Logout<5> ({})", .text.as_ref().map(FixString::as_utf8).unwrap_or_default())]
     ApplicationForcedLogout {
@@ -75,16 +83,16 @@ enum VerifyError {
 impl VerifyError {
     fn invalid_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReasonBase::SendingTimeAccuracy,
-            tag: Some(FieldTag::SendingTime),
+            reason: SessionRejectReasonBase::SendingTimeAccuracyProblem,
+            tag: Some(TAG_SENDING_TIME),
             disconnect_reason: None,
         }
     }
 
-    fn invalid_comp_id(field_tag: FieldTag) -> VerifyError {
+    fn invalid_comp_id(tag: TagNum) -> VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReasonBase::CompIdProblem,
-            tag: Some(field_tag),
+            tag: Some(tag),
             disconnect_reason: Some(DisconnectReason::InvalidCompId),
         }
     }
@@ -96,15 +104,15 @@ impl VerifyError {
     fn missing_orig_time() -> VerifyError {
         VerifyError::Reject {
             reason: SessionRejectReasonBase::RequiredTagMissing,
-            tag: Some(FieldTag::OrigSendingTime),
+            tag: Some(TAG_ORIG_SENDING_TIME),
             disconnect_reason: None,
         }
     }
 
     fn invalid_orig_time() -> VerifyError {
         VerifyError::Reject {
-            reason: SessionRejectReasonBase::SendingTimeAccuracy,
-            tag: Some(FieldTag::OrigSendingTime),
+            reason: SessionRejectReasonBase::SendingTimeAccuracyProblem,
+            tag: Some(TAG_ORIG_SENDING_TIME),
             disconnect_reason: Some(DisconnectReason::InvalidOrigSendingTime),
         }
     }
@@ -147,35 +155,35 @@ trait MessageExt {
     fn resend_as_gap_fill(&self) -> bool;
 }
 
-impl MessageExt for FixtMessage {
+impl<M: SessionMessage> MessageExt for M {
     fn resend_as_gap_fill(&self) -> bool {
-        matches!(self.msg_cat(), MsgCat::Admin) && !matches!(self.msg_type(), MsgType::Reject)
+        matches!(self.msg_cat(), MsgCat::Admin) && self.msg_type() != MsgTypeBase::Reject
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Session<S> {
+pub(crate) struct Session<M: SessionMessage, S> {
     // XXX: To avoid borrow errors, borrow state only in async fn,
     //      and in regular fn pass it by ref as argument.
-    state: Rc<RefCell<State<S, FixtMessage>>>,
-    sender: Sender,
+    state: Rc<RefCell<State<M, S>>>,
+    sender: Sender<M>,
     settings: Settings,
     session_settings: SessionSettings,
-    emitter: Emitter,
+    emitter: Emitter<M>,
     // Not in SessionState as I/O layer asks for this value often
     heartbeat_interval: Cell<u64>,
     disconnect_notify: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
-impl<S: MessagesStorage> Session<S> {
+impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
     pub(crate) fn new(
         settings: Settings,
         session_settings: SessionSettings,
-        state: Rc<RefCell<State<S, FixtMessage>>>,
-        sender: Sender,
-        emitter: Emitter,
+        state: Rc<RefCell<State<M, S>>>,
+        sender: Sender<M>,
+        emitter: Emitter<M>,
         disconnect_notify_tx: tokio::sync::oneshot::Sender<()>,
-    ) -> Session<S> {
+    ) -> Session<M, S> {
         let heartbeat_interval = settings
             .heartbeat_interval
             .unwrap_or(settings.auto_disconnect_after_no_logout.as_secs());
@@ -194,11 +202,11 @@ impl<S: MessagesStorage> Session<S> {
         &self.session_settings.session_id
     }
 
-    pub(crate) fn state(&self) -> &Rc<RefCell<State<S, FixtMessage>>> {
+    pub(crate) fn state(&self) -> &Rc<RefCell<State<M, S>>> {
         &self.state
     }
 
-    pub fn is_logged_on(state: &State<S, FixtMessage>) -> bool {
+    pub fn is_logged_on(state: &State<M, S>) -> bool {
         state.logon_received() && state.logon_sent()
     }
 
@@ -235,11 +243,11 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    fn is_target_too_high(state: &State<S, FixtMessage>, msg_seq_num: SeqNum) -> bool {
+    fn is_target_too_high(state: &State<M, S>, msg_seq_num: SeqNum) -> bool {
         msg_seq_num > state.next_target_msg_seq_num()
     }
 
-    fn is_target_too_low(state: &State<S, FixtMessage>, msg_seq_num: SeqNum) -> bool {
+    fn is_target_too_low(state: &State<M, S>, msg_seq_num: SeqNum) -> bool {
         msg_seq_num < state.next_target_msg_seq_num()
     }
 
@@ -251,15 +259,15 @@ impl<S: MessagesStorage> Session<S> {
         if !self.session_settings.check_comp_id {
             Ok(())
         } else if self.session_settings.session_id.sender_comp_id() != target_comp_id {
-            Err(VerifyError::invalid_comp_id(FieldTag::TargetCompId))
+            Err(VerifyError::invalid_comp_id(TAG_TARGET_COMP_ID))
         } else if self.session_settings.session_id.target_comp_id() != sender_comp_id {
-            Err(VerifyError::invalid_comp_id(FieldTag::SenderCompId))
+            Err(VerifyError::invalid_comp_id(TAG_SENDER_COMP_ID))
         } else {
             Ok(())
         }
     }
 
-    fn should_send_reset(&self, state: &State<S, FixtMessage>) -> bool {
+    fn should_send_reset(&self, state: &State<M, S>) -> bool {
         (self.session_settings.reset_on_logon
             || self.session_settings.reset_on_logout
             || self.session_settings.reset_on_disconnect)
@@ -268,10 +276,7 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     #[instrument(skip_all, err)]
-    fn check_logon_state(
-        state: &State<S, FixtMessage>,
-        msg_type: MsgTypeField,
-    ) -> Result<(), VerifyError> {
+    fn check_logon_state(state: &State<M, S>, msg_type: MsgTypeField) -> Result<(), VerifyError> {
         if (msg_type == MsgTypeBase::Logon && state.reset_sent()) || state.reset_received() {
             trace!("Allowed: Logon with ResetSeqNumFlag(141)=Y sent or received");
             Ok(())
@@ -312,11 +317,11 @@ impl<S: MessagesStorage> Session<S> {
     // https://github.com/rust-lang/rust-clippy/issues/6353
     async fn verify(
         &self,
-        msg: Box<FixtMessage>,
+        msg: Box<M>,
         check_too_high: bool,
         check_too_low: bool,
     ) -> Result<(), VerifyError> {
-        let msg_type = msg.msg_type2();
+        let msg_type = msg.msg_type();
         let sender_comp_id = msg.sender_comp_id();
         let target_comp_id = msg.target_comp_id();
         let sending_time = msg.sending_time();
@@ -400,7 +405,7 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    pub(crate) fn send_logon_request(&self, state: &mut State<S, FixtMessage>) {
+    pub(crate) fn send_logon_request(&self, state: &mut State<M, S>) {
         if self.session_settings.reset_on_logon {
             state.reset();
         }
@@ -413,37 +418,37 @@ impl<S: MessagesStorage> Session<S> {
             None
         };
 
-        self.send(Box::new(Message::from(AdminBase::Logon(LogonBase {
+        self.send(AdminBase::Logon(LogonBase {
             encrypt_method: EncryptMethodBase::None,
             encrypt_method_raw: EncryptMethodBase::None as Int,
             heart_bt_int: self.heartbeat_interval.get().try_into().unwrap_or(Int::MAX),
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
             // TODO: should be conditional on FIXT version
-            default_appl_ver_id: Some(Cow::Borrowed(DefaultApplVerId::Fix50Sp2.as_fix_str())),
+            default_appl_ver_id: Some(Cow::Borrowed(DEFAULT_APPL_VER_ID)),
             session_status: None,
-        }))));
+        }));
     }
 
     fn send_logon_response(
         &self,
-        state: &mut State<S, FixtMessage>,
+        state: &mut State<M, S>,
         next_expected_msg_seq_num: Option<SeqNum>,
     ) {
         if self.session_settings.reset_on_logon {
             state.reset();
         }
 
-        self.send(Box::new(Message::from(AdminBase::Logon(LogonBase {
+        self.send(AdminBase::Logon(LogonBase {
             encrypt_method: EncryptMethodBase::None,
             encrypt_method_raw: EncryptMethodBase::None as Int,
             heart_bt_int: self.heartbeat_interval.get().try_into().unwrap_or(Int::MAX),
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
             // TODO: should be conditional on FIXT version
-            default_appl_ver_id: Some(Cow::Borrowed(DefaultApplVerId::Fix50Sp2.as_fix_str())),
+            default_appl_ver_id: Some(Cow::Borrowed(DEFAULT_APPL_VER_ID)),
             session_status: None,
-        }))));
+        }));
 
         state.set_last_received_time(Instant::now());
         state.set_logon_sent(true);
@@ -451,54 +456,53 @@ impl<S: MessagesStorage> Session<S> {
 
     pub(crate) fn send_logout(
         &self,
-        state: &mut State<S, FixtMessage>,
+        state: &mut State<M, S>,
         session_status: Option<SessionStatusField>,
         text: Option<FixString>,
     ) {
-        self.send(Box::new(Message::from(AdminBase::Logout(LogoutBase {
+        self.send(AdminBase::Logout(LogoutBase {
             session_status,
             text: text.map(Cow::Owned),
-        }))));
+        }));
         state.set_logout_sent_time(true);
     }
 
     fn send_reject(
         &self,
-        state: &mut State<S, FixtMessage>,
+        state: &mut State<M, S>,
         ref_msg_type: Option<FixString>,
         ref_seq_num: SeqNum,
         reason: SessionRejectReasonField,
         text: FixString,
-        ref_tag_id: Option<i64>,
+        ref_tag_id: Option<Int>,
     ) {
-        if !matches!(
-            ref_msg_type.as_deref().and_then(MsgType::from_fix_str),
-            Some(MsgType::Logon) | Some(MsgType::SequenceReset)
-        ) && ref_seq_num == state.next_target_msg_seq_num()
-        {
+        let is_logon_or_seq_reset = ref_msg_type
+            .as_deref()
+            .and_then(|s| MsgTypeField::from_bytes(s.as_bytes()).ok())
+            .is_some_and(|mt| mt == MsgTypeBase::Logon || mt == MsgTypeBase::SequenceReset);
+        if !is_logon_or_seq_reset && ref_seq_num == state.next_target_msg_seq_num() {
             state.incr_next_target_msg_seq_num();
         }
 
         info!("Message {ref_seq_num} Rejected: {reason:?} (tag={ref_tag_id:?})");
 
-        self.send(Box::new(Message::from(AdminBase::Reject(RejectBase {
+        self.send(AdminBase::Reject(RejectBase {
             ref_seq_num,
             ref_tag_id,
             ref_msg_type: ref_msg_type.map(Cow::Owned),
-            session_reject_reason: Some(reason),
+            session_reject_reason: Some(reason.into()),
             text: Some(Cow::Owned(text)),
-        }))));
+        }));
     }
 
     fn send_sequence_reset(&self, seq_num: SeqNum, new_seq_num: SeqNum) {
-        let mut sequence_reset = Box::new(FixtMessage {
-            header: Box::new(new_header(MsgType::SequenceReset)),
-            body: Box::new(Message::from(AdminBase::SequenceReset(SequenceResetBase {
+        let mut sequence_reset = Box::new(M::from_admin(
+            HeaderBase::default(),
+            AdminBase::SequenceReset(SequenceResetBase {
                 gap_fill_flag: Some(true),
                 new_seq_no: new_seq_num,
-            }))),
-            trailer: Box::new(new_trailer()),
-        });
+            }),
+        ));
 
         sequence_reset.set_msg_seq_num(seq_num);
         sequence_reset.set_poss_dup_flag(Some(true));
@@ -511,7 +515,7 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     #[instrument(level = "trace", skip_all, fields(too_high_msg_seq_num))]
-    fn send_resend_request(&self, state: &mut State<S, FixtMessage>, too_high_msg_seq_num: SeqNum) {
+    fn send_resend_request(&self, state: &mut State<M, S>, too_high_msg_seq_num: SeqNum) {
         let begin_seq_no = state.next_target_msg_seq_num();
         let mut end_seq_no = too_high_msg_seq_num.saturating_sub(1);
 
@@ -539,34 +543,28 @@ impl<S: MessagesStorage> Session<S> {
 
         trace!(begin_seq_no, end_seq_no);
 
-        self.send(Box::new(Message::from(AdminBase::ResendRequest(
-            ResendRequestBase {
-                begin_seq_no,
-                end_seq_no,
-            },
-        ))));
+        self.send(AdminBase::ResendRequest(ResendRequestBase {
+            begin_seq_no,
+            end_seq_no,
+        }));
 
         state.set_resend_range(begin_seq_no..=end_seq_no);
     }
 
-    /// Send FIX message.
-    fn send(&self, msg: Box<Message>) {
-        if let Err(msg) = self.sender.send(msg) {
-            // This should never happen.
-            // See `fn input_loop()` and `fn output_loop()` in connection.rs
-            // Output loop always waits for input loop to finish, so it's not
-            // possible that output queue is closed when input message is still
-            // being processed.
-            unreachable!(
-                "Can't send message {:?}/{} - output stream is closed",
-                msg.msg_type(),
-                msg.msg_seq_num()
-            );
-        }
+    /// Send admin message constructed from base types.
+    fn send(&self, admin: AdminBase<'static>) {
+        self.send_raw(Box::new(M::from_admin(HeaderBase::default(), admin)));
     }
 
-    /// Send FIXT message.
-    fn send_raw(&self, msg: Box<FixtMessage>) {
+    fn message_from_bytes(
+        bytes: &[u8],
+    ) -> Result<Box<M>, easyfix_core::deserializer::DeserializeError> {
+        let (_, raw) = raw_message(bytes)?;
+        Ok(Box::new(M::from_raw_message(raw)?))
+    }
+
+    /// Send a fully constructed message.
+    fn send_raw(&self, msg: Box<M>) {
         if let Err(msg) = self.sender.send_raw(msg) {
             // This should never happen.
             // See `fn input_loop()` and `fn output_loop()` in connection.rs
@@ -614,7 +612,7 @@ impl<S: MessagesStorage> Session<S> {
         fields(?reason, reset = self.session_settings.reset_on_disconnect),
         ret
     )]
-    pub(crate) fn disconnect(&self, state: &mut State<S, FixtMessage>, reason: DisconnectReason) {
+    pub(crate) fn disconnect(&self, state: &mut State<M, S>, reason: DisconnectReason) {
         if state.disconnected() {
             info!("already disconnected");
             return;
@@ -638,7 +636,7 @@ impl<S: MessagesStorage> Session<S> {
     #[instrument(level = "trace", skip_all)]
     fn resend_range(
         &self,
-        state: &mut State<S, FixtMessage>,
+        state: &mut State<M, S>,
         begin_seq_num: SeqNum,
         mut end_seq_num: SeqNum,
     ) {
@@ -664,7 +662,7 @@ impl<S: MessagesStorage> Session<S> {
         info!("fetch messages range from {begin_seq_num} to {end_seq_num}");
         for msg_str in state.fetch_range(begin_seq_num..=end_seq_num) {
             // TODO: log error! and resend as gap fill instead of unwrap
-            let mut msg = match FixtMessage::from_bytes(msg_str) {
+            let mut msg = match Self::message_from_bytes(msg_str) {
                 Ok(msg) => msg,
                 Err(err) => {
                     error!(%err, "Failed to decode message bytes");
@@ -703,11 +701,11 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
-    async fn on_heartbeat(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_heartbeat(&self, message: Box<M>) -> Result<(), VerifyError> {
         // Got Heartbeat, verify against grace period test requests.
         trace!("got heartbeat");
 
-        let Some(AdminBase::Heartbeat(heartbeat)) = message.body.try_as_admin_base() else {
+        let Some(AdminBase::Heartbeat(heartbeat)) = message.try_as_admin() else {
             unreachable!();
         };
         let test_req_id = if self.session_settings.verify_test_request_id {
@@ -730,10 +728,10 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     /// Got TestRequest, answer with Heartbeat and return.
-    async fn on_test_request(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_test_request(&self, message: Box<M>) -> Result<(), VerifyError> {
         trace!("on_test_request");
 
-        let Some(AdminBase::TestRequest(test_request)) = message.body.try_as_admin_base() else {
+        let Some(AdminBase::TestRequest(test_request)) = message.try_as_admin() else {
             unreachable!();
         };
 
@@ -742,21 +740,19 @@ impl<S: MessagesStorage> Session<S> {
         self.verify(message, true, true).await?;
 
         trace!("Send Heartbeat");
-        self.send(Box::new(Message::from(AdminBase::Heartbeat(
-            HeartbeatBase {
-                test_req_id: Some(Cow::Owned(test_req_id)),
-            },
-        ))));
+        self.send(AdminBase::Heartbeat(HeartbeatBase {
+            test_req_id: Some(Cow::Owned(test_req_id)),
+        }));
 
         self.state.borrow_mut().incr_next_target_msg_seq_num();
 
         Ok(())
     }
 
-    async fn on_resend_request(&self, msg: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_resend_request(&self, msg: Box<M>) -> Result<(), VerifyError> {
         trace!("on_resend_request");
 
-        let Some(AdminBase::ResendRequest(resend_request)) = msg.body.try_as_admin_base() else {
+        let Some(AdminBase::ResendRequest(resend_request)) = msg.try_as_admin() else {
             unreachable!();
         };
 
@@ -783,17 +779,15 @@ impl<S: MessagesStorage> Session<S> {
             // XXX: This message will be ignored during queued messages
             //      processing, it's enqueued only to maintain proper sequence
             //      numbers.
-            state.enqueue_msg(Box::new(FixtMessage {
-                header: Box::new(Header {
-                    msg_seq_num,
-                    ..new_header(MsgType::ResendRequest)
-                }),
-                body: Box::new(Message::from(AdminBase::ResendRequest(ResendRequestBase {
+            let mut placeholder = Box::new(M::from_admin(
+                HeaderBase::default(),
+                AdminBase::ResendRequest(ResendRequestBase {
                     begin_seq_no,
                     end_seq_no,
-                }))),
-                trailer: Box::new(new_trailer()),
-            }));
+                }),
+            ));
+            placeholder.set_msg_seq_num(msg_seq_num);
+            state.enqueue_msg(placeholder);
             return Err(VerifyError::ResendRequest { msg_seq_num });
         } else if state.next_target_msg_seq_num() == msg_seq_num {
             state.incr_next_target_msg_seq_num();
@@ -802,7 +796,7 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_reject(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_reject(&self, message: Box<M>) -> Result<(), VerifyError> {
         trace!("on_reject");
 
         self.verify(message, false, true).await?;
@@ -812,15 +806,14 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_sequence_reset(&self, message: Box<FixtMessage>) -> Result<(), VerifyError> {
+    async fn on_sequence_reset(&self, message: Box<M>) -> Result<(), VerifyError> {
         trace!("on_sequence_reset");
 
-        let Some(AdminBase::SequenceReset(sequence_reset)) = message.body.try_as_admin_base()
-        else {
+        let Some(AdminBase::SequenceReset(sequence_reset)) = message.try_as_admin() else {
             unreachable!();
         };
 
-        let ref_msg_type = message.msg_type2().as_fix_str().to_owned();
+        let ref_msg_type = message.msg_type().as_fix_str().to_owned();
         let ref_seq_num = message.msg_seq_num();
         let is_gap_fill = sequence_reset.gap_fill_flag.unwrap_or(false);
         let new_seq_no = sequence_reset.new_seq_no;
@@ -833,8 +826,8 @@ impl<S: MessagesStorage> Session<S> {
             info!("Set next target MsgSeqNo to {new_seq_no}");
             state.set_next_target_msg_seq_num(new_seq_no);
         } else if new_seq_no < state.next_sender_msg_seq_num() {
-            let reject_reason = SessionRejectReasonBase::IncorrectValue;
-            let tag = FieldTag::NewSeqNo as i64;
+            let reject_reason = SessionRejectReasonBase::ValueIsIncorrect;
+            let tag = Int::from(TAG_NEW_SEQ_NO);
             let text = format!("{reject_reason:?} (tag={tag}) - NewSeqNum too low");
             self.send_reject(
                 &mut state,
@@ -849,7 +842,7 @@ impl<S: MessagesStorage> Session<S> {
         Ok(())
     }
 
-    async fn on_logout(&self, message: Box<FixtMessage>) -> Result<DisconnectReason, VerifyError> {
+    async fn on_logout(&self, message: Box<M>) -> Result<DisconnectReason, VerifyError> {
         if self.session_settings.verify_logout {
             self.verify(message, true, true).await?;
         } else if let Err(e) = self.verify(message, false, false).await {
@@ -884,10 +877,7 @@ impl<S: MessagesStorage> Session<S> {
     #[expect(clippy::await_holding_refcell_ref)]
     // Make sure `state` is dropped before await points, see
     // https://github.com/rust-lang/rust-clippy/issues/6353
-    async fn on_logon(
-        &self,
-        message: Box<FixtMessage>,
-    ) -> Result<Option<DisconnectReason>, VerifyError> {
+    async fn on_logon(&self, message: Box<M>) -> Result<Option<DisconnectReason>, VerifyError> {
         let (
             enabled,
             initiate,
@@ -900,7 +890,7 @@ impl<S: MessagesStorage> Session<S> {
         ) = {
             let state = self.state.borrow_mut();
 
-            let Some(AdminBase::Logon(logon)) = message.body.try_as_admin_base() else {
+            let Some(AdminBase::Logon(logon)) = message.try_as_admin() else {
                 unreachable!()
             };
             (
@@ -997,8 +987,8 @@ impl<S: MessagesStorage> Session<S> {
             if self.settings.heartbeat_interval.is_none() {
                 if heart_bt_int <= 0 {
                     return Err(VerifyError::Reject {
-                        reason: SessionRejectReasonBase::IncorrectValue,
-                        tag: Some(FieldTag::HeartBtInt),
+                        reason: SessionRejectReasonBase::ValueIsIncorrect,
+                        tag: Some(TAG_HEART_BT_INT),
                         disconnect_reason: None,
                     });
                 }
@@ -1046,22 +1036,22 @@ impl<S: MessagesStorage> Session<S> {
             state.enqueue_msg(
                 // No need to clone input message. Pass empty message
                 // as it will be skipped during enqueued messages processing.
-                Box::new(FixtMessage {
-                    header: Box::new(Header {
-                        msg_seq_num,
-                        ..new_header(MsgType::Logon)
-                    }),
-                    body: Box::new(Message::from(AdminBase::Logon(LogonBase {
-                        encrypt_method: EncryptMethodBase::None,
-                        encrypt_method_raw: 0,
-                        heart_bt_int: 0,
-                        reset_seq_num_flag: None,
-                        next_expected_msg_seq_num: None,
-                        default_appl_ver_id: None,
-                        session_status: None,
-                    }))),
-                    trailer: Box::new(new_trailer()),
-                }),
+                {
+                    let mut placeholder = Box::new(M::from_admin(
+                        HeaderBase::default(),
+                        AdminBase::Logon(LogonBase {
+                            encrypt_method: EncryptMethodBase::None,
+                            encrypt_method_raw: 0,
+                            heart_bt_int: 0,
+                            reset_seq_num_flag: None,
+                            next_expected_msg_seq_num: None,
+                            default_appl_ver_id: None,
+                            session_status: None,
+                        }),
+                    ));
+                    placeholder.set_msg_seq_num(msg_seq_num);
+                    placeholder
+                },
             );
             ret = Err(VerifyError::ResendRequest { msg_seq_num });
         } else {
@@ -1125,15 +1115,14 @@ impl<S: MessagesStorage> Session<S> {
     #[expect(clippy::await_holding_refcell_ref)]
     // Make sure `state` is dropped before await points, see
     // https://github.com/rust-lang/rust-clippy/issues/6353
-    async fn on_message_in_impl(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
-        let msg_type = msg.msg_type2().to_owned();
+    async fn on_message_in_impl(&self, msg: Box<M>) -> Option<DisconnectReason> {
+        let msg_type = msg.msg_type();
         let msg_seq_num = msg.msg_seq_num();
-        let _span = tracing::trace_span!("on_msg", ?msg_type, msg_seq_num).entered();
-        // TODO: restore richer trace format once MsgType is no longer used
-        // trace!(msg_type = format!("{msg_type:?}<{}>", msg_type.as_fix_str()));
-        trace!(?msg_type);
+        let name = msg.name();
+        let _span = tracing::trace_span!("on_msg", msg_type = name, msg_seq_num).entered();
+        trace!(msg_type = format!("{name}<{}>", msg_type.as_fix_str()));
 
-        let result = if let Some(admin) = msg.body.try_as_admin_base() {
+        let result = if let Some(admin) = msg.try_as_admin() {
             match admin {
                 AdminBase::Heartbeat(_) => self.on_heartbeat(msg).await,
                 AdminBase::TestRequest(_) => self.on_test_request(msg).await,
@@ -1189,18 +1178,18 @@ impl<S: MessagesStorage> Session<S> {
                 disconnect_reason,
             }) => {
                 let mut state = self.state().borrow_mut();
-                let tag_as_i64 = tag.map(|t| t as i64);
+                let tag_as_int = tag.map(Int::from);
                 self.send_reject(
                     &mut state,
                     Some(msg_type.as_fix_str().to_owned()),
                     msg_seq_num,
                     reason.into(),
-                    if let Some(tag) = tag_as_i64 {
+                    if let Some(tag) = tag_as_int {
                         FixString::from_ascii_lossy(format!("{reason:?} (tag={tag})").into_bytes())
                     } else {
                         FixString::from_ascii_lossy(format!("{reason:?}").into_bytes())
                     },
-                    tag_as_i64,
+                    tag_as_int,
                 );
 
                 self.emitter
@@ -1209,7 +1198,7 @@ impl<S: MessagesStorage> Session<S> {
                         DeserializeError::Reject {
                             msg_type: Some(msg_type.as_fix_str().to_owned()),
                             seq_num: msg_seq_num,
-                            tag: tag.map(|t| t as u16),
+                            tag,
                             reason: reason.into(),
                         },
                     ))
@@ -1277,7 +1266,7 @@ impl<S: MessagesStorage> Session<S> {
         None
     }
 
-    pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
+    pub async fn on_message_in(&self, msg: Box<M>) -> Option<DisconnectReason> {
         if !self.session_settings.verify_test_request_id {
             self.state.borrow_mut().reset_grace_period();
         }
@@ -1292,7 +1281,8 @@ impl<S: MessagesStorage> Session<S> {
 
             debug!("Processing queued message {}", msg.msg_seq_num());
 
-            if matches!(msg.msg_type(), MsgType::Logon | MsgType::ResendRequest) {
+            if msg.msg_type() == MsgTypeBase::Logon || msg.msg_type() == MsgTypeBase::ResendRequest
+            {
                 debug!(msg_type = ?msg.msg_type(), "message already processed");
                 // Logon and ResendRequest processing has already been done,
                 // just increment the target sequence nummber.
@@ -1304,7 +1294,7 @@ impl<S: MessagesStorage> Session<S> {
         None
     }
 
-    pub async fn on_message_out(&self, msg: Box<FixtMessage>) -> Option<Box<FixtMessage>> {
+    pub async fn on_message_out(&self, msg: Box<M>) -> Option<Box<M>> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         match msg.msg_cat() {
             MsgCat::Admin => {
@@ -1331,7 +1321,7 @@ impl<S: MessagesStorage> Session<S> {
                         // TODO: GAP FILL!
                         // let mut header = self.new_header(MsgType::SequenceReset);
                         // header.msg_seq_num = msg.header.msg_seq_num;
-                        // Ok(Some(Box::new(FixtMessage {
+                        // Ok(Some(Box::new(Message {
                         //     header,
                         //     body: Message::SequenceReset(SequenceReset {
                         //         gap_fill_flag: Some(true),
@@ -1413,20 +1403,16 @@ impl<S: MessagesStorage> Session<S> {
         );
         state.register_grace_period_test_req_id(test_req_id.clone());
 
-        self.send(Box::new(Message::from(AdminBase::TestRequest(
-            TestRequestBase {
-                test_req_id: Cow::Owned(test_req_id),
-            },
-        ))));
+        self.send(AdminBase::TestRequest(TestRequestBase {
+            test_req_id: Cow::Owned(test_req_id),
+        }));
 
         false
     }
 
     pub async fn on_out_timeout(self: &Rc<Self>) {
         trace!("on_out_timeout");
-        self.send(Box::new(Message::from(AdminBase::Heartbeat(
-            HeartbeatBase { test_req_id: None },
-        ))));
+        self.send(AdminBase::Heartbeat(HeartbeatBase { test_req_id: None }));
     }
 
     pub fn heartbeat_interval(&self) -> Duration {

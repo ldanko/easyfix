@@ -1,7 +1,9 @@
 use core::fmt;
 
-use easyfix_core::message::HeaderAccess;
-use easyfix_messages::fields::{FixStr, FixString};
+use easyfix_core::{
+    basic_types::{FixStr, FixString},
+    message::HeaderAccess,
+};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]

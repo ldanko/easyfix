@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, iter, ops::RangeInclusive};
 
-use easyfix_messages::fields::SeqNum;
+use easyfix_core::basic_types::SeqNum;
 
 pub trait MessagesStorage {
     fn fetch_range(&mut self, range: RangeInclusive<SeqNum>) -> impl Iterator<Item = &[u8]>;

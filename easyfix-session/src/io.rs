@@ -1,15 +1,11 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, hash_map::Entry},
     rc::Rc,
-    sync::Mutex,
     time::Duration,
 };
 
-use easyfix_core::base_enums::SessionStatusBase;
-use easyfix_messages::{
-    fields::FixString,
-    messages::{FixtMessage, Message},
+use easyfix_core::{
+    base_messages::SessionStatusBase, basic_types::FixString, message::SessionMessage,
 };
 use futures_util::{Stream, pin_mut};
 use tokio::{
@@ -42,61 +38,10 @@ use output_stream::{OutputEvent, output_stream};
 pub mod time;
 use time::{timeout, timeout_at, timeout_stream};
 
-static SENDERS: Mutex<Option<HashMap<SessionId, Sender>>> = Mutex::new(None);
-
-pub fn register_sender(session_id: SessionId, sender: Sender) {
-    if let Entry::Vacant(entry) = SENDERS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .entry(session_id)
-    {
-        entry.insert(sender);
-    }
-}
-
-pub fn unregister_sender(session_id: &SessionId) {
-    if SENDERS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .remove(session_id)
-        .is_none()
-    {
-        // TODO: ERROR?
-    }
-}
-
-pub fn sender(session_id: &SessionId) -> Option<Sender> {
-    SENDERS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .get(session_id)
-        .cloned()
-}
-
-// TODO: Remove?
-pub fn send(session_id: &SessionId, msg: Box<Message>) -> Result<(), Box<Message>> {
-    if let Some(sender) = sender(session_id) {
-        sender.send(msg).map_err(|msg| msg.body)
-    } else {
-        Err(msg)
-    }
-}
-
-pub fn send_raw(msg: Box<FixtMessage>) -> Result<(), Box<FixtMessage>> {
-    if let Some(sender) = sender(&SessionId::from_input(&*msg)) {
-        sender.send_raw(msg)
-    } else {
-        Err(msg)
-    }
-}
-
-async fn first_msg(
-    stream: &mut (impl Stream<Item = InputEvent> + Unpin),
+async fn first_msg<M>(
+    stream: &mut (impl Stream<Item = InputEvent<M>> + Unpin),
     logon_timeout: Duration,
-) -> Result<Box<FixtMessage>, Error> {
+) -> Result<Box<M>, Error> {
     match timeout(logon_timeout, stream.next()).await {
         Ok(Some(InputEvent::Message(msg))) => Ok(msg),
         Ok(Some(InputEvent::IoError(error))) => Err(error.into()),
@@ -109,22 +54,22 @@ async fn first_msg(
 }
 
 #[derive(Debug)]
-struct Connection<S> {
-    session: Rc<Session<S>>,
+struct Connection<M: SessionMessage, S> {
+    session: Rc<Session<M, S>>,
 }
 
-pub(crate) async fn acceptor_connection<S>(
+pub(crate) async fn acceptor_connection<M: SessionMessage, S>(
     reader: impl AsyncRead + Unpin,
     writer: impl AsyncWrite + Unpin,
     settings: Settings,
-    sessions: Rc<RefCell<SessionsMap<S>>>,
-    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
-    emitter: Emitter,
+    sessions: Rc<RefCell<SessionsMap<M, S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<M, S>>>,
+    emitter: Emitter<M>,
     enabled: Rc<Cell<bool>>,
 ) where
     S: MessagesStorage,
 {
-    let stream = input_stream(reader);
+    let stream = input_stream::<_, M>(reader);
     let logon_timeout =
         settings.auto_disconnect_after_no_logon_received + NO_INBOUND_TIMEOUT_PADDING;
     pin_mut!(stream);
@@ -159,7 +104,6 @@ pub(crate) async fn acceptor_connection<S>(
         return;
     }
     session_state.borrow_mut().set_disconnected(false);
-    register_sender(session_id.clone(), sender.clone());
 
     let (disconnect_tx, disconnect_rx) = oneshot::channel();
 
@@ -223,17 +167,16 @@ pub(crate) async fn acceptor_connection<S>(
     session_span.in_scope(|| {
         info!("connection closed");
     });
-    unregister_sender(&session_id);
     active_sessions.borrow_mut().remove(&session_id);
 }
 
-pub(crate) async fn initiator_connection<S>(
+pub(crate) async fn initiator_connection<M: SessionMessage, S>(
     tcp_stream: TcpStream,
     settings: Settings,
     session_settings: SessionSettings,
-    state: Rc<RefCell<State<S, FixtMessage>>>,
-    active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
-    emitter: Emitter,
+    state: Rc<RefCell<State<M, S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<M, S>>>,
+    emitter: Emitter<M>,
 ) where
     S: MessagesStorage,
 {
@@ -246,7 +189,6 @@ pub(crate) async fn initiator_connection<S>(
 
     let (disconnect_tx, disconnect_rx) = oneshot::channel();
 
-    register_sender(session_id.clone(), sender.clone());
     let session = Rc::new(Session::new(
         settings,
         session_settings,
@@ -273,7 +215,7 @@ pub(crate) async fn initiator_connection<S>(
         .await;
 
     let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
-    let input_stream = timeout_stream(input_timeout_duration, input_stream(source))
+    let input_stream = timeout_stream(input_timeout_duration, input_stream::<_, M>(source))
         .map(|res| res.unwrap_or(InputEvent::Timeout));
     pin_mut!(input_stream);
 
@@ -296,18 +238,17 @@ pub(crate) async fn initiator_connection<S>(
             .instrument(output_loop_span),
     );
     info!("connection closed");
-    unregister_sender(&session_id);
     active_sessions.borrow_mut().remove(&session_id);
 }
 
-impl<S: MessagesStorage> Connection<S> {
-    fn new(session: Rc<Session<S>>) -> Connection<S> {
+impl<M: SessionMessage, S: MessagesStorage> Connection<M, S> {
+    fn new(session: Rc<Session<M, S>>) -> Connection<M, S> {
         Connection { session }
     }
 
     async fn input_loop(
         &self,
-        mut input_stream: impl Stream<Item = InputEvent> + Unpin,
+        mut input_stream: impl Stream<Item = InputEvent<M>> + Unpin,
         input_closed_tx: oneshot::Sender<()>,
         force_disconnection_with_reason: Option<DisconnectReason>,
         mut disconnect_rx: oneshot::Receiver<()>,

@@ -5,14 +5,16 @@ use std::{
     time::Instant,
 };
 
-use easyfix_core::message::HeaderAccess;
-use easyfix_messages::fields::{FixString, SeqNum};
+use easyfix_core::{
+    basic_types::{FixString, SeqNum},
+    message::SessionMessage,
+};
 use tracing::{instrument, trace};
 
 use crate::messages_storage::MessagesStorage;
 
 #[derive(Debug)]
-struct Messages<M: Debug>(BTreeMap<SeqNum, Box<M>>);
+struct Messages<M>(BTreeMap<SeqNum, Box<M>>);
 
 impl<M: Debug> Messages<M> {
     fn new() -> Messages<M> {
@@ -37,7 +39,7 @@ impl<M: Debug> Messages<M> {
 }
 
 #[derive(Debug)]
-pub(crate) struct State<S, M: Debug> {
+pub(crate) struct State<M, S> {
     enabled: bool,
     received_logon: bool,
     logon_sent: bool,
@@ -65,8 +67,8 @@ pub(crate) struct State<S, M: Debug> {
     grace_period_test_req_ids: HashSet<FixString>,
 }
 
-impl<S: MessagesStorage, M: Debug + HeaderAccess> State<S, M> {
-    pub(crate) fn new(messages_storage: S) -> State<S, M> {
+impl<M: SessionMessage, S: MessagesStorage> State<M, S> {
+    pub(crate) fn new(messages_storage: S) -> State<M, S> {
         State {
             enabled: true,
             received_logon: false,
@@ -189,7 +191,7 @@ impl<S: MessagesStorage, M: Debug + HeaderAccess> State<S, M> {
     #[instrument(skip_all)]
     pub fn enqueue_msg(&mut self, msg: Box<M>) {
         let seq_num = msg.msg_seq_num();
-        trace!(msg_seq_num = seq_num, msg_type = ?msg.msg_type2());
+        trace!(msg_seq_num = seq_num, msg_type = ?msg.msg_type());
         self.queue.enqueue(seq_num, msg);
     }
 

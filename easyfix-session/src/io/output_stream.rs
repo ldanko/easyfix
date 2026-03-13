@@ -4,10 +4,7 @@ use std::{
 };
 
 use async_stream::stream;
-use easyfix_messages::{
-    fields::UtcTimestamp,
-    messages::{BEGIN_STRING, FixtMessage},
-};
+use easyfix_core::{basic_types::UtcTimestamp, message::SessionMessage};
 use futures_util::Stream;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::StreamExt;
@@ -22,28 +19,25 @@ pub(crate) enum OutputEvent {
     Disconnect(DisconnectReason),
 }
 
-fn fill_header<S: MessagesStorage>(message: &mut FixtMessage, session: &Session<S>) {
+fn fill_header<M: SessionMessage, S: MessagesStorage>(message: &mut M, session: &Session<M, S>) {
     let mut state = session.state().borrow_mut();
 
-    let header = &mut message.header;
-    if header.begin_string.is_empty() {
-        header.begin_string = BEGIN_STRING.to_owned();
+    if message.begin_string().is_empty() {
+        message.set_begin_string(session.session_id().begin_string().to_owned());
     }
 
-    header.msg_type = message.body.msg_type();
-
-    if header.sender_comp_id.is_empty() {
-        header.sender_comp_id = session.session_id().sender_comp_id().to_owned();
+    if message.sender_comp_id().is_empty() {
+        message.set_sender_comp_id(session.session_id().sender_comp_id().to_owned());
     }
-    if header.target_comp_id.is_empty() {
-        header.target_comp_id = session.session_id().target_comp_id().to_owned();
+    if message.target_comp_id().is_empty() {
+        message.set_target_comp_id(session.session_id().target_comp_id().to_owned());
     }
-    if header.sending_time == UtcTimestamp::MIN_UTC {
-        header.sending_time = UtcTimestamp::now();
+    if message.sending_time() == UtcTimestamp::MIN_UTC {
+        message.set_sending_time(UtcTimestamp::now());
     }
 
-    if header.msg_seq_num == 0 {
-        header.msg_seq_num = state.next_sender_msg_seq_num();
+    if message.msg_seq_num() == 0 {
+        message.set_msg_seq_num(state.next_sender_msg_seq_num());
         state.incr_next_sender_msg_seq_num();
     }
 
@@ -55,18 +49,21 @@ fn fill_header<S: MessagesStorage>(message: &mut FixtMessage, session: &Session<
     level = "trace",
     skip_all,
     fields(
-        msg_seq_num = message.header.msg_seq_num,
+        msg_seq_num = message.msg_seq_num(),
         msg_type = ?message.msg_type()
     )
 )]
-fn output_handler<S: MessagesStorage>(message: &FixtMessage, session: &Session<S>) -> Vec<u8> {
+fn output_handler<M: SessionMessage, S: MessagesStorage>(
+    message: &M,
+    session: &Session<M, S>,
+) -> Vec<u8> {
     // TODO: fn serialize_to(&mut buf) / fn serialize_to_buf(&mut buf)
     let buffer = message.serialize();
-    if !message.header.poss_dup_flag.unwrap_or(false) {
+    if !message.poss_dup_flag().unwrap_or(false) {
         session
             .state()
             .borrow_mut()
-            .store(message.header.msg_seq_num, &buffer);
+            .store(message.msg_seq_num(), &buffer);
     }
 
     debug!(
@@ -76,18 +73,18 @@ fn output_handler<S: MessagesStorage>(message: &FixtMessage, session: &Session<S
     buffer
 }
 
-pub(crate) fn output_stream<S: MessagesStorage>(
-    session: Rc<Session<S>>,
+pub(crate) fn output_stream<M: SessionMessage, S: MessagesStorage>(
+    session: Rc<Session<M, S>>,
     timeout_duration: Duration,
-    mut receiver: UnboundedReceiver<SenderMsg>,
+    mut receiver: UnboundedReceiver<SenderMsg<M>>,
 ) -> impl Stream<Item = OutputEvent> {
     let stream = stream! {
         while let Some(sender_msg) = receiver.recv().await {
             match sender_msg {
                 SenderMsg::Msg(mut msg) => {
-                    fill_header(&mut msg, &session);
+                    fill_header(&mut *msg, &session);
                     if let Some(msg) = session.on_message_out(msg).await {
-                        yield OutputEvent::Message(output_handler(&msg, &session));
+                        yield OutputEvent::Message(output_handler(&*msg, &session));
                     }
                 }
                 SenderMsg::Disconnect(reason) => {

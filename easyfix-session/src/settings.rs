@@ -1,7 +1,7 @@
 use std::ops::RangeInclusive;
 
 use chrono::NaiveTime;
-use easyfix_messages::fields::FixString;
+use easyfix_core::basic_types::FixString;
 use serde::{Deserialize, Deserializer};
 use tokio::time::Duration;
 
