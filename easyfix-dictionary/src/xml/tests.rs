@@ -71,6 +71,7 @@ fn parse_basic_types() {
         ("<field name='UtcTimeOnlyField' number='26' type='UTCTIMEONLY'/>", BasicType::UtcTimeOnly),
         ("<field name='UtcTimestampField' number='27' type='UTCTIMESTAMP'/>", BasicType::UtcTimestamp),
         ("<field name='XmlDataField' number='28' type='XMLDATA'/>", BasicType::XmlData),
+        ("<field name='TenorField' number='29' type='TENOR'/>", BasicType::Tenor),
     ];
 
     for (xml, expected_type) in type_pairs {

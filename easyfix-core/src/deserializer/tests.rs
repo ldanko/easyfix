@@ -5,8 +5,8 @@ use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
 
 use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
-    basic_types::{FixStr, LocalMktDate, Price, TimePrecision},
-    deserializer::{RawMessageError, deserialize_checksum},
+    basic_types::{FixStr, LocalMktDate, Price, Tenor, TenorUnit, TimePrecision},
+    deserializer::{DeserializeError, RawMessageError, deserialize_checksum},
 };
 
 const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(b"FIXT.1.1") };
@@ -298,4 +298,102 @@ fn deserialize_price_ok() {
         assert_eq!(price, *value);
         assert_eq!(deserializer.buf, &[b'\x00']);
     }
+}
+
+#[test]
+fn deserialize_tenor_days() {
+    let input = b"D5\x01\x00";
+    let mut deserializer = deserializer(input);
+    let tenor = deserializer
+        .deserialize_tenor()
+        .expect("failed to deserialize tenor");
+    assert_eq!(
+        tenor,
+        Tenor {
+            unit: TenorUnit::Days,
+            value: 5
+        }
+    );
+    assert_eq!(deserializer.buf, &[b'\x00']);
+}
+
+#[test]
+fn deserialize_tenor_months() {
+    let input = b"M3\x01\x00";
+    let mut deserializer = deserializer(input);
+    let tenor = deserializer
+        .deserialize_tenor()
+        .expect("failed to deserialize tenor");
+    assert_eq!(
+        tenor,
+        Tenor {
+            unit: TenorUnit::Months,
+            value: 3
+        }
+    );
+    assert_eq!(deserializer.buf, &[b'\x00']);
+}
+
+#[test]
+fn deserialize_tenor_weeks() {
+    let input = b"W13\x01\x00";
+    let mut deserializer = deserializer(input);
+    let tenor = deserializer
+        .deserialize_tenor()
+        .expect("failed to deserialize tenor");
+    assert_eq!(
+        tenor,
+        Tenor {
+            unit: TenorUnit::Weeks,
+            value: 13
+        }
+    );
+    assert_eq!(deserializer.buf, &[b'\x00']);
+}
+
+#[test]
+fn deserialize_tenor_years() {
+    let input = b"Y1\x01\x00";
+    let mut deserializer = deserializer(input);
+    let tenor = deserializer
+        .deserialize_tenor()
+        .expect("failed to deserialize tenor");
+    assert_eq!(
+        tenor,
+        Tenor {
+            unit: TenorUnit::Years,
+            value: 1
+        }
+    );
+    assert_eq!(deserializer.buf, &[b'\x00']);
+}
+
+#[test]
+fn deserialize_tenor_invalid_unit() {
+    let input = b"X5\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_tenor_zero_value() {
+    let input = b"D0\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_tenor_empty() {
+    let input = b"\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeError::Reject { .. })
+    );
 }

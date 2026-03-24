@@ -5,8 +5,8 @@ use tracing::warn;
 use crate::basic_types::{
     Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, Float, Int,
     Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
-    MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum,
-    TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+    MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum, Tenor,
+    TenorUnit, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
 };
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
@@ -429,7 +429,18 @@ impl Serializer {
         self.output.extend_from_slice(xml_data);
     }
 
-    // fn serialize_tenor(input: &[u8]) -> Result<Tenor, RejectReason>;
+    pub fn serialize_tenor(&mut self, input: &Tenor) {
+        let unit_byte = match input.unit {
+            TenorUnit::Days => b'D',
+            TenorUnit::Months => b'M',
+            TenorUnit::Weeks => b'W',
+            TenorUnit::Years => b'Y',
+        };
+        self.output.push(unit_byte);
+        let mut buffer = itoa::Buffer::new();
+        self.output
+            .extend_from_slice(buffer.format(input.value).as_bytes());
+    }
 
     pub fn serialize_enum<T>(&mut self, value: &T)
     where

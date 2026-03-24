@@ -168,6 +168,8 @@ pub enum BasicType {
     SeqNum,
     /// Character string (non-binary)
     String,
+    /// FX tenor expression ([DMWY]\d+, e.g. "D5", "M3", "W13", "Y1")
+    Tenor,
     /// Time with timezone
     TzTimeOnly,
     /// Timestamp with timezone

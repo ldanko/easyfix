@@ -6,8 +6,8 @@ use crate::{
         Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal, Exchange, FixStr,
         FixString, Float, Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
         MultipleCharValue, MultipleStringValue, NaiveDate, NaiveTime, NumInGroup, Percentage,
-        Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, TagNum, TimeZone, TzTimeOnly,
-        TzTimestamp, Utc, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+        Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, TagNum, Tenor, TenorUnit,
+        TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
     },
 };
 
@@ -1791,7 +1791,38 @@ impl Deserializer<'_> {
         Ok(xml.into())
     }
 
-    // fn deserialize_tenor(input: &[u8]) -> Result<Tenor, SessionRejectReasonBase>;
+    pub fn deserialize_tenor(&mut self) -> Result<Tenor, DeserializeError> {
+        let (unit, rest) = match self.buf {
+            [b'D', rest @ ..] => (TenorUnit::Days, rest),
+            [b'M', rest @ ..] => (TenorUnit::Months, rest),
+            [b'W', rest @ ..] => (TenorUnit::Weeks, rest),
+            [b'Y', rest @ ..] => (TenorUnit::Years, rest),
+            [] => {
+                return Err(DeserializeError::GarbledMessage(format!(
+                    "no more data to parse tag {:?}",
+                    self.current_tag
+                )));
+            }
+            _ => {
+                return Err(self.reject(
+                    self.current_tag,
+                    SessionRejectReasonBase::IncorrectDataFormatForValue,
+                ));
+            }
+        };
+        match deserialize_length(rest) {
+            Ok((leftover, value)) => {
+                self.buf = leftover;
+                Ok(Tenor { unit, value })
+            }
+            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
+                format!("no more data to parse tag {:?}", self.current_tag),
+            )),
+            Err(DeserializeErrorInternal::Error(reason)) => {
+                Err(self.reject(self.current_tag, reason))
+            }
+        }
+    }
 
     pub fn deserialize_int_enum<T>(&mut self) -> Result<T, DeserializeError>
     where

@@ -78,8 +78,19 @@ pub type Length = u16;
 pub type Data = Vec<u8>;
 pub type XmlData = Data;
 
-// TODO: don't use Vec here
-pub type Tenor = Vec<u8>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TenorUnit {
+    Days,
+    Months,
+    Weeks,
+    Years,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Tenor {
+    pub unit: TenorUnit,
+    pub value: Length,
+}
 
 #[derive(Debug)]
 pub struct FixStringError {
