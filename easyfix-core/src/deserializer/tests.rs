@@ -7,6 +7,7 @@ use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
     basic_types::{FixStr, LocalMktDate, Price, Tenor, TenorUnit, TimePrecision},
     deserializer::{DeserializeError, RawMessageError, deserialize_checksum},
+    fix_str,
 };
 
 const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(b"FIXT.1.1") };
@@ -648,10 +649,7 @@ fn deserialize_tz_timeonly_empty() {
 #[test]
 fn deserialize_negative_float() {
     let values: &[(&[u8], Price)] = &[
-        (
-            b"-3\x01\x00",
-            Price::from_str("-3").expect("Wrong decimal"),
-        ),
+        (b"-3\x01\x00", Price::from_str("-3").expect("Wrong decimal")),
         (
             b"-3.14\x01\x00",
             Price::from_str("-3.14").expect("Wrong decimal"),
@@ -669,4 +667,179 @@ fn deserialize_negative_float() {
         assert_eq!(price, *value);
         assert_eq!(deserializer.buf, b"\x00");
     }
+}
+
+// ── MultipleCharValue ───────────────────────────────────────
+
+#[test]
+fn deserialize_multiple_char_value_single() {
+    let input = b"A\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_multiple_char_value()
+        .expect("failed to deserialize");
+    assert_eq!(result, vec![b'A']);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_multiple_char_value_multiple() {
+    let input = b"2 A F\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_multiple_char_value()
+        .expect("failed to deserialize");
+    assert_eq!(result, vec![b'2', b'A', b'F']);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_multiple_char_value_empty() {
+    let input = b"";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_no_value() {
+    let input = b"\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_leading_space() {
+    let input = b" A\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_control_char() {
+    let input = b"\x05\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_high_byte() {
+    let input = b"\x80\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_two_chars_no_space() {
+    let input = b"AB\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_no_soh() {
+    let input = b"A B";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}
+
+// ── MultipleStringValue ─────────────────────────────────────
+
+#[test]
+fn deserialize_multiple_string_value_single() {
+    let input = b"ABC\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_multiple_string_value()
+        .expect("failed to deserialize");
+    assert_eq!(result, vec![fix_str!("ABC").to_owned()]);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_multiple_string_value_multiple() {
+    let input = b"AV AN A\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_multiple_string_value()
+        .expect("failed to deserialize");
+    assert_eq!(
+        result,
+        vec![
+            fix_str!("AV").to_owned(),
+            fix_str!("AN").to_owned(),
+            fix_str!("A").to_owned(),
+        ]
+    );
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_multiple_string_value_empty() {
+    let input = b"";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_string_value(),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}
+
+#[test]
+fn deserialize_multiple_string_value_no_value() {
+    let input = b"\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_string_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_string_value_control_char() {
+    let input = b"AB\x05CD\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_string_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_string_value_high_byte() {
+    let input = b"AB\x80\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_string_value(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_string_value_no_soh() {
+    let input = b"AV AN";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_string_value(),
+        Err(DeserializeError::GarbledMessage(_))
+    );
 }

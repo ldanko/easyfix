@@ -1,4 +1,6 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::LazyLock};
+
+use memchr::{memchr, memmem};
 
 use crate::{
     base_messages::SessionRejectReasonBase,
@@ -299,14 +301,11 @@ impl Deserializer<'_> {
     // This may fail when RawData or XmlData fields (or other binary fields)
     // are located before MsgSeqNum and has value `34=` inside
     fn try_find_msg_seq_num(&mut self) -> Result<SeqNum, DeserializeError> {
-        let seq_num_tag = b"34=";
+        static FINDER: LazyLock<memmem::Finder<'static>> =
+            LazyLock::new(|| memmem::Finder::new(b"34="));
 
-        let start_index = self
-            .buf
-            .windows(seq_num_tag.len())
-            .position(|window| window == seq_num_tag)
-            .ok_or(DeserializeError::Logout)?;
-        self.buf = &self.buf[start_index + seq_num_tag.len()..];
+        let start_index = FINDER.find(self.buf).ok_or(DeserializeError::Logout)?;
+        self.buf = &self.buf[start_index + FINDER.needle().len()..];
 
         self.deserialize_seq_num()
     }
@@ -856,49 +855,46 @@ impl Deserializer<'_> {
             _ => {}
         }
 
-        for (i, &byte) in self.buf.iter().enumerate() {
-            if byte == b'\x01' {
-                // SAFETY: i is from iterating self.buf, so i <= self.buf.len()
-                // and i + 1 <= self.buf.len() (since self.buf[i] == b'\x01')
-                let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
-                let (_, rest) = unsafe { rest.split_at_unchecked(1) };
-                self.buf = rest;
-                let mut result = MultipleCharValue::with_capacity(data.len() / 2 + 1);
-                for chunk in data.chunks(2) {
-                    match chunk {
-                        [b' '] | [b' ', _] => {
-                            return Err(self.reject(
-                                self.current_tag,
-                                SessionRejectReasonBase::IncorrectDataFormatForValue,
-                            ));
-                        }
-                        // Latin-1 controll characters ranges
-                        // [0x00..=0x1f] | [0x80..=0x9f] | [0x00..=0x1f, _] | [0x80..=0x9f, _] => {
+        let i = memchr(b'\x01', self.buf).ok_or_else(|| {
+            DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))
+        })?;
 
-                        // ASCII controll character range + unused range
-                        [0x00..=0x1f] | [0x7f..=0xff] => {
-                            return Err(self.reject(
-                                self.current_tag,
-                                SessionRejectReasonBase::ValueIsIncorrect,
-                            ));
-                        }
-                        [n] | [n, b' '] => result.push(*n),
-                        _ => {
-                            return Err(self.reject(
-                                self.current_tag,
-                                SessionRejectReasonBase::IncorrectDataFormatForValue,
-                            ));
-                        }
-                    }
+        // SAFETY: i is from memchr on self.buf, so i < self.buf.len(),
+        // thus i + 1 <= self.buf.len()
+        let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
+        let (_, rest) = unsafe { rest.split_at_unchecked(1) };
+        self.buf = rest;
+        let mut result = MultipleCharValue::with_capacity(data.len() / 2 + 1);
+        for chunk in data.chunks(2) {
+            match chunk {
+                [b' '] | [b' ', _] => {
+                    return Err(self.reject(
+                        self.current_tag,
+                        SessionRejectReasonBase::IncorrectDataFormatForValue,
+                    ));
                 }
-                return Ok(result);
+                // Latin-1 controll characters ranges
+                // [0x00..=0x1f] | [0x80..=0x9f] | [0x00..=0x1f, _] | [0x80..=0x9f, _] => {
+
+                // ASCII controll character range + unused range
+                [0x00..=0x1f] | [0x7f..=0xff] => {
+                    return Err(
+                        self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
+                    );
+                }
+                [n] | [n, b' '] => result.push(*n),
+                _ => {
+                    return Err(self.reject(
+                        self.current_tag,
+                        SessionRejectReasonBase::IncorrectDataFormatForValue,
+                    ));
+                }
             }
         }
-
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        Ok(result)
     }
 
     /// Deserialize alphanumeric free-format strings can include any character
@@ -946,40 +942,36 @@ impl Deserializer<'_> {
             _ => {}
         }
 
-        for (i, &byte) in self.buf.iter().enumerate() {
-            if byte == b'\x01' {
-                // SAFETY: i is from iterating self.buf, so i <= self.buf.len()
-                // and i + 1 <= self.buf.len() (since self.buf[i] == b'\x01')
-                let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
-                let (_, rest) = unsafe { rest.split_at_unchecked(1) };
-                self.buf = rest;
-                const DEFAULT_CAPACITY: usize = 4;
-                let mut result = MultipleStringValue::with_capacity(DEFAULT_CAPACITY);
-                for part in data.split(|p| *p == b' ') {
-                    let mut sub_result = Vec::with_capacity(part.len());
-                    for byte in part {
-                        match byte {
-                            // ASCII controll characters range
-                            0x00..=0x1f | 0x80..=0xff => {
-                                return Err(self.reject(
-                                    self.current_tag,
-                                    SessionRejectReasonBase::ValueIsIncorrect,
-                                ));
-                            }
-                            n => sub_result.push(*n),
-                        }
-                    }
-                    // SAFETY: string validity checked above
-                    result.push(unsafe { FixString::from_ascii_unchecked(sub_result) });
-                }
-                return Ok(result);
-            }
-        }
+        let i = memchr(b'\x01', self.buf).ok_or_else(|| {
+            DeserializeError::GarbledMessage(format!(
+                "no more data to parse tag {:?}",
+                self.current_tag
+            ))
+        })?;
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        // SAFETY: i is from memchr on self.buf, so i < self.buf.len(),
+        // thus i + 1 <= self.buf.len()
+        let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
+        let (_, rest) = unsafe { rest.split_at_unchecked(1) };
+        self.buf = rest;
+        const DEFAULT_CAPACITY: usize = 4;
+        let mut result = MultipleStringValue::with_capacity(DEFAULT_CAPACITY);
+        for part in data.split(|p| *p == b' ') {
+            let mut sub_result = Vec::with_capacity(part.len());
+            for byte in part {
+                match byte {
+                    // ASCII controll characters range
+                    0x00..=0x1f | 0x80..=0xff => {
+                        return Err(self
+                            .reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect));
+                    }
+                    n => sub_result.push(*n),
+                }
+            }
+            // SAFETY: string validity checked above
+            result.push(unsafe { FixString::from_ascii_unchecked(sub_result) });
+        }
+        Ok(result)
     }
 
     /// Deserialize ISO 3166-1:2013 Codes for the representation of names of
