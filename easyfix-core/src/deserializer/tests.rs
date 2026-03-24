@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use assert_matches::assert_matches;
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 
 use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
@@ -144,7 +144,7 @@ fn deserialize_str_ok() {
         .deserialize_str()
         .expect("failed to deserialize utc timestamp");
     assert_eq!(buf, "lorem ipsum");
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn deserialize_string_ok() {
         .deserialize_string()
         .expect("failed to deserialize utc timestamp");
     assert_eq!(buf, "lorem ipsum");
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn deserialize_utc_timestamp_ok() {
     );
     assert_eq!(utc_timestamp.timestamp(), date_time);
     assert_eq!(utc_timestamp.precision(), TimePrecision::Secs);
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn deserialize_utc_timestamp_with_millis_ok() {
     );
     assert_eq!(utc_timestamp.timestamp(), date_time);
     assert_eq!(utc_timestamp.precision(), TimePrecision::Millis);
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn deserialize_utc_timestamp_with_micros_ok() {
     );
     assert_eq!(utc_timestamp.timestamp(), date_time);
     assert_eq!(utc_timestamp.precision(), TimePrecision::Micros);
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn deserialize_utc_timestamp_with_nanos_ok() {
     );
     assert_eq!(utc_timestamp.timestamp(), date_time);
     assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -245,22 +245,68 @@ fn deserialize_utc_timestamp_with_picos_ok() {
     );
     assert_eq!(utc_timestamp.timestamp(), date_time);
     assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
-/// FIXME: it seems that timeonly deserialization has not been working for some time now
-#[ignore]
 #[test]
-fn deserialize_utc_timeonly_ok() {
+fn deserialize_utc_timeonly_secs() {
     let input = b"11:51:27\x01\x00";
     let mut deserializer = deserializer(input);
     let utc_timeonly = deserializer
         .deserialize_utc_time_only()
         .expect("failed to deserialize utc timeonly");
-    let time: NaiveTime = NaiveTime::from_hms_opt(11, 51, 27).unwrap();
+    let time = NaiveTime::from_hms_opt(11, 51, 27).unwrap();
     assert_eq!(utc_timeonly.timestamp(), time);
     assert_eq!(utc_timeonly.precision(), TimePrecision::Secs);
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_utc_timeonly_millis() {
+    let input = b"11:51:27.123\x01\x00";
+    let mut deserializer = deserializer(input);
+    let utc_timeonly = deserializer
+        .deserialize_utc_time_only()
+        .expect("failed to deserialize utc timeonly");
+    let time = NaiveTime::from_hms_milli_opt(11, 51, 27, 123).unwrap();
+    assert_eq!(utc_timeonly.timestamp(), time);
+    assert_eq!(utc_timeonly.precision(), TimePrecision::Millis);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_utc_timeonly_nanos() {
+    let input = b"11:51:27.123456789\x01\x00";
+    let mut deserializer = deserializer(input);
+    let utc_timeonly = deserializer
+        .deserialize_utc_time_only()
+        .expect("failed to deserialize utc timeonly");
+    let time = NaiveTime::from_hms_nano_opt(11, 51, 27, 123_456_789).unwrap();
+    assert_eq!(utc_timeonly.timestamp(), time);
+    assert_eq!(utc_timeonly.precision(), TimePrecision::Nanos);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_utc_timeonly_leap_second() {
+    let input = b"23:59:60\x01\x00";
+    let mut deserializer = deserializer(input);
+    let utc_timeonly = deserializer
+        .deserialize_utc_time_only()
+        .expect("failed to deserialize utc timeonly leap second");
+    assert_eq!(utc_timeonly.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_utc_timeonly_leap_second_with_millis() {
+    let input = b"23:59:60.123\x01\x00";
+    let mut deserializer = deserializer(input);
+    let utc_timeonly = deserializer
+        .deserialize_utc_time_only()
+        .expect("failed to deserialize utc timeonly leap second with millis");
+    assert_eq!(utc_timeonly.precision(), TimePrecision::Millis);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -274,7 +320,7 @@ fn deserialize_local_mkt_date_ok() {
         local_mkt_date,
         LocalMktDate::from_ymd_opt(2022, 5, 30).unwrap()
     );
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -296,7 +342,7 @@ fn deserialize_price_ok() {
             .deserialize_price()
             .expect("failed to deserialize price");
         assert_eq!(price, *value);
-        assert_eq!(deserializer.buf, &[b'\x00']);
+        assert_eq!(deserializer.buf, b"\x00");
     }
 }
 
@@ -314,7 +360,7 @@ fn deserialize_tenor_days() {
             value: 5
         }
     );
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -331,7 +377,7 @@ fn deserialize_tenor_months() {
             value: 3
         }
     );
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -348,7 +394,7 @@ fn deserialize_tenor_weeks() {
             value: 13
         }
     );
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -365,7 +411,7 @@ fn deserialize_tenor_years() {
             value: 1
         }
     );
-    assert_eq!(deserializer.buf, &[b'\x00']);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -394,6 +440,207 @@ fn deserialize_tenor_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+// --- TzTimestamp tests ---
+
+#[test]
+fn deserialize_tz_timestamp_utc() {
+    // "20060901-07:39Z" from spec examples
+    let input = b"20060901-07:39:00Z\x01\x00";
+    let mut deserializer = deserializer(input);
+    let ts = deserializer
+        .deserialize_tz_timestamp()
+        .expect("failed to deserialize tz timestamp");
+    let offset = FixedOffset::east_opt(0).unwrap();
+    let expected = NaiveDate::from_ymd_opt(2006, 9, 1)
+        .unwrap()
+        .and_hms_opt(7, 39, 0)
+        .unwrap()
+        .and_local_timezone(offset)
+        .unwrap();
+    assert_eq!(ts.timestamp(), expected);
+    assert_eq!(ts.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timestamp_negative_offset() {
+    // "20060901-02:39-05" from spec examples
+    let input = b"20060901-02:39:00-05\x01\x00";
+    let mut deserializer = deserializer(input);
+    let ts = deserializer
+        .deserialize_tz_timestamp()
+        .expect("failed to deserialize tz timestamp");
+    let offset = FixedOffset::west_opt(5 * 3600).unwrap();
+    let expected = NaiveDate::from_ymd_opt(2006, 9, 1)
+        .unwrap()
+        .and_hms_opt(2, 39, 0)
+        .unwrap()
+        .and_local_timezone(offset)
+        .unwrap();
+    assert_eq!(ts.timestamp(), expected);
+    assert_eq!(ts.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timestamp_positive_offset_with_minutes() {
+    // "20060901-13:09+05:30" from spec examples (India time)
+    let input = b"20060901-13:09:00+05:30\x01\x00";
+    let mut deserializer = deserializer(input);
+    let ts = deserializer
+        .deserialize_tz_timestamp()
+        .expect("failed to deserialize tz timestamp");
+    let offset = FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
+    let expected = NaiveDate::from_ymd_opt(2006, 9, 1)
+        .unwrap()
+        .and_hms_opt(13, 9, 0)
+        .unwrap()
+        .and_local_timezone(offset)
+        .unwrap();
+    assert_eq!(ts.timestamp(), expected);
+    assert_eq!(ts.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timestamp_with_millis() {
+    let input = b"20060901-13:09:00.123+05:30\x01\x00";
+    let mut deserializer = deserializer(input);
+    let ts = deserializer
+        .deserialize_tz_timestamp()
+        .expect("failed to deserialize tz timestamp");
+    let offset = FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
+    let expected = NaiveDate::from_ymd_opt(2006, 9, 1)
+        .unwrap()
+        .and_hms_milli_opt(13, 9, 0, 123)
+        .unwrap()
+        .and_local_timezone(offset)
+        .unwrap();
+    assert_eq!(ts.timestamp(), expected);
+    assert_eq!(ts.precision(), TimePrecision::Millis);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timestamp_with_nanos_utc() {
+    let input = b"20060901-13:09:00.123456789Z\x01\x00";
+    let mut deserializer = deserializer(input);
+    let ts = deserializer
+        .deserialize_tz_timestamp()
+        .expect("failed to deserialize tz timestamp");
+    let offset = FixedOffset::east_opt(0).unwrap();
+    let expected = NaiveDate::from_ymd_opt(2006, 9, 1)
+        .unwrap()
+        .and_hms_nano_opt(13, 9, 0, 123_456_789)
+        .unwrap()
+        .and_local_timezone(offset)
+        .unwrap();
+    assert_eq!(ts.timestamp(), expected);
+    assert_eq!(ts.precision(), TimePrecision::Nanos);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timestamp_invalid_format() {
+    let input = b"not-a-timestamp\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timestamp(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_tz_timestamp_empty() {
+    let input = b"\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timestamp(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+// --- TzTimeOnly tests ---
+
+#[test]
+fn deserialize_tz_timeonly_utc_no_seconds() {
+    let input = b"07:39Z\x01\x00";
+    let mut deserializer = deserializer(input);
+    let t = deserializer
+        .deserialize_tz_timeonly()
+        .expect("failed to deserialize tz timeonly");
+    let offset = FixedOffset::east_opt(0).unwrap();
+    assert_eq!(t.timestamp(), NaiveTime::from_hms_opt(7, 39, 0).unwrap());
+    assert_eq!(t.offset(), offset);
+    assert_eq!(t.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timeonly_with_seconds() {
+    let input = b"07:39:45+08\x01\x00";
+    let mut deserializer = deserializer(input);
+    let t = deserializer
+        .deserialize_tz_timeonly()
+        .expect("failed to deserialize tz timeonly");
+    let offset = FixedOffset::east_opt(8 * 3600).unwrap();
+    assert_eq!(t.timestamp(), NaiveTime::from_hms_opt(7, 39, 45).unwrap());
+    assert_eq!(t.offset(), offset);
+    assert_eq!(t.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timeonly_negative_offset_with_minutes() {
+    let input = b"13:09:30-05:30\x01\x00";
+    let mut deserializer = deserializer(input);
+    let t = deserializer
+        .deserialize_tz_timeonly()
+        .expect("failed to deserialize tz timeonly");
+    let offset = FixedOffset::west_opt(5 * 3600 + 30 * 60).unwrap();
+    assert_eq!(t.timestamp(), NaiveTime::from_hms_opt(13, 9, 30).unwrap());
+    assert_eq!(t.offset(), offset);
+    assert_eq!(t.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timeonly_with_millis() {
+    let input = b"13:09:30.123+05:30\x01\x00";
+    let mut deserializer = deserializer(input);
+    let t = deserializer
+        .deserialize_tz_timeonly()
+        .expect("failed to deserialize tz timeonly");
+    let offset = FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
+    assert_eq!(
+        t.timestamp(),
+        NaiveTime::from_hms_milli_opt(13, 9, 30, 123).unwrap()
+    );
+    assert_eq!(t.offset(), offset);
+    assert_eq!(t.precision(), TimePrecision::Millis);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_tz_timeonly_invalid_format() {
+    let input = b"xx:yy\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timeonly(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_tz_timeonly_empty() {
+    let input = b"\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timeonly(),
         Err(DeserializeError::Reject { .. })
     );
 }

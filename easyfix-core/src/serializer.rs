@@ -3,10 +3,11 @@ use std::io::Write;
 use tracing::warn;
 
 use crate::basic_types::{
-    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, Float, Int,
-    Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
+    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, FixedOffset, Float,
+    Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
     MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum, Tenor,
-    TenorUnit, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+    TenorUnit, TimePrecision, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp,
+    XmlData,
 };
 
 // TODO: This should be parametrizable and also used in parser to cut too big messages.
@@ -388,7 +389,15 @@ impl Serializer {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn serialize_tz_timestamp(&mut self, input: &TzTimestamp) {
-        self.output.extend_from_slice(input)
+        let ts = input.timestamp();
+        let fmt = match input.precision() {
+            TimePrecision::Secs => "%Y%m%d-%H:%M:%S",
+            TimePrecision::Millis => "%Y%m%d-%H:%M:%S%.3f",
+            TimePrecision::Micros => "%Y%m%d-%H:%M:%S%.6f",
+            TimePrecision::Nanos => "%Y%m%d-%H:%M:%S%.9f",
+        };
+        write!(self.output, "{}", ts.format(fmt)).expect("TzTimestamp serialization failed");
+        self.serialize_tz_offset(ts.offset());
     }
 
     /// Serialize time of day with timezone. Time represented based on
@@ -402,7 +411,32 @@ impl Serializer {
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes.
     pub fn serialize_tz_timeonly(&mut self, input: &TzTimeOnly) {
-        self.output.extend_from_slice(input)
+        let fmt = match input.precision() {
+            TimePrecision::Secs => "%H:%M:%S",
+            TimePrecision::Millis => "%H:%M:%S%.3f",
+            TimePrecision::Micros => "%H:%M:%S%.6f",
+            TimePrecision::Nanos => "%H:%M:%S%.9f",
+        };
+        write!(self.output, "{}", input.timestamp().format(fmt))
+            .expect("TzTimeOnly serialization failed");
+        self.serialize_tz_offset(&input.offset());
+    }
+
+    fn serialize_tz_offset(&mut self, offset: &FixedOffset) {
+        let total_secs = offset.local_minus_utc();
+        if total_secs == 0 {
+            self.output.push(b'Z');
+            return;
+        }
+        let sign = if total_secs < 0 { b'-' } else { b'+' };
+        let abs_secs = total_secs.unsigned_abs();
+        let hours = abs_secs / 3600;
+        let minutes = (abs_secs % 3600) / 60;
+        self.output.push(sign);
+        let _ = write!(self.output, "{hours:02}");
+        if minutes != 0 {
+            let _ = write!(self.output, ":{minutes:02}");
+        }
     }
 
     /// Serialize sequence of character digits without commas or decimals.

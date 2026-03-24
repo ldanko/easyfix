@@ -2,7 +2,7 @@ use std::{borrow, fmt, mem, ops};
 
 use chrono::Timelike;
 pub use chrono::{
-    DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
+    DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
     format::{DelayedFormat, StrftimeItems},
 };
 pub use rust_decimal::Decimal;
@@ -70,9 +70,18 @@ pub type UtcDateOnly = NaiveDate;
 pub type LocalMktTime = NaiveTime;
 pub type LocalMktDate = NaiveDate;
 
-// TODO: don't use Vec here
-pub type TzTimestamp = Vec<u8>;
-pub type TzTimeOnly = Vec<u8>;
+#[derive(Clone, Copy, Debug)]
+pub struct TzTimestamp {
+    timestamp: DateTime<FixedOffset>,
+    precision: TimePrecision,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TzTimeOnly {
+    timestamp: NaiveTime,
+    offset: FixedOffset,
+    precision: TimePrecision,
+}
 
 pub type Length = u16;
 pub type Data = Vec<u8>;
@@ -931,7 +940,10 @@ impl UtcTimeOnly {
     /// input's precision is adjusted to requested one
     pub fn with_millis(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
-            timestamp: time.with_nanosecond(time.nanosecond() / 1_000_000).unwrap(),
+            // Strip sub-millisecond precision from nanoseconds
+            timestamp: time
+                .with_nanosecond(time.nanosecond() - time.nanosecond() % 1_000_000)
+                .unwrap(),
             precision: TimePrecision::Millis,
         }
     }
@@ -940,7 +952,10 @@ impl UtcTimeOnly {
     /// input's precision is adjusted to requested one
     pub fn with_micros(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
-            timestamp: time.with_nanosecond(time.nanosecond() / 1_000).unwrap(),
+            // Strip sub-microsecond precision from nanoseconds
+            timestamp: time
+                .with_nanosecond(time.nanosecond() - time.nanosecond() % 1_000)
+                .unwrap(),
             precision: TimePrecision::Micros,
         }
     }
@@ -960,6 +975,112 @@ impl UtcTimeOnly {
 
     pub fn timestamp(&self) -> NaiveTime {
         self.timestamp
+    }
+
+    pub fn precision(&self) -> TimePrecision {
+        self.precision
+    }
+}
+
+impl TzTimestamp {
+    pub fn with_precision(
+        timestamp: DateTime<FixedOffset>,
+        precision: TimePrecision,
+    ) -> TzTimestamp {
+        TzTimestamp {
+            timestamp,
+            precision,
+        }
+    }
+
+    pub fn with_secs(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
+        TzTimestamp {
+            timestamp,
+            precision: TimePrecision::Secs,
+        }
+    }
+
+    pub fn with_millis(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
+        TzTimestamp {
+            timestamp,
+            precision: TimePrecision::Millis,
+        }
+    }
+
+    pub fn with_micros(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
+        TzTimestamp {
+            timestamp,
+            precision: TimePrecision::Micros,
+        }
+    }
+
+    pub fn with_nanos(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
+        TzTimestamp {
+            timestamp,
+            precision: TimePrecision::Nanos,
+        }
+    }
+
+    pub fn timestamp(&self) -> DateTime<FixedOffset> {
+        self.timestamp
+    }
+
+    pub fn precision(&self) -> TimePrecision {
+        self.precision
+    }
+}
+
+impl TzTimeOnly {
+    pub fn new(timestamp: NaiveTime, offset: FixedOffset, precision: TimePrecision) -> TzTimeOnly {
+        TzTimeOnly {
+            timestamp,
+            offset,
+            precision,
+        }
+    }
+
+    pub fn with_secs(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
+        TzTimeOnly {
+            timestamp: timestamp.with_nanosecond(0).unwrap(),
+            offset,
+            precision: TimePrecision::Secs,
+        }
+    }
+
+    pub fn with_millis(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
+        TzTimeOnly {
+            timestamp: timestamp
+                .with_nanosecond(timestamp.nanosecond() / 1_000_000 * 1_000_000)
+                .unwrap(),
+            offset,
+            precision: TimePrecision::Millis,
+        }
+    }
+
+    pub fn with_micros(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
+        TzTimeOnly {
+            timestamp: timestamp
+                .with_nanosecond(timestamp.nanosecond() / 1_000 * 1_000)
+                .unwrap(),
+            offset,
+            precision: TimePrecision::Micros,
+        }
+    }
+
+    pub fn with_nanos(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
+        TzTimeOnly {
+            timestamp,
+            offset,
+            precision: TimePrecision::Nanos,
+        }
+    }
+
+    pub fn timestamp(&self) -> NaiveTime {
+        self.timestamp
+    }
+
+    pub fn offset(&self) -> FixedOffset {
+        self.offset
     }
 
     pub fn precision(&self) -> TimePrecision {
