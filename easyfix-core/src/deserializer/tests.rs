@@ -644,3 +644,29 @@ fn deserialize_tz_timeonly_empty() {
         Err(DeserializeError::Reject { .. })
     );
 }
+
+#[test]
+fn deserialize_negative_float() {
+    let values: &[(&[u8], Price)] = &[
+        (
+            b"-3\x01\x00",
+            Price::from_str("-3").expect("Wrong decimal"),
+        ),
+        (
+            b"-3.14\x01\x00",
+            Price::from_str("-3.14").expect("Wrong decimal"),
+        ),
+        (
+            b"-97.0347\x01\x00",
+            Price::from_str("-97.0347").expect("Wrong decimal"),
+        ),
+    ];
+    for (input, value) in values {
+        let mut deserializer = deserializer(input);
+        let price = deserializer
+            .deserialize_price()
+            .expect("failed to deserialize negative price");
+        assert_eq!(price, *value);
+        assert_eq!(deserializer.buf, b"\x00");
+    }
+}

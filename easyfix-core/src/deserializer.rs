@@ -411,9 +411,8 @@ impl Deserializer<'_> {
         }
 
         let mut value: TagNum = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and self.buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
@@ -429,7 +428,9 @@ impl Deserializer<'_> {
                             .reject(self.current_tag, SessionRejectReasonBase::InvalidTagNumber));
                     } else {
                         self.current_tag = Some(value);
-                        self.buf = &self.buf[i + 1..];
+                        // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
+                        let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
+                        self.buf = rest;
                         return Ok(Some(value));
                     }
                 }
@@ -480,9 +481,8 @@ impl Deserializer<'_> {
         };
 
         let mut value: Int = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and self.buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
@@ -492,7 +492,9 @@ impl Deserializer<'_> {
                         })?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
+                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
+                    self.buf = rest;
                     return Ok(if negative { -value } else { value });
                 }
                 _ => {
@@ -526,9 +528,8 @@ impl Deserializer<'_> {
         }
 
         let mut value: SeqNum = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
@@ -536,7 +537,9 @@ impl Deserializer<'_> {
                         .ok_or(DeserializeError::Logout)?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
+                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
+                    self.buf = rest;
                     // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
                     return Ok(value);
                 }
@@ -571,9 +574,8 @@ impl Deserializer<'_> {
         }
 
         let mut value: NumInGroup = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
@@ -587,7 +589,9 @@ impl Deserializer<'_> {
                         return Err(self
                             .reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect));
                     } else {
-                        self.buf = &self.buf[i + 1..];
+                        // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
+                        let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
+                        self.buf = rest;
                         return Ok(value);
                     }
                 }
@@ -632,9 +636,8 @@ impl Deserializer<'_> {
         };
 
         let mut value: NumInGroup = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     value = value
                         .checked_mul(10)
@@ -644,7 +647,9 @@ impl Deserializer<'_> {
                         })?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
+                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
+                    self.buf = rest;
                     break;
                 }
                 _ => {
@@ -699,9 +704,8 @@ impl Deserializer<'_> {
 
         let mut num: i64 = 0;
         let mut scale = None;
-        for i in 0..buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { buf.get_unchecked(i) } {
+        for (i, &byte) in buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     num = num
                         .checked_mul(10)
@@ -723,7 +727,9 @@ impl Deserializer<'_> {
                     scale = Some(0);
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    // SAFETY: i is from iterating buf, so i + 1 <= buf.len()
+                    let (_, rest) = unsafe { buf.split_at_unchecked(i + 1) };
+                    self.buf = rest;
                     let scale = scale.unwrap_or(0);
                     // TODO: Limit scale (28 or more panics!)
                     return Ok(Decimal::new(if negative { -num } else { num }, scale));
@@ -850,12 +856,13 @@ impl Deserializer<'_> {
             _ => {}
         }
 
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and input.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
-                let data = &self.buf[0..i];
-                // Skip data and separator
-                self.buf = &self.buf[i + 1..];
+        for (i, &byte) in self.buf.iter().enumerate() {
+            if byte == b'\x01' {
+                // SAFETY: i is from iterating self.buf, so i <= self.buf.len()
+                // and i + 1 <= self.buf.len() (since self.buf[i] == b'\x01')
+                let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
+                let (_, rest) = unsafe { rest.split_at_unchecked(1) };
+                self.buf = rest;
                 let mut result = MultipleCharValue::with_capacity(data.len() / 2 + 1);
                 for chunk in data.chunks(2) {
                     match chunk {
@@ -939,12 +946,13 @@ impl Deserializer<'_> {
             _ => {}
         }
 
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and input.len()
-            if let b'\x01' = unsafe { self.buf.get_unchecked(i) } {
-                let data = &self.buf[0..i];
-                // Skip data and separator
-                self.buf = &self.buf[i + 1..];
+        for (i, &byte) in self.buf.iter().enumerate() {
+            if byte == b'\x01' {
+                // SAFETY: i is from iterating self.buf, so i <= self.buf.len()
+                // and i + 1 <= self.buf.len() (since self.buf[i] == b'\x01')
+                let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
+                let (_, rest) = unsafe { rest.split_at_unchecked(1) };
+                self.buf = rest;
                 const DEFAULT_CAPACITY: usize = 4;
                 let mut result = MultipleStringValue::with_capacity(DEFAULT_CAPACITY);
                 for part in data.split(|p| *p == b' ') {
@@ -1150,9 +1158,8 @@ impl Deserializer<'_> {
         }
 
         let mut fraction_of_second: u64 = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     fraction_of_second = fraction_of_second
                         .checked_mul(10)
@@ -1162,7 +1169,9 @@ impl Deserializer<'_> {
                         })?;
                 }
                 b'\x01' => {
-                    self.buf = &self.buf[i + 1..];
+                    // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
+                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
+                    self.buf = rest;
                     return fraction_to_nanos(fraction_of_second, i as u8)
                         .map(|ns| (ns, i as u8))
                         .map_err(|reason| self.reject(self.current_tag, reason));
@@ -1609,9 +1618,8 @@ impl Deserializer<'_> {
         }
 
         let mut fraction_of_second: u64 = 0;
-        for i in 0..self.buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { self.buf.get_unchecked(i) } {
+        for (i, &byte) in self.buf.iter().enumerate() {
+            match byte {
                 n @ b'0'..=b'9' => {
                     fraction_of_second = fraction_of_second
                         .checked_mul(10)
@@ -1622,7 +1630,9 @@ impl Deserializer<'_> {
                 }
                 // Stop at offset or SOH — don't consume terminator
                 b'Z' | b'+' | b'-' | b'\x01' => {
-                    self.buf = &self.buf[i..];
+                    // SAFETY: i is from iterating self.buf, so i <= self.buf.len()
+                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i) };
+                    self.buf = rest;
                     return fraction_to_nanos(fraction_of_second, i as u8)
                         .map(|ns| (ns, i as u8))
                         .map_err(|reason| self.reject(self.current_tag, reason));
