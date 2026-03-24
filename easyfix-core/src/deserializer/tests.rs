@@ -843,3 +843,94 @@ fn deserialize_multiple_string_value_no_soh() {
         Err(DeserializeError::GarbledMessage(_))
     );
 }
+
+// ── Data / XmlData ──────────────────────────────────────────
+
+#[test]
+fn deserialize_data_ok() {
+    // 5 bytes of data + SOH + marker
+    let input = b"hello\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_data(5)
+        .expect("failed to deserialize data");
+    assert_eq!(&*result, b"hello");
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_data_with_soh_inside() {
+    // Data can contain any bytes including SOH — length delimits, not SOH
+    let input = b"ab\x01cd\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_data(5)
+        .expect("failed to deserialize data with embedded SOH");
+    assert_eq!(&*result, b"ab\x01cd");
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_data_missing_separator() {
+    // Data without SOH separator after — should be detected as error
+    let input = b"helloX\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_data(5),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}
+
+#[test]
+fn deserialize_data_empty_buf() {
+    let input = b"";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_data(5),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}
+
+#[test]
+fn deserialize_data_buf_too_short() {
+    let input = b"hi\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_data(5),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}
+
+#[test]
+fn deserialize_data_soh_after_separator() {
+    // Byte after separator happens to be SOH (next field is empty-valued)
+    // This is valid and should NOT cause a false "missing separator" error
+    let input = b"hello\x01\x01";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_data(5)
+        .expect("SOH after separator should not cause error");
+    assert_eq!(&*result, b"hello");
+    assert_eq!(deserializer.buf, b"\x01");
+}
+
+#[test]
+fn deserialize_xml_ok() {
+    let input = b"<x/>\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_xml(4)
+        .expect("failed to deserialize xml");
+    assert_eq!(&*result, b"<x/>");
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_xml_missing_separator() {
+    let input = b"<x/>X\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_xml(4),
+        Err(DeserializeError::GarbledMessage(_))
+    );
+}

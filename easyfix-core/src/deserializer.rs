@@ -1938,18 +1938,18 @@ impl Deserializer<'_> {
             )));
         }
 
-        // SAFETY: length checked above
-        if let b'\x01' = unsafe { *self.buf.get_unchecked(len + 1) } {
-            // Missing separator
+        // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
+        if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
             return Err(DeserializeError::GarbledMessage(format!(
                 "missing tag ({:?}) separator",
                 self.current_tag
             )));
         }
 
-        let data = &self.buf[0..len];
-        // Skip data and separator
-        self.buf = &self.buf[len + 1..];
+        // SAFETY: guard ensures len + 1 <= self.buf.len()
+        let (data, rest) = unsafe { self.buf.split_at_unchecked(len) };
+        let (_, rest) = unsafe { rest.split_at_unchecked(1) };
+        self.buf = rest;
         Ok(data.into())
     }
 
@@ -1988,9 +1988,8 @@ impl Deserializer<'_> {
             )));
         }
 
-        // SAFETY: length checked above
-        if let b'\x01' = unsafe { *self.buf.get_unchecked(len + 1) } {
-            // Missing separator
+        // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
+        if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
             return Err(DeserializeError::GarbledMessage(format!(
                 "missing tag ({:?}) separator",
                 self.current_tag
@@ -1998,9 +1997,10 @@ impl Deserializer<'_> {
         }
 
         // TODO: XML validation, SessionRejectReasonBase::XmlValidationError when invalid
-        let xml = &self.buf[0..len];
-        // Skip XML and separator
-        self.buf = &self.buf[len + 1..];
+        // SAFETY: guard ensures len + 1 <= self.buf.len()
+        let (xml, rest) = unsafe { self.buf.split_at_unchecked(len) };
+        let (_, rest) = unsafe { rest.split_at_unchecked(1) };
+        self.buf = rest;
         Ok(xml.into())
     }
 
