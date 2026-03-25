@@ -111,7 +111,7 @@ impl EnumerableType {
     }
 
     /// Returns the underlying `BasicType` this enumerable type was created from.
-    pub fn to_basic_type(&self) -> BasicType {
+    pub fn to_basic_type(self) -> BasicType {
         match self {
             EnumerableType::Int => BasicType::Int,
             EnumerableType::NumInGroup => BasicType::NumInGroup,

@@ -103,6 +103,12 @@ fn generate_heartbeat(members: &[Member]) -> TokenStream {
     let map = tag_map(members);
     validate_tag(&map, 112, "TestReqID", BasicType::String);
 
+    let extra_fields_default = if members.len() > 1 {
+        quote! { ..Default::default() }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl<'a> From<&'a Heartbeat> for HeartbeatBase<'a> {
             fn from(msg: &'a Heartbeat) -> Self {
@@ -116,7 +122,7 @@ fn generate_heartbeat(members: &[Member]) -> TokenStream {
             fn from(base: HeartbeatBase<'_>) -> Heartbeat {
                 Heartbeat {
                     test_req_id: base.test_req_id.map(Cow::into_owned),
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }
@@ -131,6 +137,12 @@ fn generate_test_request(members: &[Member]) -> TokenStream {
     let map = tag_map(members);
     validate_tag(&map, 112, "TestReqID", BasicType::String);
 
+    let extra_fields_default = if members.len() > 1 {
+        quote! { ..Default::default() }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl<'a> From<&'a TestRequest> for TestRequestBase<'a> {
             fn from(msg: &'a TestRequest) -> Self {
@@ -144,7 +156,7 @@ fn generate_test_request(members: &[Member]) -> TokenStream {
             fn from(base: TestRequestBase<'_>) -> TestRequest {
                 TestRequest {
                     test_req_id: base.test_req_id.into_owned(),
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }
@@ -159,6 +171,12 @@ fn generate_resend_request(members: &[Member]) -> TokenStream {
     let map = tag_map(members);
     validate_tag(&map, 7, "BeginSeqNo", BasicType::SeqNum);
     validate_tag(&map, 16, "EndSeqNo", BasicType::SeqNum);
+
+    let extra_fields_default = if members.len() > 2 {
+        quote! { ..Default::default() }
+    } else {
+        quote! {}
+    };
 
     quote! {
         impl From<&ResendRequest> for ResendRequestBase {
@@ -175,7 +193,7 @@ fn generate_resend_request(members: &[Member]) -> TokenStream {
                 ResendRequest {
                     begin_seq_no: base.begin_seq_no,
                     end_seq_no: base.end_seq_no,
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }
@@ -190,6 +208,12 @@ fn generate_sequence_reset(members: &[Member]) -> TokenStream {
     let map = tag_map(members);
     validate_tag(&map, 123, "GapFillFlag", BasicType::Boolean);
     validate_tag(&map, 36, "NewSeqNo", BasicType::SeqNum);
+
+    let extra_fields_default = if members.len() > 2 {
+        quote! { ..Default::default() }
+    } else {
+        quote! {}
+    };
 
     quote! {
         impl From<&SequenceReset> for SequenceResetBase {
@@ -206,7 +230,7 @@ fn generate_sequence_reset(members: &[Member]) -> TokenStream {
                 SequenceReset {
                     gap_fill_flag: base.gap_fill_flag,
                     new_seq_no: base.new_seq_no,
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }
@@ -234,7 +258,7 @@ fn generate_logout(members: &[Member], version: Version) -> TokenStream {
     // --- Incoming: session_status as newtype field ---
     let incoming_session_status = if has_session_status {
         quote! {
-            msg.session_status.as_ref().map(|v| SessionStatusField::from(v.clone()))
+            msg.session_status.as_ref().map(|v| SessionStatusField::from(*v))
         }
     } else {
         quote! { None }
@@ -245,6 +269,13 @@ fn generate_logout(members: &[Member], version: Version) -> TokenStream {
         quote! {
             session_status: base.session_status.map(fields::SessionStatus::from),
         }
+    } else {
+        quote! {}
+    };
+
+    let base_field_count = 1 + has_session_status as usize;
+    let extra_fields_default = if members.len() > base_field_count {
+        quote! { ..Default::default() }
     } else {
         quote! {}
     };
@@ -264,7 +295,7 @@ fn generate_logout(members: &[Member], version: Version) -> TokenStream {
                 Logout {
                     #outgoing_session_status
                     text: base.text.map(Cow::into_owned),
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }
@@ -325,7 +356,7 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
     let incoming_session_reject_reason = if has_session_reject_reason {
         quote! {
             msg.session_reject_reason.as_ref()
-                .map(|v| SessionRejectReasonField::from(v.clone()))
+                .map(|v| SessionRejectReasonField::from(*v))
         }
     } else {
         quote! { None }
@@ -353,6 +384,16 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
         quote! {}
     };
 
+    let base_field_count = 2
+        + has_ref_tag_id as usize
+        + has_ref_msg_type as usize
+        + has_session_reject_reason as usize;
+    let extra_fields_default = if members.len() > base_field_count {
+        quote! { ..Default::default() }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl<'a> From<&'a Reject> for RejectBase<'a> {
             fn from(msg: &'a Reject) -> Self {
@@ -374,7 +415,7 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
                     #outgoing_ref_msg_type
                     #outgoing_session_reject_reason
                     text: base.text.map(Cow::into_owned),
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }
@@ -454,7 +495,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
 
     let incoming_session_status = if has_session_status {
         quote! {
-            msg.session_status.as_ref().map(|v| SessionStatusField::from(v.clone()))
+            msg.session_status.as_ref().map(|v| SessionStatusField::from(*v))
         }
     } else {
         quote! { None }
@@ -492,6 +533,17 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
         quote! {}
     };
 
+    let base_field_count = 2
+        + has_reset_seq_num_flag as usize
+        + has_next_expected as usize
+        + has_default_appl_ver_id as usize
+        + has_session_status as usize;
+    let extra_fields_default = if members.len() > base_field_count {
+        quote! { ..Default::default() }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl<'a> From<&'a Logon> for LogonBase<'a> {
             fn from(msg: &'a Logon) -> Self {
@@ -516,7 +568,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
                     #outgoing_next_expected
                     #outgoing_default_appl_ver_id
                     #outgoing_session_status
-                    ..Default::default()
+                    #extra_fields_default
                 }
             }
         }

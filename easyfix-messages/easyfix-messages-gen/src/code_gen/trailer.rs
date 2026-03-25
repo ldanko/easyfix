@@ -15,18 +15,16 @@ impl Trailer {
 
     fn generate_deserialize(&self) -> TokenStream {
         let variables_definitions = self.members.iter().map(|member| member.gen_opt_variables());
-        let de_match_entries = self
-            .members
-            .iter()
-            .flat_map(|member| member.gen_deserialize_match_entries());
         let de_trailer_entries = self
             .members
             .iter()
             .map(|member| member.gen_deserialize_struct_entries());
-        quote! {
-            fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeError> {
-                #(#variables_definitions)*
-
+        let deserialize_values = if self.members.len() > 1 {
+            let de_match_entries = self
+                .members
+                .iter()
+                .flat_map(|member| member.gen_deserialize_match_entries());
+            quote! {
                 while let Some(tag) = deserializer.deserialize_tag_num()? {
                     match tag {
                         #(#de_match_entries,)*
@@ -39,6 +37,24 @@ impl Trailer {
                         },
                     }
                 }
+            }
+        } else {
+            quote! {
+                if let Some(tag) = deserializer.deserialize_tag_num()? {
+                    if FieldTag::from_tag_num(tag).is_some() {
+                        return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
+                    } else {
+                        return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::UndefinedTag));
+                    }
+                }
+            }
+        };
+
+        quote! {
+            fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeError> {
+                #(#variables_definitions)*
+
+                #deserialize_values
 
                 Ok(Trailer {
                     #(#de_trailer_entries,)*
