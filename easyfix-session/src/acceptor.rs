@@ -85,8 +85,10 @@ impl Connection for TcpConnection {
     }
 }
 
+type SharedSessionState<M, S> = Rc<RefCell<SessionState<M, S>>>;
+
 pub struct SessionsMap<M, S> {
-    map: HashMap<SessionId, (SessionSettings, Rc<RefCell<SessionState<M, S>>>)>,
+    map: HashMap<SessionId, (SessionSettings, SharedSessionState<M, S>)>,
     message_storage_builder: Box<dyn Fn(&SessionId) -> S>,
 }
 
@@ -112,7 +114,7 @@ impl<M: SessionMessage, S: MessagesStorage> SessionsMap<M, S> {
     pub(crate) fn get_session(
         &self,
         session_id: &SessionId,
-    ) -> Option<(SessionSettings, Rc<RefCell<SessionState<M, S>>>)> {
+    ) -> Option<(SessionSettings, SharedSessionState<M, S>)> {
         self.map.get(session_id).cloned()
     }
 

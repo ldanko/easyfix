@@ -490,7 +490,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
             ref_seq_num,
             ref_tag_id,
             ref_msg_type: ref_msg_type.map(Cow::Owned),
-            session_reject_reason: Some(reason.into()),
+            session_reject_reason: Some(reason),
             text: Some(Cow::Owned(text)),
         }));
     }
