@@ -4,6 +4,8 @@
 //! - Incoming: Generated → Base (zero-copy borrow)
 //! - Outgoing: Base → Generated (owned construction)
 
+mod messages;
+
 use std::borrow::Cow;
 
 use easyfix_core::{
@@ -12,12 +14,9 @@ use easyfix_core::{
         ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, SessionStatusBase,
         TestRequestBase,
     },
-    basic_types::{SessionRejectReasonField, SessionStatusField},
     fix_str,
 };
-use easyfix_messages::messages::{
-    Body, Heartbeat, Logon, Logout, Reject, ResendRequest, SequenceReset, TestRequest,
-};
+use messages::{Body, Heartbeat, Logon, Logout, Reject, ResendRequest, SequenceReset, TestRequest};
 
 // ---------------------------------------------------------------------------
 // HeartbeatBase ↔ Heartbeat
@@ -238,7 +237,7 @@ fn logout_round_trip() {
 
 #[test]
 fn reject_incoming_full() {
-    use easyfix_messages::fields::SessionRejectReason;
+    use messages::SessionRejectReason;
 
     let msg = Reject {
         ref_seq_num: 7,
@@ -321,7 +320,7 @@ fn reject_round_trip_preserves_copy_fields() {
 
 #[test]
 fn logon_incoming() {
-    use easyfix_messages::fields::{DefaultApplVerId, EncryptMethod, SessionStatus};
+    use messages::{DefaultApplVerId, EncryptMethod, SessionStatus};
 
     let msg = Logon {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
@@ -346,7 +345,7 @@ fn logon_incoming() {
 
 #[test]
 fn logon_incoming_minimal() {
-    use easyfix_messages::fields::{DefaultApplVerId, EncryptMethod};
+    use messages::{DefaultApplVerId, EncryptMethod};
 
     let msg = Logon {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
@@ -409,7 +408,7 @@ fn logon_outgoing_without_optional_fields() {
 
 #[test]
 fn logon_round_trip_copy_fields() {
-    use easyfix_messages::fields::{DefaultApplVerId, EncryptMethod};
+    use messages::{DefaultApplVerId, EncryptMethod};
 
     let original = Logon {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),

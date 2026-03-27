@@ -1,19 +1,26 @@
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-use super::admin;
+use super::{admin, serde_derives};
 
 /// Generate the `FieldTag` enum and its impls.
-pub fn generate_field_tag(fields_names: &[Ident], fields_numbers: &[u16]) -> TokenStream {
+pub fn generate_field_tag(
+    fields_names: &[Ident],
+    fields_numbers: &[u16],
+    serde_serialize: bool,
+    serde_deserialize: bool,
+) -> TokenStream {
     let fields_names_as_bytes = fields_names
         .iter()
         .map(|f| Literal::byte_string(f.to_string().as_bytes()));
     let fields_numbers_literals = fields_numbers.iter().copied().map(Literal::u16_suffixed);
 
+    let serde_derives = serde_derives(serde_serialize, serde_deserialize);
+
     quote! {
+        #[allow(dead_code)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-        #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+        #serde_derives
         #[repr(u16)]
         pub enum FieldTag {
             #(#fields_names = #fields_numbers,)*
@@ -25,6 +32,7 @@ pub fn generate_field_tag(fields_names: &[Ident], fields_numbers: &[u16]) -> Tok
             }
         }
 
+        #[allow(dead_code)]
         impl FieldTag {
             pub const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
                 match tag_num {
@@ -54,7 +62,11 @@ pub fn generate_field_tag(fields_names: &[Ident], fields_numbers: &[u16]) -> Tok
 
 /// Generate the `Body` enum with serialize/deserialize dispatch,
 /// From impls, msg_type(), and msg_cat().
-pub fn generate_message_enum(names: &[&Ident]) -> TokenStream {
+pub fn generate_message_enum(
+    names: &[&Ident],
+    serde_serialize: bool,
+    serde_deserialize: bool,
+) -> TokenStream {
     let admin_base_dispatch = admin::generate_admin_base_dispatch();
     let names_str = names.iter().map(|name| Literal::string(&name.to_string()));
 
@@ -68,15 +80,18 @@ pub fn generate_message_enum(names: &[&Ident]) -> TokenStream {
         }
     });
 
+    let serde_derives = serde_derives(serde_serialize, serde_deserialize);
+
     quote! {
+        #[allow(dead_code)]
         #[derive(Clone, Debug)]
-        #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-        #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+        #serde_derives
         #[allow(clippy::large_enum_variant)]
         pub enum Body {
             #(#names(#names),)*
         }
 
+        #[allow(dead_code)]
         impl Body {
             fn serialize(&self, serializer: &mut Serializer) {
                 match self {
@@ -121,17 +136,20 @@ pub fn generate_message_enum(names: &[&Ident]) -> TokenStream {
 }
 
 /// Generate the `Message` struct and its impls.
-pub fn generate_fixt_message() -> TokenStream {
+pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    let serde_derives = serde_derives(serde_serialize, serde_deserialize);
+
     quote! {
+        #[allow(dead_code)]
         #[derive(Clone, Debug)]
-        #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-        #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+        #serde_derives
         pub struct Message {
             pub header: Header,
             pub body: Box<Body>,
             pub trailer: Trailer,
         }
 
+        #[allow(dead_code)]
         impl Message {
             pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
                 let begin_string = deserializer.begin_string();

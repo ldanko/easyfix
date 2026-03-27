@@ -1,0 +1,194 @@
+<fix type="FIXT" major="1" minor="1" servicepack="0">
+ <header>
+  <field name="BeginString" required="Y" />
+  <field name="BodyLength" required="Y" />
+  <field name="MsgType" required="Y" />
+  <field name="ApplVerID" required="N" />
+  <field name="SenderCompID" required="Y" />
+  <field name="TargetCompID" required="Y" />
+  <field name="MsgSeqNum" required="Y" />
+  <field name="SenderSubID" required="N" />
+  <field name="TargetSubID" required="N" />
+  <field name="PossDupFlag" required="N" />
+  <field name="SendingTime" required="Y" />
+  <field name="OrigSendingTime" required="N" />
+ </header>
+ <messages>
+  <message name="Heartbeat" msgtype="0" msgcat="admin">
+   <field name="TestReqID" required="N" />
+  </message>
+  <message name="TestRequest" msgtype="1" msgcat="admin">
+   <field name="TestReqID" required="Y" />
+  </message>
+  <message name="ResendRequest" msgtype="2" msgcat="admin">
+   <field name="BeginSeqNo" required="Y" />
+   <field name="EndSeqNo" required="Y" />
+  </message>
+  <message name="Reject" msgtype="3" msgcat="admin">
+   <field name="RefSeqNum" required="Y" />
+   <field name="RefTagID" required="N" />
+   <field name="RefMsgType" required="N" />
+   <field name="SessionRejectReason" required="N" />
+   <field name="Text" required="N" />
+  </message>
+  <message name="SequenceReset" msgtype="4" msgcat="admin">
+   <field name="GapFillFlag" required="N" />
+   <field name="NewSeqNo" required="Y" />
+  </message>
+  <message name="Logout" msgtype="5" msgcat="admin">
+   <field name="SessionStatus" required="N" />
+   <field name="NextExpectedMsgSeqNum" required="N" />
+   <field name="Text" required="N" />
+  </message>
+  <message name="Logon" msgtype="A" msgcat="admin">
+   <field name="EncryptMethod" required="Y" />
+   <field name="HeartBtInt" required="Y" />
+   <field name="RawDataLength" required="N" />
+   <field name="RawData" required="N" />
+   <field name="ResetSeqNumFlag" required="N" />
+   <field name="NextExpectedMsgSeqNum" required="N" />
+   <component name="MsgTypeGrp" required="N" />
+   <field name="SessionStatus" required="N" />
+   <field name="DefaultApplVerID" required="Y" />
+   <field name="Text" required="N" />
+  </message>
+ </messages>
+ <trailer>
+  <field name="SignatureLength" required="N" />
+  <field name="Signature" required="N" />
+  <field name="CheckSum" required="Y" />
+ </trailer>
+ <components>
+  <component name="MsgTypeGrp">
+   <group name="NoMsgTypes" required="N">
+    <field name="RefMsgType" required="N" />
+    <field name="MsgDirection" required="N" />
+    <field name="DefaultVerIndicator" required="N" />
+   </group>
+  </component>
+ </components>
+ <fields>
+  <field number="7" name="BeginSeqNo" type="SEQNUM" />
+  <field number="8" name="BeginString" type="STRING" />
+  <field number="9" name="BodyLength" type="LENGTH" />
+  <field number="10" name="CheckSum" type="STRING" />
+  <field number="16" name="EndSeqNo" type="SEQNUM" />
+  <field number="34" name="MsgSeqNum" type="SEQNUM" />
+  <field number="35" name="MsgType" type="STRING">
+   <value enum="0" description="HEARTBEAT" />
+   <value enum="1" description="TEST_REQUEST" />
+   <value enum="2" description="RESEND_REQUEST" />
+   <value enum="3" description="REJECT" />
+   <value enum="4" description="SEQUENCE_RESET" />
+   <value enum="5" description="LOGOUT" />
+   <value enum="A" description="LOGON" />
+   <value enum="8" description="EXECUTION_REPORT" />
+   <value enum="D" description="NEW_ORDER_SINGLE" />
+  </field>
+  <field number="36" name="NewSeqNo" type="SEQNUM" />
+  <field number="43" name="PossDupFlag" type="BOOLEAN">
+   <value enum="N" description="ORIGINAL_TRANSMISSION" />
+   <value enum="Y" description="POSSIBLE_DUPLICATE" />
+  </field>
+  <field number="45" name="RefSeqNum" type="SEQNUM" />
+  <field number="49" name="SenderCompID" type="STRING" />
+  <field number="50" name="SenderSubID" type="STRING" />
+  <field number="52" name="SendingTime" type="UTCTIMESTAMP" />
+  <field number="56" name="TargetCompID" type="STRING" />
+  <field number="57" name="TargetSubID" type="STRING" />
+  <field number="58" name="Text" type="STRING" />
+  <field number="89" name="Signature" type="DATA" />
+  <field number="93" name="SignatureLength" type="LENGTH" />
+  <field number="95" name="RawDataLength" type="LENGTH" />
+  <field number="96" name="RawData" type="DATA" />
+  <field number="98" name="EncryptMethod" type="INT">
+   <value enum="0" description="NONE" />
+   <value enum="1" description="PKCS" />
+   <value enum="2" description="DES" />
+   <value enum="3" description="PKCS_DES" />
+   <value enum="4" description="PGP_DES" />
+   <value enum="5" description="PGP_DES_MD5" />
+   <value enum="6" description="PEM" />
+  </field>
+  <field number="108" name="HeartBtInt" type="INT" />
+  <field number="112" name="TestReqID" type="STRING" />
+  <field number="122" name="OrigSendingTime" type="UTCTIMESTAMP" />
+  <field number="123" name="GapFillFlag" type="BOOLEAN">
+   <value enum="N" description="SEQUENCE_RESET" />
+   <value enum="Y" description="GAP_FILL_MESSAGE" />
+  </field>
+  <field number="141" name="ResetSeqNumFlag" type="BOOLEAN">
+   <value enum="N" description="NO" />
+   <value enum="Y" description="YES" />
+  </field>
+  <field number="371" name="RefTagID" type="INT" />
+  <field number="372" name="RefMsgType" type="STRING" />
+  <field number="373" name="SessionRejectReason" type="INT">
+   <value enum="0" description="INVALID_TAG_NUMBER" />
+   <value enum="1" description="REQUIRED_TAG_MISSING" />
+   <value enum="2" description="TAG_NOT_DEFINED_FOR_THIS_MESSAGE_TYPE" />
+   <value enum="3" description="UNDEFINED_TAG" />
+   <value enum="4" description="TAG_SPECIFIED_WITHOUT_A_VALUE" />
+   <value enum="5" description="VALUE_IS_INCORRECT" />
+   <value enum="6" description="INCORRECT_DATA_FORMAT_FOR_VALUE" />
+   <value enum="7" description="DECRYPTION_PROBLEM" />
+   <value enum="8" description="SIGNATURE_PROBLEM" />
+   <value enum="9" description="COMP_ID_PROBLEM" />
+   <value enum="10" description="SENDING_TIME_ACCURACY_PROBLEM" />
+   <value enum="11" description="INVALID_MSG_TYPE" />
+   <value enum="12" description="XML_VALIDATION_ERROR" />
+   <value enum="13" description="TAG_APPEARS_MORE_THAN_ONCE" />
+   <value enum="14" description="TAG_SPECIFIED_OUT_OF_REQUIRED_ORDER" />
+   <value enum="15" description="REPEATING_GROUP_FIELDS_OUT_OF_ORDER" />
+   <value enum="16" description="INCORRECT_NUM_IN_GROUP_COUNT_FOR_REPEATING_GROUP" />
+   <value enum="17" description="FIELD_DELIMITER_IN_FIELD_VALUE" />
+   <value enum="18" description="INVALID_UNSUPPORTED_APP_VERSION" />
+  </field>
+  <field number="384" name="NoMsgTypes" type="NUMINGROUP" />
+  <field number="385" name="MsgDirection" type="CHAR">
+   <value enum="S" description="SEND" />
+   <value enum="R" description="RECEIVE" />
+  </field>
+  <field number="789" name="NextExpectedMsgSeqNum" type="SEQNUM" />
+  <field number="1128" name="ApplVerID" type="STRING">
+   <value enum="0" description="FIX27" />
+   <value enum="1" description="FIX30" />
+   <value enum="2" description="FIX40" />
+   <value enum="3" description="FIX41" />
+   <value enum="4" description="FIX42" />
+   <value enum="5" description="FIX43" />
+   <value enum="6" description="FIX44" />
+   <value enum="7" description="FIX50" />
+   <value enum="8" description="FIX50_SP1" />
+   <value enum="9" description="FIX50_SP2" />
+   <value enum="10" description="FIX_LATEST" />
+  </field>
+  <field number="1130" name="DefaultVerIndicator" type="BOOLEAN" />
+  <field number="1137" name="DefaultApplVerID" type="STRING">
+   <value enum="0" description="FIX27" />
+   <value enum="1" description="FIX30" />
+   <value enum="2" description="FIX40" />
+   <value enum="3" description="FIX41" />
+   <value enum="4" description="FIX42" />
+   <value enum="5" description="FIX43" />
+   <value enum="6" description="FIX44" />
+   <value enum="7" description="FIX50" />
+   <value enum="8" description="FIX50_SP1" />
+   <value enum="9" description="FIX50_SP2" />
+   <value enum="10" description="FIX_LATEST" />
+  </field>
+  <field number="1409" name="SessionStatus" type="INT">
+   <value enum="0" description="SESSION_ACTIVE" />
+   <value enum="1" description="SESSION_PASSWORD_CHANGED" />
+   <value enum="2" description="SESSION_PASSWORD_DUE_TO_EXPIRE" />
+   <value enum="3" description="NEW_SESSION_PASSWORD_DOES_NOT_COMPLY_WITH_POLICY" />
+   <value enum="4" description="SESSION_LOGOUT_COMPLETE" />
+   <value enum="5" description="INVALID_USERNAME_OR_PASSWORD" />
+   <value enum="6" description="ACCOUNT_LOCKED" />
+   <value enum="7" description="LOGONS_ARE_NOT_ALLOWED_AT_THIS_TIME" />
+   <value enum="8" description="PASSWORD_EXPIRED" />
+   <value enum="9" description="RECEIVED_MSG_SEQ_NUM_TOO_LOW" />
+   <value enum="10" description="RECEIVED_NEXT_EXPECTED_MSG_SEQ_NUM_TOO_HIGH" />
+  </field>
+ </fields>
+</fix>

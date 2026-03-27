@@ -1,0 +1,17 @@
+[package]
+name = "acceptor-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+chrono = { workspace = true }
+easyfix-core = { workspace = true }
+easyfix-session = { workspace = true }
+tokio = { version = "1.38", features = ["macros", "rt"] }
+tokio-stream = "0.1"
+tracing = { workspace = true }
+tracing-subscriber = "0.3.18"
+
+[build-dependencies]
+easyfix-messages = { workspace = true }

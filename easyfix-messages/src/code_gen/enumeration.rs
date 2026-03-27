@@ -3,7 +3,7 @@ use easyfix_dictionary::Variant;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use super::member::EnumerableType;
+use super::{member::EnumerableType, serde_derives};
 
 fn variant_ident(name: &str) -> Ident {
     let mut variant_name = name.to_case(Case::UpperCamel);
@@ -216,7 +216,7 @@ impl EnumCodeGen {
         }
     }
 
-    pub fn generate(&self) -> TokenStream {
+    pub fn generate(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
         let name = &self.name;
         let try_from_type = match self.enumerable_type {
             EnumerableType::Int => quote! { Int },
@@ -285,17 +285,18 @@ impl EnumCodeGen {
         } else {
             quote! { match input }
         };
+        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
         let derives = if name == "MsgType" {
             quote! {
+                #[allow(dead_code)]
                 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-                #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-                #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+                #serde_derives
             }
         } else {
             quote! {
+                #[allow(dead_code)]
                 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-                #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-                #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+                #serde_derives
             }
         };
         quote! {

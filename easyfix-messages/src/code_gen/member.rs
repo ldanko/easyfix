@@ -128,11 +128,11 @@ impl EnumerableType {
 
     fn gen_type(&self, enum_name: &Ident) -> TokenStream {
         if self.is_multiple() {
-            quote! { Vec<fields::#enum_name> }
+            quote! { Vec<#enum_name> }
         } else {
             // TODO: in case of enum based on NumInGroup, it seems that max
             //       group members count should be limited to max enum value
-            quote! { fields::#enum_name }
+            quote! { #enum_name }
         }
     }
 
@@ -461,8 +461,8 @@ impl Field {
     ///
     /// ```rust,ignore
     /// let mut next_expected_msg_seq_num: Option<SeqNum> = None;
-    /// let mut session_status: Option<fields::SessionStatus> = None;
-    /// let mut default_appl_ver_id: Option<fields::DefaultApplVerId> = None;
+    /// let mut session_status: Option<SessionStatus> = None;
+    /// let mut default_appl_ver_id: Option<DefaultApplVerId> = None;
     /// let mut text: Option<FixString> = None;
     /// let check_sum = deserializer.check_sum();
     /// ```

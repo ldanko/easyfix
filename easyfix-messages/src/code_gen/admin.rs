@@ -267,7 +267,7 @@ fn generate_logout(members: &[Member], version: Version) -> TokenStream {
     // --- Outgoing: session_status from newtype via From ---
     let outgoing_session_status = if has_session_status {
         quote! {
-            session_status: base.session_status.map(fields::SessionStatus::from),
+            session_status: base.session_status.map(SessionStatus::from),
         }
     } else {
         quote! {}
@@ -378,7 +378,7 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
     let outgoing_session_reject_reason = if has_session_reject_reason {
         quote! {
             session_reject_reason: base.session_reject_reason
-                .map(fields::SessionRejectReason::from),
+                .map(SessionRejectReason::from),
         }
     } else {
         quote! {}
@@ -517,7 +517,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     let outgoing_default_appl_ver_id = if has_default_appl_ver_id {
         quote! {
             default_appl_ver_id: base.default_appl_ver_id.map(|v| {
-                fields::DefaultApplVerId::from_fix_str(&v)
+                DefaultApplVerId::from_fix_str(&v)
                     .expect("LogonBase default_appl_ver_id must be a valid DefaultApplVerId")
             }).unwrap_or_default(),
         }
@@ -527,7 +527,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
 
     let outgoing_session_status = if has_session_status {
         quote! {
-            session_status: base.session_status.map(fields::SessionStatus::from),
+            session_status: base.session_status.map(SessionStatus::from),
         }
     } else {
         quote! {}
@@ -562,7 +562,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
         impl From<LogonBase<'_>> for Logon {
             fn from(base: LogonBase<'_>) -> Logon {
                 Logon {
-                    encrypt_method: fields::EncryptMethod::from(base.encrypt_method),
+                    encrypt_method: EncryptMethod::from(base.encrypt_method),
                     heart_bt_int: base.heart_bt_int,
                     #outgoing_reset_seq_num_flag
                     #outgoing_next_expected

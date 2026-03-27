@@ -4,10 +4,12 @@
 //! - Incoming: Generated → Base (zero-copy borrow)
 //! - Outgoing: Base → Generated (owned construction)
 
+mod messages;
+
 use std::borrow::Cow;
 
 use easyfix_core::{base_messages::HeaderBase, basic_types::UtcTimestamp, fix_str};
-use easyfix_messages::{fields::ApplVerId, messages::Header};
+use messages::{ApplVerId, Header};
 
 // ---------------------------------------------------------------------------
 // HeaderBase ↔ Header

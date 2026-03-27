@@ -2,7 +2,7 @@ use easyfix_dictionary::{BasicType, Version};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::member::Member;
+use super::{member::Member, serde_derives};
 
 /// Header generator
 pub struct Header {
@@ -14,7 +14,12 @@ impl Header {
         Header { members }
     }
 
-    pub fn generate(&self, version: Version) -> TokenStream {
+    pub fn generate(
+        &self,
+        version: Version,
+        serde_serialize: bool,
+        serde_deserialize: bool,
+    ) -> TokenStream {
         // Tag 35 (MsgType) is not stored in Header — it's derived from the body.
         let members_definitions = self
             .members
@@ -34,15 +39,18 @@ impl Header {
         // TODO: move this to Message section
         let header_access_impl = self.generate_header_access_impl(version);
 
+        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
+
         quote! {
+            #[allow(dead_code)]
             #[derive(Clone, Debug, Default)]
-            #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
-            #[cfg_attr(feature = "deserialize", derive(serde::Deserialize))]
+            #serde_derives
             pub struct Header {
                 #(#members_definitions,)*
             }
 
-            impl Header{
+            #[allow(dead_code)]
+            impl Header {
                 pub(crate) fn serialize(&self, serializer: &mut Serializer) {
                     #(#serialize;)*
                 }
@@ -185,7 +193,7 @@ impl Header {
         let outgoing_appl_ver_id = if has_appl_ver_id {
             quote! {
                 appl_ver_id: base.appl_ver_id.map(|v| {
-                    fields::ApplVerId::from_fix_str(&v)
+                    ApplVerId::from_fix_str(&v)
                         .expect("HeaderBase appl_ver_id must be a valid ApplVerId")
                 }),
             }
@@ -264,7 +272,7 @@ impl Header {
         let set_appl_ver_id = if has_appl_ver_id {
             quote! {
                 self.appl_ver_id = value.map(|v| {
-                    fields::ApplVerId::from_fix_str(&v)
+                    ApplVerId::from_fix_str(&v)
                         .expect("HeaderAccess::set_appl_ver_id: invalid ApplVerId value")
                 });
             }
@@ -379,7 +387,7 @@ impl Header {
         let set_appl_ver_id = if has_appl_ver_id {
             quote! {
                 self.header.appl_ver_id = value.map(|v| {
-                    fields::ApplVerId::from_fix_str(&v)
+                    ApplVerId::from_fix_str(&v)
                         .expect("HeaderAccess::set_appl_ver_id: invalid ApplVerId value")
                 });
             }

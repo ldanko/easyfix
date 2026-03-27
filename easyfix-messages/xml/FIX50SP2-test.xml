@@ -1,0 +1,62 @@
+<fix type="FIX" major="5" minor="0" servicepack="2">
+ <header />
+ <messages>
+  <message name="NewOrderSingle" msgtype="D" msgcat="app">
+   <field name="ClOrdID" required="Y" />
+   <field name="Symbol" required="Y" />
+   <field name="Side" required="Y" />
+   <field name="TransactTime" required="Y" />
+   <field name="OrderQty" required="Y" />
+   <field name="OrdType" required="Y" />
+   <field name="Price" required="N" />
+  </message>
+  <message name="ExecutionReport" msgtype="8" msgcat="app">
+   <field name="OrderID" required="Y" />
+   <field name="ExecID" required="Y" />
+   <field name="ExecType" required="Y" />
+   <field name="OrdStatus" required="Y" />
+   <field name="Symbol" required="Y" />
+   <field name="Side" required="Y" />
+   <field name="LeavesQty" required="Y" />
+   <field name="CumQty" required="Y" />
+   <field name="ClOrdID" required="N" />
+   <field name="OrderQty" required="N" />
+   <field name="Price" required="N" />
+   <field name="TransactTime" required="N" />
+  </message>
+ </messages>
+ <trailer />
+ <components />
+ <fields>
+  <field number="11" name="ClOrdID" type="STRING" />
+  <field number="14" name="CumQty" type="QTY" />
+  <field number="17" name="ExecID" type="STRING" />
+  <field number="37" name="OrderID" type="STRING" />
+  <field number="38" name="OrderQty" type="QTY" />
+  <field number="39" name="OrdStatus" type="CHAR">
+   <value enum="0" description="NEW" />
+   <value enum="1" description="PARTIALLY_FILLED" />
+   <value enum="2" description="FILLED" />
+   <value enum="4" description="CANCELED" />
+   <value enum="8" description="REJECTED" />
+  </field>
+  <field number="40" name="OrdType" type="CHAR">
+   <value enum="1" description="MARKET" />
+   <value enum="2" description="LIMIT" />
+  </field>
+  <field number="44" name="Price" type="PRICE" />
+  <field number="54" name="Side" type="CHAR">
+   <value enum="1" description="BUY" />
+   <value enum="2" description="SELL" />
+  </field>
+  <field number="55" name="Symbol" type="STRING" />
+  <field number="60" name="TransactTime" type="UTCTIMESTAMP" />
+  <field number="150" name="ExecType" type="CHAR">
+   <value enum="0" description="NEW" />
+   <value enum="F" description="TRADE" />
+   <value enum="4" description="CANCELED" />
+   <value enum="8" description="REJECTED" />
+  </field>
+  <field number="151" name="LeavesQty" type="QTY" />
+ </fields>
+</fix>

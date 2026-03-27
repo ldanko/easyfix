@@ -2,20 +2,31 @@ use std::ops::RangeInclusive;
 
 use chrono::NaiveTime;
 use easyfix_core::basic_types::FixString;
-use serde::{Deserialize, Deserializer};
 use tokio::time::Duration;
 
 use crate::session_id::SessionId;
 
+#[cfg(feature = "serde-serialize")]
+fn duration_to_seconds<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_u64(duration.as_secs())
+}
+
+#[cfg(feature = "serde-deserialize")]
 fn duration_from_seconds<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
-    D: Deserializer<'de>,
+    D: serde::Deserializer<'de>,
 {
+    use serde::Deserialize;
     Ok(Duration::from_secs(u64::deserialize(deserializer)?))
 }
 
 /// FIX Trading Port session configuration.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub struct Settings {
     /// FIX SenderCompID<49> field value for outgoing messages.
     pub sender_comp_id: FixString,
@@ -26,18 +37,34 @@ pub struct Settings {
     /// outbound message is missing. If not set value from Logon<A> will be used.
     pub heartbeat_interval: Option<u64>,
     /// Timeout \[s\] for `Logon<A>` message, when reached, connection is dropped.
-    #[serde(deserialize_with = "duration_from_seconds")]
+    #[cfg_attr(
+        feature = "serde-serialize",
+        serde(serialize_with = "duration_to_seconds")
+    )]
+    #[cfg_attr(
+        feature = "serde-deserialize",
+        serde(deserialize_with = "duration_from_seconds")
+    )]
     pub auto_disconnect_after_no_logon_received: Duration,
     /// How many times `TestRequest<1> `is sent when inbound timeout is reached,
     /// before connection is dropped.
     pub auto_disconnect_after_no_heartbeat: u32,
     /// Timeout for waiting for Logout<5> acknowledgment during graceful
     /// session termination. If exceeded, the session terminates forcefully.
-    #[serde(deserialize_with = "duration_from_seconds")]
+    #[cfg_attr(
+        feature = "serde-serialize",
+        serde(serialize_with = "duration_to_seconds")
+    )]
+    #[cfg_attr(
+        feature = "serde-deserialize",
+        serde(deserialize_with = "duration_from_seconds")
+    )]
     pub auto_disconnect_after_no_logout: Duration,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub struct SessionSettings {
     pub session_id: SessionId,
     // TODO: Optional

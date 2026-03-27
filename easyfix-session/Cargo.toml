@@ -8,16 +8,20 @@ repository = "https://github.com/ldanko/easyfix"
 readme = "README.md"
 edition = "2024"
 
+[features]
+serde-serialize = ["dep:serde", "easyfix-core/serde-serialize", "chrono/serde"]
+serde-deserialize = ["dep:serde", "easyfix-core/serde-deserialize", "chrono/serde"]
+
 [dependencies]
 async-stream = { workspace = true }
 bytes = "1.6"
 chrono = { workspace = true }
-easyfix-core = { version = "0.1.0", path = "../easyfix-core" }
+easyfix-core = { workspace = true }
 futures = "0.3"
 futures-core = "0.3.31"
 futures-util = "0.3.26"
 pin-project = "1.1"
-serde = { workspace = true }
+serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { version = "1.38", features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
 tokio-stream = "0.1"
@@ -25,5 +29,4 @@ tokio-util = { version = "0.7", features = [ "io"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-easyfix-messages = { version = "0.6.4", path = "../easyfix-messages" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"]}

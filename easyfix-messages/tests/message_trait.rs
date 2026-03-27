@@ -1,5 +1,7 @@
 //! Tests for `SessionMessage` trait implementation on `Message`.
 
+mod messages;
+
 use std::borrow::Cow;
 
 use assert_matches::assert_matches;
@@ -11,10 +13,7 @@ use easyfix_core::{
     fix_str,
     message::{MsgCat, SessionMessage},
 };
-use easyfix_messages::{
-    fields::ApplVerId,
-    messages::{Body, Header, Heartbeat, Message, Trailer},
-};
+use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
 
 fn make_heartbeat() -> Message {
     Message {

@@ -4,9 +4,9 @@ use easyfix_core::{
     basic_types::{FixStr, FixString},
     message::HeaderAccess,
 };
-use serde::Deserialize;
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub struct SessionId {
     begin_string: FixString,
     sender_comp_id: FixString,

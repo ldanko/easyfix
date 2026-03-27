@@ -1,13 +1,15 @@
+mod messages;
+
 use assert_matches::assert_matches;
-use easyfix_core::{base_messages::SessionRejectReasonBase, message::SessionMessage};
-use easyfix_messages::{
+use easyfix_core::{
+    base_messages::SessionRejectReasonBase,
+    basic_types::{FixString, ToFixString, Utc, UtcTimestamp},
     deserializer::DeserializeError,
-    fields::{
-        DefaultApplVerId, EncryptMethod, FixString, MsgDirection, MsgType, ToFixString, Utc,
-        UtcTimestamp,
-    },
-    groups::MsgTypeGrp,
-    messages::{BEGIN_STRING, Body, Header, Heartbeat, Logon, Message, Trailer},
+    message::SessionMessage,
+};
+use messages::{
+    BEGIN_STRING, Body, DefaultApplVerId, EncryptMethod, Header, Heartbeat, Logon, Message,
+    MsgDirection, MsgType, MsgTypeGrp, Trailer,
 };
 
 fn header() -> Header {

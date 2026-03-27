@@ -23,6 +23,21 @@ use self::{
     trailer::Trailer,
 };
 
+fn serde_derives(serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    match (serde_serialize, serde_deserialize) {
+        (true, true) => quote! {
+            #[derive(serde::Serialize, serde::Deserialize)]
+        },
+        (true, false) => quote! {
+            #[derive(serde::Serialize)]
+        },
+        (false, true) => quote! {
+            #[derive(serde::Deserialize)]
+        },
+        (false, false) => quote! {},
+    }
+}
+
 pub struct Generator {
     version: Version,
     header: Header,
@@ -154,59 +169,50 @@ impl Generator {
         }
     }
 
-    pub fn generate_fields(&self) -> TokenStream {
-        let enums = self.enums.iter().map(|enum_| enum_.generate());
+    pub fn generate_fields(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+        let enums = self
+            .enums
+            .iter()
+            .map(|enum_| enum_.generate(serde_serialize, serde_deserialize));
         let base_enum_conversions = self
             .enums
             .iter()
             .map(|enum_| enum_.generate_base_enum_conversion());
 
         quote! {
-            use easyfix_core::base_messages::{EncryptMethodBase, SessionRejectReasonBase};
-
             #(#enums)*
 
             #(#base_enum_conversions)*
         }
     }
 
-    pub fn generate_groups(&self) -> TokenStream {
-        let groups_defs = self.groups.iter().map(|group| group.generate());
+    pub fn generate_groups(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+        let groups_defs = self
+            .groups
+            .iter()
+            .map(|group| group.generate(serde_serialize, serde_deserialize));
 
         quote! {
-            #[allow(unused_imports)]
-            use crate::{
-                deserializer::{DeserializeError, Deserializer},
-                fields::{
-                    self,
-                    basic_types::{
-                        Amt, Boolean, Char, Country, Currency, Data, Exchange, FixString,
-                        Float, Int, Language, Length, LocalMktDate, MonthYear,
-                        MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
-                        Price, PriceOffset, Qty, SeqNum, TzTimeOnly, TzTimestamp,
-                        UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
-                    },
-                    SessionRejectReason,
-                },
-                serializer::Serializer,
-            };
-            use easyfix_core::base_messages::SessionRejectReasonBase;
-
             #(#groups_defs)*
         }
     }
 
-    pub fn generate_messages(&self) -> TokenStream {
+    pub fn generate_messages(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
         let mut msg_names = Vec::new();
 
         // Generate Header and Trailer
-        let header_def = self.header.generate(self.version);
-        let trailer_def = self.trailer.generate();
+        let header_def = self
+            .header
+            .generate(self.version, serde_serialize, serde_deserialize);
+        let trailer_def = self.trailer.generate(serde_serialize, serde_deserialize);
 
         let admin_base_conversions =
             admin::generate_admin_base_conversions(&self.messages, self.version);
 
-        let structs_defs = self.messages.iter().map(|msg| msg.generate());
+        let structs_defs = self
+            .messages
+            .iter()
+            .map(|msg| msg.generate(serde_serialize, serde_deserialize));
 
         // Generate message structs
         for msg in &self.messages {
@@ -214,46 +220,47 @@ impl Generator {
         }
 
         let begin_string = Literal::byte_string(&self.version.begin_string().into_bytes());
-        let field_tag_def =
-            message_enum::generate_field_tag(&self.fields_names, &self.fields_numbers);
-        let message_enum_def = message_enum::generate_message_enum(&msg_names);
-        let fixt_message_def = message_enum::generate_fixt_message();
+        let field_tag_def = message_enum::generate_field_tag(
+            &self.fields_names,
+            &self.fields_numbers,
+            serde_serialize,
+            serde_deserialize,
+        );
+        let message_enum_def =
+            message_enum::generate_message_enum(&msg_names, serde_serialize, serde_deserialize);
+        let fixt_message_def =
+            message_enum::generate_fixt_message(serde_serialize, serde_deserialize);
 
         quote! {
             #[allow(unused_imports)]
-            use crate::{
-                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
-                fields::{
-                    self,
-                    basic_types::{
-                        Amt, Boolean, Char, Country, Currency, Data, Exchange, FixStr,
-                        FixString, Float, Int, Language, Length, LocalMktDate, MonthYear,
-                        MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue,
-                        NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum,
-                        SessionRejectReasonField, SessionStatusField, TagNum, ToFixString,
-                        TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp,
-                        XmlData,
-                    },
-                    SessionRejectReason,
+            use easyfix_core::{
+                basic_types::{
+                    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal,
+                    Exchange, FixStr, FixString, Float, Int, Language, Length,
+                    LocalMktDate, LocalMktTime, MonthYear, MsgTypeField, MsgTypeValue,
+                    MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
+                    Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField,
+                    SessionRejectReasonValue, SessionStatusField, SessionStatusValue,
+                    TagNum, Tenor, TenorUnit, TimePrecision, ToFixString, TzTimeOnly,
+                    TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
                 },
-                groups::*,
+                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
                 serializer::Serializer,
             };
-            use std::borrow::Cow;
-            use std::fmt;
+            #[allow(unused_imports)]
             use easyfix_core::base_messages::{
-                AdminBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
+                AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
                 RejectBase, ResendRequestBase, SessionRejectReasonBase, SequenceResetBase,
                 TestRequestBase,
             };
             use easyfix_core::message::{HeaderAccess, SessionMessage};
             pub use easyfix_core::message::MsgCat;
+            use std::borrow::Cow;
+            use std::fmt;
 
             pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(#begin_string) };
 
             #field_tag_def
-
-            use fields::MsgType;
 
             #header_def
 
@@ -268,24 +275,4 @@ impl Generator {
             #fixt_message_def
         }
     }
-}
-
-pub fn _formatted(tokens_stream: &TokenStream) {
-    use std::{
-        io::prelude::*,
-        process::{Command, Stdio},
-    };
-    let mut rustfmt = Command::new("rustfmt")
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("failed to run rustfmt");
-    rustfmt
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(format!("{}", tokens_stream).as_bytes())
-        .unwrap();
-    let output = rustfmt.wait_with_output().unwrap();
-    std::io::stdout().write_all(&output.stdout).unwrap();
-    std::io::stderr().write_all(&output.stderr).unwrap();
 }

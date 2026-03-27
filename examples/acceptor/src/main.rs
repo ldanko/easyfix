@@ -2,7 +2,6 @@ use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use chrono::NaiveTime;
 use easyfix_core::{basic_types::FixString, fix_str};
-use easyfix_messages::messages::{Header, Message};
 use easyfix_session::{
     acceptor::{Acceptor, TcpConnection},
     application::{AsEvent, FixEvent},
@@ -14,9 +13,15 @@ use tokio::{runtime::Builder, task::LocalSet};
 use tokio_stream::StreamExt;
 use tracing::{error, info};
 
+mod messages {
+    include!(concat!(env!("OUT_DIR"), "/messages.rs"));
+}
+
+use messages::{Header, Message};
+
 async fn acceptor() {
     let settings = Settings {
-        sender_comp_id: "n8_fix_test_server".try_into().unwrap(), //: "easyfix-acceptor".try_into().unwrap(),
+        sender_comp_id: "easyfix_test_server".try_into().unwrap(),
         sender_sub_id: None,
         heartbeat_interval: Some(10),
         auto_disconnect_after_no_logon_received: Duration::from_secs(3),
@@ -42,8 +47,6 @@ async fn acceptor() {
             session_id.clone(),
             SessionSettings {
                 session_id,
-                // session_time: UtcTimeOnly::from_hms(8, 0, 0)..=UtcTimeOnly::from_hms(16, 0, 0),
-                //logon_time: UtcTimeOnly::from_hms(7, 30, 0)..=UtcTimeOnly::from_hms(16, 30, 0),
                 session_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap()
                     ..=NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
                 logon_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap()
@@ -80,7 +83,7 @@ async fn acceptor() {
     acceptor.start(connection);
     while let Some(mut entry) = acceptor.next().await {
         match entry.as_event() {
-            FixEvent::Created(session_id) => info!("Session created: {}", session_id),
+            FixEvent::Created(session_id) => info!("Session created: {session_id}"),
             FixEvent::Logon(session_id, sender) => {
                 info!("Logon: {session_id}");
                 senders.insert(session_id.clone(), sender);
@@ -105,11 +108,7 @@ async fn acceptor() {
                 error!("{session_id}: {error}");
             }
         }
-        // info!("{:?}", entry.as_event());
     }
-    // if let Err(e) = acceptor.run().await {
-    //     error!("Error: {e}");
-    // }
 }
 
 fn reverse_route(header: &mut Header) {
@@ -118,15 +117,7 @@ fn reverse_route(header: &mut Header) {
 }
 
 fn main() {
-    // install global collector configured based on RUST_LOG env var.
     tracing_subscriber::fmt::init();
-    // tracing_subscriber::fmt()
-    //     .with_max_level(Level::TRACE)
-    //     .json()
-    //     .init();
-    // tracing_subscriber::fmt()
-    //     .with_max_level(Level::TRACE)
-    //     .init();
 
     info!("Hello World!");
 
@@ -138,14 +129,4 @@ fn main() {
 
     let local_set = LocalSet::new();
     local_set.block_on(&runtime, acceptor());
-
-    //let runtime_mt = Builder::new_multi_thread()
-    //    .enable_io()
-    //    .enable_time()
-    //    .build()
-    //    .unwrap();
-
-    //let end = runtime_mt.spawn_local(acceptor());
-
-    //runtime_mt.block_on(async { end.await.unwrap() });
 }

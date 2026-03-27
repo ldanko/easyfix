@@ -3,28 +3,22 @@ name = "easyfix-messages"
 version = "0.6.4"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
-description = "Easy FIX (Financial Information Exchange) toolset - messages."
+description = "Easy FIX (Financial Information Exchange) toolset - messages code generator."
 repository = "https://github.com/ldanko/easyfix"
 readme = "README.md"
 edition = "2024"
 
-[features]
-default = []
-serialize = ["easyfix-messages-gen/serialize"]
-deserialize = ["easyfix-messages-gen/deserialize"]
-
 [dependencies]
 anyhow = { workspace = true }
-chrono = { workspace = true }
-easyfix-core = { version = "0.1.0", path = "../easyfix-core" }
-itoa = "1.0"
-rust_decimal = { version = "1.36", default-features = false }
-serde = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-
-[build-dependencies]
-easyfix-messages-gen = { version = "0.6.2", path = "easyfix-messages-gen" }
+clap = { workspace = true, features = ["derive"] }
+convert_case = { workspace = true }
+easyfix-dictionary = { workspace = true }
+prettyplease = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 assert_matches = { workspace = true }
+easyfix-core = { workspace = true }
+easyfix-macros = { workspace = true }

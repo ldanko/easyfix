@@ -13,10 +13,10 @@ proc-macro = true
 
 [dependencies]
 proc-macro-crate = "3.5.0"
-proc-macro2 = "1.0"
-quote = "1.0"
-syn = "2.0"
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
 
 [dev-dependencies]
-easyfix-core = { version = "0.1.0", path = "../easyfix-core" }
+easyfix-core = { workspace = true }
 trybuild = "1.0"
