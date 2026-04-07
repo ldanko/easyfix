@@ -1,143 +1,72 @@
-#![feature(impl_trait_in_assoc_type)]
+//! FIX session layer: initiator and acceptor on single-threaded tokio.
+//!
+//! [`Initiator`] drives a single outbound (client) session; [`Acceptor`]
+//! accepts inbound connections and matches each one to a registered
+//! session, running one task per connection. Both are generic over an
+//! `M` implementing [`SessionMessage`], so session logic is decoupled
+//! from generated message types. Users implement [`Application`] (built
+//! per session by an [`ApplicationFactory`]) for callbacks and choose a
+//! [`MessagesStorage`] implementation, such as [`InMemoryStorage`], to retain
+//! sequence numbers and resend data.
+//! Tasks are spawned with `spawn_local`, so a tokio `LocalSet` (or other
+//! local-task context) is required.
+//!
+//! FIX application-layer encryption and cryptographic signature verification
+//! are unsupported. Session-generated Logons use `EncryptMethod(98)=0`.
+//! A decoded Logon requesting another method is refused before application
+//! input with `Logout<5>` and a diagnostic, then disconnected. Values outside
+//! the dictionary enum follow normal decoding-error handling. Header and
+//! session-state validation take precedence.
+//! For transport encryption, supply a TLS stream through
+//! [`Initiator::run_session`] or a custom [`Connection`] implementation.
+//!
+//! Third-party routing is the application's responsibility. A message
+//! dictionary may expose fields such as `OnBehalfOfCompID(115)` and
+//! `DeliverToCompID(128)` for the application to read and populate. The
+//! application validates those addresses and forwards messages between
+//! sessions. Session-generated replies do not inherit third-party routing
+//! fields; the application must supply them when needed.
 
-pub mod acceptor;
-pub mod application;
-pub mod initiator;
-pub mod io;
-pub mod messages_storage;
-mod session;
-pub mod session_id;
-mod session_state;
-pub mod settings;
+// Let `easyfix_session::...` paths resolve inside the crate's own tests. The
+// fixtures in `tests/common/fixtures.rs` are compiled into both the
+// integration binaries and these unit tests, and name the crate the way an
+// external user does. Same device as `extern crate self as easyfix_core` in
+// `easyfix-core`.
+#[cfg(test)]
+extern crate self as easyfix_session;
 
-use std::{fmt, time::Duration};
+mod acceptor;
+mod application;
+mod engine;
+mod initiator;
+mod io;
+mod messages_storage;
+mod session_id;
+mod settings;
+#[cfg(doc)]
+#[doc = include_str!("session_reset.md")]
+pub mod session_reset {}
+#[cfg(test)]
+mod test_helpers;
 
-use easyfix_core::{basic_types::TimePrecision, message::SessionMessage};
-use settings::Settings;
-use tokio::sync::mpsc;
-use tracing::error;
-
-const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
-const TEST_REQUEST_THRESHOLD: f32 = 1.2;
-
-/// Fractional-second width of the `SendingTime<52>` and `OrigSendingTime<122>`
-/// this crate stamps.
-// Not configurable here: nanoseconds is what this crate has always emitted, and
-// pinning it keeps existing deployments on the same wire format.
-const SESSION_TIME_PRECISION: TimePrecision = TimePrecision::Nanos;
-
-#[derive(Debug, thiserror::Error)]
-pub enum SessionError {
-    #[error("Never received logon from new connection.")]
-    LogonNeverReceived,
-    #[error("Message does not point to any session.")]
-    UnknownSession,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Session error: {0}")]
-    SessionError(SessionError),
-}
-
-/// Disconnection reasons.
-#[derive(Clone, Copy, Debug)]
-pub enum DisconnectReason {
-    /// Logout requested locally
-    LocalRequestedLogout,
-    /// Logout requested remotely
-    RemoteRequestedLogout,
-    /// Disconnect forced by Application code
-    ApplicationForcedDisconnect,
-    /// Received message without MsgSeqNum
-    MsgSeqNumNotFound,
-    /// Received message with MsgSeqNum too low
-    MsgSeqNumTooLow,
-    /// Invalid logon state
-    InvalidLogonState,
-    /// Invalid COMP ID
-    InvalidCompId,
-    /// Invalid OrigSendingTime
-    InvalidOrigSendingTime,
-    /// Remote side disconnected
-    Disconnected,
-    /// I/O Error
-    IoError,
-    /// Logout timeout
-    LogoutTimeout,
-}
-
-#[derive(Debug)]
-pub(crate) enum SenderMsg<M> {
-    Msg(Box<M>),
-    Disconnect(DisconnectReason),
-}
-
-pub struct Sender<M> {
-    inner: mpsc::UnboundedSender<SenderMsg<M>>,
-}
-
-impl<M> Clone for Sender<M> {
-    fn clone(&self) -> Self {
-        Sender {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<M> fmt::Debug for Sender<M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Sender")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-impl<M: SessionMessage> Sender<M> {
-    /// Create new `Sender` instance.
-    pub(crate) fn new(writer: mpsc::UnboundedSender<SenderMsg<M>>) -> Sender<M> {
-        Sender { inner: writer }
-    }
-
-    // TODO: rename send_raw to send once the old send(Box<Message>) is removed
-    /// Send message.
-    ///
-    /// Before serialization following header fields will be filled:
-    /// - begin_string (if not empty)
-    /// - sender_comp_id (if not empty)
-    /// - target_comp_id (if not empty)
-    /// - sending_time (if eq UtcTimestamp::MIN_UTC)
-    /// - msg_seq_num (if eq 0)
-    ///
-    /// The checksum(10) field value is always ignored - it is computed and set
-    /// after serialization.
-    pub fn send_raw(&self, msg: Box<M>) -> Result<(), Box<M>> {
-        if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)) {
-            match msg.0 {
-                SenderMsg::Msg(msg) => {
-                    let msg_type = msg.msg_type();
-                    error!(
-                        "failed to send {msg_type:?}<{}> message, receiver closed or dropped",
-                        msg_type.as_fix_str()
-                    );
-                    Err(msg)
-                }
-                SenderMsg::Disconnect(_) => unreachable!(),
-            }
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Send disconnect message.
-    ///
-    /// Output stream will close output queue so no more message can be send
-    /// after this one.
-    pub(crate) fn disconnect(&self, reason: DisconnectReason) {
-        if self.inner.send(SenderMsg::Disconnect(reason)).is_err() {
-            error!("failed to disconnect, receiver closed or dropped");
-        }
-    }
-}
+pub use acceptor::{
+    Acceptor, AcceptorError, Connection, ConnectionDropReason, ConnectionObserver, ShutdownMode,
+    TcpConnection,
+};
+pub use application::{
+    Application, ApplicationFactory, DisconnectReason, InputAction, SessionContext,
+    invalid_heart_bt_int_range_text, invalid_heart_bt_int_text, max_message_size_exceeded_text,
+};
+pub use easyfix_core::{
+    basic_types,
+    deserializer::DeserializeErrorKind,
+    fix_str,
+    message::{DeserializeError, SessionMessage},
+    serializer::SerializeError,
+    version::Version,
+};
+pub use initiator::{Initiator, InitiatorError};
+pub use io::sender::{SendError, Sender};
+pub use messages_storage::{InMemoryStorage, InMemoryStorageError, MessagesStorage, StoreError};
+pub use session_id::SessionId;
+pub use settings::{AcceptorSettings, SessionSettings};
