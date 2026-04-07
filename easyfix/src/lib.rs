@@ -12,7 +12,7 @@
 //! | `full` | - | all three of the above |
 //!
 //! `serde-serialize` / `serde-deserialize` forward to the same features on
-//! `easyfix-core` (and on the session crate when it is enabled).
+//! `easyfix-core`.
 //!
 //! Every crate behind this facade is also publishable on its own; depend on
 //! them directly when a single layer is all that is needed - a build script

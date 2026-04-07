@@ -1,6 +1,6 @@
 [package]
 name = "easyfix-messages"
-version = "0.6.4"
+version = "0.20.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - messages code generator."

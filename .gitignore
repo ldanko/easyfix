@@ -12,3 +12,5 @@ Cargo.lock
 Session.vim
 
 **/.claude/settings.local.json
+
+/.worktrees

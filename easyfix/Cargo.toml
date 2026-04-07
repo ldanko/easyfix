@@ -1,6 +1,6 @@
 [package]
 name = "easyfix"
-version = "0.14.5"
+version = "0.20.0"
 authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) engine."
@@ -17,8 +17,8 @@ full = ["codegen", "dictionary", "session"]
 codegen = ["dep:easyfix-messages"]
 dictionary = ["dep:easyfix-dictionary"]
 session = ["dep:easyfix-session"]
-serde-serialize = ["easyfix-core/serde-serialize", "easyfix-session?/serde-serialize"]
-serde-deserialize = ["easyfix-core/serde-deserialize", "easyfix-session?/serde-deserialize"]
+serde-serialize = ["easyfix-core/serde-serialize"]
+serde-deserialize = ["easyfix-core/serde-deserialize"]
 
 [dependencies]
 easyfix-core = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "session-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+easyfix-core = { workspace = true }
+easyfix-session = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = "0.3.18"
+
+[build-dependencies]
+easyfix-messages = { workspace = true }
