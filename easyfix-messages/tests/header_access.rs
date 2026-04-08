@@ -4,9 +4,8 @@
 //! setters modify them correctly, including enum-backed fields
 //! (MsgType, ApplVerID).
 
-mod messages;
-
 use easyfix_core::{basic_types::UtcTimestamp, fix_str, message::HeaderAccess};
+use easyfix_test_messages as messages;
 use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
 
 fn make_fixt_message() -> Message {

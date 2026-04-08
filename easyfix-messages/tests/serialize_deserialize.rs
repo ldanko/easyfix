@@ -1,5 +1,3 @@
-mod messages;
-
 use assert_matches::assert_matches;
 use easyfix_core::{
     base_messages::SessionRejectReasonBase,
@@ -7,6 +5,7 @@ use easyfix_core::{
     deserializer::DeserializeError,
     message::SessionMessage,
 };
+use easyfix_test_messages as messages;
 use messages::{
     BEGIN_STRING, Body, DefaultApplVerId, EncryptMethod, Header, Heartbeat, Logon, Message,
     MsgDirection, MsgType, MsgTypeGrp, Trailer,

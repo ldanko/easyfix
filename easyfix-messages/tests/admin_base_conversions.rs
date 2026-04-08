@@ -4,8 +4,6 @@
 //! - Incoming: Generated → Base (zero-copy borrow)
 //! - Outgoing: Base → Generated (owned construction)
 
-mod messages;
-
 use std::borrow::Cow;
 
 use easyfix_core::{
@@ -16,6 +14,7 @@ use easyfix_core::{
     },
     fix_str,
 };
+use easyfix_test_messages as messages;
 use messages::{Body, Heartbeat, Logon, Logout, Reject, ResendRequest, SequenceReset, TestRequest};
 
 // ---------------------------------------------------------------------------

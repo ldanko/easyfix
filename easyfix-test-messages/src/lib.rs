@@ -1,4 +1,5 @@
-#[allow(dead_code)]
+#![allow(dead_code, unused_imports)]
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum MsgType {
     #[default]

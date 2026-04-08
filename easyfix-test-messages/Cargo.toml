@@ -1,0 +1,12 @@
+[package]
+name = "easyfix-test-messages"
+version = "0.1.0"
+authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
+license = "MIT"
+description = "Pre-generated FIX message types for testing easyfix crates."
+repository = "https://github.com/ldanko/easyfix"
+edition = "2024"
+publish = false
+
+[dependencies]
+easyfix-core = { workspace = true }
