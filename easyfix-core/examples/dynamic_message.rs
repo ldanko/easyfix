@@ -27,7 +27,7 @@ use easyfix_core::{
     SerializeError, Version,
     base_messages::*,
     basic_types::*,
-    deserializer::{DeserializeError, Deserializer, RawMessage},
+    deserializer::{self, DeserializeError, Deserializer, GarbledReason, RawMessage},
     fix_str,
     message::{HeaderAccess, MsgCat, SessionMessage},
     serializer::Serializer,
@@ -603,13 +603,8 @@ fn deserialize_message(raw: RawMessage<'_>) -> Result<DynamicMessage, Deserializ
     // are already consumed by raw_message()). First consume the tag number
     // with deserialize_tag_num(), then read the value with deserialize_msg_type().
     // Copy msg_type bytes immediately to release the borrow on `des`.
-    match des.deserialize_tag_num()? {
-        Some(35) => {}
-        _ => {
-            return Err(DeserializeError::GarbledMessage(
-                "expected MsgType(35) as the first tag after BodyLength".into(),
-            ));
-        }
+    if !matches!(des.deserialize_tag_num(), Ok(Some(35))) {
+        return Err(DeserializeError::Garbled(GarbledReason::MsgTypeNotThirdTag));
     }
     let msg_type_range = des.deserialize_msg_type()?;
     let msg_type_bytes: Vec<u8> = des.range_to_fixstr(msg_type_range).as_bytes().to_vec();
@@ -806,7 +801,7 @@ fn main() {
     println!("Wire:    {wire_display}");
 
     // Round-trip: parse the serialized bytes back
-    let (_, raw) = easyfix_core::deserializer::raw_message(&wire).expect("valid framing");
+    let (_, raw) = deserializer::raw_message(&wire).expect("valid framing");
     let parsed = DynamicMessage::from_raw_message(raw).expect("valid message");
 
     println!("\nRound-trip OK:");

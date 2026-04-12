@@ -1132,15 +1132,14 @@ impl MsgTypeGrp {
 }
 use std::{borrow::Cow, fmt};
 
-#[allow(unused_imports)]
-use easyfix_core::base_messages::{
-    AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
-    ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
-};
 pub use easyfix_core::message::MsgCat;
 #[allow(unused_imports)]
 use easyfix_core::{
-    SerializeError,
+    SerializeError, Version,
+    base_messages::{
+        AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
+        ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
+    },
     basic_types::{
         Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal, Exchange, FixStr,
         FixString, Float, Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
@@ -1149,12 +1148,9 @@ use easyfix_core::{
         SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
         ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
     },
-    deserializer::{DeserializeError, Deserializer, RawMessage, raw_message},
-    serializer::Serializer,
-};
-use easyfix_core::{
-    Version,
+    deserializer::{DeserializeError, Deserializer, GarbledReason, RawMessage, raw_message},
     message::{HeaderAccess, SessionMessage},
+    serializer::Serializer,
 };
 pub const VERSION: Version = Version::FIXT11;
 #[allow(dead_code)]
@@ -3194,24 +3190,18 @@ impl Message {
     pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
         let begin_string = deserializer.begin_string();
         if begin_string != VERSION.begin_str() {
-            return Err(DeserializeError::GarbledMessage(
-                "begin string mismatch".into(),
+            return Err(DeserializeError::Garbled(
+                GarbledReason::BeginStringMismatch,
             ));
         }
         let body_length = deserializer.body_length();
-        let msg_type = if let Some(35) = deserializer.deserialize_tag_num().map_err(|e| {
-            DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {e}"))
-        })? {
-            let msg_type_range = deserializer.deserialize_msg_type()?;
-            let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
-            let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
-                return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
-            };
-            msg_type
-        } else {
-            return Err(DeserializeError::GarbledMessage(
-                "MsgType<35> not third tag".into(),
-            ));
+        if !matches!(deserializer.deserialize_tag_num(), Ok(Some(35))) {
+            return Err(DeserializeError::Garbled(GarbledReason::MsgTypeNotThirdTag));
+        }
+        let msg_type_range = deserializer.deserialize_msg_type()?;
+        let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
+        let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
+            return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
         };
         let header = Header::deserialize(&mut deserializer, body_length).map_err(|err| {
             if let DeserializeError::Reject { reason, .. } = err

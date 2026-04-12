@@ -6,7 +6,7 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
     basic_types::{FixStr, LocalMktDate, Price, Tenor, TenorUnit, TimePrecision},
-    deserializer::{DeserializeError, RawMessageError, deserialize_checksum},
+    deserializer::{DeserializeError, GarbledReason, RawMessageError, deserialize_checksum},
     fix_str,
 };
 
@@ -699,7 +699,9 @@ fn deserialize_multiple_char_value_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
     );
 }
 
@@ -759,7 +761,9 @@ fn deserialize_multiple_char_value_no_soh() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
     );
 }
 
@@ -800,7 +804,9 @@ fn deserialize_multiple_string_value_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
     );
 }
 
@@ -840,7 +846,9 @@ fn deserialize_multiple_string_value_no_soh() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
     );
 }
 
@@ -877,7 +885,9 @@ fn deserialize_data_missing_separator() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_data(5),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::MessageNotWellFormed
+        ))
     );
 }
 
@@ -887,7 +897,9 @@ fn deserialize_data_empty_buf() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_data(5),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
     );
 }
 
@@ -897,7 +909,9 @@ fn deserialize_data_buf_too_short() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_data(5),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
     );
 }
 
@@ -931,6 +945,8 @@ fn deserialize_xml_missing_separator() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_xml(4),
-        Err(DeserializeError::GarbledMessage(_))
+        Err(DeserializeError::Garbled(
+            GarbledReason::MessageNotWellFormed
+        ))
     );
 }

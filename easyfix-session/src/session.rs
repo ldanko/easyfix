@@ -1349,7 +1349,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
         error!(deserialize_error = %text);
 
         match &error {
-            DeserializeError::GarbledMessage(reason) => error!("Garbled message: {reason}"),
+            DeserializeError::Garbled(reason) => error!("Garbled message: {reason}"),
             DeserializeError::Logout => {
                 let mut state = self.state.borrow_mut();
                 self.send_logout(

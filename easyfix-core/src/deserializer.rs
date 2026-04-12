@@ -17,10 +17,40 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GarbledReason {
+    /// The byte stream ended before a complete message could be parsed — either
+    /// at the framing level (`RawMessageError::Incomplete`) or inside a field
+    /// value whose terminating SOH never appeared.
+    IncompleteMessageData,
+    /// The bytes are present but don't match the expected framing or field
+    /// format (e.g. the byte where an SOH separator was expected is something
+    /// else).
+    MessageNotWellFormed,
+    /// Computed checksum does not match the Checksum(10) value.
+    InvalidChecksum,
+    /// BeginString(8) does not match the session's expected FIX version.
+    BeginStringMismatch,
+    /// The third tag of the message is not MsgType(35), as required by the
+    /// FIX framing rules.
+    MsgTypeNotThirdTag,
+}
+
+impl fmt::Display for GarbledReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GarbledReason::IncompleteMessageData => f.write_str("incomplete message data"),
+            GarbledReason::MessageNotWellFormed => f.write_str("message not well formed"),
+            GarbledReason::InvalidChecksum => f.write_str("invalid checksum"),
+            GarbledReason::BeginStringMismatch => f.write_str("begin string mismatch"),
+            GarbledReason::MsgTypeNotThirdTag => f.write_str("MsgType<35> not third tag"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum DeserializeError {
-    // TODO: enum maybe?
-    GarbledMessage(String),
+    Garbled(GarbledReason),
     Logout,
     Reject {
         msg_type: Option<FixString>,
@@ -33,7 +63,7 @@ pub enum DeserializeError {
 impl fmt::Display for DeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DeserializeError::GarbledMessage(reason) => write!(f, "garbled message: {}", reason),
+            DeserializeError::Garbled(reason) => write!(f, "garbled message: {reason}"),
             DeserializeError::Logout => write!(f, "MsgSeqNum missing"),
             DeserializeError::Reject {
                 tag: Some(tag),
@@ -53,13 +83,13 @@ impl From<RawMessageError> for DeserializeError {
     fn from(error: RawMessageError) -> Self {
         match error {
             RawMessageError::Incomplete => {
-                DeserializeError::GarbledMessage("Incomplete message data".to_owned())
+                DeserializeError::Garbled(GarbledReason::IncompleteMessageData)
             }
             RawMessageError::Garbled => {
-                DeserializeError::GarbledMessage("Message not well formed".to_owned())
+                DeserializeError::Garbled(GarbledReason::MessageNotWellFormed)
             }
             RawMessageError::InvalidChecksum => {
-                DeserializeError::GarbledMessage("Invalid checksum".to_owned())
+                DeserializeError::Garbled(GarbledReason::InvalidChecksum)
             }
         }
     }
@@ -252,9 +282,6 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageEr
     ))
 }
 
-// TODO:
-// enum GarbledReason
-
 #[derive(Debug)]
 pub struct Deserializer<'de> {
     raw_message: RawMessage<'de>,
@@ -439,10 +466,9 @@ impl Deserializer<'_> {
         }
 
         // End of stream
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals
@@ -455,10 +481,9 @@ impl Deserializer<'_> {
         let negative = match self.buf {
             // MSG Garbled
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -505,10 +530,9 @@ impl Deserializer<'_> {
             }
         }
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
@@ -517,10 +541,9 @@ impl Deserializer<'_> {
         match self.buf {
             // No more data, MSG Garbled
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => return Err(DeserializeError::Logout),
             _ => {}
@@ -546,10 +569,9 @@ impl Deserializer<'_> {
             }
         }
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
@@ -558,10 +580,9 @@ impl Deserializer<'_> {
         match self.buf {
             // MSG Garbled
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -603,10 +624,9 @@ impl Deserializer<'_> {
             }
         }
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals
@@ -615,10 +635,9 @@ impl Deserializer<'_> {
         match self.buf {
             // MSG Garbled
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -680,10 +699,9 @@ impl Deserializer<'_> {
     pub fn deserialize_float(&mut self) -> Result<Float, DeserializeError> {
         let (negative, buf) = match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -742,10 +760,9 @@ impl Deserializer<'_> {
             }
         }
 
-        Err(DeserializeError::GarbledMessage(format!(
-            "no more data to parse tag {:?}",
-            self.current_tag
-        )))
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))
     }
 
     #[inline(always)]
@@ -776,14 +793,12 @@ impl Deserializer<'_> {
     pub fn deserialize_boolean(&mut self) -> Result<Boolean, DeserializeError> {
         match self.buf {
             // Empty or missing separator at the end
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
-            [b'Y'] | [b'N'] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
+            [b'Y'] | [b'N'] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -807,10 +822,9 @@ impl Deserializer<'_> {
     // TODO: [Feature]: Deserialize any ISO/IEC 8859-1 (Latin-1) character except control characters.
     pub fn deserialize_char(&mut self) -> Result<Char, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -824,8 +838,8 @@ impl Deserializer<'_> {
                 Ok(*n)
             }
             // Missing separator at the end
-            [_, byte] if *byte != b'\x01' => Err(DeserializeError::GarbledMessage(
-                "missing tag spearator".into(),
+            [_, byte] if *byte != b'\x01' => Err(DeserializeError::Garbled(
+                GarbledReason::MessageNotWellFormed,
             )),
             _ => Err(self.reject(
                 self.current_tag,
@@ -841,10 +855,9 @@ impl Deserializer<'_> {
     ) -> Result<MultipleCharValue, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -855,12 +868,9 @@ impl Deserializer<'_> {
             _ => {}
         }
 
-        let i = memchr(b'\x01', self.buf).ok_or_else(|| {
-            DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))
-        })?;
+        let i = memchr(b'\x01', self.buf).ok_or(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))?;
 
         // SAFETY: i is from memchr on self.buf, so i < self.buf.len(),
         // thus i + 1 <= self.buf.len()
@@ -905,8 +915,8 @@ impl Deserializer<'_> {
                 self.buf = leftover;
                 Ok(fix_str)
             }
-            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
-                format!("no more data to parse tag {:?}", self.current_tag),
+            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
             )),
             Err(DeserializeErrorInternal::Error(reason)) => {
                 Err(self.reject(self.current_tag, reason))
@@ -928,10 +938,9 @@ impl Deserializer<'_> {
     ) -> Result<MultipleStringValue, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -942,12 +951,9 @@ impl Deserializer<'_> {
             _ => {}
         }
 
-        let i = memchr(b'\x01', self.buf).ok_or_else(|| {
-            DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))
-        })?;
+        let i = memchr(b'\x01', self.buf).ok_or(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData,
+        ))?;
 
         // SAFETY: i is from memchr on self.buf, so i < self.buf.len(),
         // thus i + 1 <= self.buf.len()
@@ -978,10 +984,9 @@ impl Deserializer<'_> {
     /// countries and their subdivision (2-character code).
     pub fn deserialize_country(&mut self) -> Result<Country, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -1002,12 +1007,9 @@ impl Deserializer<'_> {
             // TODO: add the same for [a, b] and [a] cases
             // TODO: and do it in every deserialize_* function without loop
             // TODO: or maybe better just check if len < expected message size
-            &[a, b, c] if a != b'\x01' && b != b'\x01' && c != b'\x01' => {
-                Err(DeserializeError::GarbledMessage(format!(
-                    "missing tag ({:?}) separator",
-                    self.current_tag
-                )))
-            }
+            &[a, b, c] if a != b'\x01' && b != b'\x01' && c != b'\x01' => Err(
+                DeserializeError::Garbled(GarbledReason::MessageNotWellFormed),
+            ),
             _ => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::IncorrectDataFormatForValue,
@@ -1019,10 +1021,9 @@ impl Deserializer<'_> {
     /// and funds (3-character code).
     pub fn deserialize_currency(&mut self) -> Result<Currency, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -1048,10 +1049,9 @@ impl Deserializer<'_> {
     /// (4-character code).
     pub fn deserialize_exchange(&mut self) -> Result<Exchange, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -1083,10 +1083,9 @@ impl Deserializer<'_> {
     /// - WW = w1, w2, w3, w4, w5
     pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -1107,10 +1106,9 @@ impl Deserializer<'_> {
     /// of languages (2-character code).
     pub fn deserialize_language(&mut self) -> Result<Language, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -1130,10 +1128,9 @@ impl Deserializer<'_> {
     fn deserialize_fraction_of_second(&mut self) -> Result<(u32, u8), DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', rest @ ..] => {
                 self.buf = rest;
@@ -1202,19 +1199,17 @@ impl Deserializer<'_> {
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn deserialize_utc_timestamp(&mut self) -> Result<UtcTimestamp, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [_] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [
                 // Year
                 y3 @ b'0'..=b'9',
@@ -1318,10 +1313,9 @@ impl Deserializer<'_> {
     ///   // TODO: set precision!
     pub fn deserialize_utc_time_only(&mut self) -> Result<UtcTimeOnly, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
@@ -1425,19 +1419,17 @@ impl Deserializer<'_> {
     /// - DD = 01-31.
     pub fn deserialize_utc_date_only(&mut self) -> Result<UtcDateOnly, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [_] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [
                 // Year
                 y3 @ b'0'..=b'9',
@@ -1484,19 +1476,17 @@ impl Deserializer<'_> {
     /// In general only the hour token is non-zero.
     pub fn deserialize_local_mkt_time(&mut self) -> Result<LocalMktTime, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [_] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
 
             [
                 // Hour
@@ -1537,19 +1527,17 @@ impl Deserializer<'_> {
     /// - DD = 01-31.
     pub fn deserialize_local_mkt_date(&mut self) -> Result<LocalMktDate, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [_] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [
                 // Year
                 y3 @ b'0'..=b'9',
@@ -1590,10 +1578,9 @@ impl Deserializer<'_> {
     fn deserialize_tz_fraction_of_second(&mut self) -> Result<(u32, u8), DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             // No fraction — offset or SOH follows directly
             [b'Z' | b'+' | b'-' | b'\x01', ..] => {
@@ -1694,10 +1681,9 @@ impl Deserializer<'_> {
                     self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
                 })
             }
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             _ => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::IncorrectDataFormatForValue,
@@ -1727,19 +1713,17 @@ impl Deserializer<'_> {
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn deserialize_tz_timestamp(&mut self) -> Result<TzTimestamp, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [_] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [
                 // Year
                 y3 @ b'0'..=b'9',
@@ -1827,19 +1811,17 @@ impl Deserializer<'_> {
     /// - mm = 00-59 offset minutes.
     pub fn deserialize_tz_timeonly(&mut self) -> Result<TzTimeOnly, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            ))),
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [b'\x01', ..] => Err(self.reject(
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            ))),
+            [_] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
             [
                 // Hour
                 h1 @ b'0'..=b'2',
@@ -1908,8 +1890,8 @@ impl Deserializer<'_> {
                 self.buf = leftover;
                 Ok(len)
             }
-            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
-                format!("no more data to parse tag {:?}", self.current_tag),
+            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
             )),
             Err(DeserializeErrorInternal::Error(reject)) => {
                 Err(self.reject(self.current_tag, reject))
@@ -1924,26 +1906,23 @@ impl Deserializer<'_> {
     /// associated Length field.
     pub fn deserialize_data(&mut self, len: usize) -> Result<Data, DeserializeError> {
         if self.buf.is_empty() {
-            return Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            )));
+            return Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            ));
         }
 
         // Data length + separator (SOH)
         if self.buf.len() < len + 1 {
-            return Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            )));
+            return Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            ));
         }
 
         // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
         if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
-            return Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            )));
+            return Err(DeserializeError::Garbled(
+                GarbledReason::MessageNotWellFormed,
+            ));
         }
 
         // SAFETY: guard ensures len + 1 <= self.buf.len()
@@ -1966,10 +1945,9 @@ impl Deserializer<'_> {
     pub fn deserialize_xml(&mut self, len: usize) -> Result<XmlData, DeserializeError> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             [b'\x01', ..] => {
                 return Err(self.reject(
@@ -1982,18 +1960,16 @@ impl Deserializer<'_> {
 
         // XML length + separator (SOH)
         if self.buf.len() < len + 1 {
-            return Err(DeserializeError::GarbledMessage(format!(
-                "no more data to parse tag {:?}",
-                self.current_tag
-            )));
+            return Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            ));
         }
 
         // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
         if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
-            return Err(DeserializeError::GarbledMessage(format!(
-                "missing tag ({:?}) separator",
-                self.current_tag
-            )));
+            return Err(DeserializeError::Garbled(
+                GarbledReason::MessageNotWellFormed,
+            ));
         }
 
         // TODO: XML validation, SessionRejectReasonBase::XmlValidationError when invalid
@@ -2011,10 +1987,9 @@ impl Deserializer<'_> {
             [b'W', rest @ ..] => (TenorUnit::Weeks, rest),
             [b'Y', rest @ ..] => (TenorUnit::Years, rest),
             [] => {
-                return Err(DeserializeError::GarbledMessage(format!(
-                    "no more data to parse tag {:?}",
-                    self.current_tag
-                )));
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
             _ => {
                 return Err(self.reject(
@@ -2028,8 +2003,8 @@ impl Deserializer<'_> {
                 self.buf = leftover;
                 Ok(Tenor { unit, value })
             }
-            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::GarbledMessage(
-                format!("no more data to parse tag {:?}", self.current_tag),
+            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
             )),
             Err(DeserializeErrorInternal::Error(reason)) => {
                 Err(self.reject(self.current_tag, reason))

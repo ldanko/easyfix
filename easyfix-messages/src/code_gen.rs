@@ -241,33 +241,28 @@ impl Generator {
             message_enum::generate_fixt_message(serde_serialize, serde_deserialize);
 
         quote! {
+            use std::{borrow::Cow, fmt};
+
+            pub use easyfix_core::message::MsgCat;
             #[allow(unused_imports)]
             use easyfix_core::{
-                basic_types::{
-                    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal,
-                    Exchange, FixStr, FixString, Float, Int, Language, Length,
-                    LocalMktDate, LocalMktTime, MonthYear, MsgTypeField, MsgTypeValue,
-                    MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
-                    Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField,
-                    SessionRejectReasonValue, SessionStatusField, SessionStatusValue,
-                    TagNum, Tenor, TenorUnit, TimePrecision, ToFixString, TzTimeOnly,
-                    TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+                SerializeError, Version,
+                base_messages::{
+                    AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
+                    ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
                 },
-                deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
+                basic_types::{
+                    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal, Exchange, FixStr,
+                    FixString, Float, Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
+                    MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
+                    Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, SessionRejectReasonValue,
+                    SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
+                    ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+                },
+                deserializer::{DeserializeError, Deserializer, GarbledReason, RawMessage, raw_message},
+                message::{HeaderAccess, SessionMessage},
                 serializer::Serializer,
-                SerializeError,
             };
-            #[allow(unused_imports)]
-            use easyfix_core::base_messages::{
-                AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
-                RejectBase, ResendRequestBase, SessionRejectReasonBase, SequenceResetBase,
-                TestRequestBase,
-            };
-            use easyfix_core::message::{HeaderAccess, SessionMessage};
-            pub use easyfix_core::message::MsgCat;
-            use easyfix_core::Version;
-            use std::borrow::Cow;
-            use std::fmt;
 
             pub const VERSION: Version = Version::#version_ident;
 

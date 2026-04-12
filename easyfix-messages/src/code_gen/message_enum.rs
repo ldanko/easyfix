@@ -154,24 +154,21 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
             pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
                 let begin_string = deserializer.begin_string();
                 if begin_string != VERSION.begin_str() {
-                    return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
+                    return Err(DeserializeError::Garbled(GarbledReason::BeginStringMismatch));
                 }
 
                 let body_length = deserializer.body_length();
 
-                // Check if MsgType(35) is the third tag in a message.
-                let msg_type = if let Some(35) = deserializer
-                    .deserialize_tag_num()
-                    .map_err(|e| DeserializeError::GarbledMessage(format!("failed to parse MsgType<35>: {e}")))?
-                {
-                    let msg_type_range = deserializer.deserialize_msg_type()?;
-                    let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
-                    let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
-                        return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
-                    };
-                    msg_type
-                } else {
-                    return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
+                // The FIX framing rule requires MsgType(35) as the third tag —
+                // any other outcome (malformed tag number, wrong tag, EOF) is
+                // the same protocol violation.
+                if !matches!(deserializer.deserialize_tag_num(), Ok(Some(35))) {
+                    return Err(DeserializeError::Garbled(GarbledReason::MsgTypeNotThirdTag));
+                }
+                let msg_type_range = deserializer.deserialize_msg_type()?;
+                let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
+                let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
+                    return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
                 };
 
                 let header = Header::deserialize(&mut deserializer, body_length)
