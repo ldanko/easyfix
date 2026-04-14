@@ -14,9 +14,9 @@ serde-deserialize = ["dep:serde", "chrono/serde"]
 [dependencies]
 chrono = { workspace = true }
 easyfix-macros = { workspace = true }
-itoa = "1.0"
-memchr = "2.8.0"
-rust_decimal = { version = "1.36", default-features = false }
+itoa = { workspace = true }
+memchr = { workspace = true }
+rust_decimal = { workspace = true, default-features = false }
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
