@@ -7,14 +7,12 @@ use easyfix_core::{
 };
 use easyfix_test_messages as messages;
 use messages::{
-    BEGIN_STRING, Body, DefaultApplVerId, EncryptMethod, Header, Heartbeat, Logon, Message,
-    MsgDirection, MsgType, MsgTypeGrp, Trailer,
+    Body, DefaultApplVerId, EncryptMethod, Header, Heartbeat, Logon, Message, MsgDirection,
+    MsgType, MsgTypeGrp, Trailer,
 };
 
 fn header() -> Header {
     Header {
-        begin_string: BEGIN_STRING.to_owned(),
-        body_length: 0, // Serializer will overwrite this
         sender_comp_id: FixString::from_ascii_lossy(b"test_sender".to_vec()),
         target_comp_id: FixString::from_ascii_lossy(b"test_target".to_vec()),
         msg_seq_num: 1,

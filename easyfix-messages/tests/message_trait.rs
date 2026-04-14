@@ -17,7 +17,6 @@ use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
 fn make_heartbeat() -> Message {
     Message {
         header: Header {
-            begin_string: fix_str!("FIXT.1.1").to_owned(),
             sender_comp_id: fix_str!("SENDER").to_owned(),
             target_comp_id: fix_str!("TARGET").to_owned(),
             msg_seq_num: 42,
@@ -41,7 +40,6 @@ fn header_returns_borrowed_header_base() {
     let msg = make_heartbeat();
     let base = msg.header();
 
-    assert_eq!(base.begin_string.as_ref(), fix_str!("FIXT.1.1"));
     assert_eq!(base.sender_comp_id.as_ref(), fix_str!("SENDER"));
     assert_eq!(base.target_comp_id.as_ref(), fix_str!("TARGET"));
     assert_eq!(base.msg_seq_num, 42);
@@ -62,7 +60,6 @@ fn as_admin_returns_some_for_admin_message() {
 fn as_admin_returns_none_for_app_message() {
     let msg = Message {
         header: Header {
-            begin_string: fix_str!("FIXT.1.1").to_owned(),
             sender_comp_id: fix_str!("S").to_owned(),
             target_comp_id: fix_str!("T").to_owned(),
             msg_seq_num: 1,
@@ -98,7 +95,6 @@ fn msg_cat_returns_admin_for_admin_message() {
 #[test]
 fn from_admin_constructs_heartbeat() {
     let header = HeaderBase {
-        begin_string: Cow::Owned(fix_str!("FIXT.1.1").to_owned()),
         sender_comp_id: Cow::Owned(fix_str!("SENDER").to_owned()),
         target_comp_id: Cow::Owned(fix_str!("TARGET").to_owned()),
         msg_seq_num: 10,
@@ -121,7 +117,6 @@ fn from_admin_constructs_heartbeat() {
 #[test]
 fn from_admin_constructs_logon() {
     let header = HeaderBase {
-        begin_string: Cow::Owned(fix_str!("FIXT.1.1").to_owned()),
         sender_comp_id: Cow::Owned(fix_str!("S").to_owned()),
         target_comp_id: Cow::Owned(fix_str!("T").to_owned()),
         msg_seq_num: 1,

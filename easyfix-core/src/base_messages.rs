@@ -140,7 +140,6 @@ pub enum EncryptMethodBase {
 /// - **Outgoing**: built by session with `Cow::Owned`, consumed via `From` conversion.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderBase<'a> {
-    pub begin_string: Cow<'a, FixStr>,
     pub sender_comp_id: Cow<'a, FixStr>,
     pub target_comp_id: Cow<'a, FixStr>,
     pub msg_seq_num: SeqNum,

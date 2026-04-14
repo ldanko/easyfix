@@ -23,7 +23,7 @@ futures-util = "0.3.26"
 pin-project = "1.1"
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { version = "1.38", features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
+tokio = { workspace = true, features = [ "io-util", "macros", "net", "rt", "sync", "time", ] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = [ "io"] }
 tracing = { workspace = true }

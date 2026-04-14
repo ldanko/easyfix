@@ -6,9 +6,8 @@ use std::{
 use quick_xml::de::from_str;
 
 use super::{
-    Dictionary,
+    Dictionary, Version,
     error::{BuilderError, Error, ValidationError},
-    version::Version,
 };
 use crate::xml;
 
@@ -40,7 +39,7 @@ pub fn read_raw_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
 
 pub fn read_raw_fixt_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
     let raw_dictionary = read_raw_dictionary(path)?;
-    let version = Version::from_raw_dictionary(&raw_dictionary)?;
+    let version = raw_dictionary.version()?;
 
     if !version.is_fixt() || version < Version::FIXT11 {
         return Err(Error::Builder(BuilderError::IncompatibleVersion));
@@ -70,7 +69,7 @@ pub fn read_raw_fixt_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
 
 pub fn read_raw_fix_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
     let raw_dictionary = read_raw_dictionary(path)?;
-    let version = Version::from_raw_dictionary(&raw_dictionary)?;
+    let version = raw_dictionary.version()?;
 
     if !version.is_fix() {
         return Err(Error::Builder(BuilderError::IncompatibleVersion));

@@ -366,10 +366,10 @@ fn test_msg_cat() {
 }
 
 #[test]
-fn test_fix_type() {
+fn test_session_protocol() {
     // Test Display implementation
-    assert_eq!(FixType::Fix.to_string(), "FIX");
-    assert_eq!(FixType::Fixt.to_string(), "FIXT");
+    assert_eq!(SessionProtocol::Fix.to_string(), "FIX");
+    assert_eq!(SessionProtocol::Fixt.to_string(), "FIXT");
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn parse_full_xml() {
     let dictionary: Dictionary = from_str(xml).unwrap();
 
     // Check dictionary attributes
-    assert_eq!(dictionary.fix_type, FixType::Fixt);
+    assert_eq!(dictionary.session_protocol, SessionProtocol::Fixt);
     assert_eq!(dictionary.major, 1);
     assert_eq!(dictionary.minor, 1);
     assert_eq!(dictionary.servicepack, 0);

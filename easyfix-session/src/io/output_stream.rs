@@ -19,12 +19,13 @@ pub(crate) enum OutputEvent {
     Disconnect(DisconnectReason),
 }
 
+/// Fill mandatory header fields on an outgoing message. Preserves pre-set
+/// values.
+///
+/// BeginString is a compile-time constant of the generated messages crate
+/// and therefore not filled here.
 fn fill_header<M: SessionMessage, S: MessagesStorage>(message: &mut M, session: &Session<M, S>) {
     let mut state = session.state().borrow_mut();
-
-    if message.begin_string().is_empty() {
-        message.set_begin_string(session.session_id().begin_string().to_owned());
-    }
 
     if message.sender_comp_id().is_empty() {
         message.set_sender_comp_id(session.session_id().sender_comp_id().to_owned());

@@ -65,7 +65,7 @@ impl SessionId {
     /// The remote's SenderCompID becomes our TargetCompID and vice versa.
     pub fn from_input(msg: &impl HeaderAccess) -> SessionId {
         SessionId::new(
-            msg.begin_string().to_owned(),
+            msg.version().begin_string(),
             msg.target_comp_id().to_owned(),
             msg.sender_comp_id().to_owned(),
         )
@@ -74,7 +74,7 @@ impl SessionId {
     /// Build a SessionId from an outgoing message.
     pub fn from_output(msg: &impl HeaderAccess) -> SessionId {
         SessionId::new(
-            msg.begin_string().to_owned(),
+            msg.version().begin_string(),
             msg.sender_comp_id().to_owned(),
             msg.target_comp_id().to_owned(),
         )

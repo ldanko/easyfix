@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use convert_case::{Case, Casing};
 use easyfix_dictionary::{self as dict, Dictionary, Version};
-use proc_macro2::{Ident, Literal, Span, TokenStream};
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
 mod admin;
@@ -219,7 +219,16 @@ impl Generator {
             msg_names.push(msg.name());
         }
 
-        let begin_string = Literal::byte_string(&self.version.begin_string().into_bytes());
+        // `Version::FIX44` / `Version::FIXT11` / `Version::FIX50SP2` — the
+        // identifier is the canonical BeginString with dots stripped.
+        let version_const: String = self
+            .version
+            .begin_str()
+            .as_utf8()
+            .chars()
+            .filter(|c| *c != '.')
+            .collect();
+        let version_ident = Ident::new(&version_const, Span::call_site());
         let field_tag_def = message_enum::generate_field_tag(
             &self.fields_names,
             &self.fields_numbers,
@@ -255,10 +264,11 @@ impl Generator {
             };
             use easyfix_core::message::{HeaderAccess, SessionMessage};
             pub use easyfix_core::message::MsgCat;
+            use easyfix_core::Version;
             use std::borrow::Cow;
             use std::fmt;
 
-            pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(#begin_string) };
+            pub const VERSION: Version = Version::#version_ident;
 
             #field_tag_def
 

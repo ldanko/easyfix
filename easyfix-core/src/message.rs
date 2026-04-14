@@ -6,6 +6,7 @@
 use std::fmt::Debug;
 
 use crate::{
+    Version,
     base_messages::{AdminBase, HeaderBase},
     basic_types::{Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
     deserializer::{DeserializeError, RawMessage},
@@ -63,8 +64,12 @@ pub trait SessionMessage: Sized + Debug + HeaderAccess {
 /// Used by session for: filling headers on outgoing app messages, setting
 /// `PossDupFlag` + `OrigSendingTime` on resend, incoming validation.
 pub trait HeaderAccess {
-    /// BeginString (tag 8) — FIX protocol version (e.g. `"FIX.4.4"`, `"FIXT.1.1"`).
-    fn begin_string(&self) -> &FixStr;
+    /// BeginString (tag 8) — FIX protocol version.
+    ///
+    /// Implementations return a compile-time constant defined by the
+    /// generated messages crate, so this accessor is infallible and
+    /// never varies per instance.
+    fn version(&self) -> Version;
 
     /// SenderCompID (tag 49) — identifier of the message sender.
     fn sender_comp_id(&self) -> &FixStr;
@@ -88,9 +93,6 @@ pub trait HeaderAccess {
     /// ApplVerID (tag 1128) — application-level protocol version.
     /// Only relevant for FIXT (FIX 5.0+); return `None` for FIX 4.x.
     fn appl_ver_id(&self) -> Option<&FixStr>;
-
-    /// Set BeginString (tag 8).
-    fn set_begin_string(&mut self, value: FixString);
 
     /// Set SenderCompID (tag 49).
     fn set_sender_comp_id(&mut self, value: FixString);

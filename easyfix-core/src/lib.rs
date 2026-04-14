@@ -37,3 +37,6 @@ pub mod currency;
 pub mod deserializer;
 pub mod message;
 pub mod serializer;
+pub mod version;
+
+pub use version::{SessionProtocol, UnknownVersionError, Version};

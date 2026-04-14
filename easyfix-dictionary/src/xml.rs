@@ -7,8 +7,7 @@
 //! - XML-based structures (Field, Component, Group, etc.)
 //! - Serialization/deserialization helpers for FIX-specific formats
 
-use std::fmt;
-
+use easyfix_core::SessionProtocol;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(test)]
@@ -295,33 +294,10 @@ where
     Ok(List::deserialize(deserializer)?.field)
 }
 
-/// Type of FIX protocol.
-///
-/// Distinguishes between traditional FIX protocol versions and
-/// the FIXT transport layer protocol introduced with FIX 5.0.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum FixType {
-    /// Traditional FIX protocol (FIX 4.0 - FIX 5.0)
-    Fix,
-
-    /// FIXT transport layer protocol (FIXT 1.1)
-    Fixt,
-}
-
-impl fmt::Display for FixType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FixType::Fix => f.write_str("FIX"),
-            FixType::Fixt => f.write_str("FIXT"),
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dictionary {
     #[serde(rename = "@type")]
-    pub fix_type: FixType,
+    pub session_protocol: SessionProtocol,
     #[serde(rename = "@major")]
     pub major: u8,
     #[serde(rename = "@minor")]

@@ -43,6 +43,6 @@ mod xml;
 
 // Re-export all public items from the dictionary module
 pub use dictionary::{
-    BasicType, BuilderError, Component, Dictionary, DictionaryBuilder, Error, Field, FixType,
-    Group, Member, MemberDefinition, Message, MsgCat, MsgType, ValidationError, Variant, Version,
+    BasicType, BuilderError, Component, Dictionary, DictionaryBuilder, Error, Field, Group, Member,
+    MemberDefinition, Message, MsgCat, MsgType, SessionProtocol, ValidationError, Variant, Version,
 };

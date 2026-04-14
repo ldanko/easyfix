@@ -1,5 +1,4 @@
-#![allow(dead_code, unused_imports)]
-
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum MsgType {
     #[default]
@@ -1138,7 +1137,10 @@ use easyfix_core::base_messages::{
     ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
 };
 pub use easyfix_core::message::MsgCat;
-use easyfix_core::message::{HeaderAccess, SessionMessage};
+use easyfix_core::{
+    Version,
+    message::{HeaderAccess, SessionMessage},
+};
 #[allow(unused_imports)]
 use easyfix_core::{
     basic_types::{
@@ -1152,7 +1154,7 @@ use easyfix_core::{
     deserializer::{DeserializeError, Deserializer, RawMessage, raw_message},
     serializer::Serializer,
 };
-pub const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(b"FIXT.1.1") };
+pub const VERSION: Version = Version::FIXT11;
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -1335,8 +1337,6 @@ impl ToFixString for FieldTag {
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct Header {
-    ///Tag 8.
-    pub begin_string: FixString,
     ///Tag 9.
     pub body_length: Length,
     ///Tag 1128.
@@ -1402,7 +1402,6 @@ impl Header {
 
     fn deserialize(
         deserializer: &mut Deserializer,
-        begin_string: FixString,
         body_length: Length,
     ) -> Result<Header, DeserializeError> {
         let mut appl_ver_id: Option<ApplVerId> = None;
@@ -1416,10 +1415,6 @@ impl Header {
         let mut orig_sending_time: Option<UtcTimestamp> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
             match tag {
-                8u16 => {
-                    return Err(deserializer
-                        .reject(Some(8u16), SessionRejectReasonBase::TagAppearsMoreThanOnce));
-                }
                 9u16 => {
                     return Err(deserializer
                         .reject(Some(9u16), SessionRejectReasonBase::TagAppearsMoreThanOnce));
@@ -1510,7 +1505,6 @@ impl Header {
             }
         }
         Ok(Header {
-            begin_string,
             body_length,
             appl_ver_id,
             sender_comp_id: sender_comp_id.ok_or_else(|| {
@@ -1535,7 +1529,6 @@ impl Header {
 impl<'a> From<&'a Header> for HeaderBase<'a> {
     fn from(header: &'a Header) -> Self {
         HeaderBase {
-            begin_string: Cow::Borrowed(&header.begin_string),
             sender_comp_id: Cow::Borrowed(&header.sender_comp_id),
             target_comp_id: Cow::Borrowed(&header.target_comp_id),
             msg_seq_num: header.msg_seq_num,
@@ -1552,7 +1545,6 @@ impl<'a> From<&'a Header> for HeaderBase<'a> {
 impl From<HeaderBase<'_>> for Header {
     fn from(base: HeaderBase<'_>) -> Header {
         Header {
-            begin_string: base.begin_string.into_owned(),
             sender_comp_id: base.sender_comp_id.into_owned(),
             target_comp_id: base.target_comp_id.into_owned(),
             msg_seq_num: base.msg_seq_num,
@@ -1568,8 +1560,8 @@ impl From<HeaderBase<'_>> for Header {
     }
 }
 impl HeaderAccess for Header {
-    fn begin_string(&self) -> &FixStr {
-        &self.begin_string
+    fn version(&self) -> Version {
+        VERSION
     }
 
     fn sender_comp_id(&self) -> &FixStr {
@@ -1598,10 +1590,6 @@ impl HeaderAccess for Header {
 
     fn appl_ver_id(&self) -> Option<&FixStr> {
         self.appl_ver_id.as_ref().map(|v| v.as_fix_str())
-    }
-
-    fn set_begin_string(&mut self, value: FixString) {
-        self.begin_string = value;
     }
 
     fn set_sender_comp_id(&mut self, value: FixString) {
@@ -1636,8 +1624,8 @@ impl HeaderAccess for Header {
     }
 }
 impl HeaderAccess for Message {
-    fn begin_string(&self) -> &FixStr {
-        &self.header.begin_string
+    fn version(&self) -> Version {
+        VERSION
     }
 
     fn sender_comp_id(&self) -> &FixStr {
@@ -1666,10 +1654,6 @@ impl HeaderAccess for Message {
 
     fn appl_ver_id(&self) -> Option<&FixStr> {
         self.header.appl_ver_id.as_ref().map(|v| v.as_fix_str())
-    }
-
-    fn set_begin_string(&mut self, value: FixString) {
-        self.header.begin_string = value;
     }
 
     fn set_sender_comp_id(&mut self, value: FixString) {
@@ -3196,7 +3180,7 @@ pub struct Message {
 impl Message {
     pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
         let begin_string = deserializer.begin_string();
-        if begin_string != BEGIN_STRING {
+        if begin_string != VERSION.begin_str() {
             return Err(DeserializeError::GarbledMessage(
                 "begin string mismatch".into(),
             ));
@@ -3216,20 +3200,19 @@ impl Message {
                 "MsgType<35> not third tag".into(),
             ));
         };
-        let header =
-            Header::deserialize(&mut deserializer, begin_string, body_length).map_err(|err| {
-                if let DeserializeError::Reject { reason, .. } = err
-                    && reason == SessionRejectReasonBase::RequiredTagMissing
-                    && let Ok(Some(tag)) = deserializer.deserialize_tag_num()
-                {
-                    deserializer.reject(
-                        Some(tag),
-                        SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
-                    )
-                } else {
-                    err
-                }
-            })?;
+        let header = Header::deserialize(&mut deserializer, body_length).map_err(|err| {
+            if let DeserializeError::Reject { reason, .. } = err
+                && reason == SessionRejectReasonBase::RequiredTagMissing
+                && let Ok(Some(tag)) = deserializer.deserialize_tag_num()
+            {
+                deserializer.reject(
+                    Some(tag),
+                    SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                )
+            } else {
+                err
+            }
+        })?;
         let body = Body::deserialize(&mut deserializer, msg_type)?;
         let trailer = Trailer::deserialize(&mut deserializer)?;
         Ok(Box::new(Message {
@@ -3273,7 +3256,7 @@ impl SessionMessage for Message {
     fn serialize(&self) -> Vec<u8> {
         let mut serializer = Serializer::new();
         serializer.output_mut().extend_from_slice(b"8=");
-        serializer.serialize_string(&self.header.begin_string);
+        serializer.serialize_string(VERSION.begin_str());
         serializer.output_mut().push(b'\x01');
         serializer.serialize_body_len();
         serializer.output_mut().extend_from_slice(b"35=");

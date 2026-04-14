@@ -17,8 +17,6 @@ use messages::{ApplVerId, Header};
 #[test]
 fn header_incoming() {
     let header = Header {
-        begin_string: fix_str!("FIXT.1.1").to_owned(),
-
         sender_comp_id: fix_str!("SENDER").to_owned(),
         target_comp_id: fix_str!("TARGET").to_owned(),
         msg_seq_num: 42,
@@ -30,7 +28,6 @@ fn header_incoming() {
     };
     let base = HeaderBase::from(&header);
 
-    assert_eq!(base.begin_string.as_ref(), fix_str!("FIXT.1.1"));
     assert_eq!(base.sender_comp_id.as_ref(), fix_str!("SENDER"));
     assert_eq!(base.target_comp_id.as_ref(), fix_str!("TARGET"));
     assert_eq!(base.msg_seq_num, 42);
@@ -43,8 +40,6 @@ fn header_incoming() {
 #[test]
 fn header_incoming_minimal() {
     let header = Header {
-        begin_string: fix_str!("FIXT.1.1").to_owned(),
-
         sender_comp_id: fix_str!("S").to_owned(),
         target_comp_id: fix_str!("T").to_owned(),
         msg_seq_num: 1,
@@ -65,7 +60,6 @@ fn header_outgoing() {
     let sending_time = UtcTimestamp::now();
     let orig_sending_time = UtcTimestamp::now();
     let base = HeaderBase {
-        begin_string: Cow::Owned(fix_str!("FIXT.1.1").to_owned()),
         sender_comp_id: Cow::Owned(fix_str!("SENDER").to_owned()),
         target_comp_id: Cow::Owned(fix_str!("TARGET").to_owned()),
         msg_seq_num: 10,
@@ -76,7 +70,6 @@ fn header_outgoing() {
     };
     let header = Header::from(base);
 
-    assert_eq!(header.begin_string.as_bytes(), b"FIXT.1.1");
     assert_eq!(header.sender_comp_id.as_bytes(), b"SENDER");
     assert_eq!(header.target_comp_id.as_bytes(), b"TARGET");
     assert_eq!(header.msg_seq_num, 10);
@@ -92,7 +85,6 @@ fn header_outgoing() {
 #[test]
 fn header_outgoing_without_optional_fields() {
     let base = HeaderBase {
-        begin_string: Cow::Owned(fix_str!("FIXT.1.1").to_owned()),
         sender_comp_id: Cow::Owned(fix_str!("S").to_owned()),
         target_comp_id: Cow::Owned(fix_str!("T").to_owned()),
         msg_seq_num: 1,
@@ -111,8 +103,6 @@ fn header_outgoing_without_optional_fields() {
 #[test]
 fn header_round_trip() {
     let original = Header {
-        begin_string: fix_str!("FIXT.1.1").to_owned(),
-
         sender_comp_id: fix_str!("SENDER").to_owned(),
         target_comp_id: fix_str!("TARGET").to_owned(),
         msg_seq_num: 42,
@@ -124,8 +114,6 @@ fn header_round_trip() {
     };
     let base = HeaderBase::from(&original);
     let reconstructed = Header::from(base);
-
-    assert_eq!(original.begin_string, reconstructed.begin_string);
 
     assert_eq!(original.sender_comp_id, reconstructed.sender_comp_id);
     assert_eq!(original.target_comp_id, reconstructed.target_comp_id);
@@ -139,8 +127,6 @@ fn header_round_trip() {
 #[test]
 fn header_round_trip_minimal() {
     let original = Header {
-        begin_string: fix_str!("FIXT.1.1").to_owned(),
-
         sender_comp_id: fix_str!("A").to_owned(),
         target_comp_id: fix_str!("B").to_owned(),
         msg_seq_num: 1,
@@ -149,8 +135,6 @@ fn header_round_trip_minimal() {
     };
     let base = HeaderBase::from(&original);
     let reconstructed = Header::from(base);
-
-    assert_eq!(original.begin_string, reconstructed.begin_string);
 
     assert_eq!(original.sender_comp_id, reconstructed.sender_comp_id);
     assert_eq!(original.target_comp_id, reconstructed.target_comp_id);

@@ -20,11 +20,13 @@ impl Header {
         serde_serialize: bool,
         serde_deserialize: bool,
     ) -> TokenStream {
-        // Tag 35 (MsgType) is not stored in Header — it's derived from the body.
+        // Tag 8 (BeginString) and tag 35 (MsgType) are not stored in Header:
+        //   - BeginString is a compile-time constant per generated crate (`VERSION`).
+        //   - MsgType is derived from the body.
         let members_definitions = self
             .members
             .iter()
-            .filter(|m| m.tag_num() != 35)
+            .filter(|m| !matches!(m.tag_num(), 8 | 35))
             .map(|member| member.gen_definition());
         // Tags 8 (BeginString), 9 (BodyLength), and 35 (MsgType) are serialized
         // by Message::serialize() — not by Header::serialize().
@@ -67,21 +69,28 @@ impl Header {
     }
 
     fn generate_deserialize(&self) -> TokenStream {
-        let variables_definitions = self.members.iter().map(|member| member.gen_opt_variables());
+        // Tag 8 (BeginString) is validated against the crate's `VERSION`
+        // const before `Header::deserialize` is called and is not stored on
+        // the struct, so it needs no variable, match arm, or struct entry.
+        let variables_definitions = self
+            .members
+            .iter()
+            .filter(|m| m.tag_num() != 8)
+            .map(|member| member.gen_opt_variables());
         let de_match_entries = self
             .members
             .iter()
+            .filter(|m| m.tag_num() != 8)
             .flat_map(|member| member.gen_deserialize_match_entries());
-        // Tag 35 (MsgType) is not stored in Header — skip it in struct initialization.
+        // Tag 8 (BeginString) and tag 35 (MsgType) are not fields of Header.
         let de_header_entries = self
             .members
             .iter()
-            .filter(|m| m.tag_num() != 35)
+            .filter(|m| !matches!(m.tag_num(), 8 | 35))
             .map(|member| member.gen_deserialize_struct_entries());
         quote! {
             fn deserialize(
                 deserializer: &mut Deserializer,
-                begin_string: FixString,
                 body_length: Length,
             ) -> Result<Header, DeserializeError> {
                 #(#variables_definitions)*
@@ -205,7 +214,6 @@ impl Header {
             impl<'a> From<&'a Header> for HeaderBase<'a> {
                 fn from(header: &'a Header) -> Self {
                     HeaderBase {
-                        begin_string: Cow::Borrowed(&header.begin_string),
                         sender_comp_id: Cow::Borrowed(&header.sender_comp_id),
                         target_comp_id: Cow::Borrowed(&header.target_comp_id),
                         msg_seq_num: header.msg_seq_num,
@@ -220,7 +228,6 @@ impl Header {
             impl From<HeaderBase<'_>> for Header {
                 fn from(base: HeaderBase<'_>) -> Header {
                     Header {
-                        begin_string: base.begin_string.into_owned(),
                         sender_comp_id: base.sender_comp_id.into_owned(),
                         target_comp_id: base.target_comp_id.into_owned(),
                         msg_seq_num: base.msg_seq_num,
@@ -282,8 +289,8 @@ impl Header {
 
         quote! {
             impl HeaderAccess for Header {
-                fn begin_string(&self) -> &FixStr {
-                    &self.begin_string
+                fn version(&self) -> Version {
+                    VERSION
                 }
 
                 fn sender_comp_id(&self) -> &FixStr {
@@ -312,10 +319,6 @@ impl Header {
 
                 fn appl_ver_id(&self) -> Option<&FixStr> {
                     #get_appl_ver_id
-                }
-
-                fn set_begin_string(&mut self, value: FixString) {
-                    self.begin_string = value;
                 }
 
                 fn set_sender_comp_id(&mut self, value: FixString) {
@@ -397,8 +400,8 @@ impl Header {
 
         quote! {
             impl HeaderAccess for Message {
-                fn begin_string(&self) -> &FixStr {
-                    &self.header.begin_string
+                fn version(&self) -> Version {
+                    VERSION
                 }
 
                 fn sender_comp_id(&self) -> &FixStr {
@@ -427,10 +430,6 @@ impl Header {
 
                 fn appl_ver_id(&self) -> Option<&FixStr> {
                     #get_appl_ver_id
-                }
-
-                fn set_begin_string(&mut self, value: FixString) {
-                    self.header.begin_string = value;
                 }
 
                 fn set_sender_comp_id(&mut self, value: FixString) {

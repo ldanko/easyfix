@@ -153,7 +153,7 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
         impl Message {
             pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
                 let begin_string = deserializer.begin_string();
-                if begin_string != BEGIN_STRING {
+                if begin_string != VERSION.begin_str() {
                     return Err(DeserializeError::GarbledMessage("begin string mismatch".into()));
                 }
 
@@ -174,7 +174,7 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                     return Err(DeserializeError::GarbledMessage("MsgType<35> not third tag".into()));
                 };
 
-                let header = Header::deserialize(&mut deserializer, begin_string, body_length)
+                let header = Header::deserialize(&mut deserializer, body_length)
                     .map_err(|err| {
                         if let DeserializeError::Reject { reason, .. } = err
                             && reason == SessionRejectReasonBase::RequiredTagMissing
@@ -234,9 +234,9 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
             fn serialize(&self) -> Vec<u8> {
                 let mut serializer = Serializer::new();
                 // Framing tags (8, 9, 35) are written here, not in Header::serialize().
-                // Tag 8: BeginString
+                // Tag 8: BeginString (compile-time const per generated crate)
                 serializer.output_mut().extend_from_slice(b"8=");
-                serializer.serialize_string(&self.header.begin_string);
+                serializer.serialize_string(VERSION.begin_str());
                 serializer.output_mut().push(b'\x01');
                 // Tag 9: BodyLength (placeholder, patched by serialize_checksum)
                 serializer.serialize_body_len();

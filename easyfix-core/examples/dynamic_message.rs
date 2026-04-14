@@ -21,9 +21,10 @@
 //! plus `NewOrderSingle` (D) as a sample application message. Extending to other
 //! message types follows the same pattern.
 
-use std::{borrow::Cow, collections::HashMap, fmt};
+use std::{borrow::Cow, collections::HashMap, fmt, str::FromStr};
 
 use easyfix_core::{
+    Version,
     base_messages::*,
     basic_types::*,
     deserializer::{DeserializeError, Deserializer, RawMessage},
@@ -322,10 +323,12 @@ impl DynamicMessage {
 // ---------------------------------------------------------------------------
 
 impl HeaderAccess for DynamicMessage {
-    fn begin_string(&self) -> &FixStr {
-        self.get(TAG_BEGIN_STRING)
+    fn version(&self) -> Version {
+        let s = self
+            .get(TAG_BEGIN_STRING)
             .expect("BeginString(8) is always present")
-            .as_str()
+            .as_str();
+        Version::from_str(s.as_utf8()).expect("BeginString(8) is a known FIX version")
     }
 
     fn sender_comp_id(&self) -> &FixStr {
@@ -362,10 +365,6 @@ impl HeaderAccess for DynamicMessage {
 
     fn appl_ver_id(&self) -> Option<&FixStr> {
         None // FIX 4.x only
-    }
-
-    fn set_begin_string(&mut self, value: FixString) {
-        self.set(TAG_BEGIN_STRING, Value::Str(value));
     }
 
     fn set_sender_comp_id(&mut self, value: FixString) {
@@ -417,7 +416,11 @@ fn serialize_message(msg: &DynamicMessage) -> Vec<u8> {
 
     // Tag 8: BeginString
     s.output_mut().extend_from_slice(b"8=");
-    s.serialize_string(msg.begin_string());
+    s.serialize_string(
+        msg.get(TAG_BEGIN_STRING)
+            .expect("BeginString(8) is always present")
+            .as_str(),
+    );
     s.output_mut().push(b'\x01');
 
     // Tag 9: BodyLength placeholder
@@ -701,7 +704,6 @@ impl SessionMessage for DynamicMessage {
 
     fn header(&self) -> HeaderBase<'_> {
         HeaderBase {
-            begin_string: Cow::Borrowed(self.begin_string()),
             sender_comp_id: Cow::Borrowed(self.sender_comp_id()),
             target_comp_id: Cow::Borrowed(self.target_comp_id()),
             msg_seq_num: self.msg_seq_num(),
@@ -730,11 +732,9 @@ impl SessionMessage for DynamicMessage {
 
     fn from_admin(header: HeaderBase<'static>, admin: AdminBase<'static>) -> Self {
         let (msg_type, mut fields) = Self::from_admin_base(admin);
-        // Populate header fields
-        fields.insert(
-            TAG_BEGIN_STRING,
-            Value::Str(header.begin_string.into_owned()),
-        );
+        // Populate header fields. BeginString is a compile-time property
+        // of this dynamic-message example (FIX 4.4).
+        fields.insert(TAG_BEGIN_STRING, Value::Str(Version::FIX44.begin_string()));
         fields.insert(
             TAG_SENDER_COMP_ID,
             Value::Str(header.sender_comp_id.into_owned()),

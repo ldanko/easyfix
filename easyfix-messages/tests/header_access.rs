@@ -4,14 +4,13 @@
 //! setters modify them correctly, including enum-backed fields
 //! (MsgType, ApplVerID).
 
-use easyfix_core::{basic_types::UtcTimestamp, fix_str, message::HeaderAccess};
+use easyfix_core::{Version, basic_types::UtcTimestamp, fix_str, message::HeaderAccess};
 use easyfix_test_messages as messages;
 use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
 
 fn make_fixt_message() -> Message {
     Message {
         header: Header {
-            begin_string: fix_str!("FIXT.1.1").to_owned(),
             sender_comp_id: fix_str!("SENDER").to_owned(),
             target_comp_id: fix_str!("TARGET").to_owned(),
             msg_seq_num: 42,
@@ -30,7 +29,7 @@ fn make_fixt_message() -> Message {
 fn getters_return_header_fields() {
     let msg = make_fixt_message();
 
-    assert_eq!(msg.begin_string(), fix_str!("FIXT.1.1"));
+    assert_eq!(msg.version(), Version::FIXT11);
     assert_eq!(msg.sender_comp_id(), fix_str!("SENDER"));
     assert_eq!(msg.target_comp_id(), fix_str!("TARGET"));
     assert_eq!(msg.msg_seq_num(), 42);
@@ -44,7 +43,6 @@ fn getters_return_header_fields() {
 fn getters_return_none_for_absent_optional_fields() {
     let msg = Message {
         header: Header {
-            begin_string: fix_str!("FIXT.1.1").to_owned(),
             sender_comp_id: fix_str!("S").to_owned(),
             target_comp_id: fix_str!("T").to_owned(),
             msg_seq_num: 1,
@@ -67,7 +65,6 @@ fn setters_modify_header_fields() {
     let new_sending_time = UtcTimestamp::now();
     let new_orig_sending_time = UtcTimestamp::now();
 
-    msg.set_begin_string(fix_str!("FIX.4.4").to_owned());
     msg.set_sender_comp_id(fix_str!("NEW_SENDER").to_owned());
     msg.set_target_comp_id(fix_str!("NEW_TARGET").to_owned());
     msg.set_msg_seq_num(99);
@@ -76,7 +73,6 @@ fn setters_modify_header_fields() {
     msg.set_orig_sending_time(Some(new_orig_sending_time));
     msg.set_appl_ver_id(Some(fix_str!("7").to_owned())); // FIX50
 
-    assert_eq!(msg.begin_string(), fix_str!("FIX.4.4"));
     assert_eq!(msg.sender_comp_id(), fix_str!("NEW_SENDER"));
     assert_eq!(msg.target_comp_id(), fix_str!("NEW_TARGET"));
     assert_eq!(msg.msg_seq_num(), 99);

@@ -11,13 +11,13 @@ mod builder;
 mod error;
 mod resolver;
 mod types;
-mod version;
 
 #[cfg(test)]
 mod tests;
 
 use std::{collections::HashMap, fs, rc::Rc};
 
+pub use easyfix_core::{SessionProtocol, Version};
 use quick_xml::de::from_str;
 
 use self::resolver::{Elements, Resolver, check_required_fields};
@@ -25,10 +25,36 @@ pub use self::{
     builder::DictionaryBuilder,
     error::{BuilderError, Error, ValidationError},
     types::{Component, Field, Group, Member, MemberDefinition, Message, Variant},
-    version::Version,
 };
 use crate::xml;
-pub use crate::xml::{BasicType, FixType, MsgCat, MsgType};
+pub use crate::xml::{BasicType, MsgCat, MsgType};
+
+impl xml::Dictionary {
+    /// Build a [`Version`] from this raw XML dictionary's header
+    /// attributes.
+    ///
+    /// Returns [`BuilderError::UnknownVersion`] (carrying the formatted
+    /// `BeginString`) when the version is not recognized.
+    pub(crate) fn version(&self) -> Result<Version, Error> {
+        Version::new(
+            self.session_protocol,
+            self.major,
+            self.minor,
+            self.servicepack,
+        )
+        .map_err(|_| {
+            let begin_string = if self.servicepack == 0 {
+                format!("{}.{}.{}", self.session_protocol, self.major, self.minor)
+            } else {
+                format!(
+                    "{}.{}.{}SP{}",
+                    self.session_protocol, self.major, self.minor, self.servicepack
+                )
+            };
+            Error::Builder(BuilderError::UnknownVersion(begin_string))
+        })
+    }
+}
 
 /// The main dictionary representing a FIX protocol specification.
 ///
@@ -78,7 +104,7 @@ impl Dictionary {
         _flatten: bool,
         strict_check: bool,
     ) -> Result<Dictionary, Error> {
-        let version = Version::from_raw_dictionary(&raw_dictionary)?;
+        let version = raw_dictionary.version()?;
         let mut resolver = Resolver::new(raw_dictionary.fields, raw_dictionary.components)?;
 
         let header = Component {
@@ -335,11 +361,9 @@ impl Dictionary {
         self.version
     }
 
-    /// Returns the BeginString representation of this dictionary's version
-    ///
-    /// This is a convenience method that delegates to `version().begin_string()`.
+    /// Returns the BeginString representation of this dictionary's version.
     pub fn begin_string(&self) -> String {
-        self.version.begin_string()
+        self.version.to_string()
     }
 
     /// Looks up a field by name

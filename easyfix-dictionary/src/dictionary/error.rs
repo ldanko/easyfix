@@ -1,6 +1,5 @@
 use std::io;
 
-use super::Version;
 use crate::xml::{BasicType, MsgCat, MsgType};
 
 /// Errors that can occur during dictionary operations.
@@ -110,8 +109,8 @@ pub enum ValidationError {
 #[derive(Debug, thiserror::Error)]
 pub enum BuilderError {
     /// FIX version not recognized or supported
-    #[error("Unknown version {}", .0.begin_string())]
-    UnknownVersion(Version),
+    #[error("Unknown version {0}")]
+    UnknownVersion(String),
 
     /// No dictionary was specified in the builder
     #[error("No dictionary specified")]
