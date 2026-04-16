@@ -6,7 +6,7 @@
 use std::fmt::Debug;
 
 use crate::{
-    Version,
+    SerializeError, Version,
     base_messages::{AdminBase, HeaderBase},
     basic_types::{Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
     deserializer::{DeserializeError, RawMessage},
@@ -29,8 +29,9 @@ pub trait SessionMessage: Sized + Debug + HeaderAccess {
     /// Deserialize from a structurally validated `RawMessage`.
     fn from_raw_message(raw: RawMessage<'_>) -> Result<Self, DeserializeError>;
 
-    /// Serialize to FIX tag-value wire format.
-    fn serialize(&self) -> Vec<u8>;
+    /// Serialize to FIX tag-value wire format into the caller-provided buffer.
+    /// Returns the number of bytes written.
+    fn serialize(&self, buf: &mut [u8]) -> Result<usize, SerializeError>;
 
     /// Extract header fields as a borrowed base. Zero-copy.
     fn header(&self) -> HeaderBase<'_>;

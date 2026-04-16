@@ -87,8 +87,9 @@ impl MessageCodeGen {
 
             #[allow(dead_code)]
             impl #name {
-                pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-                    #(#serialize;)*
+                pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+                    #(#serialize)*
+                    Ok(())
                 }
 
                 #fn_deserialize

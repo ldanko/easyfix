@@ -40,7 +40,9 @@ fn fixt_message(msg: Box<Body>) -> Box<Message> {
 fn heartbeat_ok() {
     // Simple test with simple message.
     let msg = fixt_message(Box::new(Body::Heartbeat(Heartbeat { test_req_id: None })));
-    let serialized = msg.serialize();
+    let mut serialized = vec![0u8; 4096];
+    let len = msg.serialize(&mut serialized).expect("serialize failed");
+    serialized.truncate(len);
     Message::from_bytes(&serialized).expect("Deserialization failed");
 }
 
@@ -52,7 +54,9 @@ fn logon_msg_type_grp_no_present() {
         default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
         ..Default::default()
     })));
-    let serialized = msg.serialize();
+    let mut serialized = vec![0u8; 4096];
+    let len = msg.serialize(&mut serialized).expect("serialize failed");
+    serialized.truncate(len);
     Message::from_bytes(&serialized).expect("Deserialization failed");
 }
 
@@ -76,7 +80,9 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
         ]),
         ..Default::default()
     })));
-    let serialized = msg.serialize();
+    let mut serialized = vec![0u8; 4096];
+    let len = msg.serialize(&mut serialized).expect("serialize failed");
+    serialized.truncate(len);
     Message::from_bytes(&serialized).expect("Deserialization failed");
 }
 
@@ -100,7 +106,9 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
         ]),
         ..Default::default()
     })));
-    let serialized = msg.serialize();
+    let mut serialized = vec![0u8; 4096];
+    let len = msg.serialize(&mut serialized).expect("serialize failed");
+    serialized.truncate(len);
     Message::from_bytes(&serialized).expect("Deserialization failed");
 }
 

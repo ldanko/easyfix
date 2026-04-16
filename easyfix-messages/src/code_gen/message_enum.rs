@@ -93,7 +93,7 @@ pub fn generate_message_enum(
 
         #[allow(dead_code)]
         impl Body {
-            fn serialize(&self, serializer: &mut Serializer) {
+            fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
                 match self {
                     #(Body::#names(msg) => msg.serialize(serializer),)*
                 }
@@ -211,13 +211,15 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
 
             // TODO: Like chrono::Format::DelayedFormat
             pub fn dbg_fix_str(&self) -> impl fmt::Display {
-                let mut output = self.serialize();
-                for byte in output.iter_mut() {
+                let mut buf = vec![0u8; 4096];
+                let len = self.serialize(&mut buf).expect("serialize failed");
+                buf.truncate(len);
+                for byte in buf.iter_mut() {
                     if *byte == b'\x01' {
                         *byte = b'|';
                     }
                 }
-                String::from_utf8_lossy(&output).into_owned()
+                String::from_utf8_lossy(&buf).into_owned()
             }
 
             pub const fn msg_type(&self) -> MsgType {
@@ -231,24 +233,24 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                 Ok(*Message::deserialize(deserializer)?)
             }
 
-            fn serialize(&self) -> Vec<u8> {
-                let mut serializer = Serializer::new();
+            fn serialize(&self, buf: &mut [u8]) -> Result<usize, SerializeError> {
+                let mut serializer = Serializer::new(buf);
                 // Framing tags (8, 9, 35) are written here, not in Header::serialize().
                 // Tag 8: BeginString (compile-time const per generated crate)
-                serializer.output_mut().extend_from_slice(b"8=");
-                serializer.serialize_string(VERSION.begin_str());
-                serializer.output_mut().push(b'\x01');
+                serializer.put_slice(b"8=")?;
+                serializer.serialize_string(VERSION.begin_str())?;
+                serializer.put_soh()?;
                 // Tag 9: BodyLength (placeholder, patched by serialize_checksum)
-                serializer.serialize_body_len();
+                serializer.serialize_body_len()?;
                 // Tag 35: MsgType (derived from body, not stored in Header)
-                serializer.output_mut().extend_from_slice(b"35=");
-                serializer.serialize_enum(&self.body.msg_type());
-                serializer.output_mut().push(b'\x01');
+                serializer.put_slice(b"35=")?;
+                serializer.serialize_enum(&self.body.msg_type())?;
+                serializer.put_soh()?;
                 // Remaining header fields (34, 49, 52, etc.)
-                self.header.serialize(&mut serializer);
-                self.body.serialize(&mut serializer);
-                self.trailer.serialize(&mut serializer);
-                serializer.take()
+                self.header.serialize(&mut serializer)?;
+                self.body.serialize(&mut serializer)?;
+                self.trailer.serialize(&mut serializer)?;
+                Ok(serializer.pos())
             }
 
             fn header(&self) -> HeaderBase<'_> {

@@ -1,6 +1,4 @@
-use std::io::Write;
-
-use tracing::warn;
+use std::fmt::{self, Write};
 
 use crate::basic_types::{
     Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, FixedOffset, Float,
@@ -10,135 +8,185 @@ use crate::basic_types::{
     XmlData,
 };
 
-// TODO: This should be parametrizable and also used in parser to cut too big messages.
-const MAX_MSG_SIZE: usize = 4096;
-const MAX_BODY_LEN_DIGITS: usize = if MAX_MSG_SIZE < 10000 {
-    4
-} else if MAX_MSG_SIZE < 100000 {
-    5
-} else if MAX_MSG_SIZE < 1000000 {
-    6
-} else if MAX_MSG_SIZE < 10000000 {
-    7
-} else if MAX_MSG_SIZE < 100000000 {
-    8
-} else {
-    panic!("MAX_MSG_SIZE too big");
-};
-
-// TODO: SerializeError: Empty Vec/Group, `0` on SeqNum,TagNum,NumInGroup,Length
-
-impl Default for Serializer {
-    fn default() -> Self {
-        Self::new()
+const fn max_body_len_digits(max_msg_size: usize) -> usize {
+    if max_msg_size < 10 {
+        1
+    } else if max_msg_size < 100 {
+        2
+    } else if max_msg_size < 1000 {
+        3
+    } else if max_msg_size < 10_000 {
+        4
+    } else if max_msg_size < 100_000 {
+        5
+    } else if max_msg_size < 1_000_000 {
+        6
+    } else if max_msg_size < 10_000_000 {
+        7
+    } else if max_msg_size < 100_000_000 {
+        8
+    } else {
+        panic!("max message size too big")
     }
 }
 
-pub struct Serializer {
-    output: Vec<u8>,
-    body_start_idx: usize,
-    current_tag_num: TagNum,
+#[derive(Debug, thiserror::Error)]
+pub enum SerializeError {
+    #[error("max message size exceeded")]
+    MaxMessageSizeExceeded,
+    #[error("empty value")]
+    EmptyValue,
+    #[error("invalid value")]
+    InvalidValue,
 }
 
-impl Serializer {
-    pub fn new() -> Serializer {
+fn validate_char(c: Char) -> Result<(), SerializeError> {
+    if matches!(c, 0x20..=0x7e) {
+        Ok(())
+    } else {
+        Err(SerializeError::InvalidValue)
+    }
+}
+
+pub struct Serializer<'a> {
+    output: &'a mut [u8],
+    pos: usize,
+    body_start_idx: usize,
+}
+
+impl<'a> Serializer<'a> {
+    pub fn new(output: &'a mut [u8]) -> Serializer<'a> {
         Serializer {
-            // Allocate for max message size, to prevent vector reallocation.
-            output: Vec::with_capacity(MAX_MSG_SIZE),
+            output,
+            pos: 0,
             body_start_idx: 0,
-            current_tag_num: 0,
         }
     }
 
-    pub fn output_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.output
+    pub fn pos(&self) -> usize {
+        self.pos
     }
 
-    pub fn take(self) -> Vec<u8> {
-        self.output
+    pub fn written(&self) -> &[u8] {
+        &self.output[..self.pos]
     }
 
-    pub fn serialize_body_len(&mut self) {
-        const BODY_LEN_PLACEHOLDER: &[u8] = match MAX_BODY_LEN_DIGITS {
-            4 => b"9=0000\x01",
-            5 => b"9=00000\x01",
-            _ => panic!("unexpected count of maximum body length digits"),
-        };
-        self.output.extend_from_slice(BODY_LEN_PLACEHOLDER);
-        self.body_start_idx = self.output.len();
+    pub fn put_slice(&mut self, bytes: &[u8]) -> Result<(), SerializeError> {
+        if bytes.len() > self.output.len() - self.pos {
+            return Err(SerializeError::MaxMessageSizeExceeded);
+        }
+        let end = self.pos + bytes.len();
+        self.output[self.pos..end].copy_from_slice(bytes);
+        self.pos = end;
+        Ok(())
+    }
+
+    pub fn put_u8(&mut self, byte: u8) -> Result<(), SerializeError> {
+        if self.pos >= self.output.len() {
+            return Err(SerializeError::MaxMessageSizeExceeded);
+        }
+        self.output[self.pos] = byte;
+        self.pos += 1;
+        Ok(())
+    }
+
+    /// Write the FIX field delimiter (SOH, 0x01).
+    pub fn put_soh(&mut self) -> Result<(), SerializeError> {
+        self.put_u8(b'\x01')
+    }
+
+    pub fn serialize_body_len(&mut self) -> Result<(), SerializeError> {
+        const PLACEHOLDERS: [&[u8]; 8] = [
+            b"9=0\x01",
+            b"9=00\x01",
+            b"9=000\x01",
+            b"9=0000\x01",
+            b"9=00000\x01",
+            b"9=000000\x01",
+            b"9=0000000\x01",
+            b"9=00000000\x01",
+        ];
+        let digits = max_body_len_digits(self.output.len());
+        self.put_slice(PLACEHOLDERS[digits - 1])?;
+        self.body_start_idx = self.pos;
+        Ok(())
     }
 
     // TODO: add test cases for body len and checksum verification
-    pub fn serialize_checksum(&mut self) {
+    pub fn serialize_checksum(&mut self) -> Result<(), SerializeError> {
         let mut buffer = itoa::Buffer::new();
 
-        let body = &self.output[self.body_start_idx..];
-        let body_len = body.len();
+        let body_len = self.pos - self.body_start_idx;
         let body_len_slice = buffer.format(body_len).as_bytes();
 
         self.output[self.body_start_idx - body_len_slice.len() - 1..self.body_start_idx - 1]
             .copy_from_slice(body_len_slice);
 
-        let checksum = self
-            .output
+        let checksum = self.output[..self.pos]
             .iter()
             .fold(0u8, |acc, &byte| u8::wrapping_add(acc, byte));
 
-        self.output.extend_from_slice(b"10=");
+        self.put_slice(b"10=")?;
         if checksum < 10 {
-            self.output.extend_from_slice(b"00");
+            self.put_slice(b"00")?;
         } else if checksum < 100 {
-            self.output.extend_from_slice(b"0");
+            self.put_u8(b'0')?;
         }
-        self.output
-            .extend_from_slice(buffer.format(checksum).as_bytes());
-        self.output.push(b'\x01');
+        self.put_slice(buffer.format(checksum).as_bytes())?;
+        self.put_u8(b'\x01')?;
+        Ok(())
     }
 
     /// Serialize sequence of character digits without commas or decimals.
     /// Value must be positive and may not contain leading zeros.
-    pub fn serialize_tag_num(&mut self, tag_num: &TagNum) {
-        self.current_tag_num = *tag_num;
+    pub fn serialize_tag_num(&mut self, tag_num: &TagNum) -> Result<(), SerializeError> {
+        if *tag_num == 0 {
+            return Err(SerializeError::InvalidValue);
+        }
         let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(*tag_num).as_bytes());
+        self.put_slice(buffer.format(*tag_num).as_bytes())
     }
 
     /// Serialize sequence of character digits without commas or decimals
     /// and optional sign character (characters “-” and “0” – “9” ).
     /// The sign character utilizes one octet (i.e., positive int is “99999”
     /// while negative int is “-99999”).
-    pub fn serialize_int(&mut self, int: &Int) {
+    pub fn serialize_int(&mut self, int: &Int) -> Result<(), SerializeError> {
         let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(*int).as_bytes());
+        self.put_slice(buffer.format(*int).as_bytes())
     }
 
     /// Serialize sequence of character digits without commas or decimals.
     /// Value must be positive.
-    pub fn serialize_seq_num(&mut self, seq_num: &SeqNum) {
-        let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(*seq_num).as_bytes());
-    }
-
-    /// Serialize sequence of character digits without commas or decimals.
-    /// Value must be positive.
-    pub fn serialize_num_in_group(&mut self, num_in_group: &NumInGroup) {
-        if *num_in_group == 0 {
-            warn!("empty Group (tag={})", self.current_tag_num);
+    pub fn serialize_seq_num(&mut self, seq_num: &SeqNum) -> Result<(), SerializeError> {
+        if *seq_num == 0 {
+            return Err(SerializeError::InvalidValue);
         }
         let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(*num_in_group).as_bytes());
+        self.put_slice(buffer.format(*seq_num).as_bytes())
+    }
+
+    /// Serialize sequence of character digits without commas or decimals.
+    /// Value must be positive.
+    pub fn serialize_num_in_group(
+        &mut self,
+        num_in_group: &NumInGroup,
+    ) -> Result<(), SerializeError> {
+        if *num_in_group == 0 {
+            return Err(SerializeError::InvalidValue);
+        }
+        let mut buffer = itoa::Buffer::new();
+        self.put_slice(buffer.format(*num_in_group).as_bytes())
     }
 
     /// Serialize sequence of character digits without commas or decimals
     /// (values 1 to 31).
-    pub fn serialize_day_of_month(&mut self, day_of_month: DayOfMonth) {
+    pub fn serialize_day_of_month(
+        &mut self,
+        day_of_month: DayOfMonth,
+    ) -> Result<(), SerializeError> {
         let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(day_of_month).as_bytes());
+        self.put_slice(buffer.format(day_of_month).as_bytes())
     }
 
     /// Serialize sequence of character digits with optional decimal point
@@ -152,118 +200,113 @@ impl Serializer {
     /// All float fields must accommodate up to fifteen significant digits.
     /// The number of decimal places used should be a factor of business/market
     /// needs and mutual agreement between counterparties.
-    pub fn serialize_float(&mut self, float: &Float) {
-        self.output.extend_from_slice(float.to_string().as_bytes())
+    pub fn serialize_float(&mut self, float: &Float) -> Result<(), SerializeError> {
+        self.put_slice(float.to_string().as_bytes())
     }
 
-    pub fn serialize_qty(&mut self, qty: &Qty) {
+    pub fn serialize_qty(&mut self, qty: &Qty) -> Result<(), SerializeError> {
         self.serialize_float(qty)
     }
 
-    pub fn serialize_price(&mut self, price: &Price) {
+    pub fn serialize_price(&mut self, price: &Price) -> Result<(), SerializeError> {
         self.serialize_float(price)
     }
 
-    pub fn serialize_price_offset(&mut self, price_offset: &PriceOffset) {
+    pub fn serialize_price_offset(
+        &mut self,
+        price_offset: &PriceOffset,
+    ) -> Result<(), SerializeError> {
         self.serialize_float(price_offset)
     }
 
-    pub fn serialize_amt(&mut self, amt: &Amt) {
+    pub fn serialize_amt(&mut self, amt: &Amt) -> Result<(), SerializeError> {
         self.serialize_float(amt)
     }
 
-    pub fn serialize_percentage(&mut self, percentage: &Percentage) {
+    pub fn serialize_percentage(&mut self, percentage: &Percentage) -> Result<(), SerializeError> {
         self.serialize_float(percentage)
     }
 
-    pub fn serialize_boolean(&mut self, boolean: &Boolean) {
+    pub fn serialize_boolean(&mut self, boolean: &Boolean) -> Result<(), SerializeError> {
         if *boolean {
-            self.output.extend_from_slice(b"Y");
+            self.put_u8(b'Y')
         } else {
-            self.output.extend_from_slice(b"N");
-        }
-    }
-
-    fn validate_char(&self, c: &Char) {
-        if matches!(c, 0x00..=0x1f) {
-            warn!(
-                "wrong Char value - special character ({:#04x}) (tag={})",
-                c, self.current_tag_num
-            );
-        }
-        if matches!(c, 0x80..=0xff) {
-            warn!(
-                "value of Char value - outside ASCII range ({:#04x}) (tag={})",
-                c, self.current_tag_num
-            );
+            self.put_u8(b'N')
         }
     }
 
     /// Use any ASCII character except control characters.
-    pub fn serialize_char(&mut self, c: &Char) {
-        self.validate_char(c);
-        self.output.push(*c);
+    pub fn serialize_char(&mut self, c: &Char) -> Result<(), SerializeError> {
+        validate_char(*c)?;
+        self.put_u8(*c)
     }
 
     /// Serialize string containing one or more space-delimited single
     /// character values, e.g. “2 A F”.
-    pub fn serialize_multiple_char_value(&mut self, mcv: &MultipleCharValue) {
+    pub fn serialize_multiple_char_value(
+        &mut self,
+        mcv: &MultipleCharValue,
+    ) -> Result<(), SerializeError> {
         if mcv.is_empty() {
-            warn!("empty MutlipleCharValue (tag={})", self.current_tag_num);
+            return Err(SerializeError::EmptyValue);
         }
         for c in mcv {
-            self.validate_char(c);
-            self.output.push(*c);
-            self.output.push(b' ');
+            validate_char(*c)?;
+            self.put_u8(*c)?;
+            self.put_u8(b' ')?;
         }
-        self.output.pop();
+        // Drop trailing space (mirrors Vec::pop's no-op-on-empty behavior).
+        self.pos = self.pos.saturating_sub(1);
+        Ok(())
     }
 
     /// Serialize alphanumeric free-format strings can include any character
     /// except control characters.
-    pub fn serialize_string(&mut self, input: &FixStr) {
+    pub fn serialize_string(&mut self, input: &FixStr) -> Result<(), SerializeError> {
         if input.is_empty() {
-            warn!("empty String (tag={})", self.current_tag_num);
+            return Err(SerializeError::EmptyValue);
         }
-        self.output.extend_from_slice(input.as_bytes());
+        self.put_slice(input.as_bytes())
     }
 
     /// Serialize string containing one or more space-delimited multiple
     /// character values, e.g. “AV AN A”.
-    pub fn serialize_multiple_string_value(&mut self, input: &MultipleStringValue) {
+    pub fn serialize_multiple_string_value(
+        &mut self,
+        input: &MultipleStringValue,
+    ) -> Result<(), SerializeError> {
         if input.is_empty() {
-            warn!("empty MultipleStringValue (tag={})", self.current_tag_num);
+            return Err(SerializeError::EmptyValue);
         }
         for s in input {
             if s.is_empty() {
-                warn!(
-                    "empty MultipleStringValue element (tag={})",
-                    self.current_tag_num
-                );
+                return Err(SerializeError::EmptyValue);
             }
-            self.output.extend_from_slice(s.as_bytes());
-            self.output.push(b' ');
+            self.put_slice(s.as_bytes())?;
+            self.put_u8(b' ')?;
         }
-        self.output.pop();
+        // Drop trailing space (mirrors Vec::pop's no-op-on-empty behavior).
+        self.pos = self.pos.saturating_sub(1);
+        Ok(())
     }
 
     /// Serialize ISO 3166-1:2013 Codes for the representation of names of
     /// countries and their subdivision (2-character code).
-    pub fn serialize_country(&mut self, country: &Country) {
-        self.output.extend_from_slice(country.to_bytes());
+    pub fn serialize_country(&mut self, country: &Country) -> Result<(), SerializeError> {
+        self.put_slice(country.to_bytes())
     }
 
     /// Serialize ISO 4217:2015 Codes for the representation of currencies
     /// and funds (3-character code).
-    pub fn serialize_currency(&mut self, currency: &Currency) {
-        self.output.extend_from_slice(currency.to_bytes());
+    pub fn serialize_currency(&mut self, currency: &Currency) -> Result<(), SerializeError> {
+        self.put_slice(currency.to_bytes())
     }
 
     /// Serialize ISO 10383:2012 Securities and related financial instruments
     /// – Codes for exchanges and market identification (MIC)
     /// (4-character code).
-    pub fn serialize_exchange(&mut self, exchange: &Exchange) {
-        self.output.extend_from_slice(exchange);
+    pub fn serialize_exchange(&mut self, exchange: &Exchange) -> Result<(), SerializeError> {
+        self.put_slice(exchange)
     }
 
     /// Serialize string representing month of a year.
@@ -277,14 +320,14 @@ impl Serializer {
     /// # Valid values:
     /// YYYY = 0000-9999; MM = 01-12; DD = 01-31;
     /// WW = w1, w2, w3, w4, w5.
-    pub fn serialize_month_year(&mut self, input: &MonthYear) {
-        self.output.extend_from_slice(input);
+    pub fn serialize_month_year(&mut self, input: &MonthYear) -> Result<(), SerializeError> {
+        self.put_slice(input)
     }
 
     /// Serialize ISO 639-1:2002 Codes for the representation of names
     /// of languages (2-character code).
-    pub fn serialize_language(&mut self, input: &Language) {
-        self.output.extend_from_slice(input);
+    pub fn serialize_language(&mut self, input: &Language) -> Result<(), SerializeError> {
+        self.put_slice(input)
     }
 
     /// Serialize string representing time/date combination represented
@@ -304,9 +347,9 @@ impl Serializer {
     ///   is not conveyed), it may include 3 digits to convey
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
-    pub fn serialize_utc_timestamp(&mut self, input: &UtcTimestamp) {
-        write!(self.output, "{}", input.format_precisely())
-            .expect("UtcTimestamp serialization failed")
+    pub fn serialize_utc_timestamp(&mut self, input: &UtcTimestamp) -> Result<(), SerializeError> {
+        write!(self, "{}", input.format_precisely())
+            .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize string representing time-only represented in UTC
@@ -326,9 +369,9 @@ impl Serializer {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
     ///   // TODO: set precision!
-    pub fn serialize_utc_time_only(&mut self, input: &UtcTimeOnly) {
-        write!(self.output, "{}", input.format("%H:%M:%S.%f"))
-            .expect("UtcTimeOnly serialization failed")
+    pub fn serialize_utc_time_only(&mut self, input: &UtcTimeOnly) -> Result<(), SerializeError> {
+        write!(self, "{}", input.format("%H:%M:%S.%f"))
+            .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize date represented in UTC (Universal Time Coordinated)
@@ -338,8 +381,9 @@ impl Serializer {
     /// - YYYY = 0000-9999,
     /// - MM = 01-12,
     /// - DD = 01-31.
-    pub fn serialize_utc_date_only(&mut self, input: &UtcDateOnly) {
-        write!(self.output, "{}", input.format("%Y%m%d")).expect("UtcDateOnly serialization failed")
+    pub fn serialize_utc_date_only(&mut self, input: &UtcDateOnly) -> Result<(), SerializeError> {
+        write!(self, "{}", input.format("%Y%m%d"))
+            .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize time local to a market center. Used where offset to UTC
@@ -352,9 +396,9 @@ impl Serializer {
     /// - SS = 00-59 seconds.
     ///
     /// In general only the hour token is non-zero.
-    pub fn serialize_local_mkt_time(&mut self, input: &LocalMktTime) {
-        write!(self.output, "{}", input.format("%H:%M:%S"))
-            .expect("LocalMktTime serialization failed")
+    pub fn serialize_local_mkt_time(&mut self, input: &LocalMktTime) -> Result<(), SerializeError> {
+        write!(self, "{}", input.format("%H:%M:%S"))
+            .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize date of local market (as opposed to UTC) in YYYYMMDD
@@ -364,9 +408,9 @@ impl Serializer {
     /// - YYYY = 0000-9999,
     /// - MM = 01-12,
     /// - DD = 01-31.
-    pub fn serialize_local_mkt_date(&mut self, input: &LocalMktDate) {
-        write!(self.output, "{}", input.format("%Y%m%d"))
-            .expect("LocalMktDate serialization failed")
+    pub fn serialize_local_mkt_date(&mut self, input: &LocalMktDate) -> Result<(), SerializeError> {
+        write!(self, "{}", input.format("%Y%m%d"))
+            .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize string representing a time/date combination representing
@@ -388,7 +432,7 @@ impl Serializer {
     ///   is not conveyed), it may include 3 digits to convey
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
-    pub fn serialize_tz_timestamp(&mut self, input: &TzTimestamp) {
+    pub fn serialize_tz_timestamp(&mut self, input: &TzTimestamp) -> Result<(), SerializeError> {
         let ts = input.timestamp();
         let fmt = match input.precision() {
             TimePrecision::Secs => "%Y%m%d-%H:%M:%S",
@@ -396,8 +440,8 @@ impl Serializer {
             TimePrecision::Micros => "%Y%m%d-%H:%M:%S%.6f",
             TimePrecision::Nanos => "%Y%m%d-%H:%M:%S%.9f",
         };
-        write!(self.output, "{}", ts.format(fmt)).expect("TzTimestamp serialization failed");
-        self.serialize_tz_offset(ts.offset());
+        write!(self, "{}", ts.format(fmt)).map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
+        self.serialize_tz_offset(ts.offset())
     }
 
     /// Serialize time of day with timezone. Time represented based on
@@ -410,91 +454,106 @@ impl Serializer {
     /// - SS = 00-59 seconds,
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes.
-    pub fn serialize_tz_timeonly(&mut self, input: &TzTimeOnly) {
+    pub fn serialize_tz_timeonly(&mut self, input: &TzTimeOnly) -> Result<(), SerializeError> {
         let fmt = match input.precision() {
             TimePrecision::Secs => "%H:%M:%S",
             TimePrecision::Millis => "%H:%M:%S%.3f",
             TimePrecision::Micros => "%H:%M:%S%.6f",
             TimePrecision::Nanos => "%H:%M:%S%.9f",
         };
-        write!(self.output, "{}", input.timestamp().format(fmt))
-            .expect("TzTimeOnly serialization failed");
-        self.serialize_tz_offset(&input.offset());
+        write!(self, "{}", input.timestamp().format(fmt))
+            .map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
+        self.serialize_tz_offset(&input.offset())
     }
 
-    fn serialize_tz_offset(&mut self, offset: &FixedOffset) {
+    fn serialize_tz_offset(&mut self, offset: &FixedOffset) -> Result<(), SerializeError> {
         let total_secs = offset.local_minus_utc();
         if total_secs == 0 {
-            self.output.push(b'Z');
-            return;
+            return self.put_u8(b'Z');
         }
         let sign = if total_secs < 0 { b'-' } else { b'+' };
         let abs_secs = total_secs.unsigned_abs();
         let hours = abs_secs / 3600;
         let minutes = (abs_secs % 3600) / 60;
-        self.output.push(sign);
-        let _ = write!(self.output, "{hours:02}");
+        self.put_u8(sign)?;
+        write!(self, "{hours:02}").map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
         if minutes != 0 {
-            let _ = write!(self.output, ":{minutes:02}");
+            write!(self, ":{minutes:02}").map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
         }
+        Ok(())
     }
 
     /// Serialize sequence of character digits without commas or decimals.
-    pub fn serialize_length(&mut self, length: &Length) {
+    pub fn serialize_length(&mut self, length: &Length) -> Result<(), SerializeError> {
+        if *length == 0 {
+            return Err(SerializeError::InvalidValue);
+        }
         let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(*length).as_bytes());
+        self.put_slice(buffer.format(*length).as_bytes())
     }
 
     /// Serialize raw data with no format or content restrictions,
     /// or a character string encoded as specified by MessageEncoding(347).
-    pub fn serialize_data(&mut self, data: &Data) {
+    pub fn serialize_data(&mut self, data: &Data) -> Result<(), SerializeError> {
         if data.is_empty() {
-            warn!("empty Data (tag={})", self.current_tag_num);
+            return Err(SerializeError::EmptyValue);
         }
-        self.output.extend_from_slice(data);
+        self.put_slice(data)
     }
 
     /// Serialize XML document.
-    pub fn serialize_xml(&mut self, xml_data: &XmlData) {
+    pub fn serialize_xml(&mut self, xml_data: &XmlData) -> Result<(), SerializeError> {
         if xml_data.is_empty() {
-            warn!("empty XmlData (tag={})", self.current_tag_num);
+            return Err(SerializeError::EmptyValue);
         }
-        self.output.extend_from_slice(xml_data);
+        self.put_slice(xml_data)
     }
 
-    pub fn serialize_tenor(&mut self, input: &Tenor) {
+    pub fn serialize_tenor(&mut self, input: &Tenor) -> Result<(), SerializeError> {
         let unit_byte = match input.unit {
             TenorUnit::Days => b'D',
             TenorUnit::Months => b'M',
             TenorUnit::Weeks => b'W',
             TenorUnit::Years => b'Y',
         };
-        self.output.push(unit_byte);
+        self.put_u8(unit_byte)?;
         let mut buffer = itoa::Buffer::new();
-        self.output
-            .extend_from_slice(buffer.format(input.value).as_bytes());
+        self.put_slice(buffer.format(input.value).as_bytes())
     }
 
-    pub fn serialize_enum<T>(&mut self, value: &T)
+    pub fn serialize_enum<T>(&mut self, value: &T) -> Result<(), SerializeError>
     where
         T: Copy + Into<&'static [u8]>,
     {
-        self.output.extend_from_slice((*value).into());
+        self.put_slice((*value).into())
     }
 
-    pub fn serialize_enum_collection<T>(&mut self, values: &[T])
+    pub fn serialize_enum_collection<T>(&mut self, values: &[T]) -> Result<(), SerializeError>
     where
         T: Copy + Into<&'static [u8]>,
     {
         if values.is_empty() {
-            warn!("empty enum collection (tag={})", self.current_tag_num);
+            return Err(SerializeError::EmptyValue);
         }
         for value in values {
-            self.output.extend_from_slice((*value).into());
-            self.output.push(b' ');
+            self.put_slice((*value).into())?;
+            self.put_u8(b' ')?;
         }
-        // Drop last space
-        self.output.pop();
+        // Drop last space (mirrors Vec::pop's no-op-on-empty behavior).
+        self.pos = self.pos.saturating_sub(1);
+        Ok(())
+    }
+}
+
+impl<'a> Write for Serializer<'a> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let bytes = s.as_bytes();
+        let end = self.pos + bytes.len();
+        if end > self.output.len() {
+            return Err(fmt::Error);
+        }
+        self.output[self.pos..end].copy_from_slice(bytes);
+        self.pos = end;
+        Ok(())
     }
 }

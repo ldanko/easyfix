@@ -149,7 +149,9 @@ fn from_admin_constructs_logon() {
 #[test]
 fn serialize_from_raw_message_round_trip() {
     let original = make_heartbeat();
-    let bytes = SessionMessage::serialize(&original);
+    let mut bytes = vec![0u8; 4096];
+    let len = SessionMessage::serialize(&original, &mut bytes).expect("serialize failed");
+    bytes.truncate(len);
 
     let (_, raw) = easyfix_core::deserializer::raw_message(&bytes).unwrap();
     let restored = Message::from_raw_message(raw).unwrap();

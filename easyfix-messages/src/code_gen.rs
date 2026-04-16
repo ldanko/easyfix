@@ -255,6 +255,7 @@ impl Generator {
                 },
                 deserializer::{raw_message, DeserializeError, Deserializer, RawMessage},
                 serializer::Serializer,
+                SerializeError,
             };
             #[allow(unused_imports)]
             use easyfix_core::base_messages::{

@@ -427,21 +427,21 @@ impl Field {
         let serialize_call = self.data_type.gen_serialize_call();
 
         match SpecialTag::from_tag(self.number) {
-            Some(SpecialTag::BodyLength) => quote! { serializer.serialize_body_len() },
-            Some(SpecialTag::CheckSum) => quote! { serializer.serialize_checksum() },
+            Some(SpecialTag::BodyLength) => quote! { serializer.serialize_body_len()?; },
+            Some(SpecialTag::CheckSum) => quote! { serializer.serialize_checksum()?; },
             _ => {
                 if required {
                     quote! {
-                        serializer.output_mut().extend_from_slice(#tag);
-                        #serialize_call(&self.#name);
-                        serializer.output_mut().push(b'\x01');
+                        serializer.put_slice(#tag)?;
+                        #serialize_call(&self.#name)?;
+                        serializer.put_soh()?;
                     }
                 } else {
                     quote! {
                         if let Some(#name) = &self.#name {
-                            serializer.output_mut().extend_from_slice(#tag);
-                            #serialize_call(#name);
-                            serializer.output_mut().push(b'\x01');
+                            serializer.put_slice(#tag)?;
+                            #serialize_call(#name)?;
+                            serializer.put_soh()?;
                         }
                     }
                 }
@@ -652,22 +652,22 @@ impl RawData {
         };
         if required {
             quote! {
-                serializer.output_mut().extend_from_slice(#len_num);
-                serializer.serialize_length(&(self.#data_name.len() as u16));
-                serializer.output_mut().push(b'\x01');
-                serializer.output_mut().extend_from_slice(#data_num);
-                #serialize_value(&self.#data_name);
-                serializer.output_mut().push(b'\x01');
+                serializer.put_slice(#len_num)?;
+                serializer.serialize_length(&(self.#data_name.len() as u16))?;
+                serializer.put_soh()?;
+                serializer.put_slice(#data_num)?;
+                #serialize_value(&self.#data_name)?;
+                serializer.put_soh()?;
             }
         } else {
             quote! {
                 if let Some(#data_name) = &self.#data_name {
-                    serializer.output_mut().extend_from_slice(#len_num);
-                    serializer.serialize_length(&(#data_name.len() as u16));
-                    serializer.output_mut().push(b'\x01');
-                    serializer.output_mut().extend_from_slice(#data_num);
-                    #serialize_value(#data_name);
-                    serializer.output_mut().push(b'\x01');
+                    serializer.put_slice(#len_num)?;
+                    serializer.serialize_length(&(#data_name.len() as u16))?;
+                    serializer.put_soh()?;
+                    serializer.put_slice(#data_num)?;
+                    #serialize_value(#data_name)?;
+                    serializer.put_soh()?;
                 }
             }
         }
@@ -813,22 +813,22 @@ impl Group {
             Literal::byte_string(format!("{}=", self.num_in_group_number).as_bytes());
         if required {
             quote! {
-                serializer.output_mut().extend_from_slice(#num_in_group_tag);
+                serializer.put_slice(#num_in_group_tag)?;
                 // TODO: possible overflow (impossible in practice)
-                serializer.serialize_num_in_group(&(self.#group_name.len() as NumInGroup));
-                serializer.output_mut().push(b'\x01');
+                serializer.serialize_num_in_group(&(self.#group_name.len() as NumInGroup))?;
+                serializer.put_soh()?;
                 for entry in &self.#group_name {
-                    entry.serialize(serializer);
+                    entry.serialize(serializer)?;
                 }
             }
         } else {
             quote! {
                 if let Some(#group_name) = &self.#group_name {
-                    serializer.output_mut().extend_from_slice(#num_in_group_tag);
-                    serializer.serialize_num_in_group(&(#group_name.len() as NumInGroup));
-                    serializer.output_mut().push(b'\x01');
+                    serializer.put_slice(#num_in_group_tag)?;
+                    serializer.serialize_num_in_group(&(#group_name.len() as NumInGroup))?;
+                    serializer.put_soh()?;
                     for entry in #group_name {
-                        entry.serialize(serializer);
+                        entry.serialize(serializer)?;
                     }
                 }
             }

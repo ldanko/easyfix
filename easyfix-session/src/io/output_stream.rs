@@ -58,8 +58,9 @@ fn output_handler<M: SessionMessage, S: MessagesStorage>(
     message: &M,
     session: &Session<M, S>,
 ) -> Vec<u8> {
-    // TODO: fn serialize_to(&mut buf) / fn serialize_to_buf(&mut buf)
-    let buffer = message.serialize();
+    let mut buffer = vec![0u8; 4096];
+    let len = message.serialize(&mut buffer).expect("serialize failed");
+    buffer.truncate(len);
     if !message.poss_dup_flag().unwrap_or(false) {
         session
             .state()

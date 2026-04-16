@@ -1030,22 +1030,23 @@ pub struct MsgTypeGrp {
 }
 #[allow(dead_code)]
 impl MsgTypeGrp {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(ref_msg_type) = &self.ref_msg_type {
-            serializer.output_mut().extend_from_slice(b"372=");
-            serializer.serialize_string(ref_msg_type);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"372=")?;
+            serializer.serialize_string(ref_msg_type)?;
+            serializer.put_soh()?;
         }
         if let Some(msg_direction) = &self.msg_direction {
-            serializer.output_mut().extend_from_slice(b"385=");
-            serializer.serialize_enum(msg_direction);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"385=")?;
+            serializer.serialize_enum(msg_direction)?;
+            serializer.put_soh()?;
         }
         if let Some(default_ver_indicator) = &self.default_ver_indicator {
-            serializer.output_mut().extend_from_slice(b"1130=");
-            serializer.serialize_boolean(default_ver_indicator);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"1130=")?;
+            serializer.serialize_boolean(default_ver_indicator)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     pub(crate) fn deserialize(
@@ -1137,12 +1138,9 @@ use easyfix_core::base_messages::{
     ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
 };
 pub use easyfix_core::message::MsgCat;
-use easyfix_core::{
-    Version,
-    message::{HeaderAccess, SessionMessage},
-};
 #[allow(unused_imports)]
 use easyfix_core::{
+    SerializeError,
     basic_types::{
         Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal, Exchange, FixStr,
         FixString, Float, Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
@@ -1153,6 +1151,10 @@ use easyfix_core::{
     },
     deserializer::{DeserializeError, Deserializer, RawMessage, raw_message},
     serializer::Serializer,
+};
+use easyfix_core::{
+    Version,
+    message::{HeaderAccess, SessionMessage},
 };
 pub const VERSION: Version = Version::FIXT11;
 #[allow(dead_code)]
@@ -1360,44 +1362,45 @@ pub struct Header {
 }
 #[allow(dead_code)]
 impl Header {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(appl_ver_id) = &self.appl_ver_id {
-            serializer.output_mut().extend_from_slice(b"1128=");
-            serializer.serialize_enum(appl_ver_id);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"1128=")?;
+            serializer.serialize_enum(appl_ver_id)?;
+            serializer.put_soh()?;
         }
-        serializer.output_mut().extend_from_slice(b"49=");
-        serializer.serialize_string(&self.sender_comp_id);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"56=");
-        serializer.serialize_string(&self.target_comp_id);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"34=");
-        serializer.serialize_seq_num(&self.msg_seq_num);
-        serializer.output_mut().push(b'\x01');
+        serializer.put_slice(b"49=")?;
+        serializer.serialize_string(&self.sender_comp_id)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"56=")?;
+        serializer.serialize_string(&self.target_comp_id)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"34=")?;
+        serializer.serialize_seq_num(&self.msg_seq_num)?;
+        serializer.put_soh()?;
         if let Some(sender_sub_id) = &self.sender_sub_id {
-            serializer.output_mut().extend_from_slice(b"50=");
-            serializer.serialize_string(sender_sub_id);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"50=")?;
+            serializer.serialize_string(sender_sub_id)?;
+            serializer.put_soh()?;
         }
         if let Some(target_sub_id) = &self.target_sub_id {
-            serializer.output_mut().extend_from_slice(b"57=");
-            serializer.serialize_string(target_sub_id);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"57=")?;
+            serializer.serialize_string(target_sub_id)?;
+            serializer.put_soh()?;
         }
         if let Some(poss_dup_flag) = &self.poss_dup_flag {
-            serializer.output_mut().extend_from_slice(b"43=");
-            serializer.serialize_boolean(poss_dup_flag);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"43=")?;
+            serializer.serialize_boolean(poss_dup_flag)?;
+            serializer.put_soh()?;
         }
-        serializer.output_mut().extend_from_slice(b"52=");
-        serializer.serialize_utc_timestamp(&self.sending_time);
-        serializer.output_mut().push(b'\x01');
+        serializer.put_slice(b"52=")?;
+        serializer.serialize_utc_timestamp(&self.sending_time)?;
+        serializer.put_soh()?;
         if let Some(orig_sending_time) = &self.orig_sending_time {
-            serializer.output_mut().extend_from_slice(b"122=");
-            serializer.serialize_utc_timestamp(orig_sending_time);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"122=")?;
+            serializer.serialize_utc_timestamp(orig_sending_time)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(
@@ -1697,16 +1700,17 @@ pub struct Trailer {
 }
 #[allow(dead_code)]
 impl Trailer {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(signature) = &self.signature {
-            serializer.output_mut().extend_from_slice(b"93=");
-            serializer.serialize_length(&(signature.len() as u16));
-            serializer.output_mut().push(b'\x01');
-            serializer.output_mut().extend_from_slice(b"89=");
-            serializer.serialize_data(signature);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"93=")?;
+            serializer.serialize_length(&(signature.len() as u16))?;
+            serializer.put_soh()?;
+            serializer.put_slice(b"89=")?;
+            serializer.serialize_data(signature)?;
+            serializer.put_soh()?;
         }
-        serializer.serialize_checksum();
+        serializer.serialize_checksum()?;
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeError> {
@@ -1776,12 +1780,13 @@ pub struct Heartbeat {
 }
 #[allow(dead_code)]
 impl Heartbeat {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(test_req_id) = &self.test_req_id {
-            serializer.output_mut().extend_from_slice(b"112=");
-            serializer.serialize_string(test_req_id);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"112=")?;
+            serializer.serialize_string(test_req_id)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -1830,10 +1835,11 @@ pub struct TestRequest {
 }
 #[allow(dead_code)]
 impl TestRequest {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-        serializer.output_mut().extend_from_slice(b"112=");
-        serializer.serialize_string(&self.test_req_id);
-        serializer.output_mut().push(b'\x01');
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        serializer.put_slice(b"112=")?;
+        serializer.serialize_string(&self.test_req_id)?;
+        serializer.put_soh()?;
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -1888,13 +1894,14 @@ pub struct ResendRequest {
 }
 #[allow(dead_code)]
 impl ResendRequest {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-        serializer.output_mut().extend_from_slice(b"7=");
-        serializer.serialize_seq_num(&self.begin_seq_no);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"16=");
-        serializer.serialize_seq_num(&self.end_seq_no);
-        serializer.output_mut().push(b'\x01');
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        serializer.put_slice(b"7=")?;
+        serializer.serialize_seq_num(&self.begin_seq_no)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"16=")?;
+        serializer.serialize_seq_num(&self.end_seq_no)?;
+        serializer.put_soh()?;
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -1964,30 +1971,31 @@ pub struct Reject {
 }
 #[allow(dead_code)]
 impl Reject {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-        serializer.output_mut().extend_from_slice(b"45=");
-        serializer.serialize_seq_num(&self.ref_seq_num);
-        serializer.output_mut().push(b'\x01');
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        serializer.put_slice(b"45=")?;
+        serializer.serialize_seq_num(&self.ref_seq_num)?;
+        serializer.put_soh()?;
         if let Some(ref_tag_id) = &self.ref_tag_id {
-            serializer.output_mut().extend_from_slice(b"371=");
-            serializer.serialize_int(ref_tag_id);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"371=")?;
+            serializer.serialize_int(ref_tag_id)?;
+            serializer.put_soh()?;
         }
         if let Some(ref_msg_type) = &self.ref_msg_type {
-            serializer.output_mut().extend_from_slice(b"372=");
-            serializer.serialize_string(ref_msg_type);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"372=")?;
+            serializer.serialize_string(ref_msg_type)?;
+            serializer.put_soh()?;
         }
         if let Some(session_reject_reason) = &self.session_reject_reason {
-            serializer.output_mut().extend_from_slice(b"373=");
-            serializer.serialize_enum(session_reject_reason);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"373=")?;
+            serializer.serialize_enum(session_reject_reason)?;
+            serializer.put_soh()?;
         }
         if let Some(text) = &self.text {
-            serializer.output_mut().extend_from_slice(b"58=");
-            serializer.serialize_string(text);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"58=")?;
+            serializer.serialize_string(text)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -2082,15 +2090,16 @@ pub struct SequenceReset {
 }
 #[allow(dead_code)]
 impl SequenceReset {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(gap_fill_flag) = &self.gap_fill_flag {
-            serializer.output_mut().extend_from_slice(b"123=");
-            serializer.serialize_boolean(gap_fill_flag);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"123=")?;
+            serializer.serialize_boolean(gap_fill_flag)?;
+            serializer.put_soh()?;
         }
-        serializer.output_mut().extend_from_slice(b"36=");
-        serializer.serialize_seq_num(&self.new_seq_no);
-        serializer.output_mut().push(b'\x01');
+        serializer.put_slice(b"36=")?;
+        serializer.serialize_seq_num(&self.new_seq_no)?;
+        serializer.put_soh()?;
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -2156,22 +2165,23 @@ pub struct Logout {
 }
 #[allow(dead_code)]
 impl Logout {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(session_status) = &self.session_status {
-            serializer.output_mut().extend_from_slice(b"1409=");
-            serializer.serialize_enum(session_status);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"1409=")?;
+            serializer.serialize_enum(session_status)?;
+            serializer.put_soh()?;
         }
         if let Some(next_expected_msg_seq_num) = &self.next_expected_msg_seq_num {
-            serializer.output_mut().extend_from_slice(b"789=");
-            serializer.serialize_seq_num(next_expected_msg_seq_num);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"789=")?;
+            serializer.serialize_seq_num(next_expected_msg_seq_num)?;
+            serializer.put_soh()?;
         }
         if let Some(text) = &self.text {
-            serializer.output_mut().extend_from_slice(b"58=");
-            serializer.serialize_string(text);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"58=")?;
+            serializer.serialize_string(text)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -2258,52 +2268,53 @@ pub struct Logon {
 }
 #[allow(dead_code)]
 impl Logon {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-        serializer.output_mut().extend_from_slice(b"98=");
-        serializer.serialize_enum(&self.encrypt_method);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"108=");
-        serializer.serialize_int(&self.heart_bt_int);
-        serializer.output_mut().push(b'\x01');
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        serializer.put_slice(b"98=")?;
+        serializer.serialize_enum(&self.encrypt_method)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"108=")?;
+        serializer.serialize_int(&self.heart_bt_int)?;
+        serializer.put_soh()?;
         if let Some(raw_data) = &self.raw_data {
-            serializer.output_mut().extend_from_slice(b"95=");
-            serializer.serialize_length(&(raw_data.len() as u16));
-            serializer.output_mut().push(b'\x01');
-            serializer.output_mut().extend_from_slice(b"96=");
-            serializer.serialize_data(raw_data);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"95=")?;
+            serializer.serialize_length(&(raw_data.len() as u16))?;
+            serializer.put_soh()?;
+            serializer.put_slice(b"96=")?;
+            serializer.serialize_data(raw_data)?;
+            serializer.put_soh()?;
         }
         if let Some(reset_seq_num_flag) = &self.reset_seq_num_flag {
-            serializer.output_mut().extend_from_slice(b"141=");
-            serializer.serialize_boolean(reset_seq_num_flag);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"141=")?;
+            serializer.serialize_boolean(reset_seq_num_flag)?;
+            serializer.put_soh()?;
         }
         if let Some(next_expected_msg_seq_num) = &self.next_expected_msg_seq_num {
-            serializer.output_mut().extend_from_slice(b"789=");
-            serializer.serialize_seq_num(next_expected_msg_seq_num);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"789=")?;
+            serializer.serialize_seq_num(next_expected_msg_seq_num)?;
+            serializer.put_soh()?;
         }
         if let Some(msg_type_grp) = &self.msg_type_grp {
-            serializer.output_mut().extend_from_slice(b"384=");
-            serializer.serialize_num_in_group(&(msg_type_grp.len() as NumInGroup));
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"384=")?;
+            serializer.serialize_num_in_group(&(msg_type_grp.len() as NumInGroup))?;
+            serializer.put_soh()?;
             for entry in msg_type_grp {
-                entry.serialize(serializer);
+                entry.serialize(serializer)?;
             }
         }
         if let Some(session_status) = &self.session_status {
-            serializer.output_mut().extend_from_slice(b"1409=");
-            serializer.serialize_enum(session_status);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"1409=")?;
+            serializer.serialize_enum(session_status)?;
+            serializer.put_soh()?;
         }
-        serializer.output_mut().extend_from_slice(b"1137=");
-        serializer.serialize_enum(&self.default_appl_ver_id);
-        serializer.output_mut().push(b'\x01');
+        serializer.put_slice(b"1137=")?;
+        serializer.serialize_enum(&self.default_appl_ver_id)?;
+        serializer.put_soh()?;
         if let Some(text) = &self.text {
-            serializer.output_mut().extend_from_slice(b"58=");
-            serializer.serialize_string(text);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"58=")?;
+            serializer.serialize_string(text)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -2505,30 +2516,31 @@ pub struct NewOrderSingle {
 }
 #[allow(dead_code)]
 impl NewOrderSingle {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-        serializer.output_mut().extend_from_slice(b"11=");
-        serializer.serialize_string(&self.cl_ord_id);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"55=");
-        serializer.serialize_string(&self.symbol);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"54=");
-        serializer.serialize_enum(&self.side);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"60=");
-        serializer.serialize_utc_timestamp(&self.transact_time);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"38=");
-        serializer.serialize_qty(&self.order_qty);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"40=");
-        serializer.serialize_enum(&self.ord_type);
-        serializer.output_mut().push(b'\x01');
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        serializer.put_slice(b"11=")?;
+        serializer.serialize_string(&self.cl_ord_id)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"55=")?;
+        serializer.serialize_string(&self.symbol)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"54=")?;
+        serializer.serialize_enum(&self.side)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"60=")?;
+        serializer.serialize_utc_timestamp(&self.transact_time)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"38=")?;
+        serializer.serialize_qty(&self.order_qty)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"40=")?;
+        serializer.serialize_enum(&self.ord_type)?;
+        serializer.put_soh()?;
         if let Some(price) = &self.price {
-            serializer.output_mut().extend_from_slice(b"44=");
-            serializer.serialize_price(price);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"44=")?;
+            serializer.serialize_price(price)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -2665,51 +2677,52 @@ pub struct ExecutionReport {
 }
 #[allow(dead_code)]
 impl ExecutionReport {
-    pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-        serializer.output_mut().extend_from_slice(b"37=");
-        serializer.serialize_string(&self.order_id);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"17=");
-        serializer.serialize_string(&self.exec_id);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"150=");
-        serializer.serialize_enum(&self.exec_type);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"39=");
-        serializer.serialize_enum(&self.ord_status);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"55=");
-        serializer.serialize_string(&self.symbol);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"54=");
-        serializer.serialize_enum(&self.side);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"151=");
-        serializer.serialize_qty(&self.leaves_qty);
-        serializer.output_mut().push(b'\x01');
-        serializer.output_mut().extend_from_slice(b"14=");
-        serializer.serialize_qty(&self.cum_qty);
-        serializer.output_mut().push(b'\x01');
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        serializer.put_slice(b"37=")?;
+        serializer.serialize_string(&self.order_id)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"17=")?;
+        serializer.serialize_string(&self.exec_id)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"150=")?;
+        serializer.serialize_enum(&self.exec_type)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"39=")?;
+        serializer.serialize_enum(&self.ord_status)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"55=")?;
+        serializer.serialize_string(&self.symbol)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"54=")?;
+        serializer.serialize_enum(&self.side)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"151=")?;
+        serializer.serialize_qty(&self.leaves_qty)?;
+        serializer.put_soh()?;
+        serializer.put_slice(b"14=")?;
+        serializer.serialize_qty(&self.cum_qty)?;
+        serializer.put_soh()?;
         if let Some(cl_ord_id) = &self.cl_ord_id {
-            serializer.output_mut().extend_from_slice(b"11=");
-            serializer.serialize_string(cl_ord_id);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"11=")?;
+            serializer.serialize_string(cl_ord_id)?;
+            serializer.put_soh()?;
         }
         if let Some(order_qty) = &self.order_qty {
-            serializer.output_mut().extend_from_slice(b"38=");
-            serializer.serialize_qty(order_qty);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"38=")?;
+            serializer.serialize_qty(order_qty)?;
+            serializer.put_soh()?;
         }
         if let Some(price) = &self.price {
-            serializer.output_mut().extend_from_slice(b"44=");
-            serializer.serialize_price(price);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"44=")?;
+            serializer.serialize_price(price)?;
+            serializer.put_soh()?;
         }
         if let Some(transact_time) = &self.transact_time {
-            serializer.output_mut().extend_from_slice(b"60=");
-            serializer.serialize_utc_timestamp(transact_time);
-            serializer.output_mut().push(b'\x01');
+            serializer.put_slice(b"60=")?;
+            serializer.serialize_utc_timestamp(transact_time)?;
+            serializer.put_soh()?;
         }
+        Ok(())
     }
 
     fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
@@ -3038,7 +3051,7 @@ pub enum Body {
 }
 #[allow(dead_code)]
 impl Body {
-    fn serialize(&self, serializer: &mut Serializer) {
+    fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         match self {
             Body::Heartbeat(msg) => msg.serialize(serializer),
             Body::TestRequest(msg) => msg.serialize(serializer),
@@ -3234,13 +3247,15 @@ impl Message {
     }
 
     pub fn dbg_fix_str(&self) -> impl fmt::Display {
-        let mut output = self.serialize();
-        for byte in output.iter_mut() {
+        let mut buf = vec![0u8; 4096];
+        let len = self.serialize(&mut buf).expect("serialize failed");
+        buf.truncate(len);
+        for byte in buf.iter_mut() {
             if *byte == b'\x01' {
                 *byte = b'|';
             }
         }
-        String::from_utf8_lossy(&output).into_owned()
+        String::from_utf8_lossy(&buf).into_owned()
     }
 
     pub const fn msg_type(&self) -> MsgType {
@@ -3253,19 +3268,19 @@ impl SessionMessage for Message {
         Ok(*Message::deserialize(deserializer)?)
     }
 
-    fn serialize(&self) -> Vec<u8> {
-        let mut serializer = Serializer::new();
-        serializer.output_mut().extend_from_slice(b"8=");
-        serializer.serialize_string(VERSION.begin_str());
-        serializer.output_mut().push(b'\x01');
-        serializer.serialize_body_len();
-        serializer.output_mut().extend_from_slice(b"35=");
-        serializer.serialize_enum(&self.body.msg_type());
-        serializer.output_mut().push(b'\x01');
-        self.header.serialize(&mut serializer);
-        self.body.serialize(&mut serializer);
-        self.trailer.serialize(&mut serializer);
-        serializer.take()
+    fn serialize(&self, buf: &mut [u8]) -> Result<usize, SerializeError> {
+        let mut serializer = Serializer::new(buf);
+        serializer.put_slice(b"8=")?;
+        serializer.serialize_string(VERSION.begin_str())?;
+        serializer.put_soh()?;
+        serializer.serialize_body_len()?;
+        serializer.put_slice(b"35=")?;
+        serializer.serialize_enum(&self.body.msg_type())?;
+        serializer.put_soh()?;
+        self.header.serialize(&mut serializer)?;
+        self.body.serialize(&mut serializer)?;
+        self.trailer.serialize(&mut serializer)?;
+        Ok(serializer.pos())
     }
 
     fn header(&self) -> HeaderBase<'_> {

@@ -24,7 +24,7 @@
 use std::{borrow::Cow, collections::HashMap, fmt, str::FromStr};
 
 use easyfix_core::{
-    Version,
+    SerializeError, Version,
     base_messages::*,
     basic_types::*,
     deserializer::{DeserializeError, Deserializer, RawMessage},
@@ -411,37 +411,36 @@ impl HeaderAccess for DynamicMessage {
 // ---------------------------------------------------------------------------
 
 /// Serialize a `DynamicMessage` to FIX TagValue wire format.
-fn serialize_message(msg: &DynamicMessage) -> Vec<u8> {
-    let mut s = Serializer::new();
-
+fn serialize_message(msg: &DynamicMessage, buf: &mut [u8]) -> Result<usize, SerializeError> {
+    let mut s = Serializer::new(buf);
     // Tag 8: BeginString
-    s.output_mut().extend_from_slice(b"8=");
+    s.put_slice(b"8=")?;
     s.serialize_string(
         msg.get(TAG_BEGIN_STRING)
             .expect("BeginString(8) is always present")
             .as_str(),
-    );
-    s.output_mut().push(b'\x01');
+    )?;
+    s.put_soh()?;
 
     // Tag 9: BodyLength placeholder
-    s.serialize_body_len();
+    s.serialize_body_len()?;
 
     // Tag 35: MsgType
-    s.output_mut().extend_from_slice(b"35=");
-    s.output_mut().extend_from_slice(msg.msg_type.as_bytes());
-    s.output_mut().push(b'\x01');
+    s.put_slice(b"35=")?;
+    s.put_slice(msg.msg_type.as_bytes())?;
+    s.put_soh()?;
 
     // Header fields
-    serialize_tag_str(&mut s, TAG_SENDER_COMP_ID, msg.sender_comp_id());
-    serialize_tag_str(&mut s, TAG_TARGET_COMP_ID, msg.target_comp_id());
-    serialize_tag_seq_num(&mut s, TAG_MSG_SEQ_NUM, msg.msg_seq_num());
-    serialize_tag_timestamp(&mut s, TAG_SENDING_TIME, &msg.sending_time());
+    serialize_tag_str(&mut s, TAG_SENDER_COMP_ID, msg.sender_comp_id())?;
+    serialize_tag_str(&mut s, TAG_TARGET_COMP_ID, msg.target_comp_id())?;
+    serialize_tag_seq_num(&mut s, TAG_MSG_SEQ_NUM, msg.msg_seq_num())?;
+    serialize_tag_timestamp(&mut s, TAG_SENDING_TIME, &msg.sending_time())?;
 
     if let Some(flag) = msg.poss_dup_flag() {
-        serialize_tag_bool(&mut s, TAG_POSS_DUP_FLAG, flag);
+        serialize_tag_bool(&mut s, TAG_POSS_DUP_FLAG, flag)?;
     }
     if let Some(time) = msg.orig_sending_time() {
-        serialize_tag_timestamp(&mut s, TAG_ORIG_SENDING_TIME, &time);
+        serialize_tag_timestamp(&mut s, TAG_ORIG_SENDING_TIME, &time)?;
     }
 
     // Body fields — serialize all non-header tags in tag-number order
@@ -467,54 +466,73 @@ fn serialize_message(msg: &DynamicMessage) -> Vec<u8> {
 
     for tag in body_tags {
         let value = &msg.fields[&tag];
-        serialize_tag_value(&mut s, tag, value);
+        serialize_tag_value(&mut s, tag, value)?;
     }
 
     // Checksum (also patches body length)
-    s.serialize_checksum();
-
-    s.take()
+    s.serialize_checksum()?;
+    Ok(s.pos())
 }
 
-fn serialize_tag_value(s: &mut Serializer, tag: TagNum, value: &Value) {
+fn serialize_tag_value(
+    s: &mut Serializer,
+    tag: TagNum,
+    value: &Value,
+) -> Result<(), SerializeError> {
     let tag_prefix = format!("{tag}=");
-    s.output_mut().extend_from_slice(tag_prefix.as_bytes());
+    s.put_slice(tag_prefix.as_bytes())?;
     match value {
-        Value::Int(v) => s.serialize_int(v),
-        Value::SeqNum(v) => s.serialize_seq_num(v),
-        Value::Bool(v) => s.serialize_boolean(v),
-        Value::Str(v) => s.serialize_string(v),
-        Value::Timestamp(v) => s.serialize_utc_timestamp(v),
+        Value::Int(v) => s.serialize_int(v)?,
+        Value::SeqNum(v) => s.serialize_seq_num(v)?,
+        Value::Bool(v) => s.serialize_boolean(v)?,
+        Value::Str(v) => s.serialize_string(v)?,
+        Value::Timestamp(v) => s.serialize_utc_timestamp(v)?,
     }
-    s.output_mut().push(b'\x01');
+    s.put_soh()
 }
 
-fn serialize_tag_str(s: &mut Serializer, tag: TagNum, value: &FixStr) {
+fn serialize_tag_str(
+    s: &mut Serializer,
+    tag: TagNum,
+    value: &FixStr,
+) -> Result<(), SerializeError> {
     let tag_prefix = format!("{tag}=");
-    s.output_mut().extend_from_slice(tag_prefix.as_bytes());
-    s.serialize_string(value);
-    s.output_mut().push(b'\x01');
+    s.put_slice(tag_prefix.as_bytes())?;
+    s.serialize_string(value)?;
+    s.put_soh()
 }
 
-fn serialize_tag_seq_num(s: &mut Serializer, tag: TagNum, value: SeqNum) {
+fn serialize_tag_seq_num(
+    s: &mut Serializer,
+    tag: TagNum,
+    value: SeqNum,
+) -> Result<(), SerializeError> {
     let tag_prefix = format!("{tag}=");
-    s.output_mut().extend_from_slice(tag_prefix.as_bytes());
-    s.serialize_seq_num(&value);
-    s.output_mut().push(b'\x01');
+    s.put_slice(tag_prefix.as_bytes())?;
+    s.serialize_seq_num(&value)?;
+    s.put_soh()
 }
 
-fn serialize_tag_timestamp(s: &mut Serializer, tag: TagNum, value: &UtcTimestamp) {
+fn serialize_tag_timestamp(
+    s: &mut Serializer,
+    tag: TagNum,
+    value: &UtcTimestamp,
+) -> Result<(), SerializeError> {
     let tag_prefix = format!("{tag}=");
-    s.output_mut().extend_from_slice(tag_prefix.as_bytes());
-    s.serialize_utc_timestamp(value);
-    s.output_mut().push(b'\x01');
+    s.put_slice(tag_prefix.as_bytes())?;
+    s.serialize_utc_timestamp(value)?;
+    s.put_soh()
 }
 
-fn serialize_tag_bool(s: &mut Serializer, tag: TagNum, value: Boolean) {
+fn serialize_tag_bool(
+    s: &mut Serializer,
+    tag: TagNum,
+    value: Boolean,
+) -> Result<(), SerializeError> {
     let tag_prefix = format!("{tag}=");
-    s.output_mut().extend_from_slice(tag_prefix.as_bytes());
-    s.serialize_boolean(&value);
-    s.output_mut().push(b'\x01');
+    s.put_slice(tag_prefix.as_bytes())?;
+    s.serialize_boolean(&value)?;
+    s.put_soh()
 }
 
 // ---------------------------------------------------------------------------
@@ -698,8 +716,8 @@ impl SessionMessage for DynamicMessage {
         deserialize_message(raw)
     }
 
-    fn serialize(&self) -> Vec<u8> {
-        serialize_message(self)
+    fn serialize(&self, buf: &mut [u8]) -> Result<usize, SerializeError> {
+        serialize_message(self, buf)
     }
 
     fn header(&self) -> HeaderBase<'_> {
@@ -781,7 +799,9 @@ fn main() {
     println!("Name:    {}", logon.name());
 
     // Serialize
-    let wire = logon.serialize();
+    let mut wire = vec![0u8; 4096];
+    let len = logon.serialize(&mut wire).expect("serialize failed");
+    wire.truncate(len);
     let wire_display = String::from_utf8_lossy(&wire).replace('\x01', "|");
     println!("Wire:    {wire_display}");
 

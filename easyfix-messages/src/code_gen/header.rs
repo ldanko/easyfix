@@ -53,8 +53,9 @@ impl Header {
 
             #[allow(dead_code)]
             impl Header {
-                pub(crate) fn serialize(&self, serializer: &mut Serializer) {
-                    #(#serialize;)*
+                pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+                    #(#serialize)*
+                    Ok(())
                 }
 
                 #deserialize
