@@ -38,6 +38,3 @@ pub mod deserializer;
 pub mod message;
 pub mod serializer;
 pub mod version;
-
-pub use serializer::SerializeError;
-pub use version::{SessionProtocol, UnknownVersionError, Version};

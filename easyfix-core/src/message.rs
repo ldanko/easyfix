@@ -6,10 +6,11 @@
 use std::fmt::Debug;
 
 use crate::{
-    SerializeError, Version,
     base_messages::{AdminBase, HeaderBase},
     basic_types::{Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
     deserializer::{DeserializeError, RawMessage},
+    serializer::SerializeError,
+    version::Version,
 };
 
 /// Admin vs App message category.

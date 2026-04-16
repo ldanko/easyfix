@@ -17,7 +17,7 @@ mod tests;
 
 use std::{collections::HashMap, fs, rc::Rc};
 
-pub use easyfix_core::{SessionProtocol, Version};
+pub use easyfix_core::version::{SessionProtocol, Version};
 use quick_xml::de::from_str;
 
 use self::resolver::{Elements, Resolver, check_required_fields};

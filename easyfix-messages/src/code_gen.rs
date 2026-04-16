@@ -246,7 +246,6 @@ impl Generator {
             pub use easyfix_core::message::MsgCat;
             #[allow(unused_imports)]
             use easyfix_core::{
-                SerializeError, Version,
                 base_messages::{
                     AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
                     ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
@@ -261,7 +260,8 @@ impl Generator {
                 },
                 deserializer::{DeserializeError, Deserializer, GarbledReason, RawMessage, raw_message},
                 message::{HeaderAccess, SessionMessage},
-                serializer::Serializer,
+                serializer::{SerializeError, Serializer},
+                version::Version,
             };
 
             pub const VERSION: Version = Version::#version_ident;

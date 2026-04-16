@@ -1135,7 +1135,6 @@ use std::{borrow::Cow, fmt};
 pub use easyfix_core::message::MsgCat;
 #[allow(unused_imports)]
 use easyfix_core::{
-    SerializeError, Version,
     base_messages::{
         AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
         ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
@@ -1150,7 +1149,8 @@ use easyfix_core::{
     },
     deserializer::{DeserializeError, Deserializer, GarbledReason, RawMessage, raw_message},
     message::{HeaderAccess, SessionMessage},
-    serializer::Serializer,
+    serializer::{SerializeError, Serializer},
+    version::Version,
 };
 pub const VERSION: Version = Version::FIXT11;
 #[allow(dead_code)]

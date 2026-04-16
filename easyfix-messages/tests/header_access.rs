@@ -4,7 +4,7 @@
 //! setters modify them correctly, including enum-backed fields
 //! (MsgType, ApplVerID).
 
-use easyfix_core::{Version, basic_types::UtcTimestamp, fix_str, message::HeaderAccess};
+use easyfix_core::{basic_types::UtcTimestamp, fix_str, message::HeaderAccess, version::Version};
 use easyfix_test_messages as messages;
 use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
 

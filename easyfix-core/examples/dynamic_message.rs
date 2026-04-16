@@ -24,13 +24,13 @@
 use std::{borrow::Cow, collections::HashMap, fmt, str::FromStr};
 
 use easyfix_core::{
-    SerializeError, Version,
     base_messages::*,
     basic_types::*,
     deserializer::{self, DeserializeError, Deserializer, GarbledReason, RawMessage},
     fix_str,
     message::{HeaderAccess, MsgCat, SessionMessage},
-    serializer::Serializer,
+    serializer::{SerializeError, Serializer},
+    version::Version,
 };
 
 // ---------------------------------------------------------------------------

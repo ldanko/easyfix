@@ -7,7 +7,7 @@
 //! - XML-based structures (Field, Component, Group, etc.)
 //! - Serialization/deserialization helpers for FIX-specific formats
 
-use easyfix_core::SessionProtocol;
+use easyfix_core::version::SessionProtocol;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(test)]
