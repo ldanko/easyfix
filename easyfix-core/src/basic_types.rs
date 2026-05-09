@@ -1,4 +1,4 @@
-use std::{borrow, fmt, mem, ops};
+use std::{borrow, fmt, mem, num::NonZero, ops};
 
 use chrono::Timelike;
 pub use chrono::{
@@ -10,8 +10,10 @@ pub use rust_decimal::Decimal;
 pub use crate::{country::Country, currency::Currency};
 
 pub type Int = i64;
+pub type NonZeroInt = NonZero<Int>;
 pub type TagNum = u16;
 pub type SeqNum = u32;
+pub type NonZeroSeqNum = NonZero<SeqNum>;
 pub type NumInGroup = u8;
 pub type DayOfMonth = u8;
 
