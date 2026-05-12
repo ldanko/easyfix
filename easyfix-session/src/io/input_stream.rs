@@ -53,7 +53,7 @@ fn parse_message<M: SessionMessage>(
 
     match raw_message(bytes) {
         Ok((leftover, raw_msg)) => {
-            let result = M::from_raw_message(raw_msg).map(|msg| Some(Box::new(msg)));
+            let result = M::from_raw_message(raw_msg).map(Some);
             let leftover_len = leftover.len();
             bytes.split_to(src_len - leftover_len).freeze();
             result

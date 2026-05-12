@@ -195,17 +195,6 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                 }))
             }
 
-            pub fn from_raw_message(raw_message: RawMessage) -> Result<Box<Message>, DeserializeError> {
-                let deserializer = Deserializer::from_raw_message(raw_message);
-                Message::deserialize(deserializer)
-            }
-
-            pub fn from_bytes(input: &[u8]) -> Result<Box<Message>, DeserializeError> {
-                let (_, raw_msg) = raw_message(input)?;
-                let deserializer = Deserializer::from_raw_message(raw_msg);
-                Message::deserialize(deserializer)
-            }
-
             // TODO: Like chrono::Format::DelayedFormat
             pub fn dbg_fix_str(&self) -> impl fmt::Display {
                 let mut buf = vec![0u8; 4096];
@@ -225,9 +214,9 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
         }
 
         impl SessionMessage for Message {
-            fn from_raw_message(raw: RawMessage<'_>) -> Result<Self, DeserializeError> {
+            fn from_raw_message(raw: RawMessage<'_>) -> Result<Box<Self>, DeserializeError> {
                 let deserializer = Deserializer::from_raw_message(raw);
-                Ok(*Message::deserialize(deserializer)?)
+                Message::deserialize(deserializer)
             }
 
             fn serialize(&self, buf: &mut [u8]) -> Result<usize, SerializeError> {

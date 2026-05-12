@@ -15,7 +15,7 @@ use easyfix_core::{
         FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, SessionStatusField,
         TagNum, Utc, UtcTimestamp,
     },
-    deserializer::{DeserializeError, raw_message},
+    deserializer::DeserializeError,
     fix_str,
     message::{MsgCat, SessionMessage},
 };
@@ -556,13 +556,6 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
         self.send_raw(Box::new(M::from_admin(HeaderBase::default(), admin)));
     }
 
-    fn message_from_bytes(
-        bytes: &[u8],
-    ) -> Result<Box<M>, easyfix_core::deserializer::DeserializeError> {
-        let (_, raw) = raw_message(bytes)?;
-        Ok(Box::new(M::from_raw_message(raw)?))
-    }
-
     /// Send a fully constructed message.
     fn send_raw(&self, msg: Box<M>) {
         if let Err(msg) = self.sender.send_raw(msg) {
@@ -662,7 +655,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
         info!("fetch messages range from {begin_seq_num} to {end_seq_num}");
         for msg_str in state.fetch_range(begin_seq_num..=end_seq_num) {
             // TODO: log error! and resend as gap fill instead of unwrap
-            let mut msg = match Self::message_from_bytes(msg_str) {
+            let mut msg = match M::from_bytes(msg_str) {
                 Ok(msg) => msg,
                 Err(err) => {
                     error!(%err, "Failed to decode message bytes");

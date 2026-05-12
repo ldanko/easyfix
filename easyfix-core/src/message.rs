@@ -8,7 +8,7 @@ use std::fmt::Debug;
 use crate::{
     base_messages::{AdminBase, HeaderBase},
     basic_types::{Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
-    deserializer::{DeserializeError, RawMessage},
+    deserializer::{DeserializeError, RawMessage, raw_message},
     serializer::SerializeError,
     version::Version,
 };
@@ -27,8 +27,17 @@ pub enum MsgCat {
 /// `Session<M: SessionMessage>` uses this trait to deserialize, inspect,
 /// construct, and serialize messages without knowing the concrete type.
 pub trait SessionMessage: Sized + Debug + HeaderAccess {
-    /// Deserialize from a structurally validated `RawMessage`.
-    fn from_raw_message(raw: RawMessage<'_>) -> Result<Self, DeserializeError>;
+    /// Deserialize from a structurally validated `RawMessage`. Returns
+    /// `Box<Self>` because concrete message types can be large
+    /// (e.g. `ExecutionReport`).
+    fn from_raw_message(raw: RawMessage<'_>) -> Result<Box<Self>, DeserializeError>;
+
+    /// Deserialize from FIX tag-value wire bytes. Composes [`raw_message`]
+    /// framing with [`Self::from_raw_message`].
+    fn from_bytes(bytes: &[u8]) -> Result<Box<Self>, DeserializeError> {
+        let (_, raw) = raw_message(bytes)?;
+        Self::from_raw_message(raw)
+    }
 
     /// Serialize to FIX tag-value wire format into the caller-provided buffer.
     /// Returns the number of bytes written.

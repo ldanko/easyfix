@@ -595,7 +595,7 @@ fn required_body_tags(msg_type: &[u8]) -> &'static [TagNum] {
     }
 }
 
-fn deserialize_message(raw: RawMessage<'_>) -> Result<DynamicMessage, DeserializeError> {
+fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, DeserializeError> {
     let mut des = Deserializer::from_raw_message(raw);
     let begin_string = des.begin_string();
 
@@ -659,7 +659,7 @@ fn deserialize_message(raw: RawMessage<'_>) -> Result<DynamicMessage, Deserializ
         }
     }
 
-    Ok(msg)
+    Ok(Box::new(msg))
 }
 
 /// Deserialize a body field value based on its tag number.
@@ -707,7 +707,7 @@ impl fmt::Display for DynamicMessage {
 }
 
 impl SessionMessage for DynamicMessage {
-    fn from_raw_message(raw: RawMessage<'_>) -> Result<Self, DeserializeError> {
+    fn from_raw_message(raw: RawMessage<'_>) -> Result<Box<Self>, DeserializeError> {
         deserialize_message(raw)
     }
 
