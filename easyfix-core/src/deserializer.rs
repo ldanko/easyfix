@@ -29,8 +29,10 @@ pub enum GarbledReason {
     MessageNotWellFormed,
     /// Computed checksum does not match the Checksum(10) value.
     InvalidChecksum,
-    /// BeginString(8) does not match the session's expected FIX version.
-    BeginStringMismatch,
+    /// BeginString(8) is not a recognized FIX version identifier (bad format
+    /// or an unknown version). A *recognized but wrong* version is not
+    /// garbled; it is a [`LogoutReason::BeginStringMismatch`].
+    InvalidBeginString,
     /// The third tag of the message is not MsgType(35), as required by the
     /// FIX framing rules.
     MsgTypeNotThirdTag,
@@ -42,8 +44,28 @@ impl fmt::Display for GarbledReason {
             GarbledReason::IncompleteMessageData => f.write_str("incomplete message data"),
             GarbledReason::MessageNotWellFormed => f.write_str("message not well formed"),
             GarbledReason::InvalidChecksum => f.write_str("invalid checksum"),
-            GarbledReason::BeginStringMismatch => f.write_str("begin string mismatch"),
+            GarbledReason::InvalidBeginString => f.write_str("invalid BeginString<8>"),
             GarbledReason::MsgTypeNotThirdTag => f.write_str("MsgType<35> not third tag"),
+        }
+    }
+}
+
+/// Cause of a [`DeserializeError::Logout`] — a well-formed message that the
+/// session must answer with a Logout(35=5) and disconnect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogoutReason {
+    /// MsgSeqNum(34) is missing.
+    MsgSeqNumMissing,
+    /// BeginString(8) is a recognized FIX version but not the one expected for
+    /// this session.
+    BeginStringMismatch,
+}
+
+impl fmt::Display for LogoutReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LogoutReason::MsgSeqNumMissing => f.write_str("MsgSeqNum<34> missing"),
+            LogoutReason::BeginStringMismatch => f.write_str("invalid BeginString<8>"),
         }
     }
 }
@@ -51,7 +73,7 @@ impl fmt::Display for GarbledReason {
 #[derive(Debug)]
 pub enum DeserializeError {
     Garbled(GarbledReason),
-    Logout,
+    Logout(LogoutReason),
     Reject {
         msg_type: Option<FixString>,
         seq_num: SeqNum,
@@ -64,7 +86,7 @@ impl fmt::Display for DeserializeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DeserializeError::Garbled(reason) => write!(f, "garbled message: {reason}"),
-            DeserializeError::Logout => write!(f, "MsgSeqNum missing"),
+            DeserializeError::Logout(reason) => write!(f, "logout: {reason}"),
             DeserializeError::Reject {
                 tag: Some(tag),
                 reason,
@@ -331,7 +353,9 @@ impl Deserializer<'_> {
         static FINDER: LazyLock<memmem::Finder<'static>> =
             LazyLock::new(|| memmem::Finder::new(b"34="));
 
-        let start_index = FINDER.find(self.buf).ok_or(DeserializeError::Logout)?;
+        let start_index = FINDER
+            .find(self.buf)
+            .ok_or(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing))?;
         self.buf = &self.buf[start_index + FINDER.needle().len()..];
 
         self.deserialize_seq_num()
@@ -545,7 +569,7 @@ impl Deserializer<'_> {
                     GarbledReason::IncompleteMessageData,
                 ));
             }
-            [b'\x01', ..] => return Err(DeserializeError::Logout),
+            [b'\x01', ..] => return Err(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing)),
             _ => {}
         }
 
@@ -556,7 +580,7 @@ impl Deserializer<'_> {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as SeqNum))
-                        .ok_or(DeserializeError::Logout)?;
+                        .ok_or(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing))?;
                 }
                 b'\x01' => {
                     // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
@@ -565,7 +589,7 @@ impl Deserializer<'_> {
                     // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
                     return Ok(value);
                 }
-                _ => return Err(DeserializeError::Logout),
+                _ => return Err(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing)),
             }
         }
 

@@ -1147,7 +1147,7 @@ use easyfix_core::{
         SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
         ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
     },
-    deserializer::{DeserializeError, Deserializer, GarbledReason, RawMessage},
+    deserializer::{DeserializeError, Deserializer, GarbledReason, LogoutReason, RawMessage},
     message::{HeaderAccess, SessionMessage},
     serializer::{SerializeError, Serializer},
     version::Version,
@@ -3190,9 +3190,10 @@ impl Message {
     pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
         let begin_string = deserializer.begin_string();
         if begin_string != VERSION.begin_str() {
-            return Err(DeserializeError::Garbled(
-                GarbledReason::BeginStringMismatch,
-            ));
+            return match begin_string.as_utf8().parse::<Version>() {
+                Ok(_) => Err(DeserializeError::Logout(LogoutReason::BeginStringMismatch)),
+                Err(_) => Err(DeserializeError::Garbled(GarbledReason::InvalidBeginString)),
+            };
         }
         let body_length = deserializer.body_length();
         if !matches!(deserializer.deserialize_tag_num(), Ok(Some(35))) {

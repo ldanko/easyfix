@@ -154,7 +154,14 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
             pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
                 let begin_string = deserializer.begin_string();
                 if begin_string != VERSION.begin_str() {
-                    return Err(DeserializeError::Garbled(GarbledReason::BeginStringMismatch));
+                    // A recognized FIX version that isn't ours is a
+                    // rules-of-engagement mismatch -> Logout (Scenario 2(i));
+                    // a BeginString that is not a defined FIX identifier is
+                    // genuinely garbled (FIX Session Layer §4.5.2).
+                    return match begin_string.as_utf8().parse::<Version>() {
+                        Ok(_) => Err(DeserializeError::Logout(LogoutReason::BeginStringMismatch)),
+                        Err(_) => Err(DeserializeError::Garbled(GarbledReason::InvalidBeginString)),
+                    };
                 }
 
                 let body_length = deserializer.body_length();

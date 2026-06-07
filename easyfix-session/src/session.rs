@@ -1354,14 +1354,15 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
 
         match &error {
             DeserializeError::Garbled(reason) => error!("Garbled message: {reason}"),
-            DeserializeError::Logout => {
+            // `LogoutReason` is ignored here: this legacy crate keeps its
+            // existing Logout+disconnect behavior (session2 distinguishes the
+            // reasons). See easyfix-session2 for the BeginString-mismatch path.
+            DeserializeError::Logout(reason) => {
                 let mut state = self.state.borrow_mut();
                 self.send_logout(
                     &mut state,
                     None,
-                    Some(FixString::from_ascii_lossy(
-                        b"MsgSeqNum(34) not found".to_vec(),
-                    )),
+                    Some(FixString::from_ascii_lossy(reason.to_string().into_bytes())),
                 );
                 return Some(DisconnectReason::MsgSeqNumNotFound);
             }

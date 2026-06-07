@@ -258,7 +258,7 @@ impl Generator {
                     SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
                     ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
                 },
-                deserializer::{DeserializeError, Deserializer, GarbledReason, RawMessage},
+                deserializer::{DeserializeError, Deserializer, GarbledReason, LogoutReason, RawMessage},
                 message::{HeaderAccess, SessionMessage},
                 serializer::{SerializeError, Serializer},
                 version::Version,
