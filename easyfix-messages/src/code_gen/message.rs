@@ -47,7 +47,9 @@ impl MessageCodeGen {
                     match tag {
                         #(#de_match_entries,)*
                         tag => {
-                            if FieldTag::from_tag_num(tag).is_some() {
+                            if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                                return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
+                            } else if FieldTag::from_tag_num(tag).is_some() {
                                 return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagNotDefinedForThisMessageType));
                             } else {
                                 // A tag defined in no dictionary:

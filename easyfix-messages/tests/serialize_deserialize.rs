@@ -201,3 +201,33 @@ fn undefined_tag_in_header_rejected_with_invalid_tag_number() {
         }) if reason == SessionRejectReasonBase::InvalidTagNumber
     );
 }
+
+/// Scenario 14g: "Standard Header fields appear before Body fields which
+/// appear before Standard Trailer fields."
+///
+/// A header field appearing in the Body section violates that order and must
+/// be rejected with reason 14 (Tag specified out of required order),
+/// NOT 2 (Tag not defined for this message type).
+/// Here `PossDupFlag(43)` — an optional Standard Header field — appears after
+/// a body field (`TestReqID 112`).
+#[test]
+fn header_field_in_body_rejected_with_out_of_required_order() {
+    let bytes = build_fix(&[
+        ("35", "0"), // Heartbeat
+        ("49", "test_sender"),
+        ("56", "test_target"),
+        ("34", "1"),
+        ("52", "20230713-21:55:13.436187000"),
+        ("112", "ABC"), // TestReqID body field — header section has ended
+        ("43", "Y"),    // PossDupFlag, a Standard Header field, now out of order
+    ]);
+
+    assert_matches!(
+        Message::from_bytes(&bytes),
+        Err(DeserializeError::Reject {
+            tag: Some(43),
+            reason,
+            ..
+        }) if reason == SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder
+    );
+}

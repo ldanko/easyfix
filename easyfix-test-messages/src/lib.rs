@@ -1523,6 +1523,23 @@ impl Header {
             orig_sending_time,
         })
     }
+
+    pub(crate) fn is_header_field(tag: TagNum) -> bool {
+        matches!(
+            tag,
+            8u16 | 9u16
+                | 35u16
+                | 1128u16
+                | 49u16
+                | 56u16
+                | 34u16
+                | 50u16
+                | 57u16
+                | 43u16
+                | 52u16
+                | 122u16
+        )
+    }
 }
 impl<'a> From<&'a Header> for HeaderBase<'a> {
     fn from(header: &'a Header) -> Self {
@@ -1765,6 +1782,10 @@ impl Trailer {
             check_sum,
         })
     }
+
+    pub(crate) fn is_trailer_field(tag: TagNum) -> bool {
+        matches!(tag, 93u16 | 10u16)
+    }
 }
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
@@ -1797,7 +1818,12 @@ impl Heartbeat {
                     test_req_id = Some(deserializer.deserialize_string()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -1849,7 +1875,12 @@ impl TestRequest {
                     test_req_id = Some(deserializer.deserialize_string()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -1916,7 +1947,12 @@ impl ResendRequest {
                     end_seq_no = Some(deserializer.deserialize_seq_num()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -2039,7 +2075,12 @@ impl Reject {
                     text = Some(deserializer.deserialize_string()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -2114,7 +2155,12 @@ impl SequenceReset {
                     new_seq_no = Some(deserializer.deserialize_seq_num()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -2205,7 +2251,12 @@ impl Logout {
                     text = Some(deserializer.deserialize_string()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -2444,7 +2495,12 @@ impl Logon {
                     text = Some(deserializer.deserialize_string()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -2590,7 +2646,12 @@ impl NewOrderSingle {
                     price = Some(deserializer.deserialize_price()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,
@@ -2815,7 +2876,12 @@ impl ExecutionReport {
                     transact_time = Some(deserializer.deserialize_utc_timestamp()?);
                 }
                 tag => {
-                    if FieldTag::from_tag_num(tag).is_some() {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(
                             Some(tag),
                             SessionRejectReasonBase::TagNotDefinedForThisMessageType,

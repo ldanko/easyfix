@@ -1,4 +1,4 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
 use super::{member::Member, serde_derives};
@@ -73,6 +73,10 @@ impl Trailer {
         let members_definitions = self.members.iter().map(|member| member.gen_definition());
         let serialize = self.members.iter().map(|member| member.gen_serialize());
         let deserialize = self.generate_deserialize();
+        let trailer_field_tags = self
+            .members
+            .iter()
+            .map(|member| Literal::u16_suffixed(member.tag_num()));
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
         quote! {
@@ -91,6 +95,10 @@ impl Trailer {
                 }
 
                 #deserialize
+
+                pub(crate) fn is_trailer_field(tag: TagNum) -> bool {
+                    matches!(tag, #(#trailer_field_tags)|*)
+                }
             }
         }
     }

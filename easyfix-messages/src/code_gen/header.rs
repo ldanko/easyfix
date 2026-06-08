@@ -1,5 +1,5 @@
 use easyfix_dictionary::{BasicType, Version};
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 
 use super::{member::Member, serde_derives};
@@ -36,6 +36,10 @@ impl Header {
             .filter(|m| !matches!(m.tag_num(), 8 | 9 | 35))
             .map(|member| member.gen_serialize());
         let deserialize = self.generate_deserialize();
+        let header_field_tags = self
+            .members
+            .iter()
+            .map(|member| Literal::u16_suffixed(member.tag_num()));
         let header_base_conversions = self.generate_header_base_conversions(version);
         let header_self_access_impl = self.generate_header_access_for_header_impl(version);
         // TODO: move this to Message section
@@ -59,6 +63,10 @@ impl Header {
                 }
 
                 #deserialize
+
+                pub(crate) fn is_header_field(tag: TagNum) -> bool {
+                    matches!(tag, #(#header_field_tags)|*)
+                }
             }
 
             #header_base_conversions
