@@ -460,6 +460,14 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
         session_status: Option<SessionStatusField>,
         text: Option<FixString>,
     ) {
+        // Reachable through the acceptor/initiator API (e.g. logout requested
+        // while the session is concurrently tearing down). The output queue
+        // is closed at this point, so the message can't be delivered anyway.
+        if state.disconnected() {
+            warn!("Logout<5> not sent: session already disconnected");
+            return;
+        }
+
         self.send(AdminBase::Logout(LogoutBase {
             session_status,
             text: text.map(Cow::Owned),
@@ -559,12 +567,11 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
     /// Send a fully constructed message.
     fn send_raw(&self, msg: Box<M>) {
         if let Err(msg) = self.sender.send_raw(msg) {
-            // This should never happen.
-            // See `fn input_loop()` and `fn output_loop()` in connection.rs
-            // Output loop always waits for input loop to finish, so it's not
-            // possible that output queue is closed when input message is still
-            // being processed.
-            unreachable!(
+            // Unreachable from the input loop (output queue is closed only
+            // after all input is processed), but reachable through the
+            // acceptor/initiator API when the session is concurrently
+            // tearing down - drop the message instead of panicking.
+            error!(
                 "Can't send message {:?}/{} - output stream is closed",
                 msg.msg_type(),
                 msg.msg_seq_num()
@@ -1105,9 +1112,6 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
     //         msg_type = ?msg.msg_type()
     //         )
     //     )]
-    #[expect(clippy::await_holding_refcell_ref)]
-    // Make sure `state` is dropped before await points, see
-    // https://github.com/rust-lang/rust-clippy/issues/6353
     async fn on_message_in_impl(&self, msg: Box<M>) -> Option<DisconnectReason> {
         let msg_type = msg.msg_type();
         let msg_seq_num = msg.msg_seq_num();
@@ -1170,20 +1174,27 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
                 tag,
                 disconnect_reason,
             }) => {
-                let mut state = self.state().borrow_mut();
                 let tag_as_int = tag.map(Int::from);
-                self.send_reject(
-                    &mut state,
-                    Some(msg_type.as_fix_str().to_owned()),
-                    msg_seq_num,
-                    reason.into(),
-                    if let Some(tag) = tag_as_int {
-                        FixString::from_ascii_lossy(format!("{reason:?} (tag={tag})").into_bytes())
-                    } else {
-                        FixString::from_ascii_lossy(format!("{reason:?}").into_bytes())
-                    },
-                    tag_as_int,
-                );
+                // `state` borrow must end before the await below - output
+                // stream borrows the state to fill headers of messages
+                // enqueued by `send_reject`.
+                {
+                    let mut state = self.state().borrow_mut();
+                    self.send_reject(
+                        &mut state,
+                        Some(msg_type.as_fix_str().to_owned()),
+                        msg_seq_num,
+                        reason.into(),
+                        if let Some(tag) = tag_as_int {
+                            FixString::from_ascii_lossy(
+                                format!("{reason:?} (tag={tag})").into_bytes(),
+                            )
+                        } else {
+                            FixString::from_ascii_lossy(format!("{reason:?}").into_bytes())
+                        },
+                        tag_as_int,
+                    );
+                }
 
                 self.emitter
                     .send(FixEventInternal::DeserializeError(
@@ -1198,7 +1209,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
                     .await;
 
                 if let Some(disconnect_reason) = disconnect_reason {
-                    self.send_logout(&mut state, None, None);
+                    self.send_logout(&mut self.state().borrow_mut(), None, None);
                     return Some(disconnect_reason);
                 }
             }

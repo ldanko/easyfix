@@ -29,4 +29,5 @@ tokio-util = { version = "0.7", features = [ "io"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+easyfix-test-messages = { path = "../easyfix-test-messages" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"]}

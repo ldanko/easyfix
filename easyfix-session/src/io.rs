@@ -58,6 +58,54 @@ struct Connection<M: SessionMessage, S> {
     session: Rc<Session<M, S>>,
 }
 
+/// Removes a connection's session from the active sessions map when the
+/// connection task finishes, **including when it panics**. Without this,
+/// a panicking task leaves the session in `active_sessions` forever: every
+/// reconnect attempt is rejected with "Session already active" and a later
+/// logout request fails on the closed output channel.
+struct SessionCleanupGuard<M: SessionMessage, S: MessagesStorage> {
+    session_id: SessionId,
+    state: Rc<RefCell<State<M, S>>>,
+    active_sessions: Rc<RefCell<ActiveSessionsMap<M, S>>>,
+    reset_on_disconnect: bool,
+}
+
+impl<M: SessionMessage, S: MessagesStorage> Drop for SessionCleanupGuard<M, S> {
+    fn drop(&mut self) {
+        // try_borrow_mut: this can run during unwind, never panic here
+        match self.active_sessions.try_borrow_mut() {
+            Ok(mut active_sessions) => {
+                active_sessions.remove(&self.session_id);
+            }
+            Err(_) => error!(
+                session_id = %self.session_id,
+                "session cleanup failed: active sessions map already borrowed"
+            ),
+        }
+
+        match self.state.try_borrow_mut() {
+            Ok(mut state) => {
+                // Normally cleared by `emit_logout` in the output loop, which
+                // never runs when the task panics. Stale logon flags would
+                // reject the next logon with "Invalid logon state".
+                state.set_logon_received(false);
+                state.set_logon_sent(false);
+                if !state.disconnected() {
+                    warn!(
+                        session_id = %self.session_id,
+                        "connection task finished without disconnecting, forcing disconnected state"
+                    );
+                    state.disconnect(self.reset_on_disconnect);
+                }
+            }
+            Err(_) => error!(
+                session_id = %self.session_id,
+                "session cleanup failed: session state already borrowed"
+            ),
+        }
+    }
+}
+
 pub(crate) async fn acceptor_connection<M: SessionMessage, S>(
     reader: impl AsyncRead + Unpin,
     writer: impl AsyncWrite + Unpin,
@@ -104,6 +152,13 @@ pub(crate) async fn acceptor_connection<M: SessionMessage, S>(
         return;
     }
     session_state.borrow_mut().set_disconnected(false);
+
+    let _cleanup_guard = SessionCleanupGuard {
+        session_id: session_id.clone(),
+        state: session_state.clone(),
+        active_sessions: active_sessions.clone(),
+        reset_on_disconnect: session_settings.reset_on_disconnect,
+    };
 
     let (disconnect_tx, disconnect_rx) = oneshot::channel();
 
@@ -167,7 +222,6 @@ pub(crate) async fn acceptor_connection<M: SessionMessage, S>(
     session_span.in_scope(|| {
         info!("connection closed");
     });
-    active_sessions.borrow_mut().remove(&session_id);
 }
 
 pub(crate) async fn initiator_connection<M: SessionMessage, S>(
@@ -188,6 +242,13 @@ pub(crate) async fn initiator_connection<M: SessionMessage, S>(
     let sender = Sender::new(sender);
 
     let (disconnect_tx, disconnect_rx) = oneshot::channel();
+
+    let _cleanup_guard = SessionCleanupGuard {
+        session_id: session_id.clone(),
+        state: state.clone(),
+        active_sessions: active_sessions.clone(),
+        reset_on_disconnect: session_settings.reset_on_disconnect,
+    };
 
     let session = Rc::new(Session::new(
         settings,
@@ -238,7 +299,6 @@ pub(crate) async fn initiator_connection<M: SessionMessage, S>(
             .instrument(output_loop_span),
     );
     info!("connection closed");
-    active_sessions.borrow_mut().remove(&session_id);
 }
 
 impl<M: SessionMessage, S: MessagesStorage> Connection<M, S> {
