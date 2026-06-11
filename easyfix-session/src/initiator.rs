@@ -7,7 +7,7 @@ use tracing::{Instrument, info, info_span};
 use crate::{
     Error,
     application::{Emitter, EventStream, events_channel},
-    io::initiator_connection,
+    io::{PendingLogout, initiator_connection, supervise_connection},
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
@@ -63,13 +63,19 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
         let connection_span = info_span!("connection", %addr);
 
         tokio::task::spawn_local(async move {
-            initiator_connection(
-                tcp_stream,
-                settings,
-                session_settings,
-                state,
-                active_sessions,
-                emitter,
+            let pending_logout = PendingLogout::default();
+            supervise_connection(
+                initiator_connection(
+                    tcp_stream,
+                    settings,
+                    session_settings,
+                    state,
+                    active_sessions,
+                    emitter.clone(),
+                    pending_logout.clone(),
+                ),
+                pending_logout,
+                &emitter,
             )
             .instrument(connection_span.clone())
             .await;

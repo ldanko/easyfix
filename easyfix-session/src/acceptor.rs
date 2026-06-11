@@ -22,7 +22,7 @@ use tracing::{Instrument, error, info, info_span, instrument, warn};
 use crate::{
     DisconnectReason, Settings,
     application::{AsEvent, Emitter, EventStream, events_channel},
-    io::acceptor_connection,
+    io::{PendingLogout, acceptor_connection, supervise_connection},
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
@@ -170,14 +170,20 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
         });
 
         if self.enabled.get() {
-            acceptor_connection(
-                reader,
-                writer,
-                self.settings,
-                self.sessions,
-                self.active_sessions,
-                self.emitter,
-                self.enabled,
+            let pending_logout = PendingLogout::default();
+            supervise_connection(
+                acceptor_connection(
+                    reader,
+                    writer,
+                    self.settings,
+                    self.sessions,
+                    self.active_sessions,
+                    self.emitter.clone(),
+                    self.enabled,
+                    pending_logout.clone(),
+                ),
+                pending_logout,
+                &self.emitter,
             )
             .instrument(span.clone())
             .await;

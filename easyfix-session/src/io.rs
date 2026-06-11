@@ -1,6 +1,9 @@
 use std::{
+    any::Any,
     cell::{Cell, RefCell},
     collections::{HashMap, hash_map::Entry},
+    future::Future,
+    panic::AssertUnwindSafe,
     rc::Rc,
     sync::Mutex,
     time::Duration,
@@ -10,7 +13,7 @@ use easyfix_messages::{
     fields::{FixString, SessionStatus},
     messages::{FixtMessage, Message},
 };
-use futures_util::{Stream, pin_mut};
+use futures_util::{FutureExt, Stream, pin_mut};
 use tokio::{
     self,
     io::{AsyncRead, AsyncWrite, AsyncWriteExt},
@@ -112,6 +115,51 @@ struct Connection<S> {
     session: Rc<Session<S>>,
 }
 
+/// Logout event parked by [`SessionCleanupGuard`] when the connection future
+/// panics, delivered by [`supervise_connection`] which - unlike `Drop` - can
+/// await on the events channel.
+pub(crate) type PendingLogout = Rc<RefCell<Option<(SessionId, DisconnectReason)>>>;
+
+fn panic_message(panic: &(dyn Any + Send)) -> &str {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message
+    } else {
+        "<non-string panic payload>"
+    }
+}
+
+/// Runs a connection future, containing its panics.
+///
+/// A panic is caught at the future's `poll` boundary, so it never reaches the
+/// executor: one panicking session can't kill the whole process (not every
+/// executor isolates task panics) and the application receives the
+/// Logout event parked by [`SessionCleanupGuard`], delivered here with
+/// a regular, backpressure-aware `send`.
+pub(crate) async fn supervise_connection(
+    connection: impl Future<Output = ()>,
+    pending_logout: PendingLogout,
+    emitter: &Emitter,
+) {
+    // UnwindSafe: all state shared with the connection future lives behind
+    // Rc<RefCell<...>> and is brought back to a consistent state by
+    // `SessionCleanupGuard` during unwind, the same way a process restart
+    // would leave it.
+    if let Err(panic) = AssertUnwindSafe(connection).catch_unwind().await {
+        error!(
+            "connection task panicked: {}",
+            panic_message(panic.as_ref())
+        );
+        let parked_logout = pending_logout.borrow_mut().take();
+        if let Some((session_id, reason)) = parked_logout {
+            emitter
+                .send(FixEventInternal::Logout(session_id, reason))
+                .await;
+        }
+    }
+}
+
 /// Removes global registrations of a connection's session when the connection
 /// task finishes, **including when it panics**. Without this, a panicking task
 /// leaves the session in `active_sessions`/`SENDERS` forever: every reconnect
@@ -121,6 +169,7 @@ struct SessionCleanupGuard<S: MessagesStorage> {
     session_id: SessionId,
     state: Rc<RefCell<State<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
+    pending_logout: PendingLogout,
     reset_on_disconnect: bool,
 }
 
@@ -141,9 +190,12 @@ impl<S: MessagesStorage> Drop for SessionCleanupGuard<S> {
 
         match self.state.try_borrow_mut() {
             Ok(mut state) => {
-                // Normally cleared by `emit_logout` in the output loop, which
-                // never runs when the task panics. Stale logon flags would
-                // reject the next logon with "Invalid logon state".
+                // Logon flags still set mean `emit_logout` in the output loop
+                // never ran, i.e. the task died without a proper teardown.
+                // Stale flags would reject the next logon with "Invalid logon
+                // state", and without the Logout event the application would
+                // never learn that the connection is gone.
+                let logout_not_emitted = state.logon_received() || state.logon_sent();
                 state.set_logon_received(false);
                 state.set_logon_sent(false);
                 if !state.disconnected() {
@@ -152,6 +204,12 @@ impl<S: MessagesStorage> Drop for SessionCleanupGuard<S> {
                         "connection task finished without disconnecting, forcing disconnected state"
                     );
                     state.disconnect(self.reset_on_disconnect);
+                }
+                if logout_not_emitted {
+                    // Can't await in Drop - park the event for
+                    // `supervise_connection` to deliver.
+                    *self.pending_logout.borrow_mut() =
+                        Some((self.session_id.clone(), DisconnectReason::Disconnected));
                 }
             }
             Err(_) => error!(
@@ -162,6 +220,7 @@ impl<S: MessagesStorage> Drop for SessionCleanupGuard<S> {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn acceptor_connection<S>(
     reader: impl AsyncRead + Unpin,
     writer: impl AsyncWrite + Unpin,
@@ -170,6 +229,7 @@ pub(crate) async fn acceptor_connection<S>(
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
     enabled: Rc<Cell<bool>>,
+    pending_logout: PendingLogout,
 ) where
     S: MessagesStorage,
 {
@@ -214,6 +274,7 @@ pub(crate) async fn acceptor_connection<S>(
         session_id: session_id.clone(),
         state: session_state.clone(),
         active_sessions: active_sessions.clone(),
+        pending_logout,
         reset_on_disconnect: session_settings.reset_on_disconnect,
     };
 
@@ -288,6 +349,7 @@ pub(crate) async fn initiator_connection<S>(
     state: Rc<RefCell<State<S>>>,
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
+    pending_logout: PendingLogout,
 ) where
     S: MessagesStorage,
 {
@@ -306,6 +368,7 @@ pub(crate) async fn initiator_connection<S>(
         session_id: session_id.clone(),
         state: state.clone(),
         active_sessions: active_sessions.clone(),
+        pending_logout,
         reset_on_disconnect: session_settings.reset_on_disconnect,
     };
 

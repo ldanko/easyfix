@@ -10,9 +10,7 @@ use std::{cell::Cell, io, net::SocketAddr, ops::RangeInclusive, rc::Rc, time::Du
 use chrono::NaiveTime;
 use easyfix_macros::fix_str;
 use easyfix_messages::{
-    fields::{
-        DefaultApplVerId, EncryptMethod, FixStr, SeqNum, SessionStatus, Utc, UtcTimestamp,
-    },
+    fields::{DefaultApplVerId, EncryptMethod, FixStr, SeqNum, SessionStatus, Utc, UtcTimestamp},
     messages::{FixtMessage, Header, Logon, Message, TestRequest, Trailer},
 };
 use easyfix_session::{
@@ -137,7 +135,10 @@ fn test_request(id: &FixStr) -> Message {
 }
 
 fn count_occurrences(haystack: &[u8], needle: &[u8]) -> usize {
-    haystack.windows(needle.len()).filter(|w| w == &needle).count()
+    haystack
+        .windows(needle.len())
+        .filter(|w| w == &needle)
+        .count()
 }
 
 async fn pump_until_logon<S: MessagesStorage + 'static>(acceptor: &mut Acceptor<S>) {
@@ -232,9 +233,16 @@ fn reject_flood_does_not_kill_connection_task() {
         let stale = UtcTimestamp::with_millis(Utc::now() - chrono::Duration::seconds(600));
         let mut batch = Vec::new();
         for seq_num in 2..2 + FLOOD_LEN as SeqNum {
-            batch.extend_from_slice(&serialize_msg(test_request(fix_str!("flood")), seq_num, stale));
+            batch.extend_from_slice(&serialize_msg(
+                test_request(fix_str!("flood")),
+                seq_num,
+                stale,
+            ));
         }
-        client_tx.write_all(&batch).await.expect("flood write failed");
+        client_tx
+            .write_all(&batch)
+            .await
+            .expect("flood write failed");
 
         // Let the connection task chew through the batch while no one
         // consumes events, so the events channel fills up mid-batch.
@@ -250,8 +258,14 @@ fn reject_flood_does_not_kill_connection_task() {
 
         // Every flooded message must be answered with Reject<3>.
         let mut buf = Vec::new();
-        read_until_pumping(&mut acceptor, &mut client_rx, &mut buf, b"\x0135=3\x01", FLOOD_LEN)
-            .await;
+        read_until_pumping(
+            &mut acceptor,
+            &mut client_rx,
+            &mut buf,
+            b"\x0135=3\x01",
+            FLOOD_LEN,
+        )
+        .await;
     });
 }
 
@@ -341,16 +355,34 @@ fn panicked_connection_task_releases_session() {
         // response to this TestRequest is stored for resend.
         panic_armed.set(true);
         client_tx
-            .write_all(&serialize_msg(test_request(fix_str!("boom")), 2, UtcTimestamp::now()))
+            .write_all(&serialize_msg(
+                test_request(fix_str!("boom")),
+                2,
+                UtcTimestamp::now(),
+            ))
             .await
             .expect("test request write failed");
 
         // The dead task must clean up after itself; keep the event stream
-        // drained while waiting.
-        while acceptor.is_session_active(&session_id()).expect("unknown session") {
+        // drained while waiting. The cleanup must also deliver the Logout
+        // event the dead output loop never emitted, so the application can
+        // release its own per-connection state (login status, senders,
+        // disconnect notification for other services).
+        let mut logout_seen = false;
+        while acceptor
+            .is_session_active(&session_id())
+            .expect("unknown session")
+        {
             if let Ok(Some(mut entry)) = timeout(Duration::from_millis(20), acceptor.next()).await
+                && matches!(entry.as_event(), FixEvent::Logout(..))
             {
-                let _ = entry.as_event();
+                logout_seen = true;
+            }
+        }
+        while !logout_seen {
+            let mut entry = acceptor.next().await.expect("event stream closed");
+            if matches!(entry.as_event(), FixEvent::Logout(..)) {
+                logout_seen = true;
             }
         }
 
