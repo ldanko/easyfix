@@ -598,8 +598,8 @@ impl<S: MessagesStorage> Session<S> {
                 .await;
         } else {
             info!(
-                "Logout not emitted: session was never established \
-                (neither Logon received nor Logon sent)"
+                "FixEventInternal::Logout not emitted: session was never \
+                established (neither Logon received nor Logon sent)"
             );
         }
     }
