@@ -7,7 +7,7 @@ use std::fmt::Debug;
 
 use crate::{
     base_messages::{AdminBase, HeaderBase},
-    basic_types::{Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
+    basic_types::{ApplVerId, Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
     deserializer::{DeserializeError, RawMessage, raw_message},
     serializer::SerializeError,
     version::Version,
@@ -103,7 +103,7 @@ pub trait HeaderAccess {
 
     /// ApplVerID (tag 1128) — application-level protocol version.
     /// Only relevant for FIXT (FIX 5.0+); return `None` for FIX 4.x.
-    fn appl_ver_id(&self) -> Option<&FixStr>;
+    fn appl_ver_id(&self) -> Option<ApplVerId>;
 
     /// Set SenderCompID (tag 49).
     fn set_sender_comp_id(&mut self, value: FixString);
@@ -125,5 +125,5 @@ pub trait HeaderAccess {
 
     /// Set ApplVerID (tag 1128). Pass `None` to clear.
     /// No-op for FIX 4.x implementations.
-    fn set_appl_ver_id(&mut self, value: Option<FixString>);
+    fn set_appl_ver_id(&mut self, value: Option<ApplVerId>);
 }

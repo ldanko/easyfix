@@ -7,6 +7,7 @@ pub use chrono::{
 };
 pub use rust_decimal::Decimal;
 
+use crate::{base_messages::SessionRejectReasonBase, fix_str, version::Version};
 pub use crate::{country::Country, currency::Currency};
 
 pub type Int = i64;
@@ -1330,6 +1331,162 @@ impl SessionRejectReasonField {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ApplVerId (tags 1128 / 1137)
+// ---------------------------------------------------------------------------
+
+/// Invalid ApplVerID / DefaultApplVerID value (outside ApplVerIDCodeSet).
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("invalid ApplVerID value: {0}")]
+pub struct InvalidApplVerId(pub FixString);
+
+/// Application version identifier - the ApplVerIDCodeSet shared by
+/// `ApplVerID(1128)` and `DefaultApplVerID(1137)`.
+///
+/// The codeset is closed by the standard (FIX Session Layer §11.2 - values
+/// are assigned only at service-pack release; custom application versions
+/// live in `CstmApplVerID(1129)` / `DefaultCstmApplVerID(1408)`, never
+/// here). Deliberately no `Default` impl - an implicit application version
+/// is how a silent `1137=0` (FIX 2.7) ends up on the wire.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum ApplVerId {
+    Fix27,
+    Fix30,
+    Fix40,
+    Fix41,
+    Fix42,
+    Fix43,
+    Fix44,
+    Fix50,
+    Fix50Sp1,
+    Fix50Sp2,
+    FixLatest,
+}
+
+impl ApplVerId {
+    /// Spec-defined meaning of an *absent* `DefaultApplVerID(1137)`:
+    /// "If DefaultApplVerID(1137) is not present, the default application
+    /// level is assumed to be FIXLatest" (FIX Session Layer §10, row 1137;
+    /// §5.2.2). Applies to that absent-1137 rule only - not a blanket
+    /// default for non-FIXT profiles.
+    pub const DEFAULT_IF_ABSENT: ApplVerId = ApplVerId::FixLatest;
+
+    pub const fn as_fix_str(self) -> &'static FixStr {
+        match self {
+            ApplVerId::Fix27 => fix_str!("0"),
+            ApplVerId::Fix30 => fix_str!("1"),
+            ApplVerId::Fix40 => fix_str!("2"),
+            ApplVerId::Fix41 => fix_str!("3"),
+            ApplVerId::Fix42 => fix_str!("4"),
+            ApplVerId::Fix43 => fix_str!("5"),
+            ApplVerId::Fix44 => fix_str!("6"),
+            ApplVerId::Fix50 => fix_str!("7"),
+            ApplVerId::Fix50Sp1 => fix_str!("8"),
+            ApplVerId::Fix50Sp2 => fix_str!("9"),
+            ApplVerId::FixLatest => fix_str!("10"),
+        }
+    }
+
+    pub const fn as_bytes(self) -> &'static [u8] {
+        self.as_fix_str().as_bytes()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<ApplVerId> {
+        match bytes {
+            b"0" => Some(ApplVerId::Fix27),
+            b"1" => Some(ApplVerId::Fix30),
+            b"2" => Some(ApplVerId::Fix40),
+            b"3" => Some(ApplVerId::Fix41),
+            b"4" => Some(ApplVerId::Fix42),
+            b"5" => Some(ApplVerId::Fix43),
+            b"6" => Some(ApplVerId::Fix44),
+            b"7" => Some(ApplVerId::Fix50),
+            b"8" => Some(ApplVerId::Fix50Sp1),
+            b"9" => Some(ApplVerId::Fix50Sp2),
+            b"10" => Some(ApplVerId::FixLatest),
+            _ => None,
+        }
+    }
+
+    pub fn from_fix_str(value: &FixStr) -> Result<ApplVerId, InvalidApplVerId> {
+        ApplVerId::from_bytes(value.as_bytes()).ok_or_else(|| InvalidApplVerId(value.to_owned()))
+    }
+
+    /// Base-version projection onto [`Version`]. The extension-pack axis
+    /// is disregarded: `FixLatest` projects onto its frozen base,
+    /// [`Version::FIX_LATEST`] - the function does not claim FIX Latest
+    /// *is* that frozen version, only that it is its version-axis base.
+    pub fn to_version(self) -> Version {
+        match self {
+            ApplVerId::Fix27 => Version::FIX27,
+            ApplVerId::Fix30 => Version::FIX30,
+            ApplVerId::Fix40 => Version::FIX40,
+            ApplVerId::Fix41 => Version::FIX41,
+            ApplVerId::Fix42 => Version::FIX42,
+            ApplVerId::Fix43 => Version::FIX43,
+            ApplVerId::Fix44 => Version::FIX44,
+            ApplVerId::Fix50 => Version::FIX50,
+            ApplVerId::Fix50Sp1 => Version::FIX50SP1,
+            ApplVerId::Fix50Sp2 => Version::FIX50SP2,
+            ApplVerId::FixLatest => Version::FIX_LATEST,
+        }
+    }
+}
+
+impl From<ApplVerId> for &'static [u8] {
+    fn from(value: ApplVerId) -> &'static [u8] {
+        value.as_bytes()
+    }
+}
+
+impl TryFrom<&FixStr> for ApplVerId {
+    type Error = SessionRejectReasonBase;
+
+    fn try_from(value: &FixStr) -> Result<ApplVerId, SessionRejectReasonBase> {
+        ApplVerId::from_bytes(value.as_bytes()).ok_or(SessionRejectReasonBase::ValueIsIncorrect)
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+impl serde::Serialize for ApplVerId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_fix_str().as_utf8())
+    }
+}
+
+#[cfg(feature = "serde-deserialize")]
+impl<'de> serde::Deserialize<'de> for ApplVerId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct ApplVerIdVisitor;
+
+        impl<'de> Visitor<'de> for ApplVerIdVisitor {
+            type Value = ApplVerId;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an ApplVerIDCodeSet value (\"0\"..\"10\")")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                ApplVerId::from_bytes(value.as_bytes())
+                    .ok_or_else(|| de::Error::custom(format!("invalid ApplVerID value: {value}")))
+            }
+        }
+
+        deserializer.deserialize_str(ApplVerIdVisitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1376,5 +1533,48 @@ mod tests {
     fn utc_timestamp_default_precision_nanos() {
         let now = UtcTimestamp::now();
         assert_eq!(now.precision(), TimePrecision::Nanos);
+    }
+
+    #[test]
+    fn appl_ver_id_wire_round_trip() {
+        for (code, id) in [
+            (&b"0"[..], ApplVerId::Fix27),
+            (b"1", ApplVerId::Fix30),
+            (b"2", ApplVerId::Fix40),
+            (b"3", ApplVerId::Fix41),
+            (b"4", ApplVerId::Fix42),
+            (b"5", ApplVerId::Fix43),
+            (b"6", ApplVerId::Fix44),
+            (b"7", ApplVerId::Fix50),
+            (b"8", ApplVerId::Fix50Sp1),
+            (b"9", ApplVerId::Fix50Sp2),
+            (b"10", ApplVerId::FixLatest),
+        ] {
+            assert_eq!(id.as_bytes(), code);
+            assert_eq!(ApplVerId::from_bytes(code), Some(id));
+            assert_eq!(ApplVerId::from_fix_str(id.as_fix_str()).unwrap(), id);
+        }
+    }
+
+    #[test]
+    fn appl_ver_id_rejects_out_of_codeset() {
+        assert!(ApplVerId::from_bytes(b"11").is_none());
+        assert!(ApplVerId::from_bytes(b"X").is_none());
+        assert!(ApplVerId::from_bytes(b"").is_none());
+        let err = ApplVerId::from_fix_str(fix_str!("11")).unwrap_err();
+        assert_eq!(err.0.as_utf8(), "11");
+        assert_eq!(
+            ApplVerId::try_from(fix_str!("42")),
+            Err(SessionRejectReasonBase::ValueIsIncorrect),
+        );
+    }
+
+    #[test]
+    fn appl_ver_id_version_bridge() {
+        assert_eq!(ApplVerId::Fix50Sp2.to_version(), Version::FIX50SP2);
+        assert_eq!(ApplVerId::Fix27.to_version(), Version::FIX27);
+        // Base-version projection: Latest lands on its frozen base.
+        assert_eq!(ApplVerId::FixLatest.to_version(), Version::FIX_LATEST);
+        assert_eq!(ApplVerId::FixLatest.to_version(), Version::FIX50SP2);
     }
 }

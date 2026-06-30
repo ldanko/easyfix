@@ -20,7 +20,7 @@
 use std::borrow::Cow;
 
 use crate::basic_types::{
-    Boolean, FixStr, Int, MsgTypeField, MsgTypeValue, SeqNum, SessionRejectReasonField,
+    ApplVerId, Boolean, FixStr, Int, MsgTypeField, MsgTypeValue, SeqNum, SessionRejectReasonField,
     SessionRejectReasonValue, SessionStatusField, SessionStatusValue, UtcTimestamp,
 };
 
@@ -147,13 +147,13 @@ pub struct HeaderBase<'a> {
     pub poss_dup_flag: Option<Boolean>,
     pub orig_sending_time: Option<UtcTimestamp>,
     /// FIXT only. `None` for pre-FIXT versions.
-    pub appl_ver_id: Option<Cow<'a, FixStr>>,
+    pub appl_ver_id: Option<ApplVerId>,
 }
 
 /// Admin message base — the session dispatches on this after checking `msg.try_as_admin()`.
 #[derive(Clone, Debug)]
 pub enum AdminBase<'a> {
-    Logon(LogonBase<'a>),
+    Logon(LogonBase),
     Logout(LogoutBase<'a>),
     Heartbeat(HeartbeatBase<'a>),
     TestRequest(TestRequestBase<'a>),
@@ -163,7 +163,7 @@ pub enum AdminBase<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct LogonBase<'a> {
+pub struct LogonBase {
     /// Typed value for outgoing.
     pub encrypt_method: EncryptMethodBase,
     /// Raw value for incoming comparison/logging.
@@ -173,7 +173,7 @@ pub struct LogonBase<'a> {
     /// `None` for FIX < 4.4.
     pub next_expected_msg_seq_num: Option<SeqNum>,
     /// `None` for pre-FIXT.
-    pub default_appl_ver_id: Option<Cow<'a, FixStr>>,
+    pub default_appl_ver_id: Option<ApplVerId>,
     /// FIXT only.
     pub session_status: Option<SessionStatusField>,
 }

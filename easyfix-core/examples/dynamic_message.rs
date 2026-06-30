@@ -363,7 +363,7 @@ impl HeaderAccess for DynamicMessage {
         self.get(TAG_ORIG_SENDING_TIME).map(Value::as_timestamp)
     }
 
-    fn appl_ver_id(&self) -> Option<&FixStr> {
+    fn appl_ver_id(&self) -> Option<ApplVerId> {
         None // FIX 4.x only
     }
 
@@ -401,7 +401,7 @@ impl HeaderAccess for DynamicMessage {
         }
     }
 
-    fn set_appl_ver_id(&mut self, _value: Option<FixString>) {
+    fn set_appl_ver_id(&mut self, _value: Option<ApplVerId>) {
         // No-op for FIX 4.x
     }
 }
