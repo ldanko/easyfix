@@ -131,6 +131,14 @@ impl Version {
         minor: 1,
         servicepack: 0,
     };
+    /// The rolling *FIX Latest* application layer, projected onto its base
+    /// (frozen) version.
+    ///
+    /// FIX Latest = FIX50SP2 plus the cumulative extension-pack stream
+    /// (FIX Session Layer §3.1.17), so on the version axis it equals
+    /// FIX50SP2 - until the FIX Trading Community ever cuts a new frozen
+    /// release. Alias: compares equal to [`Version::FIX50SP2`].
+    pub const FIX_LATEST: Version = Version::FIX50SP2;
 
     /// All FIX versions recognized by this crate.
     pub const fn known_versions() -> &'static [Version] {
