@@ -12,11 +12,10 @@ use easyfix_core::{
         SessionStatusBase, TestRequestBase,
     },
     basic_types::{
-        FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, SessionStatusField,
-        TagNum, Utc, UtcTimestamp,
+        ApplVerId, FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField,
+        SessionStatusField, TagNum, Utc, UtcTimestamp,
     },
     deserializer::DeserializeError,
-    fix_str,
     message::{MsgCat, SessionMessage},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -31,7 +30,7 @@ use crate::{
 };
 
 // TODO: should be configurable per session, not hardcoded.
-const DEFAULT_APPL_VER_ID: &FixStr = fix_str!("9");
+const DEFAULT_APPL_VER_ID: ApplVerId = ApplVerId::Fix50Sp2;
 
 // Tag numbers used by session-level validation.
 const TAG_NEW_SEQ_NO: TagNum = 36;
@@ -425,7 +424,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
             // TODO: should be conditional on FIXT version
-            default_appl_ver_id: Some(Cow::Borrowed(DEFAULT_APPL_VER_ID)),
+            default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
             session_status: None,
         }));
     }
@@ -446,7 +445,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
             next_expected_msg_seq_num,
             // TODO: should be conditional on FIXT version
-            default_appl_ver_id: Some(Cow::Borrowed(DEFAULT_APPL_VER_ID)),
+            default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
             session_status: None,
         }));
 
@@ -1045,7 +1044,12 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
                             heart_bt_int: 0,
                             reset_seq_num_flag: None,
                             next_expected_msg_seq_num: None,
-                            default_appl_ver_id: None,
+                            // Explicit: with the required generated slot,
+                            // `None` would now fill DEFAULT_IF_ABSENT
+                            // ("10") instead of the old Default ("0").
+                            // The placeholder is never sent, but keep its
+                            // wire meaning pinned.
+                            default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
                             session_status: None,
                         }),
                     ));

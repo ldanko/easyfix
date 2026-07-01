@@ -14,7 +14,7 @@ use easyfix_core::{
     base_messages::{
         AdminBase, EncryptMethodBase, HeaderBase, LogonBase, SessionStatusBase, TestRequestBase,
     },
-    basic_types::{FixStr, Int, SeqNum, UtcTimestamp},
+    basic_types::{ApplVerId, FixStr, Int, SeqNum, UtcTimestamp},
     fix_str,
     message::{HeaderAccess, SessionMessage},
 };
@@ -38,7 +38,7 @@ use tokio_stream::StreamExt;
 const BEGIN_STRING: &FixStr = fix_str!("FIXT.1.1");
 const SERVER_COMP_ID: &FixStr = fix_str!("server");
 const CLIENT_COMP_ID: &FixStr = fix_str!("client");
-const DEFAULT_APPL_VER_ID: &FixStr = fix_str!("9");
+const DEFAULT_APPL_VER_ID: ApplVerId = ApplVerId::Fix50Sp2;
 
 fn session_id() -> SessionId {
     SessionId::new(
@@ -72,8 +72,8 @@ fn session_settings() -> SessionSettings {
         reset_on_logon: false,
         reset_on_logout: false,
         reset_on_disconnect: true,
-        sender_default_appl_ver_id: DEFAULT_APPL_VER_ID.to_owned(),
-        target_default_appl_ver_id: DEFAULT_APPL_VER_ID.to_owned(),
+        sender_default_appl_ver_id: DEFAULT_APPL_VER_ID,
+        target_default_appl_ver_id: DEFAULT_APPL_VER_ID,
         persist: false,
         refresh_on_logon: false,
         enable_next_expected_msg_seq_num: false,
@@ -132,7 +132,7 @@ fn logon() -> AdminBase<'static> {
         heart_bt_int: 10,
         reset_seq_num_flag: None,
         next_expected_msg_seq_num: None,
-        default_appl_ver_id: Some(Cow::Borrowed(DEFAULT_APPL_VER_ID)),
+        default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
         session_status: None,
     })
 }

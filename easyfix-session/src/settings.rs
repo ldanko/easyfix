@@ -1,7 +1,7 @@
 use std::ops::RangeInclusive;
 
 use chrono::NaiveTime;
-use easyfix_core::basic_types::FixString;
+use easyfix_core::basic_types::{ApplVerId, FixString};
 use tokio::time::Duration;
 
 use crate::session_id::SessionId;
@@ -85,8 +85,8 @@ pub struct SessionSettings {
 
     pub refresh_on_logon: bool,
 
-    pub sender_default_appl_ver_id: FixString,
-    pub target_default_appl_ver_id: FixString,
+    pub sender_default_appl_ver_id: ApplVerId,
+    pub target_default_appl_ver_id: ApplVerId,
 
     /// Enable the next expected message sequence number (optional tag 789
     /// on Logon) on sent Logon message and use value of tag 789 on received
