@@ -452,6 +452,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     if has_default_appl_ver_id {
         validate_tag(&map, 1137, "DefaultApplVerID", BasicType::String);
     }
+    let default_appl_ver_id_required = has_default_appl_ver_id && map[&1137].required();
     let has_session_status = map.contains_key(&1409);
     if has_session_status {
         validate_tag(&map, 1409, "SessionStatus", BasicType::Int);
@@ -487,8 +488,12 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
         quote! { None }
     };
 
-    let incoming_default_appl_ver_id = if has_default_appl_ver_id {
-        quote! { Some(Cow::Borrowed(msg.default_appl_ver_id.as_fix_str())) }
+    // The generated field is the `Copy` core `ApplVerId` (required) or
+    // `Option<ApplVerId>` (optional) - plain passthroughs both ways.
+    let incoming_default_appl_ver_id = if default_appl_ver_id_required {
+        quote! { Some(msg.default_appl_ver_id) }
+    } else if has_default_appl_ver_id {
+        quote! { msg.default_appl_ver_id }
     } else {
         quote! { None }
     };
@@ -514,13 +519,18 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
         quote! {}
     };
 
-    let outgoing_default_appl_ver_id = if has_default_appl_ver_id {
+    let outgoing_default_appl_ver_id = if default_appl_ver_id_required {
+        // `None` into a required 1137 slot fills the spec's own meaning of
+        // absence: "If DefaultApplVerID(1137) is not present, the default
+        // application level is assumed to be FIXLatest" (FIX Session Layer
+        // §10, row 1137). Both session engines always supply `Some`.
         quote! {
-            default_appl_ver_id: base.default_appl_ver_id.map(|v| {
-                DefaultApplVerId::from_fix_str(&v)
-                    .expect("LogonBase default_appl_ver_id must be a valid DefaultApplVerId")
-            }).unwrap_or_default(),
+            default_appl_ver_id: base
+                .default_appl_ver_id
+                .unwrap_or(ApplVerId::DEFAULT_IF_ABSENT),
         }
+    } else if has_default_appl_ver_id {
+        quote! { default_appl_ver_id: base.default_appl_ver_id, }
     } else {
         quote! {}
     };
@@ -545,8 +555,8 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     };
 
     quote! {
-        impl<'a> From<&'a Logon> for LogonBase<'a> {
-            fn from(msg: &'a Logon) -> Self {
+        impl From<&Logon> for LogonBase {
+            fn from(msg: &Logon) -> Self {
                 LogonBase {
                     encrypt_method: Default::default(),
                     encrypt_method_raw: msg.encrypt_method.as_int(),
@@ -559,8 +569,8 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
             }
         }
 
-        impl From<LogonBase<'_>> for Logon {
-            fn from(base: LogonBase<'_>) -> Logon {
+        impl From<LogonBase> for Logon {
+            fn from(base: LogonBase) -> Logon {
                 Logon {
                     encrypt_method: EncryptMethod::from(base.encrypt_method),
                     heart_bt_int: base.heart_bt_int,

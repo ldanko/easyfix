@@ -82,13 +82,43 @@ impl MessageCodeGen {
         let msg_cat = Ident::new(&format!("{:?}", self.msg_cat), Span::call_site());
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
+        // A required core `ApplVerId` field (FIXT Logon's 1137) has no
+        // `Default`, so the struct emits `Default` manually with the
+        // spec's absence semantics for that field.
+        let (default_derive, manual_default) = if self
+            .body_members
+            .iter()
+            .any(|member| member.needs_manual_default())
+        {
+            let default_entries = self
+                .body_members
+                .iter()
+                .map(|member| member.gen_default_entry());
+            (
+                quote! {},
+                quote! {
+                    impl Default for #name {
+                        fn default() -> #name {
+                            #name {
+                                #(#default_entries,)*
+                            }
+                        }
+                    }
+                },
+            )
+        } else {
+            (quote! { , Default }, quote! {})
+        };
+
         quote! {
             #[allow(dead_code)]
-            #[derive(Clone, Debug, Default)]
+            #[derive(Clone, Debug #default_derive)]
             #serde_derives
             pub struct #name {
                 #(#members_definitions,)*
             }
+
+            #manual_default
 
             #[allow(dead_code)]
             impl #name {

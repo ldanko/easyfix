@@ -171,6 +171,18 @@ impl Header {
         }
 
         // Version-conditional: ApplVerID (tag 1128, FIXT 1.1)
+        //
+        // Emission position: header fields serialize in dictionary member
+        // order, and every dictionary in use declares 1128 right after
+        // 8/9/35 (4th field when present), matching the Session Layer §8.5
+        // StandardHeader table order. This deliberately deviates from
+        // Transport §6's "must be the 6th field" (after 49/56) - the only
+        // normative position mandate for 1128 in the canon. §8.5's table
+        // order itself carries no shall/must, but TagValue encoding does
+        // not require ordered fields beyond the first three, Test Cases
+        // 14(g) enforces only header-before-body-before-trailer, and
+        // reference implementations disagree with each other here, so a
+        // conformant receiver must accept 1128 in the 4th position.
         let has_appl_ver_id = members_by_tag.contains_key(&1128);
         if has_appl_ver_id {
             let member = members_by_tag.get(&1128).unwrap();
@@ -187,8 +199,8 @@ impl Header {
         }
 
         // --- Incoming: From<&'a Header> for HeaderBase<'a> ---
-        // ApplVerId is an enum backed by String — uses as_fix_str()
-        // for zero-copy borrowing. Other String fields borrow via Deref.
+        // ApplVerId is the Copy core type - plain passthrough. Other
+        // String fields borrow via Deref.
 
         let incoming_orig_sending_time = if has_orig_sending_time {
             quote! { header.orig_sending_time }
@@ -197,13 +209,12 @@ impl Header {
         };
 
         let incoming_appl_ver_id = if has_appl_ver_id {
-            quote! { header.appl_ver_id.as_ref().map(|v| Cow::Borrowed(v.as_fix_str())) }
+            quote! { header.appl_ver_id }
         } else {
             quote! { None }
         };
 
         // --- Outgoing: From<HeaderBase<'_>> for Header ---
-        // ApplVerId enum is built from FixStr via from_fix_str().
 
         let outgoing_orig_sending_time = if has_orig_sending_time {
             quote! { orig_sending_time: base.orig_sending_time, }
@@ -212,12 +223,7 @@ impl Header {
         };
 
         let outgoing_appl_ver_id = if has_appl_ver_id {
-            quote! {
-                appl_ver_id: base.appl_ver_id.map(|v| {
-                    ApplVerId::from_fix_str(&v)
-                        .expect("HeaderBase appl_ver_id must be a valid ApplVerId")
-                }),
-            }
+            quote! { appl_ver_id: base.appl_ver_id, }
         } else {
             quote! {}
         };
@@ -275,7 +281,7 @@ impl Header {
         };
 
         let get_appl_ver_id = if has_appl_ver_id {
-            quote! { self.appl_ver_id.as_ref().map(|v| v.as_fix_str()) }
+            quote! { self.appl_ver_id }
         } else {
             quote! { None }
         };
@@ -289,12 +295,7 @@ impl Header {
         };
 
         let set_appl_ver_id = if has_appl_ver_id {
-            quote! {
-                self.appl_ver_id = value.map(|v| {
-                    ApplVerId::from_fix_str(&v)
-                        .expect("HeaderAccess::set_appl_ver_id: invalid ApplVerId value")
-                });
-            }
+            quote! { self.appl_ver_id = value; }
         } else {
             quote! { let _ = value; }
         };
@@ -329,7 +330,7 @@ impl Header {
                     #get_orig_sending_time
                 }
 
-                fn appl_ver_id(&self) -> Option<&FixStr> {
+                fn appl_ver_id(&self) -> Option<ApplVerId> {
                     #get_appl_ver_id
                 }
 
@@ -357,7 +358,7 @@ impl Header {
                     #set_orig_sending_time
                 }
 
-                fn set_appl_ver_id(&mut self, value: Option<FixString>) {
+                fn set_appl_ver_id(&mut self, value: Option<ApplVerId>) {
                     #set_appl_ver_id
                 }
             }
@@ -367,9 +368,8 @@ impl Header {
     /// Generate `impl HeaderAccess for Message`.
     ///
     /// Getters delegate to `self.header.*` fields. Setters assign to `self.header.*`
-    /// fields. Enum-backed fields (ApplVerID) use `as_fix_str()` / `from_fix_str()`.
-    /// Version-conditional fields (OrigSendingTime, ApplVerID) return `None` / no-op
-    /// when absent from the generated Header.
+    /// fields. Version-conditional fields (OrigSendingTime, ApplVerID) return
+    /// `None` / no-op when absent from the generated Header.
     pub fn generate_header_access_impl(&self, _version: Version) -> TokenStream {
         let members_by_tag: std::collections::HashMap<u16, &Member> =
             self.members.iter().map(|m| (m.tag_num(), m)).collect();
@@ -386,7 +386,7 @@ impl Header {
         };
 
         let get_appl_ver_id = if has_appl_ver_id {
-            quote! { self.header.appl_ver_id.as_ref().map(|v| v.as_fix_str()) }
+            quote! { self.header.appl_ver_id }
         } else {
             quote! { None }
         };
@@ -400,12 +400,7 @@ impl Header {
         };
 
         let set_appl_ver_id = if has_appl_ver_id {
-            quote! {
-                self.header.appl_ver_id = value.map(|v| {
-                    ApplVerId::from_fix_str(&v)
-                        .expect("HeaderAccess::set_appl_ver_id: invalid ApplVerId value")
-                });
-            }
+            quote! { self.header.appl_ver_id = value; }
         } else {
             quote! { let _ = value; }
         };
@@ -440,7 +435,7 @@ impl Header {
                     #get_orig_sending_time
                 }
 
-                fn appl_ver_id(&self) -> Option<&FixStr> {
+                fn appl_ver_id(&self) -> Option<ApplVerId> {
                     #get_appl_ver_id
                 }
 
@@ -468,7 +463,7 @@ impl Header {
                     #set_orig_sending_time
                 }
 
-                fn set_appl_ver_id(&mut self, value: Option<FixString>) {
+                fn set_appl_ver_id(&mut self, value: Option<ApplVerId>) {
                     #set_appl_ver_id
                 }
             }

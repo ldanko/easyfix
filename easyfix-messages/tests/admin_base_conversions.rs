@@ -319,15 +319,15 @@ fn reject_round_trip_preserves_copy_fields() {
 
 #[test]
 fn logon_incoming() {
-    use messages::{DefaultApplVerId, EncryptMethod, SessionStatus};
+    use messages::{ApplVerId, EncryptMethod, SessionStatus};
 
     let msg = Logon {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
         heart_bt_int: 30,
         reset_seq_num_flag: Some(true),
         next_expected_msg_seq_num: Some(5),
-        default_appl_ver_id: DefaultApplVerId::from_bytes(b"9").unwrap(), // FIX50SP2
-        session_status: Some(SessionStatus::try_from(0i64).unwrap()),     // SessionActive
+        default_appl_ver_id: ApplVerId::Fix50Sp2,
+        session_status: Some(SessionStatus::try_from(0i64).unwrap()), // SessionActive
         ..Default::default()
     };
     let base = LogonBase::from(&msg);
@@ -337,19 +337,19 @@ fn logon_incoming() {
     assert_eq!(base.heart_bt_int, 30);
     assert_eq!(base.reset_seq_num_flag, Some(true));
     assert_eq!(base.next_expected_msg_seq_num, Some(5));
-    assert_eq!(base.default_appl_ver_id.as_deref(), Some(fix_str!("9")));
+    assert_eq!(base.default_appl_ver_id, Some(ApplVerId::Fix50Sp2));
     // SessionStatus: newtype field has the validated Int value
     assert_eq!(base.session_status.map(|f| f.into_inner()), Some(0),);
 }
 
 #[test]
 fn logon_incoming_minimal() {
-    use messages::{DefaultApplVerId, EncryptMethod};
+    use messages::{ApplVerId, EncryptMethod};
 
     let msg = Logon {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
         heart_bt_int: 60,
-        default_appl_ver_id: DefaultApplVerId::from_bytes(b"9").unwrap(),
+        default_appl_ver_id: ApplVerId::Fix50Sp2,
         ..Default::default()
     };
     let base = LogonBase::from(&msg);
@@ -368,7 +368,7 @@ fn logon_outgoing() {
         heart_bt_int: 30,
         reset_seq_num_flag: None,
         next_expected_msg_seq_num: Some(1),
-        default_appl_ver_id: Some(Cow::Owned(fix_str!("9").to_owned())),
+        default_appl_ver_id: Some(messages::ApplVerId::Fix50Sp2),
         session_status: Some(SessionStatusBase::SessionActive.into()),
     };
     let msg = Logon::from(base);
@@ -403,18 +403,38 @@ fn logon_outgoing_without_optional_fields() {
     assert!(msg.reset_seq_num_flag.is_none());
     assert!(msg.next_expected_msg_seq_num.is_none());
     assert!(msg.session_status.is_none());
+    // `None` into the required 1137 slot fills the spec's meaning of
+    // absence - FIXLatest ("10"), never the old silent Fix27 ("0").
+    assert_eq!(
+        msg.default_appl_ver_id,
+        messages::ApplVerId::DEFAULT_IF_ABSENT
+    );
+    assert_eq!(msg.default_appl_ver_id.as_bytes(), b"10");
+}
+
+/// The generated `Logon` cannot derive `Default` (required `ApplVerId` has
+/// none), so codegen emits a manual impl filling the 1137 slot with the
+/// spec's absence semantics - pin that here.
+#[test]
+fn logon_default_fills_required_appl_ver_id_with_fix_latest() {
+    let logon = Logon::default();
+    assert_eq!(logon.default_appl_ver_id, messages::ApplVerId::FixLatest);
+    assert_eq!(
+        logon.default_appl_ver_id,
+        messages::ApplVerId::DEFAULT_IF_ABSENT
+    );
 }
 
 #[test]
 fn logon_round_trip_copy_fields() {
-    use messages::{DefaultApplVerId, EncryptMethod};
+    use messages::{ApplVerId, EncryptMethod};
 
     let original = Logon {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
         heart_bt_int: 30,
         reset_seq_num_flag: Some(true),
         next_expected_msg_seq_num: Some(10),
-        default_appl_ver_id: DefaultApplVerId::from_bytes(b"9").unwrap(),
+        default_appl_ver_id: ApplVerId::Fix50Sp2,
         ..Default::default()
     };
     let base = LogonBase::from(&original);
@@ -465,7 +485,7 @@ fn admin_base_dispatch_outgoing_logon() {
         heart_bt_int: 30,
         reset_seq_num_flag: Some(true),
         next_expected_msg_seq_num: Some(7),
-        default_appl_ver_id: Some(Cow::Owned(fix_str!("9").to_owned())),
+        default_appl_ver_id: Some(messages::ApplVerId::Fix50Sp2),
         session_status: None,
     });
 

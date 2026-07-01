@@ -34,7 +34,7 @@ fn header_incoming() {
     assert_eq!(base.sending_time, header.sending_time);
     assert_eq!(base.poss_dup_flag, Some(true));
     assert_eq!(base.orig_sending_time, header.orig_sending_time);
-    assert_eq!(base.appl_ver_id.as_deref(), Some(fix_str!("9")));
+    assert_eq!(base.appl_ver_id, Some(ApplVerId::Fix50Sp2));
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn header_outgoing() {
         sending_time,
         poss_dup_flag: Some(true),
         orig_sending_time: Some(orig_sending_time),
-        appl_ver_id: Some(Cow::Owned(fix_str!("9").to_owned())),
+        appl_ver_id: Some(ApplVerId::Fix50Sp2),
     };
     let header = Header::from(base);
 

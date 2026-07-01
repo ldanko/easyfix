@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use convert_case::{Case, Casing};
 use easyfix_dictionary::{self as dict, Dictionary, Version};
@@ -125,6 +125,14 @@ impl Generator {
             if let dict::BasicType::Boolean = field.data_type() {
                 continue;
             }
+            // ApplVerID(1128) / DefaultApplVerID(1137) use the spec-owned
+            // `easyfix_core::basic_types::ApplVerId` - no enum is generated
+            // for them. The dictionary must not customize their codeset.
+            if matches!(field.number(), 1128 | 1137) {
+                let values: Vec<&str> = field.variants().iter().map(|v| v.value()).collect();
+                validate_appl_ver_id_codeset(field.name(), field.number(), &values);
+                continue;
+            }
             if !field.variants().is_empty() {
                 let Some(enumerable_type) = EnumerableType::try_from_basic_type(field.data_type())
                 else {
@@ -244,6 +252,10 @@ impl Generator {
             use std::{borrow::Cow, fmt};
 
             pub use easyfix_core::message::MsgCat;
+            // Spec-owned codeset type used directly as the field type for
+            // tags 1128/1137; re-exported so dictionary consumers can name
+            // it from the generated crate.
+            pub use easyfix_core::basic_types::ApplVerId;
             #[allow(unused_imports)]
             use easyfix_core::{
                 base_messages::{
@@ -280,5 +292,67 @@ impl Generator {
 
             #fixt_message_def
         }
+    }
+}
+
+/// The 11 legal ApplVerIDCodeSet wire values (FIX Session Layer §11.2).
+const APPL_VER_ID_CODESET: [&str; 11] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+
+/// Hard generation-time check for tags 1128/1137: the ApplVerIDCodeSet is
+/// closed by the standard, and the generated code represents these fields
+/// with `easyfix_core::basic_types::ApplVerId`, which only speaks the spec
+/// values. A dictionary that trims or extends the codeset would silently
+/// change accept/reject behavior, so it is rejected loudly instead. An
+/// empty `<value>` list is fine - the field type is forced by tag anyway.
+fn validate_appl_ver_id_codeset(name: &str, tag: u16, values: &[&str]) {
+    if values.is_empty() {
+        return;
+    }
+    let declared: BTreeSet<&str> = values.iter().copied().collect();
+    let expected: BTreeSet<&str> = APPL_VER_ID_CODESET.into_iter().collect();
+    if declared != expected {
+        let missing: Vec<&&str> = expected.difference(&declared).collect();
+        let extra: Vec<&&str> = declared.difference(&expected).collect();
+        panic!(
+            "field {name}({tag}) customizes the ApplVerIDCodeSet \
+             (missing: {missing:?}, extra: {extra:?}); the codeset is closed \
+             by the FIX standard - custom application versions belong in \
+             CstmApplVerID(1129) / DefaultCstmApplVerID(1408)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_appl_ver_id_codeset_accepted() {
+        validate_appl_ver_id_codeset(
+            "DefaultApplVerID",
+            1137,
+            &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+        );
+    }
+
+    #[test]
+    fn empty_appl_ver_id_value_list_accepted() {
+        validate_appl_ver_id_codeset("DefaultApplVerID", 1137, &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "DefaultApplVerID(1137) customizes the ApplVerIDCodeSet")]
+    fn trimmed_appl_ver_id_codeset_rejected() {
+        validate_appl_ver_id_codeset("DefaultApplVerID", 1137, &["9"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "DefaultApplVerID(1137) customizes the ApplVerIDCodeSet")]
+    fn extended_appl_ver_id_codeset_rejected() {
+        validate_appl_ver_id_codeset(
+            "DefaultApplVerID",
+            1137,
+            &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+        );
     }
 }

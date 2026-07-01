@@ -638,204 +638,6 @@ impl From<MsgDirection> for &'static [u8] {
 }
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ApplVerId {
-    #[default]
-    ///Value "0"
-    Fix27,
-    ///Value "1"
-    Fix30,
-    ///Value "2"
-    Fix40,
-    ///Value "3"
-    Fix41,
-    ///Value "4"
-    Fix42,
-    ///Value "5"
-    Fix43,
-    ///Value "6"
-    Fix44,
-    ///Value "7"
-    Fix50,
-    ///Value "8"
-    Fix50Sp1,
-    ///Value "9"
-    Fix50Sp2,
-    ///Value "10"
-    FixLatest,
-}
-impl ApplVerId {
-    pub const fn from_bytes(input: &[u8]) -> Option<ApplVerId> {
-        match input {
-            b"0" => Some(ApplVerId::Fix27),
-            b"1" => Some(ApplVerId::Fix30),
-            b"2" => Some(ApplVerId::Fix40),
-            b"3" => Some(ApplVerId::Fix41),
-            b"4" => Some(ApplVerId::Fix42),
-            b"5" => Some(ApplVerId::Fix43),
-            b"6" => Some(ApplVerId::Fix44),
-            b"7" => Some(ApplVerId::Fix50),
-            b"8" => Some(ApplVerId::Fix50Sp1),
-            b"9" => Some(ApplVerId::Fix50Sp2),
-            b"10" => Some(ApplVerId::FixLatest),
-            _ => None,
-        }
-    }
-
-    pub const fn from_fix_str(input: &FixStr) -> Option<ApplVerId> {
-        ApplVerId::from_bytes(input.as_bytes())
-    }
-
-    pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            ApplVerId::Fix27 => b"0",
-            ApplVerId::Fix30 => b"1",
-            ApplVerId::Fix40 => b"2",
-            ApplVerId::Fix41 => b"3",
-            ApplVerId::Fix42 => b"4",
-            ApplVerId::Fix43 => b"5",
-            ApplVerId::Fix44 => b"6",
-            ApplVerId::Fix50 => b"7",
-            ApplVerId::Fix50Sp1 => b"8",
-            ApplVerId::Fix50Sp2 => b"9",
-            ApplVerId::FixLatest => b"10",
-        }
-    }
-
-    pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
-    }
-}
-impl ToFixString for ApplVerId {
-    fn to_fix_string(&self) -> FixString {
-        self.as_fix_str().to_owned()
-    }
-}
-impl TryFrom<&FixStr> for ApplVerId {
-    type Error = SessionRejectReasonBase;
-
-    fn try_from(input: &FixStr) -> Result<ApplVerId, SessionRejectReasonBase> {
-        match input.as_bytes() {
-            b"0" => Ok(ApplVerId::Fix27),
-            b"1" => Ok(ApplVerId::Fix30),
-            b"2" => Ok(ApplVerId::Fix40),
-            b"3" => Ok(ApplVerId::Fix41),
-            b"4" => Ok(ApplVerId::Fix42),
-            b"5" => Ok(ApplVerId::Fix43),
-            b"6" => Ok(ApplVerId::Fix44),
-            b"7" => Ok(ApplVerId::Fix50),
-            b"8" => Ok(ApplVerId::Fix50Sp1),
-            b"9" => Ok(ApplVerId::Fix50Sp2),
-            b"10" => Ok(ApplVerId::FixLatest),
-            _ => Err(SessionRejectReasonBase::ValueIsIncorrect),
-        }
-    }
-}
-impl From<ApplVerId> for &'static [u8] {
-    fn from(input: ApplVerId) -> &'static [u8] {
-        input.as_bytes()
-    }
-}
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum DefaultApplVerId {
-    #[default]
-    ///Value "0"
-    Fix27,
-    ///Value "1"
-    Fix30,
-    ///Value "2"
-    Fix40,
-    ///Value "3"
-    Fix41,
-    ///Value "4"
-    Fix42,
-    ///Value "5"
-    Fix43,
-    ///Value "6"
-    Fix44,
-    ///Value "7"
-    Fix50,
-    ///Value "8"
-    Fix50Sp1,
-    ///Value "9"
-    Fix50Sp2,
-    ///Value "10"
-    FixLatest,
-}
-impl DefaultApplVerId {
-    pub const fn from_bytes(input: &[u8]) -> Option<DefaultApplVerId> {
-        match input {
-            b"0" => Some(DefaultApplVerId::Fix27),
-            b"1" => Some(DefaultApplVerId::Fix30),
-            b"2" => Some(DefaultApplVerId::Fix40),
-            b"3" => Some(DefaultApplVerId::Fix41),
-            b"4" => Some(DefaultApplVerId::Fix42),
-            b"5" => Some(DefaultApplVerId::Fix43),
-            b"6" => Some(DefaultApplVerId::Fix44),
-            b"7" => Some(DefaultApplVerId::Fix50),
-            b"8" => Some(DefaultApplVerId::Fix50Sp1),
-            b"9" => Some(DefaultApplVerId::Fix50Sp2),
-            b"10" => Some(DefaultApplVerId::FixLatest),
-            _ => None,
-        }
-    }
-
-    pub const fn from_fix_str(input: &FixStr) -> Option<DefaultApplVerId> {
-        DefaultApplVerId::from_bytes(input.as_bytes())
-    }
-
-    pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            DefaultApplVerId::Fix27 => b"0",
-            DefaultApplVerId::Fix30 => b"1",
-            DefaultApplVerId::Fix40 => b"2",
-            DefaultApplVerId::Fix41 => b"3",
-            DefaultApplVerId::Fix42 => b"4",
-            DefaultApplVerId::Fix43 => b"5",
-            DefaultApplVerId::Fix44 => b"6",
-            DefaultApplVerId::Fix50 => b"7",
-            DefaultApplVerId::Fix50Sp1 => b"8",
-            DefaultApplVerId::Fix50Sp2 => b"9",
-            DefaultApplVerId::FixLatest => b"10",
-        }
-    }
-
-    pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
-    }
-}
-impl ToFixString for DefaultApplVerId {
-    fn to_fix_string(&self) -> FixString {
-        self.as_fix_str().to_owned()
-    }
-}
-impl TryFrom<&FixStr> for DefaultApplVerId {
-    type Error = SessionRejectReasonBase;
-
-    fn try_from(input: &FixStr) -> Result<DefaultApplVerId, SessionRejectReasonBase> {
-        match input.as_bytes() {
-            b"0" => Ok(DefaultApplVerId::Fix27),
-            b"1" => Ok(DefaultApplVerId::Fix30),
-            b"2" => Ok(DefaultApplVerId::Fix40),
-            b"3" => Ok(DefaultApplVerId::Fix41),
-            b"4" => Ok(DefaultApplVerId::Fix42),
-            b"5" => Ok(DefaultApplVerId::Fix43),
-            b"6" => Ok(DefaultApplVerId::Fix44),
-            b"7" => Ok(DefaultApplVerId::Fix50),
-            b"8" => Ok(DefaultApplVerId::Fix50Sp1),
-            b"9" => Ok(DefaultApplVerId::Fix50Sp2),
-            b"10" => Ok(DefaultApplVerId::FixLatest),
-            _ => Err(SessionRejectReasonBase::ValueIsIncorrect),
-        }
-    }
-}
-impl From<DefaultApplVerId> for &'static [u8] {
-    fn from(input: DefaultApplVerId) -> &'static [u8] {
-        input.as_bytes()
-    }
-}
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SessionStatus {
     #[default]
     ///Value "0"
@@ -1132,7 +934,6 @@ impl MsgTypeGrp {
 }
 use std::{borrow::Cow, fmt};
 
-pub use easyfix_core::message::MsgCat;
 #[allow(unused_imports)]
 use easyfix_core::{
     base_messages::{
@@ -1152,6 +953,7 @@ use easyfix_core::{
     serializer::{SerializeError, Serializer},
     version::Version,
 };
+pub use easyfix_core::{basic_types::ApplVerId, message::MsgCat};
 pub const VERSION: Version = Version::FIXT11;
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1550,10 +1352,7 @@ impl<'a> From<&'a Header> for HeaderBase<'a> {
             sending_time: header.sending_time,
             poss_dup_flag: header.poss_dup_flag,
             orig_sending_time: header.orig_sending_time,
-            appl_ver_id: header
-                .appl_ver_id
-                .as_ref()
-                .map(|v| Cow::Borrowed(v.as_fix_str())),
+            appl_ver_id: header.appl_ver_id,
         }
     }
 }
@@ -1566,10 +1365,7 @@ impl From<HeaderBase<'_>> for Header {
             sending_time: base.sending_time,
             poss_dup_flag: base.poss_dup_flag,
             orig_sending_time: base.orig_sending_time,
-            appl_ver_id: base.appl_ver_id.map(|v| {
-                ApplVerId::from_fix_str(&v)
-                    .expect("HeaderBase appl_ver_id must be a valid ApplVerId")
-            }),
+            appl_ver_id: base.appl_ver_id,
             ..Default::default()
         }
     }
@@ -1603,8 +1399,8 @@ impl HeaderAccess for Header {
         self.orig_sending_time
     }
 
-    fn appl_ver_id(&self) -> Option<&FixStr> {
-        self.appl_ver_id.as_ref().map(|v| v.as_fix_str())
+    fn appl_ver_id(&self) -> Option<ApplVerId> {
+        self.appl_ver_id
     }
 
     fn set_sender_comp_id(&mut self, value: FixString) {
@@ -1631,11 +1427,8 @@ impl HeaderAccess for Header {
         self.orig_sending_time = value;
     }
 
-    fn set_appl_ver_id(&mut self, value: Option<FixString>) {
-        self.appl_ver_id = value.map(|v| {
-            ApplVerId::from_fix_str(&v)
-                .expect("HeaderAccess::set_appl_ver_id: invalid ApplVerId value")
-        });
+    fn set_appl_ver_id(&mut self, value: Option<ApplVerId>) {
+        self.appl_ver_id = value;
     }
 }
 impl HeaderAccess for Message {
@@ -1667,8 +1460,8 @@ impl HeaderAccess for Message {
         self.header.orig_sending_time
     }
 
-    fn appl_ver_id(&self) -> Option<&FixStr> {
-        self.header.appl_ver_id.as_ref().map(|v| v.as_fix_str())
+    fn appl_ver_id(&self) -> Option<ApplVerId> {
+        self.header.appl_ver_id
     }
 
     fn set_sender_comp_id(&mut self, value: FixString) {
@@ -1695,11 +1488,8 @@ impl HeaderAccess for Message {
         self.header.orig_sending_time = value;
     }
 
-    fn set_appl_ver_id(&mut self, value: Option<FixString>) {
-        self.header.appl_ver_id = value.map(|v| {
-            ApplVerId::from_fix_str(&v)
-                .expect("HeaderAccess::set_appl_ver_id: invalid ApplVerId value")
-        });
+    fn set_appl_ver_id(&mut self, value: Option<ApplVerId>) {
+        self.header.appl_ver_id = value;
     }
 }
 #[allow(dead_code)]
@@ -2284,7 +2074,7 @@ impl Logout {
     }
 }
 #[allow(dead_code)]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Logon {
     ///Tag 98.
     pub encrypt_method: EncryptMethod,
@@ -2301,9 +2091,24 @@ pub struct Logon {
     ///Tag 1409.
     pub session_status: Option<SessionStatus>,
     ///Tag 1137.
-    pub default_appl_ver_id: DefaultApplVerId,
+    pub default_appl_ver_id: ApplVerId,
     ///Tag 58.
     pub text: Option<FixString>,
+}
+impl Default for Logon {
+    fn default() -> Logon {
+        Logon {
+            encrypt_method: Default::default(),
+            heart_bt_int: Default::default(),
+            raw_data: Default::default(),
+            reset_seq_num_flag: Default::default(),
+            next_expected_msg_seq_num: Default::default(),
+            msg_type_grp: Default::default(),
+            session_status: Default::default(),
+            default_appl_ver_id: ApplVerId::DEFAULT_IF_ABSENT,
+            text: Default::default(),
+        }
+    }
 }
 #[allow(dead_code)]
 impl Logon {
@@ -2366,7 +2171,7 @@ impl Logon {
         let mut no_msg_types: Option<NumInGroup> = None;
         let mut msg_type_grp: Option<Vec<MsgTypeGrp>> = None;
         let mut session_status: Option<SessionStatus> = None;
-        let mut default_appl_ver_id: Option<DefaultApplVerId> = None;
+        let mut default_appl_ver_id: Option<ApplVerId> = None;
         let mut text: Option<FixString> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
             match tag {
@@ -3038,15 +2843,15 @@ impl From<RejectBase<'_>> for Reject {
         }
     }
 }
-impl<'a> From<&'a Logon> for LogonBase<'a> {
-    fn from(msg: &'a Logon) -> Self {
+impl From<&Logon> for LogonBase {
+    fn from(msg: &Logon) -> Self {
         LogonBase {
             encrypt_method: Default::default(),
             encrypt_method_raw: msg.encrypt_method.as_int(),
             heart_bt_int: msg.heart_bt_int,
             reset_seq_num_flag: msg.reset_seq_num_flag,
             next_expected_msg_seq_num: msg.next_expected_msg_seq_num,
-            default_appl_ver_id: Some(Cow::Borrowed(msg.default_appl_ver_id.as_fix_str())),
+            default_appl_ver_id: Some(msg.default_appl_ver_id),
             session_status: msg
                 .session_status
                 .as_ref()
@@ -3054,8 +2859,8 @@ impl<'a> From<&'a Logon> for LogonBase<'a> {
         }
     }
 }
-impl From<LogonBase<'_>> for Logon {
-    fn from(base: LogonBase<'_>) -> Logon {
+impl From<LogonBase> for Logon {
+    fn from(base: LogonBase) -> Logon {
         Logon {
             encrypt_method: EncryptMethod::from(base.encrypt_method),
             heart_bt_int: base.heart_bt_int,
@@ -3063,11 +2868,7 @@ impl From<LogonBase<'_>> for Logon {
             next_expected_msg_seq_num: base.next_expected_msg_seq_num,
             default_appl_ver_id: base
                 .default_appl_ver_id
-                .map(|v| {
-                    DefaultApplVerId::from_fix_str(&v)
-                        .expect("LogonBase default_appl_ver_id must be a valid DefaultApplVerId")
-                })
-                .unwrap_or_default(),
+                .unwrap_or(ApplVerId::DEFAULT_IF_ABSENT),
             session_status: base.session_status.map(SessionStatus::from),
             ..Default::default()
         }

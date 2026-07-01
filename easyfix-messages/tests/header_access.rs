@@ -36,7 +36,7 @@ fn getters_return_header_fields() {
     assert_eq!(msg.sending_time(), msg.header.sending_time);
     assert_eq!(msg.poss_dup_flag(), Some(true));
     assert_eq!(msg.orig_sending_time(), msg.header.orig_sending_time);
-    assert_eq!(msg.appl_ver_id(), Some(fix_str!("9")));
+    assert_eq!(msg.appl_ver_id(), Some(ApplVerId::Fix50Sp2));
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn setters_modify_header_fields() {
     msg.set_sending_time(new_sending_time);
     msg.set_poss_dup_flag(None);
     msg.set_orig_sending_time(Some(new_orig_sending_time));
-    msg.set_appl_ver_id(Some(fix_str!("7").to_owned())); // FIX50
+    msg.set_appl_ver_id(Some(ApplVerId::Fix50));
 
     assert_eq!(msg.sender_comp_id(), fix_str!("NEW_SENDER"));
     assert_eq!(msg.target_comp_id(), fix_str!("NEW_TARGET"));
@@ -79,7 +79,7 @@ fn setters_modify_header_fields() {
     assert_eq!(msg.sending_time(), new_sending_time);
     assert!(msg.poss_dup_flag().is_none());
     assert_eq!(msg.orig_sending_time(), Some(new_orig_sending_time));
-    assert_eq!(msg.appl_ver_id(), Some(fix_str!("7")));
+    assert_eq!(msg.appl_ver_id(), Some(ApplVerId::Fix50));
 }
 
 #[test]

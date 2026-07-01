@@ -43,7 +43,7 @@ fn header_returns_borrowed_header_base() {
     assert_eq!(base.sender_comp_id.as_ref(), fix_str!("SENDER"));
     assert_eq!(base.target_comp_id.as_ref(), fix_str!("TARGET"));
     assert_eq!(base.msg_seq_num, 42);
-    assert_eq!(base.appl_ver_id.as_deref(), Some(fix_str!("9")));
+    assert_eq!(base.appl_ver_id, Some(ApplVerId::Fix50Sp2));
 }
 
 // ---------------------------------------------------------------------------

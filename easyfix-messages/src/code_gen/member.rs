@@ -337,10 +337,24 @@ impl SpecialTag {
 enum DataType {
     BasicType(BasicTypeCodeGen),
     EnumerableType(Ident, EnumerableType),
+    /// ApplVerID(1128) / DefaultApplVerID(1137) - represented by the
+    /// spec-owned `easyfix_core::basic_types::ApplVerId` instead of a
+    /// generated per-dictionary enum. The ApplVerIDCodeSet is closed by
+    /// the standard (FIX Session Layer §11.2), so a single core type
+    /// serves every dictionary.
+    CoreApplVerId,
 }
 
 impl DataType {
     fn new(field: &dict::Field) -> DataType {
+        // Covers both the variants-present and variants-empty XML cases;
+        // the codeset itself is validated at enum-collection time.
+        if matches!(field.number(), 1128 | 1137)
+            && matches!(field.name(), "ApplVerID" | "DefaultApplVerID")
+            && matches!(field.data_type(), BasicType::String)
+        {
+            return DataType::CoreApplVerId;
+        }
         match (
             field.variants().is_empty(),
             EnumerableType::try_from_basic_type(field.data_type()),
@@ -367,6 +381,7 @@ impl DataType {
         match self {
             DataType::BasicType(bt) => bt.serialize_call(),
             DataType::EnumerableType(_, et) => et.serialize_call(),
+            DataType::CoreApplVerId => quote! { serializer.serialize_enum },
         }
     }
 
@@ -374,6 +389,7 @@ impl DataType {
         match self {
             DataType::BasicType(bt) => bt.deserialize_call(),
             DataType::EnumerableType(_, et) => et.deserialize_call(),
+            DataType::CoreApplVerId => quote! { deserializer.deserialize_string_enum() },
         }
     }
 }
@@ -400,6 +416,7 @@ impl Field {
         match &self.data_type {
             DataType::BasicType(bt) => bt.rust_type(),
             DataType::EnumerableType(name, et) => et.gen_type(name),
+            DataType::CoreApplVerId => quote! { ApplVerId },
         }
     }
 
@@ -418,6 +435,27 @@ impl Field {
                 pub #name: Option<#data_type>
             }
         }
+    }
+
+    /// Struct-literal entry for a manually emitted `Default` impl. Only a
+    /// required `CoreApplVerId` field deviates from `Default::default()`:
+    /// `ApplVerId` deliberately has no `Default` (a silent application
+    /// version is a spec violation), so the field fills with the spec's
+    /// own meaning of absence, `DEFAULT_IF_ABSENT` (FIX Session Layer §10,
+    /// row 1137).
+    fn gen_default_entry(&self, required: bool) -> TokenStream {
+        let name = &self.name;
+        if required && matches!(self.data_type, DataType::CoreApplVerId) {
+            quote! { #name: ApplVerId::DEFAULT_IF_ABSENT }
+        } else {
+            quote! { #name: Default::default() }
+        }
+    }
+
+    /// A required `CoreApplVerId` field makes `#[derive(Default)]`
+    /// impossible on the containing struct.
+    fn needs_manual_default(&self, required: bool) -> bool {
+        required && matches!(self.data_type, DataType::CoreApplVerId)
     }
 
     fn gen_serialize(&self, required: bool) -> TokenStream {
@@ -939,6 +977,29 @@ impl MemberDefinition {
         }
     }
 
+    /// Struct-literal entry for a manually emitted `Default` impl.
+    /// See [`Field::gen_default_entry`].
+    fn gen_default_entry(&self, required: bool) -> TokenStream {
+        match self {
+            MemberDefinition::Field(field) => field.gen_default_entry(required),
+            MemberDefinition::RawData(raw_data) => {
+                let data_name = &raw_data.data_name;
+                quote! { #data_name: Default::default() }
+            }
+            MemberDefinition::Group(group) => {
+                let name = &group.name;
+                quote! { #name: Default::default() }
+            }
+        }
+    }
+
+    fn needs_manual_default(&self, required: bool) -> bool {
+        match self {
+            MemberDefinition::Field(field) => field.needs_manual_default(required),
+            MemberDefinition::RawData(_) | MemberDefinition::Group(_) => false,
+        }
+    }
+
     fn gen_serialize(&self, required: bool) -> TokenStream {
         match self {
             MemberDefinition::Field(field) => field.gen_serialize(required),
@@ -1004,6 +1065,22 @@ impl Member {
         self.definition.tag_num()
     }
 
+    pub fn required(&self) -> bool {
+        self.required
+    }
+
+    /// Struct-literal entry for a manually emitted `Default` impl.
+    pub fn gen_default_entry(&self) -> TokenStream {
+        self.definition.gen_default_entry(self.required)
+    }
+
+    /// `true` when this member's field type has no `Default` impl (required
+    /// core `ApplVerId`), forcing the containing struct to emit `Default`
+    /// manually instead of deriving it.
+    pub fn needs_manual_default(&self) -> bool {
+        self.definition.needs_manual_default(self.required)
+    }
+
     /// Check if this member is a field with the specified underlying basic type.
     /// Works for both plain fields and enum fields (checks the enum's backing type).
     /// Returns false for groups or raw data.
@@ -1012,6 +1089,8 @@ impl Member {
             MemberDefinition::Field(field) => match &field.data_type {
                 DataType::BasicType(BasicTypeCodeGen(bt)) => *bt == expected,
                 DataType::EnumerableType(_, et) => et.to_basic_type() == expected,
+                // Declared as String in the dictionary.
+                DataType::CoreApplVerId => matches!(expected, BasicType::String),
             },
             _ => false,
         }

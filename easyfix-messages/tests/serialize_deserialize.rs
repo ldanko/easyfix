@@ -7,8 +7,8 @@ use easyfix_core::{
 };
 use easyfix_test_messages as messages;
 use messages::{
-    Body, DefaultApplVerId, EncryptMethod, Header, Heartbeat, Logon, Message, MsgDirection,
-    MsgType, MsgTypeGrp, Trailer,
+    ApplVerId, Body, EncryptMethod, Header, Heartbeat, Logon, Message, MsgDirection, MsgType,
+    MsgTypeGrp, Trailer,
 };
 
 fn header() -> Header {
@@ -51,7 +51,7 @@ fn logon_msg_type_grp_no_present() {
     let msg = fixt_message(Box::new(Body::Logon(Logon {
         encrypt_method: EncryptMethod::None,
         heart_bt_int: 30,
-        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
+        default_appl_ver_id: ApplVerId::Fix50Sp2,
         ..Default::default()
     })));
     let mut serialized = vec![0u8; 4096];
@@ -65,7 +65,7 @@ fn logon_msg_type_grp_present_with_two_entries_1() {
     let msg = fixt_message(Box::new(Body::Logon(Logon {
         encrypt_method: EncryptMethod::None,
         heart_bt_int: 30,
-        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
+        default_appl_ver_id: ApplVerId::Fix50Sp2,
         msg_type_grp: Some(vec![
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
@@ -91,7 +91,7 @@ fn logon_msg_type_grp_present_with_two_entries_2() {
     let msg = fixt_message(Box::new(Body::Logon(Logon {
         encrypt_method: EncryptMethod::None,
         heart_bt_int: 30,
-        default_appl_ver_id: DefaultApplVerId::Fix50Sp2,
+        default_appl_ver_id: ApplVerId::Fix50Sp2,
         msg_type_grp: Some(vec![
             MsgTypeGrp {
                 ref_msg_type: Some(MsgType::NewOrderSingle.to_fix_string()),
@@ -229,5 +229,58 @@ fn header_field_in_body_rejected_with_out_of_required_order() {
             reason,
             ..
         }) if reason == SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder
+    );
+}
+
+/// Scenario 14e: an out-of-codeset `DefaultApplVerID(1137)` value must be
+/// rejected with reason 5 (Value is incorrect). The ApplVerIDCodeSet is
+/// closed (Session Layer 11.2) - both a non-numeric value and a numeric
+/// value past the codeset are wire-illegal.
+#[test]
+fn out_of_codeset_default_appl_ver_id_rejected() {
+    for bad_value in ["X", "11"] {
+        let bytes = build_fix(&[
+            ("35", "A"), // Logon
+            ("49", "test_sender"),
+            ("56", "test_target"),
+            ("34", "1"),
+            ("52", "20230713-21:55:13.436187000"),
+            ("98", "0"),
+            ("108", "30"),
+            ("1137", bad_value),
+        ]);
+
+        assert_matches!(
+            Message::from_bytes(&bytes),
+            Err(DeserializeError::Reject {
+                tag: Some(1137),
+                reason,
+                ..
+            }) if reason == SessionRejectReasonBase::ValueIsIncorrect
+        );
+    }
+}
+
+/// Optional ApplVerID(1128): absent on the wire deserializes to `None` and
+/// re-serializes without emitting the tag.
+#[test]
+fn absent_appl_ver_id_round_trips_as_none() {
+    let bytes = build_fix(&[
+        ("35", "0"), // Heartbeat
+        ("49", "test_sender"),
+        ("56", "test_target"),
+        ("34", "1"),
+        ("52", "20230713-21:55:13.436187000"),
+    ]);
+
+    let msg = Message::from_bytes(&bytes).expect("Deserialization failed");
+    assert_eq!(msg.header.appl_ver_id, None);
+
+    let mut serialized = vec![0u8; 4096];
+    let len = msg.serialize(&mut serialized).expect("serialize failed");
+    serialized.truncate(len);
+    assert!(
+        !serialized.windows(6).any(|w| w == b"\x011128="),
+        "re-serialized message must not emit ApplVerID(1128)"
     );
 }
