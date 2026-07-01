@@ -7,7 +7,7 @@ use quote::quote;
 use syn::{Ident, LitStr, parse_macro_input};
 
 const fn is_non_control_ascii_char(byte: u8) -> bool {
-    byte > 0x1f && byte < 0x80
+    byte > 0x1f && byte < 0x7f
 }
 
 fn find_easyfix_core_path() -> proc_macro2::TokenStream {
