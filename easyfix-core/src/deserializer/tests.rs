@@ -6,7 +6,9 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
     basic_types::{FixStr, LocalMktDate, Price, Tenor, TenorUnit, TimePrecision},
-    deserializer::{DeserializeError, GarbledReason, RawMessageError, deserialize_checksum},
+    deserializer::{
+        DeserializeError, GarbledReason, LogoutReason, RawMessageError, deserialize_checksum,
+    },
     fix_str,
 };
 
@@ -137,6 +139,25 @@ fn deserializer(body: &[u8]) -> Deserializer<'_> {
     }
 }
 
+/// Like [`deserializer`], but with MsgSeqNum(34) not yet parsed, so error
+/// paths exercise the fallback seq num scan inside `reject`.
+fn deserializer_without_seq_num(body: &[u8]) -> Deserializer<'_> {
+    let raw_message = RawMessage {
+        begin_string: BEGIN_STRING,
+        body,
+        checksum: 0,
+    };
+
+    Deserializer {
+        raw_message,
+        buf: body,
+        msg_type: None,
+        seq_num: None,
+        current_tag: None,
+        tmp_tag: None,
+    }
+}
+
 #[test]
 fn deserialize_str_ok() {
     let input = b"lorem ipsum\x01\x00";
@@ -247,6 +268,119 @@ fn deserialize_utc_timestamp_with_picos_ok() {
     assert_eq!(utc_timestamp.timestamp(), date_time);
     assert_eq!(utc_timestamp.precision(), TimePrecision::Nanos);
     assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_utc_timestamp_rejects_overlong_fraction() {
+    // A fraction digit count outside {3, 6, 9, 12} must be rejected even
+    // when it is congruent to a valid count modulo 256.
+    let mut input = b"20240102-03:04:05.".to_vec();
+    input.extend_from_slice(&[b'0'; 256]);
+    input.extend_from_slice(b"123\x01\x00");
+    let mut deserializer = deserializer(&input);
+    assert_matches!(
+        deserializer.deserialize_utc_timestamp(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_utc_timestamp_overlong_fraction_does_not_overflow() {
+    // A long digit string with a large value must be rejected without
+    // overflowing the accumulator (an overflow panics in debug builds).
+    let mut input = b"20240102-03:04:05.".to_vec();
+    input.extend_from_slice(&[b'0'; 245]);
+    input.extend_from_slice(&[b'9'; 14]);
+    input.extend_from_slice(b"\x01\x00");
+    let mut deserializer = deserializer(&input);
+    assert_matches!(
+        deserializer.deserialize_utc_timestamp(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_utc_timestamp_rejects_thirteen_digit_fraction() {
+    let input = b"20240102-03:04:05.1234567890123\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_utc_timestamp(),
+        Err(DeserializeError::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_utc_timestamp_reject_scan_skips_own_value() {
+    // The seconds digits "34" followed by '=' inside a malformed value must
+    // not satisfy the fallback MsgSeqNum scan; the real tag 34 follows.
+    let input = b"20240102-03:04:34=997\x0134=2\x01";
+    let mut deserializer = deserializer_without_seq_num(input);
+    assert_matches!(
+        deserializer.deserialize_utc_timestamp(),
+        Err(DeserializeError::Reject { seq_num: 2, .. })
+    );
+}
+
+#[test]
+fn deserialize_utc_timestamp_reject_without_seq_num_is_logout() {
+    // No MsgSeqNum(34) after the malformed value: the reject must degrade
+    // to Logout instead of fabricating a seq num from the value's own bytes.
+    let input = b"20240102-03:04:34=997\x0158=text\x01";
+    let mut deserializer = deserializer_without_seq_num(input);
+    assert_matches!(
+        deserializer.deserialize_utc_timestamp(),
+        Err(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing))
+    );
+}
+
+#[test]
+fn deserialize_utc_timestamp_truncated_value_is_garbled() {
+    // Body ends before the value (or its SOH) is complete: incomplete
+    // data, regardless of where the cut lands.
+    for input in [
+        &b"2024"[..],
+        b"20240102-03:0",
+        b"20240102-03:04:0",
+        b"20240102-03:04:05",
+        b"20240102-03:04:05.",
+        b"20240102-03:04:05.12",
+        b"20240102-03:04:05.123",
+    ] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_utc_timestamp(),
+            Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData
+            )),
+            "input: {input:?}"
+        );
+    }
+}
+
+#[test]
+fn deserialize_utc_timeonly_truncated_value_is_garbled() {
+    for input in [&b"12:00:0"[..], b"12:00:00.1", b"12:00:00.123"] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_utc_time_only(),
+            Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData
+            )),
+            "input: {input:?}"
+        );
+    }
+}
+
+#[test]
+fn deserialize_tz_timestamp_truncated_fraction_is_garbled() {
+    let input = b"20060901-13:09:00.12";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timestamp(),
+        Err(DeserializeError::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
+    );
 }
 
 #[test]

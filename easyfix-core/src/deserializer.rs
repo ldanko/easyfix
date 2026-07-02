@@ -9,8 +9,8 @@ use crate::{
         FixString, FixedOffset, Float, Int, Language, Length, LocalMktDate, LocalMktTime,
         MonthYear, MultipleCharValue, MultipleStringValue, NaiveDate, NaiveTime, NumInGroup,
         Percentage, Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, TagNum, Tenor,
-        TenorUnit, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly, UtcTimeOnly, UtcTimestamp,
-        XmlData,
+        TenorUnit, TimePrecision, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly, UtcTimeOnly,
+        UtcTimestamp, XmlData,
     },
 };
 
@@ -118,9 +118,12 @@ impl From<RawMessageError> for DeserializeError {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum DeserializeErrorInternal {
+pub(crate) enum DeserializeErrorInternal {
+    /// The input ended at a point where a longer input could still have
+    /// parsed; only more bytes can tell truncation from malformation.
     #[error("Incomplete")]
     Incomplete,
+    /// The input is malformed regardless of any further bytes.
     #[error("{0:?}")]
     Error(SessionRejectReasonBase),
 }
@@ -160,20 +163,196 @@ fn deserialize_checksum(bytes: &[u8]) -> Result<(&[u8], u8), RawMessageError> {
     Ok((&bytes[4..], value))
 }
 
-/// Convert raw fractional-second digits to nanoseconds.
-/// `digits` is the number of digits parsed (3=ms, 6=µs, 9=ns, 12=ps).
-fn fraction_to_nanos(fraction: u64, digits: u8) -> Result<u32, SessionRejectReasonBase> {
-    let (multiplier, divider) = match digits {
-        3 => (1_000_000u64, 1u64),
-        6 => (1_000, 1),
-        9 => (1, 1),
-        // chrono can't hold picoseconds — truncate to nanoseconds
-        12 => (1, 1_000),
-        _ => return Err(SessionRejectReasonBase::IncorrectDataFormatForValue),
+/// Longest valid fractional-second width: 12 digits (picoseconds).
+const MAX_FRACTION_DIGITS: usize = 12;
+
+/// Parse the fixed-width `YYYYMMDD-HH:MM:` prefix shared by UTC and TZ
+/// timestamps. Returns the date, hour, minute and the unconsumed tail.
+/// The month and day are shape-checked here and range-checked by the
+/// calendar (`ValueIsIncorrect` when out of range).
+fn parse_timestamp_head(
+    buf: &[u8],
+) -> Result<(NaiveDate, u32, u32, &[u8]), DeserializeErrorInternal> {
+    let [
+        // Year
+        y3 @ b'0'..=b'9',
+        y2 @ b'0'..=b'9',
+        y1 @ b'0'..=b'9',
+        y0 @ b'0'..=b'9',
+        // Month
+        m1 @ b'0'..=b'1',
+        m0 @ b'0'..=b'9',
+        // Day
+        d1 @ b'0'..=b'3',
+        d0 @ b'0'..=b'9',
+        b'-',
+        // Hour
+        h1 @ b'0'..=b'2',
+        h0 @ b'0'..=b'9',
+        b':',
+        // Minute
+        mm1 @ b'0'..=b'5',
+        mm0 @ b'0'..=b'9',
+        b':',
+        rest @ ..,
+    ] = buf
+    else {
+        // Too short to hold the prefix at all - only more bytes can tell
+        // truncation from malformation.
+        return if buf.len() < 15 {
+            Err(DeserializeErrorInternal::Incomplete)
+        } else {
+            Err(DeserializeErrorInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ))
+        };
     };
-    (fraction * multiplier / divider)
-        .try_into()
-        .map_err(|_| SessionRejectReasonBase::ValueIsIncorrect)
+
+    let year = (y3 - b'0') as i32 * 1000
+        + (y2 - b'0') as i32 * 100
+        + (y1 - b'0') as i32 * 10
+        + (y0 - b'0') as i32;
+    let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
+    let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
+    let naive_date = NaiveDate::from_ymd_opt(year, month, day).ok_or(
+        DeserializeErrorInternal::Error(SessionRejectReasonBase::ValueIsIncorrect),
+    )?;
+    let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
+    let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
+    Ok((naive_date, hour, min, rest))
+}
+
+/// Parse the seconds of a UTC time: 00-59, or 60 for a leap second.
+/// chrono represents a leap second as sec=59 with nanosecond >= 1_000_000_000,
+/// so the leap case reports 59 plus a whole second of nanosecond offset.
+/// Returns (seconds, leap nanosecond offset, rest).
+fn parse_utc_seconds(buf: &[u8]) -> Result<(u32, u32, &[u8]), DeserializeErrorInternal> {
+    match buf {
+        [s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
+            Ok(((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, 0, rest))
+        }
+        [b'6', b'0', rest @ ..] => Ok((59, 1_000_000_000, rest)),
+        _ if buf.len() < 2 => Err(DeserializeErrorInternal::Incomplete),
+        _ => Err(DeserializeErrorInternal::Error(
+            SessionRejectReasonBase::IncorrectDataFormatForValue,
+        )),
+    }
+}
+
+/// Parse the optional fractional-second part of a timestamp: either absent
+/// (no leading period) or a period followed by exactly 3, 6, 9 or 12 digits.
+/// Stops at the first non-digit byte and leaves terminator handling to the
+/// caller. A 12-digit (picosecond) fraction is truncated to nanoseconds -
+/// chrono cannot hold picosecond resolution.
+/// Returns (nanoseconds, precision, rest).
+fn parse_fraction_of_second(
+    buf: &[u8],
+) -> Result<(u32, TimePrecision, &[u8]), DeserializeErrorInternal> {
+    let [b'.', digits @ ..] = buf else {
+        return Ok((0, TimePrecision::Secs, buf));
+    };
+
+    let mut fraction_of_second: u64 = 0;
+    let mut count: usize = 0;
+    for &byte in digits {
+        match byte {
+            // One digit more than the longest valid width can never
+            // become valid, no matter how the value continues.
+            b'0'..=b'9' if count == MAX_FRACTION_DIGITS => {
+                return Err(DeserializeErrorInternal::Error(
+                    SessionRejectReasonBase::IncorrectDataFormatForValue,
+                ));
+            }
+            n @ b'0'..=b'9' => {
+                // No overflow: at most 12 digits accumulate.
+                fraction_of_second = fraction_of_second * 10 + u64::from(n - b'0');
+                count += 1;
+            }
+            _ => break,
+        }
+    }
+
+    let rest = &digits[count..];
+    let (nanos, precision) = match count {
+        3 => (fraction_of_second * 1_000_000, TimePrecision::Millis),
+        6 => (fraction_of_second * 1_000, TimePrecision::Micros),
+        9 => (fraction_of_second, TimePrecision::Nanos),
+        // chrono can't hold picoseconds - truncate to nanoseconds
+        12 => (fraction_of_second / 1_000, TimePrecision::Nanos),
+        // The digits ran out at the end of the input; more bytes could
+        // still have completed a valid width.
+        _ if rest.is_empty() => return Err(DeserializeErrorInternal::Incomplete),
+        _ => {
+            return Err(DeserializeErrorInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ));
+        }
+    };
+    // Bounded by construction: at most 999_999_999.
+    Ok((nanos as u32, precision, rest))
+}
+
+/// Parse a UtcTimestamp value from the start of `buf` without consuming any
+/// terminator. On success returns the parsed value and the unconsumed tail;
+/// the caller decides what must follow (SOH in tag-value streams, end of
+/// input for length-delimited values).
+///
+/// Accepted format is either YYYYMMDD-HH:MM:SS (whole seconds) or
+/// YYYYMMDD-HH:MM:SS.sss* with a 3, 6, 9 or 12 digit fraction (picoseconds
+/// truncated to nanoseconds); SS = 60 is accepted as a UTC leap second.
+pub(crate) fn parse_utc_timestamp(
+    buf: &[u8],
+) -> Result<(UtcTimestamp, &[u8]), DeserializeErrorInternal> {
+    let (naive_date, hour, min, rest) = parse_timestamp_head(buf)?;
+    let (sec, leap_offset, rest) = parse_utc_seconds(rest)?;
+    let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
+
+    let naive_date_time = naive_date
+        .and_hms_nano_opt(hour, min, sec, leap_offset + fraction_of_second)
+        .ok_or(DeserializeErrorInternal::Error(
+            SessionRejectReasonBase::ValueIsIncorrect,
+        ))?;
+    let timestamp = Utc.from_utc_datetime(&naive_date_time);
+    Ok((UtcTimestamp::with_precision(timestamp, precision), rest))
+}
+
+/// Parse a UtcTimeOnly value from the start of `buf` without consuming any
+/// terminator, mirroring the [`parse_utc_timestamp`] contract.
+///
+/// Accepted format is HH:MM:SS with the same optional fraction as
+/// UtcTimestamp; SS = 60 is accepted as a UTC leap second.
+fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeErrorInternal> {
+    let [
+        // Hour
+        h1 @ b'0'..=b'2',
+        h0 @ b'0'..=b'9',
+        b':',
+        // Minute
+        m1 @ b'0'..=b'5',
+        m0 @ b'0'..=b'9',
+        b':',
+        rest @ ..,
+    ] = buf
+    else {
+        return if buf.len() < 6 {
+            Err(DeserializeErrorInternal::Incomplete)
+        } else {
+            Err(DeserializeErrorInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ))
+        };
+    };
+
+    let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
+    let min = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
+    let (sec, leap_offset, rest) = parse_utc_seconds(rest)?;
+    let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
+
+    let time = NaiveTime::from_hms_nano_opt(hour, min, sec, leap_offset + fraction_of_second)
+        .ok_or(DeserializeErrorInternal::Error(
+            SessionRejectReasonBase::ValueIsIncorrect,
+        ))?;
+    Ok((UtcTimeOnly::with_precision(time, precision), rest))
 }
 
 fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInternal> {
@@ -316,7 +495,7 @@ pub struct Deserializer<'de> {
     tmp_tag: Option<TagNum>,
 }
 
-impl Deserializer<'_> {
+impl<'de> Deserializer<'de> {
     pub fn from_raw_message(raw_message: RawMessage) -> Deserializer {
         let buf = raw_message.body;
         Deserializer {
@@ -418,6 +597,45 @@ impl Deserializer<'_> {
 
     pub fn put_tag(&mut self, tag: TagNum) {
         self.tmp_tag = Some(tag);
+    }
+
+    // Build a Reject for a malformed field value, skipping the remainder of
+    // the current field first so the fallback MsgSeqNum scan inside `reject`
+    // cannot match bytes of the malformed value itself.
+    fn reject_value(&mut self, reason: SessionRejectReasonBase) -> DeserializeError {
+        match memchr(b'\x01', self.buf) {
+            Some(i) => self.buf = &self.buf[i + 1..],
+            None => self.buf = &[],
+        }
+        self.reject(self.current_tag, reason)
+    }
+
+    // Map a value-parser error: exhausted input is a garbled message, a
+    // format violation is a Reject (built after skipping the field).
+    fn garbled_or_reject_value(&mut self, error: DeserializeErrorInternal) -> DeserializeError {
+        match error {
+            DeserializeErrorInternal::Incomplete => {
+                DeserializeError::Garbled(GarbledReason::IncompleteMessageData)
+            }
+            DeserializeErrorInternal::Error(reason) => self.reject_value(reason),
+        }
+    }
+
+    // Consume the SOH terminating a just-parsed value whose unconsumed tail
+    // is `rest`, advancing the buffer past it.
+    fn finish_value<T>(&mut self, value: T, rest: &'de [u8]) -> Result<T, DeserializeError> {
+        match rest {
+            [b'\x01', tail @ ..] => {
+                self.buf = tail;
+                Ok(value)
+            }
+            // Buffer ended before the terminating SOH
+            [] => Err(DeserializeError::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
+            // Value bytes not followed by SOH
+            _ => Err(self.reject_value(SessionRejectReasonBase::IncorrectDataFormatForValue)),
+        }
     }
 
     pub fn range_to_fixstr(&self, range: std::ops::Range<usize>) -> &FixStr {
@@ -1147,62 +1365,6 @@ impl Deserializer<'_> {
         }
     }
 
-    // Helper for UTC timestamp deserialization.
-    fn deserialize_fraction_of_second(&mut self) -> Result<(u32, u8), DeserializeError> {
-        match self.buf {
-            [] => {
-                return Err(DeserializeError::Garbled(
-                    GarbledReason::IncompleteMessageData,
-                ));
-            }
-            [b'\x01', rest @ ..] => {
-                self.buf = rest;
-                return Ok((0, 0));
-            }
-            // Do nothing here, fraction of second will be deserialized below
-            [b'.', rest @ ..] => self.buf = rest,
-            _ => {
-                return Err(self.reject(
-                    self.current_tag,
-                    SessionRejectReasonBase::IncorrectDataFormatForValue,
-                ));
-            }
-        }
-
-        let mut fraction_of_second: u64 = 0;
-        for (i, &byte) in self.buf.iter().enumerate() {
-            match byte {
-                n @ b'0'..=b'9' => {
-                    fraction_of_second = fraction_of_second
-                        .checked_mul(10)
-                        .and_then(|v| v.checked_add((n - b'0') as u64))
-                        .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                        })?;
-                }
-                b'\x01' => {
-                    // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
-                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
-                    self.buf = rest;
-                    return fraction_to_nanos(fraction_of_second, i as u8)
-                        .map(|ns| (ns, i as u8))
-                        .map_err(|reason| self.reject(self.current_tag, reason));
-                }
-                _ => {
-                    return Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReasonBase::IncorrectDataFormatForValue,
-                    ));
-                }
-            }
-        }
-
-        Err(self.reject(
-            self.current_tag,
-            SessionRejectReasonBase::IncorrectDataFormatForValue,
-        ))
-    }
-
     /// Deserialize string representing time/date combination represented
     /// in UTC (Universal Time Coordinated) in either YYYYMMDD-HH:MM:SS
     /// (whole seconds) or YYYYMMDD-HH:MM:SS.sss* format, colons, dash,
@@ -1219,101 +1381,27 @@ impl Deserializer<'_> {
     ///   no fractions of seconds are conveyed (in such a case the period
     ///   is not conveyed), it may include 3 digits to convey
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
-    ///   to convey nanoseconds, 12 digits to convey picoseconds;
+    ///   to convey nanoseconds, 12 digits to convey picoseconds
+    ///   (truncated to nanosecond resolution);
     pub fn deserialize_utc_timestamp(&mut self) -> Result<UtcTimestamp, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [b'\x01', ..] => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::TagSpecifiedWithoutAValue,
-            )),
-            // Missing separator at the end
-            [_] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [
-                // Year
-                y3 @ b'0'..=b'9',
-                y2 @ b'0'..=b'9',
-                y1 @ b'0'..=b'9',
-                y0 @ b'0'..=b'9',
-                // Month
-                m1 @ b'0'..=b'1',
-                m0 @ b'0'..=b'9',
-                // Day
-                d1 @ b'0'..=b'3',
-                d0 @ b'0'..=b'9',
-                b'-',
-                // Hour
-                h1 @ b'0'..=b'2',
-                h0 @ b'0'..=b'9',
-                b':',
-                // Minute
-                mm1 @ b'0'..=b'5',
-                mm0 @ b'0'..=b'9',
-                b':',
-                rest @ ..,
-            ] => {
-                let year = (y3 - b'0') as i32 * 1000
-                    + (y2 - b'0') as i32 * 100
-                    + (y1 - b'0') as i32 * 10
-                    + (y0 - b'0') as i32;
-                let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
-                let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
-                let naive_date = NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| {
-                    self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                })?;
-                let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
-                let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
-
-                // Parse seconds: normal (00-59) or leap second (60)
-                let (sec, leap_offset) = match rest {
-                    [s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
-                        let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                        self.buf = rest;
-                        (sec, 0)
-                    }
-                    [b'6', b'0', rest @ ..] => {
-                        // chrono represents leap seconds as sec=59 with nanosecond >= 1_000_000_000
-                        self.buf = rest;
-                        (59, 1_000_000_000)
-                    }
-                    _ => {
-                        return Err(self.reject(
-                            self.current_tag,
-                            SessionRejectReasonBase::IncorrectDataFormatForValue,
-                        ));
-                    }
-                };
-
-                let (fraction_of_second, precision) = self.deserialize_fraction_of_second()?;
-                let naive_date_time = naive_date
-                    .and_hms_nano_opt(hour, min, sec, leap_offset + fraction_of_second)
-                    .ok_or_else(|| {
-                        self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                    })?;
-                let timestamp = Utc.from_utc_datetime(&naive_date_time);
-
-                match precision {
-                    0 => Ok(UtcTimestamp::with_secs(timestamp)),
-                    3 => Ok(UtcTimestamp::with_millis(timestamp)),
-                    6 => Ok(UtcTimestamp::with_micros(timestamp)),
-                    9 => Ok(UtcTimestamp::with_nanos(timestamp)),
-                    // XXX: Types from `chrono` crate can't hold
-                    //      time at picosecond resolution
-                    12 => Ok(UtcTimestamp::with_nanos(timestamp)),
-                    _ => Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReasonBase::IncorrectDataFormatForValue,
-                    )),
-                }
+            [] => {
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
-            _ => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::IncorrectDataFormatForValue,
-            )),
+            [b'\x01', ..] => {
+                return Err(self.reject(
+                    self.current_tag,
+                    SessionRejectReasonBase::TagSpecifiedWithoutAValue,
+                ));
+            }
+            _ => {}
+        }
+
+        match parse_utc_timestamp(self.buf) {
+            Ok((timestamp, rest)) => self.finish_value(timestamp, rest),
+            Err(error) => Err(self.garbled_or_reject_value(error)),
         }
     }
 
@@ -1332,104 +1420,27 @@ impl Deserializer<'_> {
     ///   no fractions of seconds are conveyed (in such a case the period
     ///   is not conveyed), it may include 3 digits to convey
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
-    ///   to convey nanoseconds, 12 digits to convey picoseconds;
-    ///   // TODO: set precision!
+    ///   to convey nanoseconds, 12 digits to convey picoseconds
+    ///   (truncated to nanosecond resolution);
     pub fn deserialize_utc_time_only(&mut self) -> Result<UtcTimeOnly, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [b'\x01', ..] => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::TagSpecifiedWithoutAValue,
-            )),
-            [
-                // hours
-                h1 @ b'0'..=b'2',
-                h0 @ b'0'..=b'9',
-                b':',
-                // minutes
-                m1 @ b'0'..=b'5',
-                m0 @ b'0'..=b'9',
-                b':',
-                // seconds
-                s1 @ b'0'..=b'5',
-                s0 @ b'0'..=b'9',
-                rest @ ..,
-            ] => {
-                let h = (h1 - b'0') * 10 + (h0 - b'0');
-                let m = (m1 - b'0') * 10 + (m0 - b'0');
-                let s = (s1 - b'0') * 10 + (s0 - b'0');
-                self.buf = rest;
-                let (ns, precision) = self.deserialize_fraction_of_second()?;
-                let timestamp = NaiveTime::from_hms_nano_opt(h.into(), m.into(), s.into(), ns)
-                    .ok_or_else(|| {
-                        self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                    });
-                match timestamp {
-                    Ok(timestamp) => {
-                        match precision {
-                            0 => Ok(UtcTimeOnly::with_secs(timestamp)),
-                            3 => Ok(UtcTimeOnly::with_millis(timestamp)),
-                            6 => Ok(UtcTimeOnly::with_micros(timestamp)),
-                            9 => Ok(UtcTimeOnly::with_nanos(timestamp)),
-                            // XXX: Types from `chrono` crate can't hold
-                            //      time at picosecond resolution
-                            12 => Ok(UtcTimeOnly::with_nanos(timestamp)),
-                            _ => Err(self.reject(
-                                self.current_tag,
-                                SessionRejectReasonBase::IncorrectDataFormatForValue,
-                            )),
-                        }
-                    }
-                    Err(err) => Err(err),
-                }
+            [] => {
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
-            // Leap second case
-            [
-                h1 @ b'0'..=b'2',
-                h0 @ b'0'..=b'9',
-                b':',
-                m1 @ b'0'..=b'5',
-                m0 @ b'0'..=b'9',
-                b':',
-                b'6',
-                b'0',
-                rest @ ..,
-            ] => {
-                let h = (h1 - b'0') * 10 + (h0 - b'0');
-                let m = (m1 - b'0') * 10 + (m0 - b'0');
-                self.buf = rest;
-                let (ns, precision) = self.deserialize_fraction_of_second()?;
-                // chrono represents leap seconds as sec=59 with nanosecond >= 1_000_000_000
-                let timestamp =
-                    NaiveTime::from_hms_nano_opt(h.into(), m.into(), 59, 1_000_000_000 + ns)
-                        .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                        });
-                match timestamp {
-                    Ok(timestamp) => {
-                        match precision {
-                            0 => Ok(UtcTimeOnly::with_secs(timestamp)),
-                            3 => Ok(UtcTimeOnly::with_millis(timestamp)),
-                            6 => Ok(UtcTimeOnly::with_micros(timestamp)),
-                            9 => Ok(UtcTimeOnly::with_nanos(timestamp)),
-                            // XXX: Types from `chrono` crate can't hold
-                            //      time at picosecond resolution
-                            12 => Ok(UtcTimeOnly::with_nanos(timestamp)),
-                            _ => Err(self.reject(
-                                self.current_tag,
-                                SessionRejectReasonBase::IncorrectDataFormatForValue,
-                            )),
-                        }
-                    }
-                    Err(err) => Err(err),
-                }
+            [b'\x01', ..] => {
+                return Err(self.reject(
+                    self.current_tag,
+                    SessionRejectReasonBase::TagSpecifiedWithoutAValue,
+                ));
             }
-            _ => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::IncorrectDataFormatForValue,
-            )),
+            _ => {}
+        }
+
+        match parse_utc_time_only(self.buf) {
+            Ok((time, rest)) => self.finish_value(time, rest),
+            Err(error) => Err(self.garbled_or_reject_value(error)),
         }
     }
 
@@ -1595,65 +1606,6 @@ impl Deserializer<'_> {
         }
     }
 
-    /// Parse optional fractional seconds for TZ types.
-    /// Like `deserialize_fraction_of_second`, but stops at Z/+/-/SOH
-    /// instead of consuming SOH. Does not advance buf past the terminator.
-    fn deserialize_tz_fraction_of_second(&mut self) -> Result<(u32, u8), DeserializeError> {
-        match self.buf {
-            [] => {
-                return Err(DeserializeError::Garbled(
-                    GarbledReason::IncompleteMessageData,
-                ));
-            }
-            // No fraction — offset or SOH follows directly
-            [b'Z' | b'+' | b'-' | b'\x01', ..] => {
-                return Ok((0, 0));
-            }
-            // Fraction follows
-            [b'.', rest @ ..] => self.buf = rest,
-            _ => {
-                return Err(self.reject(
-                    self.current_tag,
-                    SessionRejectReasonBase::IncorrectDataFormatForValue,
-                ));
-            }
-        }
-
-        let mut fraction_of_second: u64 = 0;
-        for (i, &byte) in self.buf.iter().enumerate() {
-            match byte {
-                n @ b'0'..=b'9' => {
-                    fraction_of_second = fraction_of_second
-                        .checked_mul(10)
-                        .and_then(|v| v.checked_add((n - b'0') as u64))
-                        .ok_or_else(|| {
-                            self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                        })?;
-                }
-                // Stop at offset or SOH — don't consume terminator
-                b'Z' | b'+' | b'-' | b'\x01' => {
-                    // SAFETY: i is from iterating self.buf, so i <= self.buf.len()
-                    let (_, rest) = unsafe { self.buf.split_at_unchecked(i) };
-                    self.buf = rest;
-                    return fraction_to_nanos(fraction_of_second, i as u8)
-                        .map(|ns| (ns, i as u8))
-                        .map_err(|reason| self.reject(self.current_tag, reason));
-                }
-                _ => {
-                    return Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReasonBase::IncorrectDataFormatForValue,
-                    ));
-                }
-            }
-        }
-
-        Err(self.reject(
-            self.current_tag,
-            SessionRejectReasonBase::IncorrectDataFormatForValue,
-        ))
-    }
-
     /// Parse timezone offset: Z, +hh, +hh:mm, -hh, -hh:mm.
     /// Consumes the offset and trailing SOH delimiter.
     fn deserialize_tz_offset(&mut self) -> Result<FixedOffset, DeserializeError> {
@@ -1733,93 +1685,61 @@ impl Deserializer<'_> {
     ///   no fractions of seconds are conveyed (in such a case the period
     ///   is not conveyed), it may include 3 digits to convey
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
-    ///   to convey nanoseconds, 12 digits to convey picoseconds;
+    ///   to convey nanoseconds, 12 digits to convey picoseconds
+    ///   (truncated to nanosecond resolution);
     pub fn deserialize_tz_timestamp(&mut self) -> Result<TzTimestamp, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [b'\x01', ..] => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::TagSpecifiedWithoutAValue,
-            )),
-            // Missing separator at the end
-            [_] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [
-                // Year
-                y3 @ b'0'..=b'9',
-                y2 @ b'0'..=b'9',
-                y1 @ b'0'..=b'9',
-                y0 @ b'0'..=b'9',
-                // Month
-                m1 @ b'0'..=b'1',
-                m0 @ b'0'..=b'9',
-                // Day
-                d1 @ b'0'..=b'3',
-                d0 @ b'0'..=b'9',
-                b'-',
-                // Hour
-                h1 @ b'0'..=b'2',
-                h0 @ b'0'..=b'9',
-                b':',
-                // Minute
-                mm1 @ b'0'..=b'5',
-                mm0 @ b'0'..=b'9',
-                b':',
-                // Second
-                s1 @ b'0'..=b'5',
-                s0 @ b'0'..=b'9',
-                rest @ ..,
-            ] => {
-                self.buf = rest;
-                let year = (y3 - b'0') as i32 * 1000
-                    + (y2 - b'0') as i32 * 100
-                    + (y1 - b'0') as i32 * 10
-                    + (y0 - b'0') as i32;
-                let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
-                let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
-                let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
-                let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
-                let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                let (fraction_of_second, precision) = self.deserialize_tz_fraction_of_second()?;
-                let offset = self.deserialize_tz_offset()?;
-
-                let naive_date = NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| {
-                    self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                })?;
-                let naive_date_time = naive_date
-                    .and_hms_nano_opt(hour, min, sec, fraction_of_second)
-                    .ok_or_else(|| {
-                        self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                    })?;
-                let timestamp = offset
-                    .from_local_datetime(&naive_date_time)
-                    .single()
-                    .ok_or_else(|| {
-                        self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                    })?;
-
-                match precision {
-                    0 => Ok(TzTimestamp::with_secs(timestamp)),
-                    3 => Ok(TzTimestamp::with_millis(timestamp)),
-                    6 => Ok(TzTimestamp::with_micros(timestamp)),
-                    9 => Ok(TzTimestamp::with_nanos(timestamp)),
-                    // XXX: Types from `chrono` crate can't hold
-                    //      time at picosecond resolution
-                    12 => Ok(TzTimestamp::with_nanos(timestamp)),
-                    _ => Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReasonBase::IncorrectDataFormatForValue,
-                    )),
-                }
+            [] => {
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
-            _ => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::IncorrectDataFormatForValue,
-            )),
+            [b'\x01', ..] => {
+                return Err(self.reject(
+                    self.current_tag,
+                    SessionRejectReasonBase::TagSpecifiedWithoutAValue,
+                ));
+            }
+            _ => {}
         }
+
+        let (naive_date, hour, min, rest) = match parse_timestamp_head(self.buf) {
+            Ok(head) => head,
+            Err(error) => return Err(self.garbled_or_reject_value(error)),
+        };
+        // TZ times carry no leap second: SS = 00-59 only.
+        let (sec, rest) = match rest {
+            [s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
+                ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
+            }
+            _ if rest.len() < 2 => {
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
+            }
+            _ => {
+                return Err(self.reject_value(SessionRejectReasonBase::IncorrectDataFormatForValue));
+            }
+        };
+        let (fraction_of_second, precision, rest) = match parse_fraction_of_second(rest) {
+            Ok(fraction) => fraction,
+            Err(error) => return Err(self.garbled_or_reject_value(error)),
+        };
+        self.buf = rest;
+        let offset = self.deserialize_tz_offset()?;
+
+        let naive_date_time = naive_date
+            .and_hms_nano_opt(hour, min, sec, fraction_of_second)
+            .ok_or_else(|| {
+                self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
+            })?;
+        let timestamp = offset
+            .from_local_datetime(&naive_date_time)
+            .single()
+            .ok_or_else(|| {
+                self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
+            })?;
+        Ok(TzTimestamp::with_precision(timestamp, precision))
     }
 
     /// Deserialize time of day with timezone. Time represented based on
@@ -1834,17 +1754,21 @@ impl Deserializer<'_> {
     /// - mm = 00-59 offset minutes.
     pub fn deserialize_tz_timeonly(&mut self) -> Result<TzTimeOnly, DeserializeError> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [b'\x01', ..] => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::TagSpecifiedWithoutAValue,
-            )),
-            // Missing separator at the end
-            [_] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
+            [] => {
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
+            }
+            [b'\x01', ..] => {
+                return Err(self.reject(
+                    self.current_tag,
+                    SessionRejectReasonBase::TagSpecifiedWithoutAValue,
+                ));
+            }
+            _ => {}
+        }
+
+        let (hour, min, rest) = match self.buf {
             [
                 // Hour
                 h1 @ b'0'..=b'2',
@@ -1854,48 +1778,41 @@ impl Deserializer<'_> {
                 mm1 @ b'0'..=b'5',
                 mm0 @ b'0'..=b'9',
                 rest @ ..,
-            ] => {
-                let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
-                let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
-                self.buf = rest;
-
-                // Optional :SS
-                let sec = match self.buf {
-                    [b':', s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
-                        let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                        self.buf = rest;
-                        sec
-                    }
-                    _ => 0,
-                };
-
-                let (fraction_of_second, precision) = self.deserialize_tz_fraction_of_second()?;
-                let offset = self.deserialize_tz_offset()?;
-
-                let time = NaiveTime::from_hms_nano_opt(hour, min, sec, fraction_of_second)
-                    .ok_or_else(|| {
-                        self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                    })?;
-
-                match precision {
-                    0 => Ok(TzTimeOnly::with_secs(time, offset)),
-                    3 => Ok(TzTimeOnly::with_millis(time, offset)),
-                    6 => Ok(TzTimeOnly::with_micros(time, offset)),
-                    9 => Ok(TzTimeOnly::with_nanos(time, offset)),
-                    // XXX: Types from `chrono` crate can't hold
-                    //      time at picosecond resolution
-                    12 => Ok(TzTimeOnly::with_nanos(time, offset)),
-                    _ => Err(self.reject(
-                        self.current_tag,
-                        SessionRejectReasonBase::IncorrectDataFormatForValue,
-                    )),
-                }
+            ] => (
+                (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32,
+                (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32,
+                rest,
+            ),
+            _ if self.buf.len() < 5 => {
+                return Err(DeserializeError::Garbled(
+                    GarbledReason::IncompleteMessageData,
+                ));
             }
-            _ => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::IncorrectDataFormatForValue,
-            )),
-        }
+            _ => {
+                return Err(self.reject_value(SessionRejectReasonBase::IncorrectDataFormatForValue));
+            }
+        };
+
+        // Optional :SS
+        let (sec, rest) = match rest {
+            [b':', s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
+                ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
+            }
+            _ => (0, rest),
+        };
+
+        let (fraction_of_second, precision, rest) = match parse_fraction_of_second(rest) {
+            Ok(fraction) => fraction,
+            Err(error) => return Err(self.garbled_or_reject_value(error)),
+        };
+        self.buf = rest;
+        let offset = self.deserialize_tz_offset()?;
+
+        let time =
+            NaiveTime::from_hms_nano_opt(hour, min, sec, fraction_of_second).ok_or_else(|| {
+                self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
+            })?;
+        Ok(TzTimeOnly::new(time, offset, precision))
     }
 
     /// Deserialize sequence of character digits without commas or decimals.

@@ -1,5 +1,7 @@
 use std::{borrow, fmt, mem, num::NonZero, ops};
 
+#[cfg(feature = "serde-serialize")]
+use chrono::Datelike;
 use chrono::Timelike;
 pub use chrono::{
     DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
@@ -649,52 +651,7 @@ mod utc_timestamp_serde_de {
     };
 
     use super::*;
-
-    fn deserialize_fraction_of_second<E>(buf: &[u8]) -> Result<(u32, u8), E>
-    where
-        E: de::Error,
-    {
-        let [b'.', buf @ ..] = buf else {
-            return Err(de::Error::custom("incorrecct data format for UtcTimestamp"));
-        };
-
-        let mut fraction_of_second: u64 = 0;
-        for i in 0..buf.len() {
-            // SAFETY: i is between 0 and buf.len()
-            match unsafe { buf.get_unchecked(i) } {
-                n @ b'0'..=b'9' => {
-                    fraction_of_second = fraction_of_second
-                        .checked_mul(10)
-                        .and_then(|v| v.checked_add((n - b'0') as u64))
-                        .ok_or_else(|| {
-                            de::Error::custom("incorrect fraction of second (overflow)")
-                        })?;
-                }
-                _ => {
-                    return Err(de::Error::custom(
-                        "incorrecct data format for fraction of second",
-                    ));
-                }
-            }
-        }
-        let (multiplier, divider) = match buf.len() {
-            3 => (1_000_000, 1),
-            6 => (1_000, 1),
-            9 => (1, 1),
-            // XXX: Types from `chrono` crate can't hold
-            //      time at picosecond resolution
-            12 => (1, 1_000),
-            _ => {
-                return Err(de::Error::custom(
-                    "incorrect fraction of second (wrong precision)",
-                ));
-            }
-        };
-        (fraction_of_second * multiplier / divider)
-            .try_into()
-            .map(|adjusted_fraction_of_second| (adjusted_fraction_of_second, buf.len() as u8))
-            .map_err(|_| de::Error::custom("incorrecct data format for UtcTimestamp"))
-    }
+    use crate::deserializer::parse_utc_timestamp;
 
     struct UtcTimestampVisitor;
 
@@ -705,91 +662,19 @@ mod utc_timestamp_serde_de {
             formatter.write_str("string")
         }
 
-        /// TODO: Same as in Deserializer
-        /// Deserialize string representing time/date combination represented
-        /// in UTC (Universal Time Coordinated) in either YYYYMMDD-HH:MM:SS
-        /// (whole seconds) or YYYYMMDD-HH:MM:SS.sss* format, colons, dash,
-        /// and period required.
-        ///
-        /// # Valid values:
-        /// - YYYY = 0000-9999,
-        /// - MM = 01-12,
-        /// - DD = 01-31,
-        /// - HH = 00-23,
-        /// - MM = 00-59,
-        /// - SS = 00-60 (60 only if UTC leap second),
-        /// - sss* fractions of seconds. The fractions of seconds may be empty when
-        ///   no fractions of seconds are conveyed (in such a case the period
-        ///   is not conveyed), it may include 3 digits to convey
-        ///   milliseconds, 6 digits to convey microseconds, 9 digits
-        ///   to convey nanoseconds, 12 digits to convey picoseconds;
+        /// Deserialize a UTC timestamp in the FIX wire format. The grammar
+        /// is defined by the shared parser also used by the tag-value
+        /// deserializer; unlike the tag-value form the value here is
+        /// length-delimited, so the whole input must be consumed.
         fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
-            match value.as_bytes() {
-                [
-                    // Year
-                    y3 @ b'0'..=b'9',
-                    y2 @ b'0'..=b'9',
-                    y1 @ b'0'..=b'9',
-                    y0 @ b'0'..=b'9',
-                    // Month
-                    m1 @ b'0'..=b'1',
-                    m0 @ b'0'..=b'9',
-                    // Day
-                    d1 @ b'0'..=b'3',
-                    d0 @ b'0'..=b'9',
-                    b'-',
-                    // Hour
-                    h1 @ b'0'..=b'2',
-                    h0 @ b'0'..=b'9',
-                    b':',
-                    // Minute
-                    mm1 @ b'0'..=b'5',
-                    mm0 @ b'0'..=b'9',
-                    b':',
-                    // TODO: leap second!
-                    // Second
-                    s1 @ b'0'..=b'5',
-                    s0 @ b'0'..=b'9',
-                    ..,
-                ] => {
-                    let value = &value[17..];
-                    let year = (y3 - b'0') as i32 * 1000
-                        + (y2 - b'0') as i32 * 100
-                        + (y1 - b'0') as i32 * 10
-                        + (y0 - b'0') as i32;
-                    let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
-                    let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
-                    let naive_date =
-                        NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| {
-                            de::Error::custom("incorrecct data format for UtcTimestamp")
-                        })?;
-                    let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
-                    let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
-                    let sec = (s1 - b'0') as u32 * 10 + (s0 - b'0') as u32;
-                    let (fraction_of_second, precision) =
-                        deserialize_fraction_of_second(value.as_bytes())?;
-                    let naive_date_time = naive_date
-                        .and_hms_nano_opt(hour, min, sec, fraction_of_second)
-                        .ok_or_else(|| {
-                            de::Error::custom("incorrecct data format for UtcTimestamp")
-                        })?;
-                    let timestamp = Utc.from_utc_datetime(&naive_date_time);
-
-                    match precision {
-                        0 => Ok(UtcTimestamp::with_secs(timestamp)),
-                        3 => Ok(UtcTimestamp::with_millis(timestamp)),
-                        6 => Ok(UtcTimestamp::with_micros(timestamp)),
-                        9 => Ok(UtcTimestamp::with_nanos(timestamp)),
-                        // XXX: Types from `chrono` crate can't hold
-                        //      time at picosecond resolution
-                        12 => Ok(UtcTimestamp::with_nanos(timestamp)),
-                        _ => Err(de::Error::custom("incorrecct data format for UtcTimestamp")),
-                    }
-                }
-                _ => Err(de::Error::custom("incorrecct data format for UtcTimestamp")),
+            match parse_utc_timestamp(value.as_bytes()) {
+                // The whole input must be consumed - a length-delimited
+                // value has no terminator after the timestamp.
+                Ok((timestamp, [])) => Ok(timestamp),
+                _ => Err(de::Error::custom("incorrect data format for UtcTimestamp")),
             }
         }
     }
@@ -810,6 +695,17 @@ impl serde::Serialize for UtcTimestamp {
     where
         S: serde::Serializer,
     {
+        use serde::ser::Error;
+
+        // The FIX grammar has a fixed 4-digit year; chrono formats years
+        // outside that range with a sign and more digits, producing a string
+        // that can never be deserialized back - fail fast instead.
+        let year = self.timestamp.year();
+        if !(0..=9999).contains(&year) {
+            return Err(S::Error::custom(format!(
+                "year {year} not representable in the 4-digit FIX timestamp format"
+            )));
+        }
         let formatted_timestamp = self.format_precisely().to_string();
         serializer.serialize_str(&formatted_timestamp)
     }
@@ -952,6 +848,17 @@ impl UtcTimestamp {
 }
 
 impl UtcTimeOnly {
+    /// Creates UtcTimeOnly with given time precision
+    /// input's precision is adjusted to requested one
+    pub fn with_precision(time: NaiveTime, precision: TimePrecision) -> UtcTimeOnly {
+        match precision {
+            TimePrecision::Secs => UtcTimeOnly::with_secs(time),
+            TimePrecision::Millis => UtcTimeOnly::with_millis(time),
+            TimePrecision::Micros => UtcTimeOnly::with_micros(time),
+            TimePrecision::Nanos => UtcTimeOnly::with_nanos(time),
+        }
+    }
+
     /// Creates UtcTimeOnly with time precision set to full seconds
     /// input's precision is adjusted to requested one
     pub fn with_secs(time: NaiveTime) -> UtcTimeOnly {
@@ -1614,5 +1521,122 @@ mod tests {
         // Base-version projection: Latest lands on its frozen base.
         assert_eq!(ApplVerId::FixLatest.to_version(), Version::FIX_LATEST);
         assert_eq!(ApplVerId::FixLatest.to_version(), Version::FIX50SP2);
+    }
+}
+
+#[cfg(all(test, feature = "serde-deserialize"))]
+mod utc_timestamp_serde_tests {
+    use serde::{
+        Deserialize,
+        de::value::{Error as DeError, StrDeserializer},
+    };
+
+    use super::*;
+
+    fn de(input: &str) -> Result<UtcTimestamp, DeError> {
+        UtcTimestamp::deserialize(StrDeserializer::<DeError>::new(input))
+    }
+
+    #[test]
+    fn whole_second_timestamp_round_trips() {
+        // A whole-second timestamp serializes without a fraction; reading
+        // that form back must succeed and preserve the precision.
+        let original = UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap());
+        let formatted = original.format_precisely().to_string();
+        assert_eq!(formatted, "20240102-03:04:05");
+        let parsed = de(&formatted).expect("whole-second timestamp rejected");
+        assert_eq!(parsed, original);
+        assert_eq!(parsed.precision(), TimePrecision::Secs);
+    }
+
+    #[test]
+    fn fractional_timestamps_round_trip() {
+        for (input, precision) in [
+            ("20240102-03:04:05.123", TimePrecision::Millis),
+            ("20240102-03:04:05.123456", TimePrecision::Micros),
+            ("20240102-03:04:05.123456789", TimePrecision::Nanos),
+        ] {
+            let parsed = de(input).expect("valid timestamp rejected");
+            assert_eq!(parsed.precision(), precision);
+            assert_eq!(parsed.format_precisely().to_string(), input);
+        }
+    }
+
+    #[test]
+    fn leap_second_is_accepted() {
+        // chrono represents a leap second as sec=59 with nanos >= 1_000_000_000,
+        // and `with_secs` zeroes the subsecond part - so at Secs precision the
+        // leap second collapses to :59 (same as the tag-value deserializer).
+        let expected =
+            UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2023, 12, 31, 23, 59, 59).unwrap());
+        let parsed = de("20231231-23:59:60").expect("leap second rejected");
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.precision(), TimePrecision::Secs);
+    }
+
+    #[test]
+    fn leap_second_with_millis_is_accepted() {
+        let expected = Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(2023, 12, 31)
+                .unwrap()
+                .and_hms_nano_opt(23, 59, 59, 1_123_000_000)
+                .unwrap(),
+        );
+        let parsed = de("20231231-23:59:60.123").expect("leap second with millis rejected");
+        assert_eq!(parsed.timestamp(), expected);
+        assert_eq!(parsed.precision(), TimePrecision::Millis);
+    }
+
+    #[test]
+    fn trailing_garbage_is_rejected() {
+        assert!(de("20240102-03:04:05x").is_err());
+        assert!(de("20240102-03:04:05.123x").is_err());
+        assert!(de("20240102-03:04:05.123\x01").is_err());
+    }
+
+    #[test]
+    fn overlong_fraction_is_rejected() {
+        // A digit count congruent to a valid count modulo 256 must not pass.
+        let mut input = String::from("20240102-03:04:05.");
+        input.push_str(&"0".repeat(256));
+        input.push_str("123");
+        assert!(de(&input).is_err());
+    }
+
+    #[test]
+    fn invalid_values_are_rejected() {
+        // Wrong fraction digit count (only 3, 6, 9 and 12 are valid).
+        assert!(de("20240102-03:04:05.12").is_err());
+        // Empty fraction after the period.
+        assert!(de("20240102-03:04:05.").is_err());
+        // Nonexistent calendar date.
+        assert!(de("20240232-03:04:05").is_err());
+        // Second above the leap-second value.
+        assert!(de("20240102-03:04:61").is_err());
+        // Truncated value.
+        assert!(de("20240102-03:04").is_err());
+        assert!(de("").is_err());
+    }
+}
+
+#[cfg(all(test, feature = "serde-serialize"))]
+mod utc_timestamp_serde_ser_tests {
+    use super::*;
+
+    #[test]
+    fn out_of_range_year_fails_to_serialize() {
+        // The FIX grammar has a fixed 4-digit year; chrono formats years
+        // outside 0000-9999 with a sign and more digits, producing a string
+        // the deserializer can never accept. Serialization must fail fast
+        // instead of emitting unreadable data. UtcTimestamp::default() is
+        // MIN_UTC, so an unfilled timestamp field hits exactly this case.
+        assert!(serde_json::to_string(&UtcTimestamp::default()).is_err());
+        assert!(serde_json::to_string(&UtcTimestamp::MAX_UTC).is_err());
+    }
+
+    #[test]
+    fn in_range_timestamp_serializes_to_plain_string() {
+        let ts = UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap());
+        assert_eq!(serde_json::to_string(&ts).unwrap(), "\"20240102-03:04:05\"");
     }
 }
