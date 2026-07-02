@@ -511,8 +511,8 @@ impl TryFrom<&[u8]> for FixString {
     type Error = FixStringError;
 
     fn try_from(input: &[u8]) -> Result<FixString, Self::Error> {
-        // TODO: check vefore allocation
-        FixString::from_ascii(input.to_vec())
+        // Validate in place, so invalid input costs no allocation.
+        FixStr::from_ascii(input).map(|fix_str| fix_str.to_owned())
     }
 }
 
@@ -528,7 +528,8 @@ impl TryFrom<&str> for FixString {
     type Error = FixStringError;
 
     fn try_from(buf: &str) -> Result<FixString, Self::Error> {
-        FixString::from_ascii(buf.as_bytes().to_owned())
+        // Validate in place, so invalid input costs no allocation.
+        FixStr::from_ascii(buf.as_bytes()).map(|fix_str| fix_str.to_owned())
     }
 }
 
@@ -544,13 +545,17 @@ impl<const N: usize> TryFrom<[u8; N]> for FixString {
     type Error = FixStringError;
 
     fn try_from(buf: [u8; N]) -> Result<FixString, Self::Error> {
-        FixString::from_ascii(buf.to_vec())
+        // Validate in place, so invalid input costs no allocation.
+        FixStr::from_ascii(&buf).map(|fix_str| fix_str.to_owned())
     }
 }
 
-impl<const N: usize> From<&[u8; N]> for FixString {
-    fn from(input: &[u8; N]) -> FixString {
-        FixString(input.as_slice().into())
+impl<const N: usize> TryFrom<&[u8; N]> for FixString {
+    type Error = FixStringError;
+
+    fn try_from(input: &[u8; N]) -> Result<FixString, Self::Error> {
+        // Validate in place, so invalid input costs no allocation.
+        FixStr::from_ascii(input).map(|fix_str| fix_str.to_owned())
     }
 }
 
@@ -1515,6 +1520,40 @@ mod tests {
         // 0x7E (~) is the highest valid printable ASCII character, just below DEL
         let buf = b"Hello~world!".to_vec();
         assert!(FixString::from_ascii(buf).is_ok());
+    }
+
+    /// Every safe conversion into `FixString` must enforce the printable-ASCII
+    /// invariant. `as_utf8` relies on it via `from_utf8_unchecked`, so a
+    /// conversion that lets arbitrary bytes through would make even printing
+    /// a `FixString` undefined behavior.
+    #[test]
+    fn fix_string_conversions_reject_non_ascii() {
+        assert!(FixString::try_from(&b"Hello\xffworld!"[..]).is_err());
+        assert!(FixString::try_from(b"Hello\xffworld!".to_vec()).is_err());
+        assert!(FixString::try_from(*b"Hello\xffworld!").is_err());
+        assert!(FixString::try_from(b"Hello\xffworld!").is_err());
+    }
+
+    #[test]
+    fn fix_string_conversions_reject_control_characters() {
+        assert!(FixString::try_from(&b"Hello\x01world!"[..]).is_err());
+        assert!(FixString::try_from(b"Hello\x01world!".to_vec()).is_err());
+        assert!(FixString::try_from(*b"Hello\x01world!").is_err());
+        assert!(FixString::try_from(b"Hello\x01world!").is_err());
+    }
+
+    #[test]
+    fn fix_string_conversions_accept_printable_ascii() {
+        let expected = b"Hello world!";
+        assert_eq!(FixString::try_from(&expected[..]).unwrap(), expected);
+        assert_eq!(FixString::try_from(expected.to_vec()).unwrap(), expected);
+        assert_eq!(FixString::try_from(*expected).unwrap(), expected);
+        assert_eq!(FixString::try_from(expected).unwrap(), expected);
+        assert_eq!(FixString::try_from("Hello world!").unwrap(), expected);
+        assert_eq!(
+            FixString::try_from(String::from("Hello world!")).unwrap(),
+            expected
+        );
     }
 
     #[test]
