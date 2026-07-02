@@ -843,7 +843,6 @@ impl Deserializer<'_> {
     }
 
     /// Deserialize any ASCII character except control characters.
-    // TODO: [Feature]: Deserialize any ISO/IEC 8859-1 (Latin-1) character except control characters.
     pub fn deserialize_char(&mut self) -> Result<Char, DeserializeError> {
         match self.buf {
             [] => Err(DeserializeError::Garbled(

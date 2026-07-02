@@ -345,7 +345,6 @@ macro_rules! fix_format {
     }}
 }
 
-// TODO: Optional feature for ISO 8859-1 encoded strings
 impl FixString {
     pub const fn new() -> FixString {
         FixString(Vec::new())
