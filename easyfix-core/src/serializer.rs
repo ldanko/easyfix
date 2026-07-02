@@ -112,7 +112,6 @@ impl<'a> Serializer<'a> {
         Ok(())
     }
 
-    // TODO: add test cases for body len and checksum verification
     pub fn serialize_checksum(&mut self) -> Result<(), SerializeError> {
         let mut buffer = itoa::Buffer::new();
 
@@ -555,5 +554,172 @@ impl<'a> Write for Serializer<'a> {
         self.output[self.pos..end].copy_from_slice(bytes);
         self.pos = end;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Serializer, max_body_len_digits};
+
+    const BEGIN_STRING: &[u8] = b"8=FIXT.1.1\x01";
+
+    /// Frame `body` as a complete FIX message and return the byte count.
+    ///
+    /// Mirrors what a generated `FixtMessage::serialize` does: BeginString,
+    /// BodyLength placeholder, body, CheckSum.
+    fn frame(buf: &mut [u8], body: &[u8]) -> usize {
+        let mut serializer = Serializer::new(buf);
+        serializer.put_slice(BEGIN_STRING).unwrap();
+        serializer.serialize_body_len().unwrap();
+        serializer.put_slice(body).unwrap();
+        serializer.serialize_checksum().unwrap();
+        serializer.pos()
+    }
+
+    /// Independent checksum oracle: plain u32 sum reduced mod 256, rather
+    /// than the `u8::wrapping_add` fold the serializer uses.
+    fn expected_checksum(bytes: &[u8]) -> u8 {
+        (bytes.iter().map(|&b| b as u32).sum::<u32>() % 256) as u8
+    }
+
+    /// Split a framed message into (everything before `10=`, the CheckSum
+    /// field). The CheckSum field is always exactly `10=NNN\x01`.
+    fn split_checksum(msg: &[u8]) -> (&[u8], &[u8]) {
+        msg.split_at(msg.len() - 7)
+    }
+
+    #[test]
+    fn body_len_counts_bytes_between_body_length_and_checksum() {
+        let body = b"35=0\x0134=1\x0149=SENDER\x0156=TARGET\x01";
+        assert_eq!(body.len(), 30);
+
+        let mut buf = [0u8; 4096];
+        let len = frame(&mut buf, body);
+        let msg = &buf[..len];
+
+        // A 4096-byte buffer yields a 4-digit placeholder, so the BodyLength
+        // field occupies 7 bytes ("9=0000\x01") right after BeginString.
+        assert_eq!(max_body_len_digits(buf.len()), 4);
+        assert_eq!(
+            &msg[BEGIN_STRING.len()..BEGIN_STRING.len() + 7],
+            b"9=0030\x01"
+        );
+    }
+
+    #[test]
+    fn body_len_is_patched_right_aligned_keeping_leading_zeros() {
+        // Body length 5 into a 4-digit placeholder must become "0005",
+        // never "5000" or "5\0\0\0".
+        let body = b"35=0\x01";
+        assert_eq!(body.len(), 5);
+
+        let mut buf = [0u8; 4096];
+        let len = frame(&mut buf, body);
+        let msg = &buf[..len];
+
+        assert_eq!(
+            &msg[BEGIN_STRING.len()..BEGIN_STRING.len() + 7],
+            b"9=0005\x01"
+        );
+    }
+
+    #[test]
+    fn body_len_placeholder_width_follows_buffer_size() {
+        // The placeholder is sized from the buffer, not from the payload.
+        for (buf_len, digits) in [(64usize, 2usize), (500, 3), (4096, 4), (65536, 5)] {
+            let mut buf = vec![0u8; buf_len];
+            let len = frame(&mut buf, b"35=0\x01");
+            let msg = &buf[..len];
+
+            assert_eq!(max_body_len_digits(buf_len), digits);
+            let body_len_field = &msg[BEGIN_STRING.len()..BEGIN_STRING.len() + digits + 3];
+            let expected = format!("9={:0width$}\x01", 5, width = digits);
+            assert_eq!(
+                body_len_field,
+                expected.as_bytes(),
+                "buffer of {buf_len} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_covers_every_byte_before_the_checksum_field() {
+        let body = b"35=0\x0134=1\x0149=SENDER\x0156=TARGET\x01";
+        let mut buf = [0u8; 4096];
+        let len = frame(&mut buf, body);
+        let (covered, checksum_field) = split_checksum(&buf[..len]);
+
+        let expected = format!("10={:03}\x01", expected_checksum(covered));
+        assert_eq!(checksum_field, expected.as_bytes());
+    }
+
+    #[test]
+    fn checksum_is_computed_after_body_len_is_patched() {
+        // The placeholder digits differ from the patched ones, so a checksum
+        // taken before patching would disagree with a recompute over the
+        // final bytes.
+        let body = b"35=0\x0134=1\x0149=SENDER\x0156=TARGET\x01";
+        let mut buf = [0u8; 4096];
+        let len = frame(&mut buf, body);
+        let msg = &buf[..len];
+        let (covered, _) = split_checksum(msg);
+
+        // "9=0030" must already be in the covered range - not "9=0000".
+        assert!(covered.windows(6).any(|w| w == b"9=0030"));
+    }
+
+    #[test]
+    fn checksum_is_always_zero_padded_to_three_digits() {
+        // Sweep filler bytes and lengths so all three padding branches
+        // (< 10, < 100, >= 100) are exercised.
+        let mut saw_single_digit = false;
+        let mut saw_two_digits = false;
+        let mut saw_three_digits = false;
+
+        for filler in 0x20u8..=0x7e {
+            for pad in 0..8usize {
+                let mut body = Vec::from(&b"35=0\x0158="[..]);
+                body.resize(body.len() + pad, filler);
+                body.push(b'\x01');
+
+                let mut buf = [0u8; 4096];
+                let len = frame(&mut buf, &body);
+                let (covered, checksum_field) = split_checksum(&buf[..len]);
+
+                let checksum = expected_checksum(covered);
+                match checksum {
+                    0..=9 => saw_single_digit = true,
+                    10..=99 => saw_two_digits = true,
+                    _ => saw_three_digits = true,
+                }
+
+                let expected = format!("10={checksum:03}\x01");
+                assert_eq!(
+                    checksum_field,
+                    expected.as_bytes(),
+                    "filler {filler:#04x}, pad {pad}"
+                );
+            }
+        }
+
+        assert!(saw_single_digit, "no checksum below 10 was exercised");
+        assert!(saw_two_digits, "no checksum in 10..100 was exercised");
+        assert!(saw_three_digits, "no checksum >= 100 was exercised");
+    }
+
+    #[test]
+    fn framed_message_matches_a_hand_computed_reference() {
+        // Full regression anchor: exact bytes, including both patched fields.
+        let body = b"35=0\x0134=1\x01";
+        let mut buf = [0u8; 4096];
+        let len = frame(&mut buf, body);
+
+        let head = b"8=FIXT.1.1\x019=0010\x0135=0\x0134=1\x01";
+        let expected = format!(
+            "{}10={:03}\x01",
+            std::str::from_utf8(head).unwrap(),
+            expected_checksum(head)
+        );
+        assert_eq!(&buf[..len], expected.as_bytes());
     }
 }
