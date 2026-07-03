@@ -1297,10 +1297,20 @@ impl<'de> Deserializer<'de> {
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
-            [a, b, c, d, b'\x01', buf @ ..] => {
+            [
+                a @ 0x20..=0x7e,
+                b @ 0x20..=0x7e,
+                c @ 0x20..=0x7e,
+                d @ 0x20..=0x7e,
+                b'\x01',
+                buf @ ..,
+            ] => {
                 self.buf = buf;
-                // TODO
                 Ok([*a, *b, *c, *d])
+            }
+            // Correct length, but a byte outside printable ASCII
+            [_, _, _, _, b'\x01', ..] => {
+                Err(self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect))
             }
             _ => Err(self.reject(
                 self.current_tag,
@@ -1341,9 +1351,13 @@ impl<'de> Deserializer<'de> {
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
-            [a, b, b'\x01', buf @ ..] => {
+            [a @ 0x20..=0x7e, b @ 0x20..=0x7e, b'\x01', buf @ ..] => {
                 self.buf = buf;
                 Ok([*a, *b])
+            }
+            // Correct length, but a byte outside printable ASCII
+            [_, _, b'\x01', ..] => {
+                Err(self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect))
             }
             _ => Err(self.reject(
                 self.current_tag,

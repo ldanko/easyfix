@@ -5,7 +5,10 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 
 use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
-    basic_types::{FixStr, LocalMktDate, Price, Tenor, TenorUnit, TimePrecision},
+    base_messages::SessionRejectReasonBase,
+    basic_types::{
+        FixStr, LocalMktDate, Price, SessionRejectReasonField, Tenor, TenorUnit, TimePrecision,
+    },
     deserializer::{
         DeserializeError, GarbledReason, LogoutReason, RawMessageError, deserialize_checksum,
     },
@@ -1082,5 +1085,82 @@ fn deserialize_xml_missing_separator() {
         Err(DeserializeError::Garbled(
             GarbledReason::MessageNotWellFormed
         ))
+    );
+}
+
+#[test]
+fn deserialize_exchange_ok() {
+    let input = b"XNAS\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_exchange()
+        .expect("failed to deserialize exchange");
+    assert_eq!(result, *b"XNAS");
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_exchange_control_char() {
+    let input = b"XN\x02S\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_exchange(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_exchange_high_byte() {
+    let input = b"XN\x80S\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_exchange(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_exchange_wrong_length() {
+    let input = b"XNA\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_exchange(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
+}
+
+#[test]
+fn deserialize_language_ok() {
+    let input = b"pl\x01\x00";
+    let mut deserializer = deserializer(input);
+    let result = deserializer
+        .deserialize_language()
+        .expect("failed to deserialize language");
+    assert_eq!(result, *b"pl");
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_language_control_char() {
+    let input = b"p\x1f\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_language(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_language_high_byte() {
+    let input = b"p\x80\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_language(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }

@@ -305,6 +305,9 @@ impl<'a> Serializer<'a> {
     /// – Codes for exchanges and market identification (MIC)
     /// (4-character code).
     pub fn serialize_exchange(&mut self, exchange: &Exchange) -> Result<(), SerializeError> {
+        for &byte in exchange {
+            validate_char(byte)?;
+        }
         self.put_slice(exchange)
     }
 
@@ -326,6 +329,9 @@ impl<'a> Serializer<'a> {
     /// Serialize ISO 639-1:2002 Codes for the representation of names
     /// of languages (2-character code).
     pub fn serialize_language(&mut self, input: &Language) -> Result<(), SerializeError> {
+        for &byte in input {
+            validate_char(byte)?;
+        }
         self.put_slice(input)
     }
 
@@ -559,7 +565,9 @@ impl<'a> Write for Serializer<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Serializer, max_body_len_digits};
+    use assert_matches::assert_matches;
+
+    use super::{SerializeError, Serializer, max_body_len_digits};
 
     const BEGIN_STRING: &[u8] = b"8=FIXT.1.1\x01";
 
@@ -705,6 +713,50 @@ mod tests {
         assert!(saw_single_digit, "no checksum below 10 was exercised");
         assert!(saw_two_digits, "no checksum in 10..100 was exercised");
         assert!(saw_three_digits, "no checksum >= 100 was exercised");
+    }
+
+    #[test]
+    fn serialize_exchange_rejects_bytes_outside_printable_ascii() {
+        let mut buf = [0u8; 16];
+        let mut serializer = Serializer::new(&mut buf);
+        assert_matches!(
+            serializer.serialize_exchange(b"XN\x01S"),
+            Err(SerializeError::InvalidValue)
+        );
+        assert_matches!(
+            serializer.serialize_exchange(&[b'X', b'N', 0x80, b'S']),
+            Err(SerializeError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn serialize_exchange_writes_printable_ascii() {
+        let mut buf = [0u8; 16];
+        let mut serializer = Serializer::new(&mut buf);
+        serializer.serialize_exchange(b"XNAS").unwrap();
+        assert_eq!(serializer.written(), b"XNAS");
+    }
+
+    #[test]
+    fn serialize_language_rejects_bytes_outside_printable_ascii() {
+        let mut buf = [0u8; 16];
+        let mut serializer = Serializer::new(&mut buf);
+        assert_matches!(
+            serializer.serialize_language(b"p\x01"),
+            Err(SerializeError::InvalidValue)
+        );
+        assert_matches!(
+            serializer.serialize_language(&[b'p', 0xff]),
+            Err(SerializeError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn serialize_language_writes_printable_ascii() {
+        let mut buf = [0u8; 16];
+        let mut serializer = Serializer::new(&mut buf);
+        serializer.serialize_language(b"pl").unwrap();
+        assert_eq!(serializer.written(), b"pl");
     }
 
     #[test]
