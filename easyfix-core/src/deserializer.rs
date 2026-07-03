@@ -1070,8 +1070,8 @@ impl<'de> Deserializer<'de> {
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
-            // ASCII controll characters range + unused range
-            [0x00..=0x1f | 0x80..=0xff, ..] => {
+            // ASCII control characters range (including DEL) + unused range
+            [0x00..=0x1f | 0x7f..=0xff, ..] => {
                 Err(self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect))
             }
             [n, b'\x01', buf @ ..] => {
@@ -1207,8 +1207,8 @@ impl<'de> Deserializer<'de> {
             let mut sub_result = Vec::with_capacity(part.len());
             for byte in part {
                 match byte {
-                    // ASCII controll characters range
-                    0x00..=0x1f | 0x80..=0xff => {
+                    // ASCII control characters range (including DEL) + unused range
+                    0x00..=0x1f | 0x7f..=0xff => {
                         return Err(self
                             .reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect));
                     }

@@ -1155,6 +1155,73 @@ fn deserialize_language_control_char() {
 }
 
 #[test]
+fn deserialize_char_del() {
+    // 0x7f (DEL) is a control character despite being above the 0x00-0x1f range
+    let input = b"\x7f\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_char(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_del() {
+    let input = b"\x7f\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_multiple_string_value_del() {
+    let input = b"ab\x7fcd\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_string_value(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_str_del() {
+    let input = b"ab\x7fcd\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_str(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_exchange_del() {
+    let input = b"XN\x7fS\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_exchange(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_language_del() {
+    let input = b"p\x7f\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_language(),
+        Err(DeserializeError::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
 fn deserialize_language_high_byte() {
     let input = b"p\x80\x01";
     let mut deserializer = deserializer(input);
