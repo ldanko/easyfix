@@ -1313,34 +1313,21 @@ impl<'de> Deserializer<'de> {
     /// An optional day of the month can be appended or an optional week code.
     ///
     /// # Valid formats:
-    /// - `YYYYMM
-    /// - `YYYYMMDD
-    /// - `YYYYMMWW
+    /// - `YYYYMM`
+    /// - `YYYYMMDD`
+    /// - `YYYYMMWW`
     ///
     /// # Valid values:
     /// - YYYY = 0000-9999
     /// - MM = 01-12
     /// - DD = 01-31
     /// - WW = w1, w2, w3, w4, w5
+    ///
+    /// The format is not enforced: the value is accepted as a plain string,
+    /// and format conformance is left to the application.
+    #[inline(always)]
     pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeError> {
-        match self.buf {
-            [] => Err(DeserializeError::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            [b'\x01', ..] => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::TagSpecifiedWithoutAValue,
-            )),
-            [a, b, c, d, e, f, g, h, b'\x01', buf @ ..] => {
-                self.buf = buf;
-                // TODO
-                Ok([*a, *b, *c, *d, *e, *f, *g, *h].into())
-            }
-            _ => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::IncorrectDataFormatForValue,
-            )),
-        }
+        self.deserialize_string()
     }
 
     /// Deserialize ISO 639-1:2002 Codes for the representation of names

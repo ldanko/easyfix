@@ -42,8 +42,14 @@ pub struct FixStr([u8]);
 pub type MultipleStringValue = Vec<FixString>;
 
 pub type Exchange = [u8; 4];
-// TODO: don't use Vec here
-pub type MonthYear = Vec<u8>;
+/// Month of a year, optionally narrowed to a day of the month (`YYYYMMDD`)
+/// or a week within the month (`YYYYMMWW`, `WW` = `w1`..`w5`).
+///
+/// The format is not validated - the value is carried as a plain string,
+/// and format conformance is left to the application. The `FixString`
+/// invariant (printable ASCII) guarantees the value cannot corrupt
+/// message framing.
+pub type MonthYear = FixString;
 pub type Language = [u8; 2];
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]

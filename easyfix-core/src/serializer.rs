@@ -320,7 +320,7 @@ impl<'a> Serializer<'a> {
     /// YYYY = 0000-9999; MM = 01-12; DD = 01-31;
     /// WW = w1, w2, w3, w4, w5.
     pub fn serialize_month_year(&mut self, input: &MonthYear) -> Result<(), SerializeError> {
-        self.put_slice(input)
+        self.serialize_string(input)
     }
 
     /// Serialize ISO 639-1:2002 Codes for the representation of names
