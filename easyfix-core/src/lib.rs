@@ -23,6 +23,10 @@
 //! `HeaderAccess` traits are implemented by generated code, bridging session
 //! logic to concrete message definitions.
 
+// `variant_count` backs the compile-time completeness guards on the base
+// enums' `ALL` slices in `base_messages`.
+#![feature(variant_count)]
+
 // Make `::easyfix_core` resolve within this crate (including examples and
 // tests). Required by the `fix_str!` proc macro which emits
 // `::easyfix_core::basic_types::FixStr::from_ascii_unchecked(...)`.

@@ -1,4 +1,8 @@
 use convert_case::{Case, Casing};
+use easyfix_core::{
+    base_messages::{EncryptMethodBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
+    basic_types::{Int, MsgTypeValue, SessionRejectReasonValue, SessionStatusValue},
+};
 use easyfix_dictionary::Variant;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
@@ -31,9 +35,38 @@ struct BaseEnumMapping {
     trait_name: &'static str,
     /// Name of the newtype wrapper in easyfix-core (e.g. "SessionStatusField")
     field_type_name: &'static str,
-    /// Base enum variant values that must exist in the generated enum.
-    /// Used for build-time validation only.
-    base_variant_values: &'static [&'static str],
+    /// Returns the base enum variant values that must exist in the generated
+    /// enum. Sourced from the easyfix-core base enums (`ALL` slices), so the
+    /// values cannot drift from core. Used for build-time validation only.
+    base_variant_values: fn() -> Vec<String>,
+}
+
+fn encrypt_method_base_values() -> Vec<String> {
+    EncryptMethodBase::ALL
+        .iter()
+        .map(|v| (*v as Int).to_string())
+        .collect()
+}
+
+fn msg_type_base_values() -> Vec<String> {
+    MsgTypeBase::ALL
+        .iter()
+        .map(|v| v.raw_value().as_str().to_owned())
+        .collect()
+}
+
+fn session_status_base_values() -> Vec<String> {
+    SessionStatusBase::ALL
+        .iter()
+        .map(|v| v.raw_value().to_string())
+        .collect()
+}
+
+fn session_reject_reason_base_values() -> Vec<String> {
+    SessionRejectReasonBase::ALL
+        .iter()
+        .map(|v| v.raw_value().to_string())
+        .collect()
 }
 
 const BASE_ENUM_MAPPINGS: &[BaseEnumMapping] = &[
@@ -41,27 +74,25 @@ const BASE_ENUM_MAPPINGS: &[BaseEnumMapping] = &[
         generated_enum_tag: 98, // EncryptMethod
         trait_name: "",         // No trait for EncryptMethod (kept as-is)
         field_type_name: "",
-        base_variant_values: &["0"],
+        base_variant_values: encrypt_method_base_values,
     },
     BaseEnumMapping {
         generated_enum_tag: 35, // MsgType
         trait_name: "MsgTypeValue",
         field_type_name: "MsgTypeField",
-        base_variant_values: &["0", "1", "2", "3", "4", "5", "A"],
+        base_variant_values: msg_type_base_values,
     },
     BaseEnumMapping {
         generated_enum_tag: 1409, // SessionStatus
         trait_name: "SessionStatusValue",
         field_type_name: "SessionStatusField",
-        base_variant_values: &["0", "4", "9", "10"],
+        base_variant_values: session_status_base_values,
     },
     BaseEnumMapping {
         generated_enum_tag: 373, // SessionRejectReason
         trait_name: "SessionRejectReasonValue",
         field_type_name: "SessionRejectReasonField",
-        base_variant_values: &[
-            "0", "1", "2", "3", "4", "5", "6", "9", "10", "11", "13", "14", "15", "16",
-        ],
+        base_variant_values: session_reject_reason_base_values,
     },
 ];
 
@@ -93,6 +124,8 @@ impl EnumCodeGen {
     /// If this enum has a corresponding trait/newtype in easyfix-core, generate:
     /// - `impl TraitName for GeneratedEnum` (raw_value → Int)
     /// - `From<NewtypeField> for GeneratedEnum` (using TryFrom + .expect())
+    /// - For MsgType: `TryFrom<MsgTypeField>` instead (fallible, see
+    ///   [`Self::generate_msg_type_conversion`])
     /// - For EncryptMethod (no trait): `From<EncryptMethodBase> for EncryptMethod` (legacy)
     ///
     /// Returns empty TokenStream if no mapping exists. Panics if a base
@@ -108,7 +141,7 @@ impl EnumCodeGen {
         let generated_name = &self.name;
 
         // Build-time validation: all base variant values must exist in generated enum
-        for &value in mapping.base_variant_values {
+        for value in (mapping.base_variant_values)() {
             self.variants
                 .iter()
                 .find(|v| v.value() == value)
@@ -167,28 +200,51 @@ impl EnumCodeGen {
         }
     }
 
-    /// MsgType conversion: `impl MsgTypeValue for MsgType` + `From<MsgTypeField> for MsgType`.
+    /// MsgType conversion: `impl MsgTypeValue for MsgType` + `TryFrom<MsgTypeField> for MsgType`.
     ///
     /// Unlike int-typed enums, MsgType's raw value is byte-based.
-    /// `raw_value()` returns `MsgTypeField` (constructed from `as_bytes()`).
-    /// `From<MsgTypeField>` uses `from_bytes` + `try_from` on `&FixStr`.
+    /// `raw_value()` matches per variant on `const`-evaluated
+    /// `MsgTypeField` values, so an XML MsgType value that does not fit
+    /// `MsgTypeField` (too long, invalid char) fails the build of the
+    /// generated code instead of panicking at runtime.
+    /// `TryFrom<MsgTypeField>` is fallible: the field validates only the
+    /// value's shape, not membership in the generated enum (a custom XML
+    /// may define fewer message types than the field can hold).
     fn generate_msg_type_conversion(&self, mapping: &BaseEnumMapping) -> TokenStream {
         let generated_name = &self.name;
         let trait_name = Ident::new(mapping.trait_name, Span::call_site());
         let field_type_name = Ident::new(mapping.field_type_name, Span::call_site());
 
+        let raw_value_arms = self.variants.iter().map(|v| {
+            let v_name = variant_ident(v.name());
+            let v_value = Literal::byte_string(v.value().as_bytes());
+            quote! {
+                #generated_name::#v_name => const {
+                    match #field_type_name::from_bytes(#v_value) {
+                        Ok(field) => field,
+                        Err(_) => panic!("MsgType value from XML does not fit MsgTypeField"),
+                    }
+                },
+            }
+        });
+
         quote! {
             impl #trait_name for #generated_name {
                 fn raw_value(&self) -> #field_type_name {
-                    #field_type_name::from_bytes(self.as_bytes())
-                        .expect("generated MsgType values are valid")
+                    match self {
+                        #(#raw_value_arms)*
+                    }
                 }
             }
 
-            impl From<#field_type_name> for #generated_name {
-                fn from(field: #field_type_name) -> #generated_name {
-                    #generated_name::from_bytes(field.as_bytes())
-                        .expect("validated by MsgTypeField")
+            impl TryFrom<#field_type_name> for #generated_name {
+                type Error = SessionRejectReasonBase;
+
+                fn try_from(field: #field_type_name) -> Result<#generated_name, SessionRejectReasonBase> {
+                    match #generated_name::from_bytes(field.as_bytes()) {
+                        Some(msg_type) => Ok(msg_type),
+                        None => Err(SessionRejectReasonBase::InvalidMsgType),
+                    }
                 }
             }
         }

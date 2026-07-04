@@ -54,8 +54,9 @@ pub trait SessionMessage: Sized + Debug + HeaderAccess {
     ///
     /// Returns [`MsgTypeField`] — a compact, copyable representation that
     /// can be compared against [`MsgTypeBase`] variants for admin message
-    /// dispatch, or converted to a richer type via `From` when exhaustive
-    /// matching is needed.
+    /// dispatch, or converted to a richer type via `TryFrom` when exhaustive
+    /// matching is needed (fallible: the field may hold a value the richer
+    /// type does not define).
     ///
     /// [`MsgTypeBase`]: crate::base_messages::MsgTypeBase
     fn msg_type(&self) -> MsgTypeField;

@@ -1056,7 +1056,7 @@ pub enum MsgTypeError {
     TooLong(usize),
 }
 
-fn is_valid_msg_type_char(byte: u8) -> bool {
+const fn is_valid_msg_type_char(byte: u8) -> bool {
     matches!(byte, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z')
 }
 
@@ -1099,7 +1099,7 @@ impl MsgTypeField {
         MsgTypeField { buf }
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<MsgTypeField, MsgTypeError> {
+    pub const fn from_bytes(bytes: &[u8]) -> Result<MsgTypeField, MsgTypeError> {
         match bytes {
             [] => Err(MsgTypeError::Empty),
             [b0] => {

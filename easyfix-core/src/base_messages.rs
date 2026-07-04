@@ -17,7 +17,7 @@
 //!
 //! [`Message`]: crate::message::Message
 
-use std::borrow::Cow;
+use std::{borrow::Cow, mem::variant_count};
 
 use crate::basic_types::{
     ApplVerId, Boolean, FixStr, Int, MsgTypeField, MsgTypeValue, SeqNum, SessionRejectReasonField,
@@ -41,6 +41,25 @@ pub enum MsgTypeBase {
     Logout,        // "5"
     Logon,         // "A"
 }
+
+impl MsgTypeBase {
+    /// All variants. The code generator validates that a generated `MsgType`
+    /// enum covers every variant listed here.
+    pub const ALL: &'static [MsgTypeBase] = &[
+        MsgTypeBase::Heartbeat,
+        MsgTypeBase::TestRequest,
+        MsgTypeBase::ResendRequest,
+        MsgTypeBase::Reject,
+        MsgTypeBase::SequenceReset,
+        MsgTypeBase::Logout,
+        MsgTypeBase::Logon,
+    ];
+}
+
+const _: () = assert!(
+    MsgTypeBase::ALL.len() == variant_count::<MsgTypeBase>(),
+    "MsgTypeBase::ALL is missing a variant"
+);
 
 impl MsgTypeValue for MsgTypeBase {
     fn raw_value(&self) -> MsgTypeField {
@@ -82,6 +101,22 @@ pub enum SessionStatusBase {
     ReceivedNextExpectedMsgSeqNumTooHigh = 10,
 }
 
+impl SessionStatusBase {
+    /// All variants. The code generator validates that a generated
+    /// `SessionStatus` enum covers every variant listed here.
+    pub const ALL: &'static [SessionStatusBase] = &[
+        SessionStatusBase::SessionActive,
+        SessionStatusBase::SessionLogoutComplete,
+        SessionStatusBase::ReceivedMsgSeqNumTooLow,
+        SessionStatusBase::ReceivedNextExpectedMsgSeqNumTooHigh,
+    ];
+}
+
+const _: () = assert!(
+    SessionStatusBase::ALL.len() == variant_count::<SessionStatusBase>(),
+    "SessionStatusBase::ALL is missing a variant"
+);
+
 impl SessionStatusValue for SessionStatusBase {
     fn raw_value(&self) -> Int {
         *self as Int
@@ -111,6 +146,32 @@ pub enum SessionRejectReasonBase {
     IncorrectNumInGroupCountForRepeatingGroup = 16,
 }
 
+impl SessionRejectReasonBase {
+    /// All variants. The code generator validates that a generated
+    /// `SessionRejectReason` enum covers every variant listed here.
+    pub const ALL: &'static [SessionRejectReasonBase] = &[
+        SessionRejectReasonBase::InvalidTagNumber,
+        SessionRejectReasonBase::RequiredTagMissing,
+        SessionRejectReasonBase::TagNotDefinedForThisMessageType,
+        SessionRejectReasonBase::UndefinedTag,
+        SessionRejectReasonBase::TagSpecifiedWithoutAValue,
+        SessionRejectReasonBase::ValueIsIncorrect,
+        SessionRejectReasonBase::IncorrectDataFormatForValue,
+        SessionRejectReasonBase::CompIdProblem,
+        SessionRejectReasonBase::SendingTimeAccuracyProblem,
+        SessionRejectReasonBase::InvalidMsgType,
+        SessionRejectReasonBase::TagAppearsMoreThanOnce,
+        SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+        SessionRejectReasonBase::RepeatingGroupFieldsOutOfOrder,
+        SessionRejectReasonBase::IncorrectNumInGroupCountForRepeatingGroup,
+    ];
+}
+
+const _: () = assert!(
+    SessionRejectReasonBase::ALL.len() == variant_count::<SessionRejectReasonBase>(),
+    "SessionRejectReasonBase::ALL is missing a variant"
+);
+
 impl SessionRejectReasonValue for SessionRejectReasonBase {
     fn raw_value(&self) -> Int {
         *self as Int
@@ -133,6 +194,17 @@ pub enum EncryptMethodBase {
     #[default]
     None = 0,
 }
+
+impl EncryptMethodBase {
+    /// All variants. The code generator validates that a generated
+    /// `EncryptMethod` enum covers every variant listed here.
+    pub const ALL: &'static [EncryptMethodBase] = &[EncryptMethodBase::None];
+}
+
+const _: () = assert!(
+    EncryptMethodBase::ALL.len() == variant_count::<EncryptMethodBase>(),
+    "EncryptMethodBase::ALL is missing a variant"
+);
 
 /// Base header containing only the fields the session layer reads/writes.
 ///

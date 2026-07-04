@@ -12,6 +12,7 @@ edition = "2024"
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 convert_case = { workspace = true }
+easyfix-core = { workspace = true }
 easyfix-dictionary = { workspace = true }
 prettyplease = { workspace = true }
 proc-macro2 = { workspace = true }
@@ -20,6 +21,5 @@ syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 assert_matches = { workspace = true }
-easyfix-core = { workspace = true }
 easyfix-macros = { workspace = true }
 easyfix-test-messages = { workspace = true }

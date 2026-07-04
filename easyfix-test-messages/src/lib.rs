@@ -753,12 +753,108 @@ impl From<SessionStatus> for &'static [u8] {
 }
 impl MsgTypeValue for MsgType {
     fn raw_value(&self) -> MsgTypeField {
-        MsgTypeField::from_bytes(self.as_bytes()).expect("generated MsgType values are valid")
+        match self {
+            MsgType::Heartbeat => {
+                const {
+                    match MsgTypeField::from_bytes(b"0") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::TestRequest => {
+                const {
+                    match MsgTypeField::from_bytes(b"1") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::ResendRequest => {
+                const {
+                    match MsgTypeField::from_bytes(b"2") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::Reject => {
+                const {
+                    match MsgTypeField::from_bytes(b"3") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::SequenceReset => {
+                const {
+                    match MsgTypeField::from_bytes(b"4") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::Logout => {
+                const {
+                    match MsgTypeField::from_bytes(b"5") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::Logon => {
+                const {
+                    match MsgTypeField::from_bytes(b"A") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::ExecutionReport => {
+                const {
+                    match MsgTypeField::from_bytes(b"8") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+            MsgType::NewOrderSingle => {
+                const {
+                    match MsgTypeField::from_bytes(b"D") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
-impl From<MsgTypeField> for MsgType {
-    fn from(field: MsgTypeField) -> MsgType {
-        MsgType::from_bytes(field.as_bytes()).expect("validated by MsgTypeField")
+impl TryFrom<MsgTypeField> for MsgType {
+    type Error = SessionRejectReasonBase;
+
+    fn try_from(field: MsgTypeField) -> Result<MsgType, SessionRejectReasonBase> {
+        match MsgType::from_bytes(field.as_bytes()) {
+            Some(msg_type) => Ok(msg_type),
+            None => Err(SessionRejectReasonBase::InvalidMsgType),
+        }
     }
 }
 impl From<EncryptMethodBase> for EncryptMethod {
