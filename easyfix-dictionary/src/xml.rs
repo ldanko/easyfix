@@ -7,7 +7,7 @@
 //! - XML-based structures (Field, Component, Group, etc.)
 //! - Serialization/deserialization helpers for FIX-specific formats
 
-use easyfix_core::version::SessionProtocol;
+use easyfix_core::{basic_types::FixString, version::SessionProtocol};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ pub enum Member {
 pub struct MemberRef {
     /// The name of the referenced field or component
     #[serde(rename = "@name")]
-    pub name: String,
+    pub name: FixString,
 
     /// Whether this member is required in its parent
     #[serde(rename = "@required")]
@@ -96,7 +96,7 @@ pub struct Trailer {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Component {
     #[serde(rename = "@name")]
-    pub name: String,
+    pub name: FixString,
     //pub group: Option<Group>,
     #[serde(rename = "$value")]
     // enable `default`, empty members list is handled on higher layer
@@ -107,7 +107,7 @@ pub struct Component {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Group {
     #[serde(rename = "@name")]
-    pub name: String,
+    pub name: FixString,
     #[serde(rename = "@required")]
     #[serde(with = "required_flag")]
     pub required: bool,
@@ -195,7 +195,7 @@ pub struct Field {
 
     /// The human-readable name of this field
     #[serde(rename = "@name")]
-    pub name: String,
+    pub name: FixString,
 
     /// The data type of this field
     #[serde(rename = "@type")]
@@ -214,11 +214,11 @@ pub struct Field {
 pub struct Value {
     /// The actual value (as it appears on the wire)
     #[serde(rename = "@enum")]
-    pub value_enum: String,
+    pub value_enum: FixString,
 
     /// Human-readable description of what this value means
     #[serde(rename = "@description")]
-    pub description: String,
+    pub description: FixString,
 }
 
 /// Message category in the FIX protocol.
@@ -241,7 +241,7 @@ pub use easyfix_core::basic_types::MsgTypeField as MsgType;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
     #[serde(rename = "@name")]
-    pub name: String,
+    pub name: FixString,
     #[serde(rename = "@msgtype")]
     pub msg_type: MsgType,
     #[serde(rename = "@msgcat")]

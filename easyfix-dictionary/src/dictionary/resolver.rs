@@ -4,6 +4,8 @@ use std::{
     vec,
 };
 
+use easyfix_core::basic_types::{FixStr, FixString};
+
 use super::{
     Version,
     error::{Error, ValidationError},
@@ -13,9 +15,9 @@ use crate::{xml, xml::BasicType};
 
 /// Resolved dictionary elements ready to be consumed by `Dictionary`.
 pub(super) struct Elements {
-    pub(super) fields: HashMap<String, Rc<Field>>,
-    pub(super) components: HashMap<String, Rc<Component>>,
-    pub(super) groups: HashMap<String, Rc<Group>>,
+    pub(super) fields: HashMap<FixString, Rc<Field>>,
+    pub(super) components: HashMap<FixString, Rc<Component>>,
+    pub(super) groups: HashMap<FixString, Rc<Group>>,
 }
 
 /// Resolves raw XML definitions into domain types.
@@ -27,11 +29,11 @@ pub(super) struct Elements {
 /// This is a transient structure: create it, call its resolve/create
 /// methods, then consume via `finish()`.
 pub(super) struct Resolver {
-    raw_fields: HashMap<String, xml::Field>,
-    fields: HashMap<String, Rc<Field>>,
-    raw_components: HashMap<String, xml::Component>,
-    components: HashMap<String, Rc<Component>>,
-    groups: HashMap<String, Rc<Group>>,
+    raw_fields: HashMap<FixString, xml::Field>,
+    fields: HashMap<FixString, Rc<Field>>,
+    raw_components: HashMap<FixString, xml::Component>,
+    components: HashMap<FixString, Rc<Component>>,
+    groups: HashMap<FixString, Rc<Group>>,
 }
 
 impl Resolver {
@@ -39,12 +41,12 @@ impl Resolver {
         raw_fields: Vec<xml::Field>,
         raw_components: Vec<xml::Component>,
     ) -> Result<Resolver, Error> {
-        let mut names: HashSet<String> = HashSet::new();
+        let mut names: HashSet<FixString> = HashSet::new();
         let mut raw_fields_map = HashMap::with_capacity(raw_fields.len());
         for field in raw_fields {
             if !names.insert(field.name.clone()) {
                 return Err(Error::Validation(ValidationError::DuplicatedField(
-                    field.name.clone(),
+                    field.name.to_string(),
                 )));
             }
             raw_fields_map.insert(field.name.clone(), field);
@@ -54,7 +56,7 @@ impl Resolver {
         for comp in raw_components {
             if !names.insert(comp.name.clone()) {
                 return Err(Error::Validation(ValidationError::DuplicatedComponent(
-                    comp.name.clone(),
+                    comp.name.to_string(),
                 )));
             }
             raw_components_map.insert(comp.name.clone(), comp);
@@ -78,7 +80,7 @@ impl Resolver {
         }
     }
 
-    fn create_field(&mut self, name: &str) -> Result<Rc<Field>, Error> {
+    fn create_field(&mut self, name: &FixStr) -> Result<Rc<Field>, Error> {
         if let Some(field) = self.fields.get(name) {
             return Ok(field.clone());
         }
@@ -86,7 +88,7 @@ impl Resolver {
         let (field_name, raw_field) = self
             .raw_fields
             .remove_entry(name)
-            .ok_or_else(|| Error::Validation(ValidationError::UnknownField(name.to_owned())))?;
+            .ok_or_else(|| Error::Validation(ValidationError::UnknownField(name.to_string())))?;
         let field = Rc::new(Field::from(raw_field));
         self.fields.insert(field_name, field.clone());
 
@@ -95,22 +97,25 @@ impl Resolver {
 
     fn create_component(
         &mut self,
-        name: String,
-        visited: &mut HashSet<String>,
+        name: FixString,
+        visited: &mut HashSet<FixString>,
     ) -> Result<Rc<Component>, Error> {
         if !visited.insert(name.clone()) {
-            return Err(Error::Validation(ValidationError::CircularReference(name)));
+            return Err(Error::Validation(ValidationError::CircularReference(
+                name.into(),
+            )));
         }
         if let Some(component) = self.components.get(&name) {
             return Ok(component.clone());
         }
 
-        let raw_component = self
-            .raw_components
-            .remove(&name)
-            .ok_or_else(|| Error::Validation(ValidationError::UnknownComponent(name.clone())))?;
+        let raw_component = self.raw_components.remove(&name).ok_or_else(|| {
+            Error::Validation(ValidationError::UnknownComponent(name.to_string()))
+        })?;
         if raw_component.members.is_empty() {
-            return Err(Error::Validation(ValidationError::EmptyContainer(name)));
+            return Err(Error::Validation(ValidationError::EmptyContainer(
+                name.into(),
+            )));
         }
 
         let mut branch_visited = visited.clone();
@@ -164,19 +169,21 @@ impl Resolver {
     fn create_group(
         &mut self,
         raw_group: xml::Group,
-        parent_component: Option<&str>,
-        visited: &mut HashSet<String>,
+        parent_component: Option<&FixStr>,
+        visited: &mut HashSet<FixString>,
     ) -> Result<Rc<Group>, Error> {
         // Determine the group name
         let group_name = if let Some(parent_component) = parent_component {
             // Use parent component name when component contains only this group
             parent_component.to_owned()
-        } else if raw_group.name.starts_with("No") {
+        } else if raw_group.name.as_bytes().starts_with(b"No") {
             // Strip "No" prefix: "NoHops" -> "Hops"
-            let group_name = raw_group.name[2..].to_owned();
+            // SAFETY: a subslice of a valid FixStr is still printable ASCII.
+            let group_name =
+                unsafe { FixStr::from_ascii_unchecked(&raw_group.name.as_bytes()[2..]) }.to_owned();
             if !visited.insert(group_name.clone()) {
                 return Err(Error::Validation(ValidationError::CircularReference(
-                    group_name,
+                    group_name.into(),
                 )));
             }
             group_name
@@ -185,7 +192,7 @@ impl Resolver {
             let group_name = raw_group.name.clone();
             if !visited.insert(group_name.clone()) {
                 return Err(Error::Validation(ValidationError::CircularReference(
-                    group_name,
+                    group_name.into(),
                 )));
             }
             group_name
@@ -204,7 +211,7 @@ impl Resolver {
             .is_some()
         {
             return Err(Error::Validation(ValidationError::DuplicatedGroup(
-                group.name.clone(),
+                group.name.to_string(),
             )));
         }
 
@@ -235,8 +242,8 @@ impl Resolver {
     fn create_members_impl(
         &mut self,
         raw_members: Vec<xml::Member>,
-        parent_component: Option<&str>,
-        visited: &mut HashSet<String>,
+        parent_component: Option<&FixStr>,
+        visited: &mut HashSet<FixString>,
     ) -> Result<Vec<Member>, Error> {
         let raw_members_len = raw_members.len();
         let parent_component_for_group = if raw_members_len == 1 {
@@ -305,7 +312,7 @@ impl Resolver {
     pub(super) fn create_members(
         &mut self,
         raw_members: Vec<xml::Member>,
-        parent_component: Option<&str>,
+        parent_component: Option<&FixStr>,
     ) -> Result<Vec<Member>, Error> {
         let mut visited = HashSet::new();
         self.create_members_impl(raw_members, parent_component, &mut visited)
@@ -314,7 +321,9 @@ impl Resolver {
     pub(super) fn create_message(&mut self, msg: xml::Message) -> Result<Message, Error> {
         let members = self.create_members(msg.members, None)?;
         if members.is_empty() {
-            return Err(Error::Validation(ValidationError::EmptyMessage(msg.name)));
+            return Err(Error::Validation(ValidationError::EmptyMessage(
+                msg.name.into(),
+            )));
         }
 
         Ok(Message {
@@ -331,12 +340,12 @@ impl Resolver {
         // it is defined separately in the FIXT dictionary.
         if let Some(field) = self.raw_fields.values().find(|f| f.name != "MsgType") {
             Err(Error::Validation(ValidationError::UnusedField(
-                field.name.clone(),
+                field.name.to_string(),
                 field.number,
             )))
         } else if let Some(component) = self.raw_components.values().next() {
             Err(Error::Validation(ValidationError::UnusedComponent(
-                component.name.clone(),
+                component.name.to_string(),
             )))
         } else {
             Ok(())
@@ -352,7 +361,9 @@ impl Resolver {
         let mut raw_components = std::mem::take(&mut self.raw_components);
         for (name, raw_component) in raw_components.drain() {
             if raw_component.members.is_empty() {
-                return Err(Error::Validation(ValidationError::EmptyContainer(name)));
+                return Err(Error::Validation(ValidationError::EmptyContainer(
+                    name.into(),
+                )));
             }
             let members = self.create_members(raw_component.members, Some(&name))?;
             let component = Rc::new(Component { name, members });

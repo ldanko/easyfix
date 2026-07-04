@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use convert_case::{Case, Casing};
+use easyfix_core::basic_types::FixString;
 use easyfix_dictionary::{self as dict, Dictionary, Version};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -9,6 +9,7 @@ mod admin;
 mod enumeration;
 mod group;
 mod header;
+mod ident;
 mod member;
 mod message;
 mod message_enum;
@@ -18,6 +19,7 @@ use self::{
     enumeration::EnumCodeGen,
     group::GroupCodeGen,
     header::Header,
+    ident::ToIdent,
     member::{EnumerableType, Member},
     message::MessageCodeGen,
     trailer::Trailer,
@@ -65,7 +67,7 @@ impl Generator {
         let app_dictionary = dictionary.subdictionary(Version::FIX50SP2);
 
         // Collect group definitions from dictionary API, deduped by name
-        let mut groups_map: HashMap<String, GroupCodeGen> = HashMap::new();
+        let mut groups_map: HashMap<FixString, GroupCodeGen> = HashMap::new();
         for group in dictionary.groups() {
             groups_map
                 .entry(group.name().to_owned())
@@ -129,8 +131,12 @@ impl Generator {
             // `easyfix_core::basic_types::ApplVerId` - no enum is generated
             // for them. The dictionary must not customize their codeset.
             if matches!(field.number(), 1128 | 1137) {
-                let values: Vec<&str> = field.variants().iter().map(|v| v.value()).collect();
-                validate_appl_ver_id_codeset(field.name(), field.number(), &values);
+                let values: Vec<&str> = field
+                    .variants()
+                    .iter()
+                    .map(|v| v.value().as_utf8())
+                    .collect();
+                validate_appl_ver_id_codeset(field.name().as_utf8(), field.number(), &values);
                 continue;
             }
             if !field.variants().is_empty() {
@@ -155,12 +161,7 @@ impl Generator {
         fields.sort_by_key(|f| f.number());
         let (fields_names, fields_numbers) = fields
             .iter()
-            .map(|f| {
-                (
-                    Ident::new(&f.name().to_case(Case::UpperCamel), Span::call_site()),
-                    f.number(),
-                )
-            })
+            .map(|f| (f.name().to_pascal_ident(), f.number()))
             .unzip();
 
         let version = dictionary.version();

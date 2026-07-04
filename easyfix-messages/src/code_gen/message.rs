@@ -1,9 +1,9 @@
-use convert_case::{Case, Casing};
+use easyfix_core::basic_types::FixStr;
 use easyfix_dictionary::MsgCat;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-use super::{member::Member, serde_derives};
+use super::{ident::ToIdent, member::Member, serde_derives};
 
 /// Message body definition (generated into messages.rs)
 pub struct MessageCodeGen {
@@ -13,9 +13,9 @@ pub struct MessageCodeGen {
 }
 
 impl MessageCodeGen {
-    pub fn new(name: &str, body_members: Vec<Member>, msg_cat: MsgCat) -> MessageCodeGen {
+    pub fn new(name: &FixStr, body_members: Vec<Member>, msg_cat: MsgCat) -> MessageCodeGen {
         MessageCodeGen {
-            name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
+            name: name.to_pascal_ident(),
             body_members,
             msg_cat,
         }

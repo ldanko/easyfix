@@ -17,7 +17,7 @@
 //! ## Basic Usage
 //!
 //! ```rust,no_run
-//! use easyfix_dictionary::{DictionaryBuilder, Version};
+//! use easyfix_dictionary::{DictionaryBuilder, Version, fix_str};
 //! use std::path::Path;
 //!
 //! // Parse a standard FIX dictionary
@@ -28,12 +28,12 @@
 //!     .expect("Failed to parse dictionary");
 //!
 //! // Access field definitions
-//! if let Some(field) = dictionary.field_by_name("BeginString") {
+//! if let Some(field) = dictionary.field_by_name(fix_str!("BeginString")) {
 //!     println!("Field number: {}", field.number());
 //! }
 //!
 //! // Access message definitions
-//! if let Some(message) = dictionary.message_by_name("Heartbeat") {
+//! if let Some(message) = dictionary.message_by_name(fix_str!("Heartbeat")) {
 //!     println!("Message type: {}", message.msg_type());
 //! }
 //! ```
@@ -41,8 +41,14 @@
 mod dictionary;
 mod xml;
 
+// Re-export the string types used across the dictionary API so consumers
+// don't need a direct easyfix-core dependency to call lookups.
 // Re-export all public items from the dictionary module
 pub use dictionary::{
     BasicType, BuilderError, Component, Dictionary, DictionaryBuilder, Error, Field, Group, Member,
     MemberDefinition, Message, MsgCat, MsgType, SessionProtocol, ValidationError, Variant, Version,
+};
+pub use easyfix_core::{
+    basic_types::{FixStr, FixString},
+    fix_str,
 };

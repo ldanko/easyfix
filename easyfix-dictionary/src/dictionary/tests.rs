@@ -4,6 +4,7 @@ use std::{
 };
 
 use assert_matches::assert_matches;
+use easyfix_core::fix_str;
 use quick_xml::de::from_str;
 use uuid::Uuid;
 
@@ -291,14 +292,22 @@ fn test_builder_with_fixt_and_fix() {
     assert!(dictionary.subdictionary(Version::FIX50).is_some());
 
     // Main dictionary should have Heartbeat (admin) message
-    assert!(dictionary.message_by_name("Heartbeat").is_some());
+    assert!(dictionary.message_by_name(fix_str!("Heartbeat")).is_some());
 
     // Main dictionary should NOT have NewOrderSingle (app) message
-    assert!(dictionary.message_by_name("NewOrderSingle").is_none());
+    assert!(
+        dictionary
+            .message_by_name(fix_str!("NewOrderSingle"))
+            .is_none()
+    );
 
     // Subdictionary should have NewOrderSingle message
     let subdictionary = dictionary.subdictionary(Version::FIX50).unwrap();
-    assert!(subdictionary.message_by_name("NewOrderSingle").is_some());
+    assert!(
+        subdictionary
+            .message_by_name(fix_str!("NewOrderSingle"))
+            .is_some()
+    );
 }
 
 #[test]
@@ -350,13 +359,17 @@ fn test_builder_with_multiple_fix_apps() {
 
     // FIX 5.0 subdictionary should have NewOrderSingle
     let fix50_subdict = dictionary.subdictionary(Version::FIX50).unwrap();
-    assert!(fix50_subdict.message_by_name("NewOrderSingle").is_some());
+    assert!(
+        fix50_subdict
+            .message_by_name(fix_str!("NewOrderSingle"))
+            .is_some()
+    );
 
     // FIX 5.0 SP2 subdictionary should have ExecutionReport
     let fix50sp2_subdict = dictionary.subdictionary(Version::FIX50SP2).unwrap();
     assert!(
         fix50sp2_subdict
-            .message_by_name("ExecutionReport")
+            .message_by_name(fix_str!("ExecutionReport"))
             .is_some()
     );
 }
@@ -372,10 +385,10 @@ fn test_from_file_constructor() {
     assert_eq!(dictionary.version(), Version::FIX44);
 
     // Check that we can access fields
-    assert!(dictionary.field_by_name("BeginString").is_some());
+    assert!(dictionary.field_by_name(fix_str!("BeginString")).is_some());
 
     // Check that we can access messages
-    assert!(dictionary.message_by_name("Heartbeat").is_some());
+    assert!(dictionary.message_by_name(fix_str!("Heartbeat")).is_some());
 }
 
 #[test]
@@ -799,7 +812,7 @@ fn test_component_flattening() {
     let normal_dict = Dictionary::from_raw_dictionary(normal_dict_raw, false, false).unwrap();
 
     // Get the Heartbeat message
-    let heartbeat = normal_dict.message_by_name("Heartbeat").unwrap();
+    let heartbeat = normal_dict.message_by_name(fix_str!("Heartbeat")).unwrap();
 
     // In the normal case, the message should have one component member
     assert_eq!(heartbeat.members().len(), 1);
@@ -820,7 +833,9 @@ fn test_component_flattening() {
         .unwrap();
 
     // Get the Heartbeat message again
-    let flattened_heartbeat = flattened_dict.message_by_name("Heartbeat").unwrap();
+    let flattened_heartbeat = flattened_dict
+        .message_by_name(fix_str!("Heartbeat"))
+        .unwrap();
 
     // In the flattened case, components are inlined — message should have
     // TestField1 and TestField2 directly, both as fields, both required
@@ -854,10 +869,10 @@ fn test_deep_component_flattening() {
 
     // Test the NewOrderList message in both dictionaries
     let normal_msg = normal_dict
-        .message_by_name("NewOrderList")
+        .message_by_name(fix_str!("NewOrderList"))
         .expect("Message not found");
     let flattened_msg = flattened_dict
-        .message_by_name("NewOrderList")
+        .message_by_name(fix_str!("NewOrderList"))
         .expect("Message not found");
 
     // Without flattening: should have 2 members (OrderListComponent and ListID)
@@ -873,7 +888,7 @@ fn test_deep_component_flattening() {
         .members()
         .iter()
         .filter_map(|m| match m.definition() {
-            MemberDefinition::Field(field) => Some(field.name.as_str()),
+            MemberDefinition::Field(field) => Some(field.name.as_utf8()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -917,7 +932,7 @@ fn test_deep_component_flattening() {
         .members()
         .iter()
         .filter_map(|m| match m.definition() {
-            MemberDefinition::Field(field) => Some(field.name.as_str()),
+            MemberDefinition::Field(field) => Some(field.name.as_utf8()),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -969,14 +984,14 @@ fn test_nested_required_flag_propagation() {
     // Get dictionary with flattening
     let flattened_dict = complex_dictionary(true);
     let flattened_msg = flattened_dict
-        .message_by_name("NewOrderList")
+        .message_by_name(fix_str!("NewOrderList"))
         .expect("Message not found");
 
     // Check required flag propagation for fields from components
     for member in flattened_msg.members() {
         match member.definition() {
             MemberDefinition::Field(field) => {
-                match field.name.as_str() {
+                match field.name.as_utf8() {
                     // These fields should be required because they're required in a required component
                     "ListSeqNo" => assert!(member.required(), "ListSeqNo should be required"),
                     "Symbol" => assert!(member.required(), "Symbol should be required"),
@@ -1009,7 +1024,7 @@ fn test_nested_required_flag_propagation() {
                 }
             }
             MemberDefinition::Group(group) => {
-                match group.name() {
+                match group.name().as_utf8() {
                     // OrderListGroup is required in its parent component, which is required
                     "OrderListGroup" => {
                         assert!(member.required(), "OrderListGroup should be required")
@@ -1033,7 +1048,7 @@ fn test_nested_required_flag_propagation() {
             if group.name() == "OrderListGroup" {
                 for group_member in group.members() {
                     if let MemberDefinition::Field(field) = group_member.definition() {
-                        match field.name.as_str() {
+                        match field.name.as_utf8() {
                             "OrderListGroupField" => assert!(
                                 group_member.required(),
                                 "OrderListGroupField should be required"
@@ -1232,7 +1247,7 @@ fn test_field_lookups() {
 
     // Look up field by name
     let begin_string = dictionary
-        .field_by_name("BeginString")
+        .field_by_name(fix_str!("BeginString"))
         .expect("Field not found");
     assert_eq!(begin_string.number, 8);
     assert_eq!(begin_string.name, "BeginString");
@@ -1245,7 +1260,7 @@ fn test_field_lookups() {
 
     // Check field with enumerated values
     let msg_type = dictionary
-        .field_by_name("MsgType")
+        .field_by_name(fix_str!("MsgType"))
         .expect("Field not found");
     let variants = msg_type.variants();
     assert_eq!(variants.len(), 2);
@@ -1255,7 +1270,11 @@ fn test_field_lookups() {
     assert_eq!(variants[1].name(), "TEST_REQUEST");
 
     // Check non-existent field
-    assert!(dictionary.field_by_name("NonExistentField").is_none());
+    assert!(
+        dictionary
+            .field_by_name(fix_str!("NonExistentField"))
+            .is_none()
+    );
     assert!(dictionary.field_by_id(65535).is_none());
 
     // Enumerate fields
@@ -1274,7 +1293,7 @@ fn test_message_lookups() {
     let dictionary = result.expect("Failed to build dictionary");
 
     // Look up message by name - check if exists first
-    let Some(heartbeat) = dictionary.message_by_name("Heartbeat") else {
+    let Some(heartbeat) = dictionary.message_by_name(fix_str!("Heartbeat")) else {
         panic!("Heartbeat message not found");
     };
     assert_eq!(heartbeat.name(), "Heartbeat");
@@ -1300,7 +1319,11 @@ fn test_message_lookups() {
     );
 
     // Check non-existent message
-    assert!(dictionary.message_by_name("NonExistentMessage").is_none());
+    assert!(
+        dictionary
+            .message_by_name(fix_str!("NonExistentMessage"))
+            .is_none()
+    );
     assert!(dictionary.message_by_type(b"X").is_none());
 
     // Enumerate messages
@@ -1318,7 +1341,7 @@ fn test_component_lookups() {
 
     let dictionary = result.expect("Failed to build dictionary");
 
-    let Some(component) = dictionary.component("TestComponent") else {
+    let Some(component) = dictionary.component(fix_str!("TestComponent")) else {
         panic!("TestComponent component not found");
     };
     assert_eq!(component.name(), "TestComponent");
@@ -1335,7 +1358,11 @@ fn test_component_lookups() {
     );
 
     // Check non-existent component
-    assert!(dictionary.component("NonExistentComponent").is_none());
+    assert!(
+        dictionary
+            .component(fix_str!("NonExistentComponent"))
+            .is_none()
+    );
 
     // Enumerate components
     let all_components = dictionary.components().count();
@@ -1610,7 +1637,7 @@ fn test_raw_data_pairing() {
     );
 
     // Heartbeat: EncodedTextLen + EncodedText should be paired as RawData
-    let heartbeat = dictionary.message_by_name("Heartbeat").unwrap();
+    let heartbeat = dictionary.message_by_name(fix_str!("Heartbeat")).unwrap();
     assert_eq!(
         heartbeat.members().len(),
         2,
@@ -1643,7 +1670,9 @@ fn test_raw_data_pairing() {
     assert!(!encoded_text.is_field());
 
     // NewOrderSingle: MaxMessageSize is Length NOT followed by Data, should stay plain
-    let nos = dictionary.message_by_name("NewOrderSingle").unwrap();
+    let nos = dictionary
+        .message_by_name(fix_str!("NewOrderSingle"))
+        .unwrap();
     assert_eq!(
         nos.members().len(),
         3,

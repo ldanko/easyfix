@@ -1,21 +1,12 @@
-use convert_case::{Case, Casing};
 use easyfix_core::{
     base_messages::{EncryptMethodBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
-    basic_types::{Int, MsgTypeValue, SessionRejectReasonValue, SessionStatusValue},
+    basic_types::{FixStr, Int, MsgTypeValue, SessionRejectReasonValue, SessionStatusValue},
 };
 use easyfix_dictionary::Variant;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use super::{member::EnumerableType, serde_derives};
-
-fn variant_ident(name: &str) -> Ident {
-    let mut variant_name = name.to_case(Case::UpperCamel);
-    if variant_name.as_bytes()[0].is_ascii_digit() {
-        variant_name.insert(0, '_');
-    }
-    Ident::new(&variant_name, Span::call_site())
-}
+use super::{ident::ToIdent, member::EnumerableType, serde_derives};
 
 /// Defines a mapping from session-relevant traits/newtypes (in easyfix-core)
 /// to generated enums. For each mapping, the generator produces:
@@ -104,13 +95,13 @@ pub struct EnumCodeGen {
 }
 impl EnumCodeGen {
     pub fn new(
-        name: &str,
+        name: &FixStr,
         tag: u16,
         enumerable_type: EnumerableType,
         variants: Vec<Variant>,
     ) -> EnumCodeGen {
         EnumCodeGen {
-            name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
+            name: name.to_pascal_ident(),
             tag,
             enumerable_type,
             variants,
@@ -169,8 +160,8 @@ impl EnumCodeGen {
 
         // Generate raw_value() match arms for the trait impl
         let trait_match_arms = self.variants.iter().map(|v| {
-            let variant_ident = variant_ident(v.name());
-            let int_value: i64 = v.value().parse().unwrap_or_else(|_| {
+            let variant_ident = v.name().to_pascal_ident();
+            let int_value: i64 = v.value().as_utf8().parse().unwrap_or_else(|_| {
                 panic!(
                     "Enum {generated_name} variant {} has non-integer value {:?}, \
                      cannot implement {trait_name}",
@@ -216,7 +207,7 @@ impl EnumCodeGen {
         let field_type_name = Ident::new(mapping.field_type_name, Span::call_site());
 
         let raw_value_arms = self.variants.iter().map(|v| {
-            let v_name = variant_ident(v.name());
+            let v_name = v.name().to_pascal_ident();
             let v_value = Literal::byte_string(v.value().as_bytes());
             quote! {
                 #generated_name::#v_name => const {
@@ -259,7 +250,7 @@ impl EnumCodeGen {
             .iter()
             .find(|v| v.value() == "0")
             .expect("EncryptMethod must have a variant with value 0");
-        let generated_variant_ident = variant_ident(generated_variant.name());
+        let generated_variant_ident = generated_variant.name().to_pascal_ident();
 
         quote! {
             impl From<EncryptMethodBase> for #generated_name {
@@ -285,12 +276,8 @@ impl EnumCodeGen {
         let mut variant_name = Vec::with_capacity(self.variants.len());
         let mut variant_value_as_bytes = Vec::with_capacity(self.variants.len());
         for variant in &self.variants {
-            let v_name = variant_ident(variant.name());
+            let v_name = variant.name().to_pascal_ident();
             let v_value_as_bytes = Literal::byte_string(variant.value().as_bytes());
-            // TODO: check in easyfix-dictionary if variant value can be expressed as FixString
-            // (no utf-8, no control characteres, etc), if not check here before using it in
-            // FixStr::from_ascii_unchecked
-
             let variant_doc_comment = format!("Value \"{}\"", variant.value());
             variant_def.push(quote! {
                 #[doc = #variant_doc_comment]
@@ -309,7 +296,7 @@ impl EnumCodeGen {
                 let int_values = self
                     .variants
                     .iter()
-                    .map(|v| Literal::i64_suffixed(v.value().parse().unwrap()));
+                    .map(|v| Literal::i64_suffixed(v.value().as_utf8().parse().unwrap()));
                 quote! {
                     pub const fn as_int(&self) -> Int {
                         match self {
@@ -322,7 +309,7 @@ impl EnumCodeGen {
                 let int_values = self
                     .variants
                     .iter()
-                    .map(|v| Literal::u8_suffixed(v.value().parse().unwrap()));
+                    .map(|v| Literal::u8_suffixed(v.value().as_utf8().parse().unwrap()));
                 quote! {
                     pub const fn as_num_in_group(&self) -> NumInGroup {
                         match self {
@@ -383,8 +370,9 @@ impl EnumCodeGen {
                 }
 
                 pub const fn as_fix_str(&self) -> &'static FixStr {
-                    // SAFETY: enum wire values come from the dictionary XML
-                    // and are printable ASCII per the FIX standard.
+                    // SAFETY: enum wire values are `FixString`s in the
+                    // dictionary, validated as printable ASCII when the XML
+                    // is parsed.
                     unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
                 }
 

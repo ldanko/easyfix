@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use assert_matches::assert_matches;
+use easyfix_core::fix_str;
 use quick_xml::de::from_str;
 
 use super::*;
@@ -117,6 +118,68 @@ fn parse_field_with_values() {
 }
 
 #[test]
+fn reject_non_ascii_field_name() {
+    let xml = "<field name='Bad\u{f3}Name' number='1000' type='STRING'/>";
+    let result: Result<Field, _> = from_str(xml);
+    assert!(result.is_err(), "non-ASCII field name should be rejected");
+}
+
+#[test]
+fn reject_del_in_field_name() {
+    let xml = "<field name='Bad\u{7f}Name' number='1000' type='STRING'/>";
+    let result: Result<Field, _> = from_str(xml);
+    assert!(result.is_err(), "DEL in field name should be rejected");
+}
+
+#[test]
+fn reject_non_ascii_value_enum() {
+    let xml = "<field name='TestField' number='1000' type='STRING'>\
+        <value enum='\u{f3}' description='BAD'/>\
+    </field>";
+    let result: Result<Field, _> = from_str(xml);
+    assert!(result.is_err(), "non-ASCII enum value should be rejected");
+}
+
+#[test]
+fn reject_del_in_value_enum() {
+    let xml = "<field name='TestField' number='1000' type='STRING'>\
+        <value enum='\u{7f}' description='BAD'/>\
+    </field>";
+    let result: Result<Field, _> = from_str(xml);
+    assert!(result.is_err(), "DEL in enum value should be rejected");
+}
+
+#[test]
+fn reject_non_ascii_value_description() {
+    let xml = "<field name='TestField' number='1000' type='STRING'>\
+        <value enum='0' description='BAD\u{f3}'/>\
+    </field>";
+    let result: Result<Field, _> = from_str(xml);
+    assert!(result.is_err(), "non-ASCII description should be rejected");
+}
+
+#[test]
+fn reject_non_ascii_message_name() {
+    let xml = "<message name='Bad\u{f3}Msg' msgtype='ZZ' msgcat='app'>\
+        <field name='TestField' required='Y'/>\
+    </message>";
+    let result: Result<Message, _> = from_str(xml);
+    assert!(result.is_err(), "non-ASCII message name should be rejected");
+}
+
+#[test]
+fn reject_non_ascii_component_name() {
+    let xml = "<component name='Bad\u{f3}Comp'>\
+        <field name='TestField' required='Y'/>\
+    </component>";
+    let result: Result<Component, _> = from_str(xml);
+    assert!(
+        result.is_err(),
+        "non-ASCII component name should be rejected"
+    );
+}
+
+#[test]
 fn test_required_flag_parsing() {
     // Test different formats of the required flag
     let xml_variants = [
@@ -145,21 +208,21 @@ fn test_required_flag_parsing() {
 fn test_member_variants() {
     // Field member
     let field_member = Member::Field(MemberRef {
-        name: "TestField".to_string(),
+        name: fix_str!("TestField").to_owned(),
         required: true,
     });
     assert_matches!(field_member, Member::Field(r) if r.name == "TestField" && r.required);
 
     // Component member
     let component_member = Member::Component(MemberRef {
-        name: "TestComponent".to_string(),
+        name: fix_str!("TestComponent").to_owned(),
         required: false,
     });
     assert_matches!(component_member, Member::Component(r) if r.name == "TestComponent" && !r.required);
 
     // Group member
     let group_member = Member::Group(Group {
-        name: "TestGroup".to_string(),
+        name: fix_str!("TestGroup").to_owned(),
         required: true,
         members: vec![],
     });

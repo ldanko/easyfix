@@ -1,88 +1,11 @@
-use std::{collections::HashSet, rc::Rc, sync::LazyLock};
+use std::rc::Rc;
 
-use convert_case::{Case, Casing};
+use easyfix_core::basic_types::FixStr;
 use easyfix_dictionary::{self as dict, BasicType};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-fn to_snake_case_ident(name: &str) -> Ident {
-    let mut name = name.to_case(Case::Snake);
-    if is_reserved(&name) {
-        // TODO: or maybe `r#reserved`?
-        name.push('_');
-    }
-    Ident::new(&name, Span::call_site())
-}
-
-fn to_upper_snake_case_ident(name: &str) -> Ident {
-    Ident::new(&name.to_case(Case::UpperCamel), Span::call_site())
-}
-
-static RESERVED: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    HashSet::from([
-        "Self",
-        "_",
-        "abstract",
-        "as",
-        "async",
-        "await",
-        "become",
-        "box",
-        "break",
-        "const",
-        "continue",
-        "crate",
-        "do",
-        "dyn",
-        "else",
-        "enum",
-        "extern",
-        "false",
-        "final",
-        "fn",
-        "for",
-        "gen",
-        "if",
-        "impl",
-        "in",
-        "let",
-        "loop",
-        "macro",
-        "macro_rules",
-        "match",
-        "mod",
-        "move",
-        "mut",
-        "override",
-        "priv",
-        "pub",
-        "raw",
-        "ref",
-        "return",
-        "safe",
-        "self",
-        "static",
-        "struct",
-        "super",
-        "trait",
-        "true",
-        "try",
-        "type",
-        "typeof",
-        "union",
-        "unsafe",
-        "unsized",
-        "use",
-        "virtual",
-        "where",
-        "while",
-        "yield",
-    ])
-});
-
-fn is_reserved(input: &str) -> bool {
-    RESERVED.contains(input)
-}
+use super::ident::ToIdent;
 
 /// BasicType variants that can be represented as Rust enumerations.
 /// Only 6 of 27 BasicType variants support enumerations.
@@ -159,7 +82,7 @@ impl EnumerableType {
         }
     }
 
-    pub fn literal(&self, value: &str) -> Literal {
+    pub fn literal(&self, value: &FixStr) -> Literal {
         match self {
             EnumerableType::String | EnumerableType::MultipleStringValue => {
                 Literal::byte_string(value.as_bytes())
@@ -168,10 +91,10 @@ impl EnumerableType {
                 Literal::u8_suffixed(*value.as_bytes().first().expect("Invalid variant value"))
             }
             EnumerableType::Int => {
-                Literal::i64_suffixed(value.parse().expect("Invalid variant value"))
+                Literal::i64_suffixed(value.as_utf8().parse().expect("Invalid variant value"))
             }
             EnumerableType::NumInGroup => {
-                Literal::u8_suffixed(value.parse().expect("Invalid variant value"))
+                Literal::u8_suffixed(value.as_utf8().parse().expect("Invalid variant value"))
             }
         }
     }
@@ -350,7 +273,7 @@ impl DataType {
         // Covers both the variants-present and variants-empty XML cases;
         // the codeset itself is validated at enum-collection time.
         if matches!(field.number(), 1128 | 1137)
-            && matches!(field.name(), "ApplVerID" | "DefaultApplVerID")
+            && matches!(field.name().as_utf8(), "ApplVerID" | "DefaultApplVerID")
             && matches!(field.data_type(), BasicType::String)
         {
             return DataType::CoreApplVerId;
@@ -370,9 +293,7 @@ impl DataType {
                     )
                 }
             }
-            (false, Some(et)) => {
-                DataType::EnumerableType(to_upper_snake_case_ident(field.name()), et)
-            }
+            (false, Some(et)) => DataType::EnumerableType(field.name().to_pascal_ident(), et),
             (true, _) => DataType::BasicType(BasicTypeCodeGen(field.data_type())),
         }
     }
@@ -402,7 +323,7 @@ struct Field {
 
 impl Field {
     fn new(field: &dict::Field) -> Field {
-        let name = to_snake_case_ident(field.name());
+        let name = field.name().to_snake_ident();
         let number = field.number();
         let data_type = DataType::new(field);
         Field {
@@ -650,9 +571,9 @@ impl RawData {
     fn new(length: Rc<dict::Field>, data: Rc<dict::Field>) -> RawData {
         let raw_data_type = RawDataType::try_from_basic_type(data.data_type()).unwrap();
         RawData {
-            length_name: to_snake_case_ident(length.name()),
+            length_name: length.name().to_snake_ident(),
             length_number: length.number(),
-            data_name: to_snake_case_ident(data.name()),
+            data_name: data.name().to_snake_ident(),
             data_number: data.number(),
             raw_data_type,
         }
@@ -815,9 +736,9 @@ struct Group {
 impl Group {
     pub fn new(group: &dict::Group) -> Group {
         Group {
-            name: to_snake_case_ident(group.name()),
-            data_type: to_upper_snake_case_ident(group.name()),
-            num_in_group_name: to_snake_case_ident(group.num_in_group().name()),
+            name: group.name().to_snake_ident(),
+            data_type: group.name().to_pascal_ident(),
+            num_in_group_name: group.num_in_group().name().to_snake_ident(),
             num_in_group_number: group.num_in_group().number(),
             expected_tags: compute_expected_tags(group.members()),
         }

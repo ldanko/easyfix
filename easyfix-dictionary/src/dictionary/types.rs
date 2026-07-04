@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+use easyfix_core::basic_types::{FixStr, FixString};
+
 use crate::{
     xml,
     xml::{BasicType, MsgCat, MsgType},
@@ -13,19 +15,19 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct Variant {
     /// Name of this variant (e.g., "Buy", "Sell")
-    name: String,
+    name: FixString,
     /// The raw value from the field definition (e.g., "1", "2")
-    value: String,
+    value: FixString,
 }
 
 impl Variant {
     /// Returns the name of this variant
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         &self.name
     }
 
     /// Returns the raw value of this variant
-    pub fn value(&self) -> &str {
+    pub fn value(&self) -> &FixStr {
         &self.value
     }
 }
@@ -48,7 +50,7 @@ pub struct Field {
     /// The tag number that identifies this field
     pub(super) number: u16,
     /// The human-readable name of this field
-    pub(super) name: String,
+    pub(super) name: FixString,
     /// The data type of this field
     pub(super) data_type: BasicType,
     /// Enumerated variants for this field
@@ -62,7 +64,7 @@ impl Field {
     }
 
     /// Returns the name of this field
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         &self.name
     }
 
@@ -149,7 +151,7 @@ impl MemberDefinition {
     /// Returns the name of this member definition
     ///
     /// The name corresponds to the name of the underlying field, component, or group.
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         match self {
             MemberDefinition::Field(field) => &field.name,
             MemberDefinition::RawData { data, .. } => &data.name,
@@ -217,7 +219,7 @@ impl Member {
     ///
     /// This is a convenience method that delegates to the underlying definition.
     /// Works for fields, components, and groups.
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         self.definition.name()
     }
 
@@ -319,7 +321,7 @@ impl Member {
 #[derive(Debug)]
 pub struct Group {
     /// Name of the group (without "No" prefix)
-    pub(super) name: String,
+    pub(super) name: FixString,
 
     /// The NumInGroup counter field (with "No" prefix)
     pub(super) num_in_group: Rc<Field>,
@@ -330,7 +332,7 @@ pub struct Group {
 
 impl Group {
     /// Returns the name of this group
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         &self.name
     }
 
@@ -355,7 +357,7 @@ impl Group {
 #[derive(Debug)]
 pub struct Component {
     /// Name of the component
-    pub(super) name: String,
+    pub(super) name: FixString,
 
     /// Members (fields, groups, and other components) within this component
     pub(super) members: Vec<Member>,
@@ -363,7 +365,7 @@ pub struct Component {
 
 impl Component {
     /// Returns the name of this component
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         &self.name
     }
 
@@ -380,7 +382,7 @@ impl Component {
 #[derive(Debug)]
 pub struct Message {
     /// Human-readable name of the message (e.g., "Heartbeat")
-    pub(super) name: String,
+    pub(super) name: FixString,
 
     /// Message type identifier (e.g., "0" for Heartbeat)
     pub(super) msg_type: MsgType,
@@ -394,7 +396,7 @@ pub struct Message {
 
 impl Message {
     /// Returns the human-readable name of this message
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &FixStr {
         &self.name
     }
 

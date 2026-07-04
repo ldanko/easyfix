@@ -18,6 +18,10 @@ mod tests;
 use std::{collections::HashMap, fs, rc::Rc};
 
 pub use easyfix_core::version::{SessionProtocol, Version};
+use easyfix_core::{
+    basic_types::{FixStr, FixString},
+    fix_str,
+};
 use quick_xml::de::from_str;
 
 use self::resolver::{Elements, Resolver, check_required_fields};
@@ -68,22 +72,22 @@ pub struct Dictionary {
     version: Version,
 
     /// Fields indexed by name
-    fields_by_name: HashMap<String, Rc<Field>>,
+    fields_by_name: HashMap<FixString, Rc<Field>>,
 
     /// Fields indexed by ID (tag number)
     fields_by_id: HashMap<u16, Rc<Field>>,
 
     /// Groups indexed by name
-    groups: HashMap<String, Rc<Group>>,
+    groups: HashMap<FixString, Rc<Group>>,
 
     /// Components indexed by name
-    components: HashMap<String, Rc<Component>>,
+    components: HashMap<FixString, Rc<Component>>,
 
     /// Messages in definition order (from XML)
     messages: Vec<Rc<Message>>,
 
     /// Messages indexed by name
-    messages_by_name: HashMap<String, Rc<Message>>,
+    messages_by_name: HashMap<FixString, Rc<Message>>,
 
     /// Messages indexed by message type
     messages_by_id: HashMap<MsgType, Rc<Message>>,
@@ -108,11 +112,11 @@ impl Dictionary {
         let mut resolver = Resolver::new(raw_dictionary.fields, raw_dictionary.components)?;
 
         let header = Component {
-            name: "Header".into(),
+            name: fix_str!("Header").to_owned(),
             members: resolver.create_members(raw_dictionary.header.members, None)?,
         };
         let trailer = Component {
-            name: "Trailer".into(),
+            name: fix_str!("Trailer").to_owned(),
             members: resolver.create_members(raw_dictionary.trailer.members, None)?,
         };
         if strict_check {
@@ -126,7 +130,7 @@ impl Dictionary {
             let msg = Rc::new(resolver.create_message(raw_msg)?);
             if let Some(msg) = messages_by_name.insert(msg.name.clone(), msg.clone()) {
                 return Err(Error::Validation(ValidationError::DuplicatedMessageName(
-                    msg.name.clone(),
+                    msg.name.to_string(),
                 )));
             }
             if let Some(msg) = messages_by_id.insert(msg.msg_type, msg.clone()) {
@@ -181,13 +185,15 @@ impl Dictionary {
     }
 
     fn flatten_component(
-        component_name: &str,
+        component_name: &FixStr,
         output: &mut Vec<Member>,
-        components_map: &HashMap<String, Rc<Component>>,
+        components_map: &HashMap<FixString, Rc<Component>>,
     ) -> Result<(), Error> {
         // Get the component
         let component = components_map.get(component_name).ok_or_else(|| {
-            Error::Validation(ValidationError::UnknownComponent(component_name.to_owned()))
+            Error::Validation(ValidationError::UnknownComponent(
+                component_name.to_string(),
+            ))
         })?;
 
         // Inline each member of the component with its own required flag.
@@ -233,7 +239,7 @@ impl Dictionary {
     // Helper function to flatten a list of members
     fn flatten_members(
         members: &[Member],
-        components_map: &HashMap<String, Rc<Component>>,
+        components_map: &HashMap<FixString, Rc<Component>>,
     ) -> Result<Vec<Member>, Error> {
         let mut flattened_members = Vec::new();
 
@@ -282,7 +288,7 @@ impl Dictionary {
     // Helper function to flatten a group
     fn flatten_group(
         group: &Rc<Group>,
-        components_map: &HashMap<String, Rc<Component>>,
+        components_map: &HashMap<FixString, Rc<Component>>,
     ) -> Result<Rc<Group>, Error> {
         let flattened_members = Self::flatten_members(group.members(), components_map)?;
 
@@ -367,7 +373,7 @@ impl Dictionary {
     }
 
     /// Looks up a field by name
-    pub fn field_by_name(&self, name: &str) -> Option<&Field> {
+    pub fn field_by_name(&self, name: &FixStr) -> Option<&Field> {
         self.fields_by_name.get(name).map(|v| &**v)
     }
 
@@ -382,7 +388,7 @@ impl Dictionary {
     }
 
     /// Looks up a component by name
-    pub fn component(&self, name: &str) -> Option<&Component> {
+    pub fn component(&self, name: &FixStr) -> Option<&Component> {
         self.components.get(name).map(|v| &**v)
     }
 
@@ -392,7 +398,7 @@ impl Dictionary {
     }
 
     /// Looks up a group by name
-    pub fn group(&self, name: &str) -> Option<&Group> {
+    pub fn group(&self, name: &FixStr) -> Option<&Group> {
         self.groups.get(name).map(|v| &**v)
     }
 
@@ -402,7 +408,7 @@ impl Dictionary {
     }
 
     /// Looks up a message by name
-    pub fn message_by_name(&self, name: &str) -> Option<&Message> {
+    pub fn message_by_name(&self, name: &FixStr) -> Option<&Message> {
         self.messages_by_name.get(name).map(|v| &**v)
     }
 

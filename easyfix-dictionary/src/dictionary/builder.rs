@@ -60,7 +60,7 @@ pub fn read_raw_fixt_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
         .find(|msg| !matches!(msg.msg_cat, xml::MsgCat::Admin))
     {
         return Err(Error::Validation(
-            ValidationError::UnexpectedMessageCategory(msg.msg_cat, msg.name.clone()),
+            ValidationError::UnexpectedMessageCategory(msg.msg_cat, msg.name.to_string()),
         ));
     }
 
@@ -90,7 +90,7 @@ pub fn read_raw_fix_dictionary(path: &Path) -> Result<xml::Dictionary, Error> {
             .find(|msg| !matches!(msg.msg_cat, xml::MsgCat::App))
         {
             return Err(Error::Validation(
-                ValidationError::UnexpectedMessageCategory(msg.msg_cat, msg.name.clone()),
+                ValidationError::UnexpectedMessageCategory(msg.msg_cat, msg.name.to_string()),
             ));
         }
     } else {

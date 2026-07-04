@@ -1,8 +1,8 @@
-use convert_case::{Case, Casing};
-use proc_macro2::{Ident, Span, TokenStream};
+use easyfix_core::basic_types::FixStr;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
-use super::{member::Member, serde_derives};
+use super::{ident::ToIdent, member::Member, serde_derives};
 
 /// Repeating group definition (generated into groups.rs)
 pub struct GroupCodeGen {
@@ -12,9 +12,9 @@ pub struct GroupCodeGen {
 }
 
 impl GroupCodeGen {
-    pub fn new(name: &str, num_in_group_tag: u16, members: Vec<Member>) -> GroupCodeGen {
+    pub fn new(name: &FixStr, num_in_group_tag: u16, members: Vec<Member>) -> GroupCodeGen {
         GroupCodeGen {
-            name: Ident::new(&name.to_case(Case::UpperCamel), Span::call_site()),
+            name: name.to_pascal_ident(),
             num_in_group_tag,
             members,
         }
