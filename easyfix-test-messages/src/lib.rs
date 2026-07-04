@@ -916,6 +916,7 @@ impl From<SessionStatusField> for SessionStatus {
         SessionStatus::try_from(field.into_inner()).expect("validated by field newtype")
     }
 }
+///NumInGroup tag 384.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct MsgTypeGrp {
@@ -1673,6 +1674,7 @@ impl Trailer {
         matches!(tag, 93u16 | 10u16)
     }
 }
+///MsgType "0".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct Heartbeat {
@@ -1732,6 +1734,7 @@ impl Heartbeat {
         MsgCat::Admin
     }
 }
+///MsgType "1".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct TestRequest {
@@ -1793,6 +1796,7 @@ impl TestRequest {
         MsgCat::Admin
     }
 }
+///MsgType "2".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct ResendRequest {
@@ -1868,6 +1872,7 @@ impl ResendRequest {
         MsgCat::Admin
     }
 }
+///MsgType "3".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct Reject {
@@ -1997,6 +2002,7 @@ impl Reject {
         MsgCat::Admin
     }
 }
+///MsgType "4".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct SequenceReset {
@@ -2074,6 +2080,7 @@ impl SequenceReset {
         MsgCat::Admin
     }
 }
+///MsgType "5".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct Logout {
@@ -2169,6 +2176,7 @@ impl Logout {
         MsgCat::Admin
     }
 }
+///MsgType "A".
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Logon {
@@ -2440,6 +2448,7 @@ impl Logon {
         MsgCat::Admin
     }
 }
+///MsgType "D".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct NewOrderSingle {
@@ -2595,6 +2604,7 @@ impl NewOrderSingle {
         MsgCat::App
     }
 }
+///MsgType "8".
 #[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionReport {

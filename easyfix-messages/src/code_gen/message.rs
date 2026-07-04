@@ -1,4 +1,4 @@
-use easyfix_core::basic_types::FixStr;
+use easyfix_core::basic_types::{FixStr, MsgTypeField};
 use easyfix_dictionary::MsgCat;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -8,14 +8,21 @@ use super::{ident::ToIdent, member::Member, serde_derives};
 /// Message body definition (generated into messages.rs)
 pub struct MessageCodeGen {
     name: Ident,
+    msg_type: MsgTypeField,
     body_members: Vec<Member>,
     msg_cat: MsgCat,
 }
 
 impl MessageCodeGen {
-    pub fn new(name: &FixStr, body_members: Vec<Member>, msg_cat: MsgCat) -> MessageCodeGen {
+    pub fn new(
+        name: &FixStr,
+        msg_type: MsgTypeField,
+        body_members: Vec<Member>,
+        msg_cat: MsgCat,
+    ) -> MessageCodeGen {
         MessageCodeGen {
             name: name.to_pascal_ident(),
+            msg_type,
             body_members,
             msg_cat,
         }
@@ -81,6 +88,7 @@ impl MessageCodeGen {
         let fn_deserialize = self.generate_de_message();
         let msg_cat = Ident::new(&format!("{:?}", self.msg_cat), Span::call_site());
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
+        let doc_comment = format!("MsgType \"{}\".", self.msg_type);
 
         // A required core `ApplVerId` field (FIXT Logon's 1137) has no
         // `Default`, so the struct emits `Default` manually with the
@@ -111,6 +119,7 @@ impl MessageCodeGen {
         };
 
         quote! {
+            #[doc = #doc_comment]
             #[allow(dead_code)]
             #[derive(Clone, Debug #default_derive)]
             #serde_derives

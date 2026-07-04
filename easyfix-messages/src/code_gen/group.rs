@@ -136,8 +136,10 @@ impl GroupCodeGen {
         let serialize = self.members.iter().map(|member| member.gen_serialize());
         let fn_deserialize = self.generate_de_group();
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
+        let doc_comment = format!("NumInGroup tag {}.", self.num_in_group_tag);
 
         quote! {
+            #[doc = #doc_comment]
             #[allow(dead_code)]
             #[derive(Clone, Debug, Default)]
             #serde_derives

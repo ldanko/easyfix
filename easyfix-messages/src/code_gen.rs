@@ -105,6 +105,7 @@ impl Generator {
 
             messages.push(MessageCodeGen::new(
                 msg.name(),
+                msg.msg_type(),
                 members_descs,
                 msg.msg_cat(),
             ));
