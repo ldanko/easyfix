@@ -587,10 +587,11 @@ impl<'de> Deserializer<'de> {
                 }
             }
         }
-        // This should never happen
-        debug_assert!(false);
+        // No earlier processed tag is misplaced relative to `current_tag`
+        // (or `current_tag` is not part of this group at all) - blame the
+        // tag that triggered the check.
         self.reject(
-            None,
+            Some(current_tag),
             SessionRejectReasonBase::RepeatingGroupFieldsOutOfOrder,
         )
     }

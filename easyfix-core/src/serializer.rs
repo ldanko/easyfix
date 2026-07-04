@@ -8,6 +8,11 @@ use crate::basic_types::{
     XmlData,
 };
 
+/// Number of digits reserved for the BodyLength(9) placeholder, derived
+/// from the output buffer size. Capped at 8 digits: with a buffer of
+/// 100 MB or more the encodable body length tops out at 99 999 999 bytes,
+/// and a body that does not fit the placeholder fails serialization with
+/// `MaxMessageSizeExceeded` when the value is patched in.
 const fn max_body_len_digits(max_msg_size: usize) -> usize {
     if max_msg_size < 10 {
         1
@@ -23,10 +28,8 @@ const fn max_body_len_digits(max_msg_size: usize) -> usize {
         6
     } else if max_msg_size < 10_000_000 {
         7
-    } else if max_msg_size < 100_000_000 {
-        8
     } else {
-        panic!("max message size too big")
+        8
     }
 }
 
@@ -52,6 +55,9 @@ pub struct Serializer<'a> {
     output: &'a mut [u8],
     pos: usize,
     body_start_idx: usize,
+    /// Width of the BodyLength(9) placeholder written by
+    /// `serialize_body_len`; `0` until then.
+    body_len_digits: usize,
 }
 
 impl<'a> Serializer<'a> {
@@ -60,6 +66,7 @@ impl<'a> Serializer<'a> {
             output,
             pos: 0,
             body_start_idx: 0,
+            body_len_digits: 0,
         }
     }
 
@@ -109,6 +116,7 @@ impl<'a> Serializer<'a> {
         let digits = max_body_len_digits(self.output.len());
         self.put_slice(PLACEHOLDERS[digits - 1])?;
         self.body_start_idx = self.pos;
+        self.body_len_digits = digits;
         Ok(())
     }
 
@@ -117,6 +125,12 @@ impl<'a> Serializer<'a> {
 
         let body_len = self.pos - self.body_start_idx;
         let body_len_slice = buffer.format(body_len).as_bytes();
+
+        // Also rejects calling `serialize_checksum` without a preceding
+        // `serialize_body_len` (`body_len_digits` is 0 then).
+        if body_len_slice.len() > self.body_len_digits {
+            return Err(SerializeError::MaxMessageSizeExceeded);
+        }
 
         self.output[self.body_start_idx - body_len_slice.len() - 1..self.body_start_idx - 1]
             .copy_from_slice(body_len_slice);
@@ -648,6 +662,27 @@ mod tests {
                 "buffer of {buf_len} bytes"
             );
         }
+    }
+
+    #[test]
+    fn body_len_digits_cap_at_8_for_huge_buffers() {
+        // Buffers of 100 MB and beyond used to panic; now they clamp to the
+        // widest placeholder.
+        assert_eq!(max_body_len_digits(100_000_000), 8);
+        assert_eq!(max_body_len_digits(usize::MAX), 8);
+    }
+
+    #[test]
+    fn checksum_without_body_len_placeholder_errors_instead_of_panicking() {
+        // `serialize_checksum` with no preceding `serialize_body_len` has
+        // no placeholder to patch - it must fail, not index out of bounds.
+        let mut buf = [0u8; 64];
+        let mut serializer = Serializer::new(&mut buf);
+        serializer.put_slice(b"8=FIXT.1.1\x0135=0\x01").unwrap();
+        assert_matches!(
+            serializer.serialize_checksum(),
+            Err(SerializeError::MaxMessageSizeExceeded)
+        );
     }
 
     #[test]
