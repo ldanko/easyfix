@@ -640,6 +640,9 @@ impl<'de> Deserializer<'de> {
     }
 
     pub fn range_to_fixstr(&self, range: std::ops::Range<usize>) -> &FixStr {
+        // SAFETY: ranges handed out by this deserializer come from
+        // `deserialize_msg_type`, which validated the bytes as printable
+        // ASCII via `deserialize_str`.
         unsafe { FixStr::from_ascii_unchecked(&self.raw_message.body[range]) }
     }
 
@@ -652,6 +655,9 @@ impl<'de> Deserializer<'de> {
                 return Err(self.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
             };
             let msg_type_pointer = deser_str.as_bytes().as_ptr();
+            // SAFETY: `deserialize_str` returns a subslice of `self.buf`,
+            // which is always a subslice of `raw_message.body`, so both
+            // pointers point into the same allocation.
             let msg_type_start_index =
                 unsafe { msg_type_pointer.offset_from(raw_message_pointer) } as usize;
             let msg_type_len = deser_str.len();

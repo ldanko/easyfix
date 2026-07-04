@@ -271,12 +271,15 @@ impl ToOwned for FixStr {
 
     #[inline]
     fn to_owned(&self) -> FixString {
+        // SAFETY: `self` is a valid `FixStr`, so its bytes are already
+        // validated as non-control ASCII.
         unsafe { FixString::from_ascii_unchecked(self.as_bytes().to_owned()) }
     }
 
     fn clone_into(&self, target: &mut FixString) {
         let mut buf = mem::take(target).into_bytes();
         self.as_bytes().clone_into(&mut buf);
+        // SAFETY: `buf` holds bytes cloned from `self`, a valid `FixStr`.
         *target = unsafe { FixString::from_ascii_unchecked(buf) }
     }
 }
@@ -489,6 +492,8 @@ impl ops::Deref for FixString {
     type Target = FixStr;
 
     fn deref(&self) -> &FixStr {
+        // SAFETY: `FixString` holds bytes validated at construction, the
+        // same invariant `FixStr` requires.
         unsafe { FixStr::from_ascii_unchecked(&self.0) }
     }
 }

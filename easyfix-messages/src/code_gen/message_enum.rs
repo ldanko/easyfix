@@ -48,6 +48,8 @@ pub fn generate_field_tag(
             }
 
             pub const fn as_fix_str(&self) -> &'static FixStr {
+                // SAFETY: variant names are ASCII Rust identifiers derived
+                // from dictionary field names.
                 unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
             }
         }

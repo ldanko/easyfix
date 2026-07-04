@@ -57,6 +57,8 @@ pub fn fix_str(ts: TokenStream) -> TokenStream {
 
     let easyfix_path = find_easyfix_core_path();
 
+    // SAFETY (of the emitted `unsafe`): the literal's bytes were validated
+    // as non-control ASCII by the loop above, at macro expansion time.
     quote! {
       unsafe { #easyfix_path::basic_types::FixStr::from_ascii_unchecked(#input.as_bytes()) }
     }

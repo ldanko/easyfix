@@ -15,7 +15,7 @@ use crate::{
     fix_str,
 };
 
-const BEGIN_STRING: &FixStr = unsafe { FixStr::from_ascii_unchecked(b"FIXT.1.1") };
+const BEGIN_STRING: &FixStr = fix_str!("FIXT.1.1");
 
 #[test]
 fn deserialize_tag_ok() {

@@ -383,7 +383,8 @@ impl EnumCodeGen {
                 }
 
                 pub const fn as_fix_str(&self) -> &'static FixStr {
-                    // Safety: value was checked when it was generated
+                    // SAFETY: enum wire values come from the dictionary XML
+                    // and are printable ASCII per the FIX standard.
                     unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
                 }
 
