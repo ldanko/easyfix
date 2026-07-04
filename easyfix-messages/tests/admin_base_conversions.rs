@@ -244,7 +244,6 @@ fn reject_incoming_full() {
         ref_msg_type: Some(fix_str!("D").to_owned()),
         session_reject_reason: Some(SessionRejectReason::try_from(1i64).unwrap()), // RequiredTagMissing
         text: Some(fix_str!("Missing required tag").to_owned()),
-        ..Default::default()
     };
     let base = RejectBase::from(&msg);
     assert_eq!(base.ref_seq_num, 7);
