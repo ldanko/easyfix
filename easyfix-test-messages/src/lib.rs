@@ -3178,9 +3178,21 @@ impl Message {
         }))
     }
 
+    /// Debug rendering of the serialized message with `|` in place
+    /// of SOH. Never panics: an unserializable message renders as
+    /// an error placeholder instead.
     pub fn dbg_fix_str(&self) -> impl fmt::Display {
         let mut buf = vec![0u8; 4096];
-        let len = self.serialize(&mut buf).expect("serialize failed");
+        let len = loop {
+            match self.serialize(&mut buf) {
+                Ok(len) => break len,
+                Err(SerializeError::MaxMessageSizeExceeded) if buf.len() < (1 << 24) => {
+                    let new_len = buf.len() * 2;
+                    buf.resize(new_len, 0);
+                }
+                Err(err) => return format!("<unserializable message: {err}>"),
+            }
+        };
         buf.truncate(len);
         for byte in buf.iter_mut() {
             if *byte == b'\x01' {
