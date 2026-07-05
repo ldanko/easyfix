@@ -406,6 +406,44 @@ class Dictionary:
     fields: list[FieldDef]
 
 
+def prune_unused_components(
+    components: list[ComponentDef],
+    messages: list[MessageDef],
+    header: list[Member],
+    trailer: list[Member],
+) -> list[ComponentDef]:
+    """Drop components not transitively reachable from messages, header
+    or trailer.
+
+    Unreferenced components would be rejected by easyfix-dictionary strict
+    validation as unused elements.
+    """
+    by_name = {c.name: c for c in components}
+
+    def collect_refs(members: list[Member], out: list[str]) -> None:
+        for m in members:
+            if isinstance(m, ComponentRef):
+                out.append(m.name)
+            elif isinstance(m, GroupMember):
+                collect_refs(m.members, out)
+
+    pending: list[str] = []
+    for msg in messages:
+        collect_refs(msg.members, pending)
+    collect_refs(header, pending)
+    collect_refs(trailer, pending)
+
+    reachable: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in reachable or name not in by_name:
+            continue
+        reachable.add(name)
+        collect_refs(by_name[name].members, pending)
+
+    return [c for c in components if c.name in reachable]
+
+
 # ---------------------------------------------------------------------------
 # Resolver (Repository -> Dictionary)
 # ---------------------------------------------------------------------------
@@ -716,6 +754,10 @@ class Resolver:
             body = self._resolve_component_body(cid)
             components.append(ComponentDef(name=comp.name, members=body,
                                            doc=comp.description))
+
+        # Drop components nothing references, then collect field tags only
+        # from what remains so unused fields are not emitted either
+        components = prune_unused_components(components, messages, header, trailer)
 
         # Collect referenced field tags
         referenced_tags = self._collect_referenced_tags(messages, components, header, trailer)
