@@ -112,13 +112,6 @@
   <field name="CheckSum" required="Y" />
  </trailer>
  <components>
-  <component name="HopGrp">
-   <group name="NoHops" required="N">
-    <field name="HopCompID" required="N" />
-    <field name="HopSendingTime" required="N" />
-    <field name="HopRefID" required="N" />
-   </group>
-  </component>
   <component name="MsgTypeGrp">
    <group name="NoMsgTypes" required="N">
     <field name="RefMsgType" required="N" />

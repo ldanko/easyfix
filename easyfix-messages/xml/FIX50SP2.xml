@@ -9801,13 +9801,6 @@
     <field name="Nested3PartySubIDType" required="N" />
    </group>
   </component>
-  <component name="HopGrp">
-   <group name="NoHops" required="N">
-    <field name="HopCompID" required="N" />
-    <field name="HopSendingTime" required="N" />
-    <field name="HopRefID" required="N" />
-   </group>
-  </component>
   <component name="StrategyParametersGrp">
    <group name="NoStrategyParameters" required="N">
     <field name="StrategyParameterName" required="N" />
@@ -9950,16 +9943,6 @@
    <group name="NoRootPartySubIDs" required="N">
     <field name="RootPartySubID" required="N" />
     <field name="RootPartySubIDType" required="N" />
-   </group>
-  </component>
-  <component name="MsgTypeGrp">
-   <group name="NoMsgTypes" required="N">
-    <field name="RefMsgType" required="N" />
-    <field name="MsgDirection" required="N" />
-    <field name="RefApplVerID" required="N" />
-    <field name="RefApplExtID" required="N" />
-    <field name="RefCstmApplVerID" required="N" />
-    <field name="DefaultVerIndicator" required="N" />
    </group>
   </component>
   <component name="TrdSessLstGrp">
@@ -16337,11 +16320,6 @@
   </field>
   <field number="381" name="GrossTradeAmt" type="AMT" />
   <field number="382" name="NoContraBrokers" type="NUMINGROUP" />
-  <field number="384" name="NoMsgTypes" type="NUMINGROUP" />
-  <field number="385" name="MsgDirection" type="CHAR">
-   <value enum="R" description="RECEIVE" />
-   <value enum="S" description="SEND" />
-  </field>
   <field number="386" name="NoTradingSessions" type="NUMINGROUP" />
   <field number="387" name="TotalVolumeTraded" type="QTY" />
   <field number="388" name="DiscretionInst" type="CHAR">
@@ -17860,10 +17838,6 @@
    <value enum="25" description="APPROVE_TAKEUP" />
    <value enum="26" description="NOTIONAL_VALUE_AVERAGE_PX_GROUP_ALLOC" />
   </field>
-  <field number="627" name="NoHops" type="NUMINGROUP" />
-  <field number="628" name="HopCompID" type="STRING" />
-  <field number="629" name="HopSendingTime" type="UTCTIMESTAMP" />
-  <field number="630" name="HopRefID" type="SEQNUM" />
   <field number="631" name="MidPx" type="PRICE" />
   <field number="632" name="BidYield" type="PERCENTAGE" />
   <field number="633" name="MidYield" type="PERCENTAGE" />
@@ -24090,7 +24064,6 @@
   <field number="1404" name="EncryptedNewPassword" type="DATA" />
   <field number="1405" name="UnderlyingLegMaturityTime" type="TZTIMEONLY" />
   <field number="1406" name="RefApplExtID" type="INT" />
-  <field number="1410" name="DefaultVerIndicator" type="BOOLEAN" />
   <field number="1411" name="Nested4PartySubIDType" type="INT">
    <value enum="1" description="FIRM" />
    <value enum="2" description="PERSON" />
