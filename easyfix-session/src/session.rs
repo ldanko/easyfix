@@ -15,7 +15,7 @@ use easyfix_core::{
         ApplVerId, FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField,
         SessionStatusField, TagNum, Utc, UtcTimestamp,
     },
-    deserializer::DeserializeError,
+    deserializer::DeserializeErrorKind,
     message::{MsgCat, SessionMessage},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -1203,7 +1203,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
                 self.emitter
                     .send(FixEventInternal::DeserializeError(
                         self.session_id().clone(),
-                        DeserializeError::Reject {
+                        DeserializeErrorKind::Reject {
                             msg_type: Some(msg_type.as_fix_str().to_owned()),
                             seq_num: msg_seq_num,
                             tag,
@@ -1344,7 +1344,10 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
         }
     }
 
-    pub async fn on_deserialize_error(&self, error: DeserializeError) -> Option<DisconnectReason> {
+    pub async fn on_deserialize_error(
+        &self,
+        error: DeserializeErrorKind,
+    ) -> Option<DisconnectReason> {
         trace!("on_deserialize_error");
 
         // TODO: if msg_type is logon, handle missing CompId separately (disconnect)
@@ -1357,11 +1360,11 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
         error!(deserialize_error = %text);
 
         match &error {
-            DeserializeError::Garbled(reason) => error!("Garbled message: {reason}"),
+            DeserializeErrorKind::Garbled(reason) => error!("Garbled message: {reason}"),
             // `LogoutReason` is ignored here: this legacy crate keeps its
             // existing Logout+disconnect behavior (session2 distinguishes the
             // reasons). See easyfix-session2 for the BeginString-mismatch path.
-            DeserializeError::Logout(reason) => {
+            DeserializeErrorKind::Logout(reason) => {
                 let mut state = self.state.borrow_mut();
                 self.send_logout(
                     &mut state,
@@ -1370,7 +1373,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
                 );
                 return Some(DisconnectReason::MsgSeqNumNotFound);
             }
-            DeserializeError::Reject {
+            DeserializeErrorKind::Reject {
                 msg_type,
                 seq_num,
                 tag,

@@ -50,7 +50,7 @@ impl MessageCodeGen {
             de_struct_entries.push(member.gen_deserialize_struct_entries());
         }
         quote! {
-            fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+            fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
                 #(#variables_definitions)*
 
                 while let Some(tag) = deserializer.deserialize_tag_num()? {

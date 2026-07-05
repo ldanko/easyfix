@@ -7,7 +7,7 @@ use std::{
 
 use bytes::BytesMut;
 use easyfix_core::{
-    deserializer::{self, DeserializeError, RawMessageError, raw_message},
+    deserializer::{DeserializeErrorKind, RawMessageError, raw_message},
     message::SessionMessage,
 };
 use futures_util::Stream;
@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 #[derive(Debug)]
 pub enum InputEvent<M> {
     Message(Box<M>),
-    DeserializeError(DeserializeError),
+    DeserializeError(DeserializeErrorKind),
     IoError(io::Error),
     Timeout,
     LogoutTimeout,
@@ -40,7 +40,7 @@ fn process_garbled_data(buf: &mut BytesMut) {
 
 fn parse_message<M: SessionMessage>(
     bytes: &mut BytesMut,
-) -> Result<Option<Box<M>>, deserializer::DeserializeError> {
+) -> Result<Option<Box<M>>, DeserializeErrorKind> {
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -53,7 +53,12 @@ fn parse_message<M: SessionMessage>(
 
     match raw_message(bytes) {
         Ok((leftover, raw_msg)) => {
-            let result = M::from_raw_message(raw_msg).map(Some);
+            // This crate predates the header-carrying `DeserializeError`
+            // and is in maintenance mode - drop the attached header and
+            // keep the bare kind.
+            let result = M::from_raw_message(raw_msg)
+                .map(Some)
+                .map_err(|err| err.kind);
             let leftover_len = leftover.len();
             bytes.split_to(src_len - leftover_len).freeze();
             result

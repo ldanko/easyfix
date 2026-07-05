@@ -7,7 +7,7 @@ use std::{
 
 use easyfix_core::{
     basic_types::{FixString, SeqNum, SessionRejectReasonField, SessionStatusField},
-    deserializer::DeserializeError,
+    deserializer::DeserializeErrorKind,
 };
 use futures::Stream;
 use tokio::sync::{mpsc, oneshot};
@@ -132,7 +132,7 @@ pub(crate) enum FixEventInternal<M: fmt::Debug> {
     AdmMsgIn(Option<Box<M>>, Option<oneshot::Sender<InputResponderMsg>>),
     AppMsgOut(Option<Box<M>>, Responder<M>),
     AdmMsgOut(Option<Box<M>>, Responder<M>),
-    DeserializeError(SessionId, DeserializeError),
+    DeserializeError(SessionId, DeserializeErrorKind),
 }
 
 impl<M: fmt::Debug> Drop for FixEventInternal<M> {
@@ -196,7 +196,7 @@ pub enum FixEvent<'a, M> {
     AdmMsgOut(&'a mut M),
 
     /// Failed to deserialize input message.
-    DeserializeError(&'a SessionId, &'a DeserializeError),
+    DeserializeError(&'a SessionId, &'a DeserializeErrorKind),
 }
 
 #[derive(Debug)]

@@ -222,6 +222,23 @@ pub struct HeaderBase<'a> {
     pub appl_ver_id: Option<ApplVerId>,
 }
 
+impl HeaderBase<'_> {
+    /// Detach the header from the message bytes it borrows, converting
+    /// the `Cow` fields to owned values. Allocates only for borrowed
+    /// CompIDs; every other field is `Copy`.
+    pub fn into_owned(self) -> HeaderBase<'static> {
+        HeaderBase {
+            sender_comp_id: Cow::Owned(self.sender_comp_id.into_owned()),
+            target_comp_id: Cow::Owned(self.target_comp_id.into_owned()),
+            msg_seq_num: self.msg_seq_num,
+            sending_time: self.sending_time,
+            poss_dup_flag: self.poss_dup_flag,
+            orig_sending_time: self.orig_sending_time,
+            appl_ver_id: self.appl_ver_id,
+        }
+    }
+}
+
 /// Admin message base — the session dispatches on this after checking `msg.try_as_admin()`.
 #[derive(Clone, Debug)]
 pub enum AdminBase<'a> {

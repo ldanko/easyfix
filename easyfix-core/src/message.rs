@@ -8,10 +8,40 @@ use std::fmt::Debug;
 use crate::{
     base_messages::{AdminBase, HeaderBase},
     basic_types::{ApplVerId, Boolean, FixStr, FixString, MsgTypeField, SeqNum, UtcTimestamp},
-    deserializer::{DeserializeError, RawMessage, raw_message},
+    deserializer::{DeserializeErrorKind, RawMessage, RawMessageError, raw_message},
     serializer::SerializeError,
     version::Version,
 };
+
+/// Deserialization failure returned by [`SessionMessage::from_raw_message`].
+///
+/// Aggregates the underlying [`DeserializeErrorKind`] with the header of the
+/// failed message when it is recoverable. The session layer uses the header
+/// to give header verdicts (sequence numbers first) precedence over the
+/// body-level error.
+#[derive(Debug, thiserror::Error)]
+#[error("{kind}")]
+pub struct DeserializeError {
+    /// The underlying deserialization failure.
+    #[source]
+    pub kind: DeserializeErrorKind,
+    /// Fully parsed header of the failed message. `Some` when header
+    /// parsing succeeded and the failure happened in the body or trailer;
+    /// `None` when the header itself failed to parse.
+    pub header: Option<Box<HeaderBase<'static>>>,
+}
+
+impl From<DeserializeErrorKind> for DeserializeError {
+    fn from(kind: DeserializeErrorKind) -> Self {
+        DeserializeError { kind, header: None }
+    }
+}
+
+impl From<RawMessageError> for DeserializeError {
+    fn from(error: RawMessageError) -> Self {
+        DeserializeErrorKind::from(error).into()
+    }
+}
 
 /// Admin vs App message category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +60,9 @@ pub trait SessionMessage: Sized + Debug + HeaderAccess {
     /// Deserialize from a structurally validated `RawMessage`. Returns
     /// `Box<Self>` because concrete message types can be large
     /// (e.g. `ExecutionReport`).
+    ///
+    /// On failure the [`DeserializeError`] carries the parsed header whenever
+    /// header parsing succeeded before the failure.
     fn from_raw_message(raw: RawMessage<'_>) -> Result<Box<Self>, DeserializeError>;
 
     /// Deserialize from FIX tag-value wire bytes. Composes [`raw_message`]

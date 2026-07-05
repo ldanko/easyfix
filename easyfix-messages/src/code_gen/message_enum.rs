@@ -105,7 +105,7 @@ pub fn generate_message_enum(
             fn deserialize(
                 deserializer: &mut Deserializer,
                 msg_type: MsgType
-            ) -> Result<Box<Body>, DeserializeError> {
+            ) -> Result<Box<Body>, DeserializeErrorKind> {
                 match msg_type {
                     #(
                         MsgType::#names => Ok(#names::deserialize(deserializer)?),
@@ -162,8 +162,8 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                     // a BeginString that is not a defined FIX identifier is
                     // genuinely garbled (FIX Session Layer §4.5.2).
                     return match begin_string.as_utf8().parse::<Version>() {
-                        Ok(_) => Err(DeserializeError::Logout(LogoutReason::BeginStringMismatch)),
-                        Err(_) => Err(DeserializeError::Garbled(GarbledReason::InvalidBeginString)),
+                        Ok(_) => Err(DeserializeErrorKind::Logout(LogoutReason::BeginStringMismatch).into()),
+                        Err(_) => Err(DeserializeErrorKind::Garbled(GarbledReason::InvalidBeginString).into()),
                     };
                 }
 
@@ -173,17 +173,17 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                 // any other outcome (malformed tag number, wrong tag, EOF) is
                 // the same protocol violation.
                 if !matches!(deserializer.deserialize_tag_num(), Ok(Some(35))) {
-                    return Err(DeserializeError::Garbled(GarbledReason::MsgTypeNotThirdTag));
+                    return Err(DeserializeErrorKind::Garbled(GarbledReason::MsgTypeNotThirdTag).into());
                 }
                 let msg_type_range = deserializer.deserialize_msg_type()?;
                 let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
                 let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
-                    return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
+                    return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType).into());
                 };
 
                 let header = Header::deserialize(&mut deserializer, body_length)
                     .map_err(|err| {
-                        if let DeserializeError::Reject { reason, .. } = err
+                        if let DeserializeErrorKind::Reject { reason, .. } = err
                             && reason == SessionRejectReasonBase::RequiredTagMissing
                             && let Ok(Some(tag)) = deserializer.deserialize_tag_num()
                         {
@@ -194,9 +194,19 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                         }
                     })?;
 
-                let body = Body::deserialize(&mut deserializer, msg_type)?;
+                // From here on the header is fully parsed - attach it to any
+                // failure so the session can run header verdicts (sequence
+                // numbers first) before reacting to the body-level error.
+                let attach_header = |kind: DeserializeErrorKind, header: &Header| DeserializeError {
+                    kind,
+                    header: Some(Box::new(HeaderBase::from(header).into_owned())),
+                };
 
-                let trailer = Trailer::deserialize(&mut deserializer)?;
+                let body = Body::deserialize(&mut deserializer, msg_type)
+                    .map_err(|error| attach_header(error, &header))?;
+
+                let trailer = Trailer::deserialize(&mut deserializer)
+                    .map_err(|error| attach_header(error, &header))?;
 
                 Ok(Box::new(Message {
                     header,

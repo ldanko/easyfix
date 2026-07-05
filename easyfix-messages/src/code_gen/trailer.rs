@@ -57,7 +57,7 @@ impl Trailer {
         };
 
         quote! {
-            fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeError> {
+            fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeErrorKind> {
                 #(#variables_definitions)*
 
                 #deserialize_values

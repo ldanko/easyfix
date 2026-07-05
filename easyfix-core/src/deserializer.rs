@@ -50,7 +50,7 @@ impl fmt::Display for GarbledReason {
     }
 }
 
-/// Cause of a [`DeserializeError::Logout`] — a well-formed message that the
+/// Cause of a [`DeserializeErrorKind::Logout`] — a well-formed message that the
 /// session must answer with a Logout(35=5) and disconnect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogoutReason {
@@ -71,7 +71,7 @@ impl fmt::Display for LogoutReason {
 }
 
 #[derive(Debug)]
-pub enum DeserializeError {
+pub enum DeserializeErrorKind {
     Garbled(GarbledReason),
     Logout(LogoutReason),
     Reject {
@@ -82,43 +82,43 @@ pub enum DeserializeError {
     },
 }
 
-impl fmt::Display for DeserializeError {
+impl fmt::Display for DeserializeErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DeserializeError::Garbled(reason) => write!(f, "garbled message: {reason}"),
-            DeserializeError::Logout(reason) => write!(f, "logout: {reason}"),
-            DeserializeError::Reject {
+            DeserializeErrorKind::Garbled(reason) => write!(f, "garbled message: {reason}"),
+            DeserializeErrorKind::Logout(reason) => write!(f, "logout: {reason}"),
+            DeserializeErrorKind::Reject {
                 tag: Some(tag),
                 reason,
                 ..
             } => write!(f, "{reason:?} (tag={tag})"),
-            DeserializeError::Reject {
+            DeserializeErrorKind::Reject {
                 tag: None, reason, ..
             } => write!(f, "{reason:?}"),
         }
     }
 }
 
-impl Error for DeserializeError {}
+impl Error for DeserializeErrorKind {}
 
-impl From<RawMessageError> for DeserializeError {
+impl From<RawMessageError> for DeserializeErrorKind {
     fn from(error: RawMessageError) -> Self {
         match error {
             RawMessageError::Incomplete => {
-                DeserializeError::Garbled(GarbledReason::IncompleteMessageData)
+                DeserializeErrorKind::Garbled(GarbledReason::IncompleteMessageData)
             }
             RawMessageError::Garbled => {
-                DeserializeError::Garbled(GarbledReason::MessageNotWellFormed)
+                DeserializeErrorKind::Garbled(GarbledReason::MessageNotWellFormed)
             }
             RawMessageError::InvalidChecksum => {
-                DeserializeError::Garbled(GarbledReason::InvalidChecksum)
+                DeserializeErrorKind::Garbled(GarbledReason::InvalidChecksum)
             }
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum DeserializeErrorInternal {
+pub(crate) enum DeserializeErrorKindInternal {
     /// The input ended at a point where a longer input could still have
     /// parsed; only more bytes can tell truncation from malformation.
     #[error("Incomplete")]
@@ -172,7 +172,7 @@ const MAX_FRACTION_DIGITS: usize = 12;
 /// calendar (`ValueIsIncorrect` when out of range).
 fn parse_timestamp_head(
     buf: &[u8],
-) -> Result<(NaiveDate, u32, u32, &[u8]), DeserializeErrorInternal> {
+) -> Result<(NaiveDate, u32, u32, &[u8]), DeserializeErrorKindInternal> {
     let [
         // Year
         y3 @ b'0'..=b'9',
@@ -200,9 +200,9 @@ fn parse_timestamp_head(
         // Too short to hold the prefix at all - only more bytes can tell
         // truncation from malformation.
         return if buf.len() < 15 {
-            Err(DeserializeErrorInternal::Incomplete)
+            Err(DeserializeErrorKindInternal::Incomplete)
         } else {
-            Err(DeserializeErrorInternal::Error(
+            Err(DeserializeErrorKindInternal::Error(
                 SessionRejectReasonBase::IncorrectDataFormatForValue,
             ))
         };
@@ -215,7 +215,7 @@ fn parse_timestamp_head(
     let month = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
     let day = (d1 - b'0') as u32 * 10 + (d0 - b'0') as u32;
     let naive_date = NaiveDate::from_ymd_opt(year, month, day).ok_or(
-        DeserializeErrorInternal::Error(SessionRejectReasonBase::ValueIsIncorrect),
+        DeserializeErrorKindInternal::Error(SessionRejectReasonBase::ValueIsIncorrect),
     )?;
     let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
     let min = (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32;
@@ -226,14 +226,14 @@ fn parse_timestamp_head(
 /// chrono represents a leap second as sec=59 with nanosecond >= 1_000_000_000,
 /// so the leap case reports 59 plus a whole second of nanosecond offset.
 /// Returns (seconds, leap nanosecond offset, rest).
-fn parse_utc_seconds(buf: &[u8]) -> Result<(u32, u32, &[u8]), DeserializeErrorInternal> {
+fn parse_utc_seconds(buf: &[u8]) -> Result<(u32, u32, &[u8]), DeserializeErrorKindInternal> {
     match buf {
         [s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
             Ok(((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, 0, rest))
         }
         [b'6', b'0', rest @ ..] => Ok((59, 1_000_000_000, rest)),
-        _ if buf.len() < 2 => Err(DeserializeErrorInternal::Incomplete),
-        _ => Err(DeserializeErrorInternal::Error(
+        _ if buf.len() < 2 => Err(DeserializeErrorKindInternal::Incomplete),
+        _ => Err(DeserializeErrorKindInternal::Error(
             SessionRejectReasonBase::IncorrectDataFormatForValue,
         )),
     }
@@ -247,7 +247,7 @@ fn parse_utc_seconds(buf: &[u8]) -> Result<(u32, u32, &[u8]), DeserializeErrorIn
 /// Returns (nanoseconds, precision, rest).
 fn parse_fraction_of_second(
     buf: &[u8],
-) -> Result<(u32, TimePrecision, &[u8]), DeserializeErrorInternal> {
+) -> Result<(u32, TimePrecision, &[u8]), DeserializeErrorKindInternal> {
     let [b'.', digits @ ..] = buf else {
         return Ok((0, TimePrecision::Secs, buf));
     };
@@ -259,7 +259,7 @@ fn parse_fraction_of_second(
             // One digit more than the longest valid width can never
             // become valid, no matter how the value continues.
             b'0'..=b'9' if count == MAX_FRACTION_DIGITS => {
-                return Err(DeserializeErrorInternal::Error(
+                return Err(DeserializeErrorKindInternal::Error(
                     SessionRejectReasonBase::IncorrectDataFormatForValue,
                 ));
             }
@@ -281,9 +281,9 @@ fn parse_fraction_of_second(
         12 => (fraction_of_second / 1_000, TimePrecision::Nanos),
         // The digits ran out at the end of the input; more bytes could
         // still have completed a valid width.
-        _ if rest.is_empty() => return Err(DeserializeErrorInternal::Incomplete),
+        _ if rest.is_empty() => return Err(DeserializeErrorKindInternal::Incomplete),
         _ => {
-            return Err(DeserializeErrorInternal::Error(
+            return Err(DeserializeErrorKindInternal::Error(
                 SessionRejectReasonBase::IncorrectDataFormatForValue,
             ));
         }
@@ -302,14 +302,14 @@ fn parse_fraction_of_second(
 /// truncated to nanoseconds); SS = 60 is accepted as a UTC leap second.
 pub(crate) fn parse_utc_timestamp(
     buf: &[u8],
-) -> Result<(UtcTimestamp, &[u8]), DeserializeErrorInternal> {
+) -> Result<(UtcTimestamp, &[u8]), DeserializeErrorKindInternal> {
     let (naive_date, hour, min, rest) = parse_timestamp_head(buf)?;
     let (sec, leap_offset, rest) = parse_utc_seconds(rest)?;
     let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
 
     let naive_date_time = naive_date
         .and_hms_nano_opt(hour, min, sec, leap_offset + fraction_of_second)
-        .ok_or(DeserializeErrorInternal::Error(
+        .ok_or(DeserializeErrorKindInternal::Error(
             SessionRejectReasonBase::ValueIsIncorrect,
         ))?;
     let timestamp = Utc.from_utc_datetime(&naive_date_time);
@@ -321,7 +321,7 @@ pub(crate) fn parse_utc_timestamp(
 ///
 /// Accepted format is HH:MM:SS with the same optional fraction as
 /// UtcTimestamp; SS = 60 is accepted as a UTC leap second.
-fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeErrorInternal> {
+fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeErrorKindInternal> {
     let [
         // Hour
         h1 @ b'0'..=b'2',
@@ -335,9 +335,9 @@ fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeEr
     ] = buf
     else {
         return if buf.len() < 6 {
-            Err(DeserializeErrorInternal::Incomplete)
+            Err(DeserializeErrorKindInternal::Incomplete)
         } else {
-            Err(DeserializeErrorInternal::Error(
+            Err(DeserializeErrorKindInternal::Error(
                 SessionRejectReasonBase::IncorrectDataFormatForValue,
             ))
         };
@@ -349,25 +349,25 @@ fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeEr
     let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
 
     let time = NaiveTime::from_hms_nano_opt(hour, min, sec, leap_offset + fraction_of_second)
-        .ok_or(DeserializeErrorInternal::Error(
+        .ok_or(DeserializeErrorKindInternal::Error(
             SessionRejectReasonBase::ValueIsIncorrect,
         ))?;
     Ok((UtcTimeOnly::with_precision(time, precision), rest))
 }
 
-fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInternal> {
+fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorKindInternal> {
     for (i, b) in bytes.iter().enumerate() {
         match b {
             // No control character is allowed
             0x00 | 0x02..=0x1f | 0x7f..=0xff => {
-                return Err(DeserializeErrorInternal::Error(
+                return Err(DeserializeErrorKindInternal::Error(
                     SessionRejectReasonBase::ValueIsIncorrect,
                 ));
             }
             // Except SOH which marks end of tag
             b'\x01' => {
                 if i == 0 {
-                    return Err(DeserializeErrorInternal::Error(
+                    return Err(DeserializeErrorKindInternal::Error(
                         SessionRejectReasonBase::TagSpecifiedWithoutAValue,
                     ));
                 } else {
@@ -381,10 +381,10 @@ fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorInt
         }
     }
 
-    Err(DeserializeErrorInternal::Incomplete)
+    Err(DeserializeErrorKindInternal::Incomplete)
 }
 
-fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorInternal> {
+fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorKindInternal> {
     let mut value: Length = 0;
     for (i, b) in bytes.iter().enumerate() {
         match b {
@@ -392,17 +392,17 @@ fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorI
                 value = value
                     .checked_mul(10)
                     .and_then(|v| v.checked_add(Length::from(n - b'0')))
-                    .ok_or(DeserializeErrorInternal::Error(
+                    .ok_or(DeserializeErrorKindInternal::Error(
                         SessionRejectReasonBase::ValueIsIncorrect,
                     ))?;
             }
             b'\x01' => {
                 if i == 0 {
-                    return Err(DeserializeErrorInternal::Error(
+                    return Err(DeserializeErrorKindInternal::Error(
                         SessionRejectReasonBase::TagSpecifiedWithoutAValue,
                     ));
                 } else if value == 0 {
-                    return Err(DeserializeErrorInternal::Error(
+                    return Err(DeserializeErrorKindInternal::Error(
                         SessionRejectReasonBase::ValueIsIncorrect,
                     ));
                 } else {
@@ -410,14 +410,14 @@ fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorI
                 }
             }
             _ => {
-                return Err(DeserializeErrorInternal::Error(
+                return Err(DeserializeErrorKindInternal::Error(
                     SessionRejectReasonBase::IncorrectDataFormatForValue,
                 ));
             }
         }
     }
 
-    Err(DeserializeErrorInternal::Incomplete)
+    Err(DeserializeErrorKindInternal::Incomplete)
 }
 
 #[derive(Debug)]
@@ -437,11 +437,11 @@ pub enum RawMessageError {
     InvalidChecksum,
 }
 
-impl From<DeserializeErrorInternal> for RawMessageError {
-    fn from(d: DeserializeErrorInternal) -> RawMessageError {
+impl From<DeserializeErrorKindInternal> for RawMessageError {
+    fn from(d: DeserializeErrorKindInternal) -> RawMessageError {
         match d {
-            DeserializeErrorInternal::Incomplete => RawMessageError::Incomplete,
-            DeserializeErrorInternal::Error(_) => RawMessageError::Garbled,
+            DeserializeErrorKindInternal::Incomplete => RawMessageError::Incomplete,
+            DeserializeErrorKindInternal::Error(_) => RawMessageError::Garbled,
         }
     }
 }
@@ -528,13 +528,13 @@ impl<'de> Deserializer<'de> {
 
     // This may fail when RawData or XmlData fields (or other binary fields)
     // are located before MsgSeqNum and has value `34=` inside
-    fn try_find_msg_seq_num(&mut self) -> Result<SeqNum, DeserializeError> {
+    fn try_find_msg_seq_num(&mut self) -> Result<SeqNum, DeserializeErrorKind> {
         static FINDER: LazyLock<memmem::Finder<'static>> =
             LazyLock::new(|| memmem::Finder::new(b"34="));
 
         let start_index = FINDER
             .find(self.buf)
-            .ok_or(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing))?;
+            .ok_or(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing))?;
         self.buf = &self.buf[start_index + FINDER.needle().len()..];
 
         self.deserialize_seq_num()
@@ -544,7 +544,7 @@ impl<'de> Deserializer<'de> {
         &mut self,
         tag: Option<TagNum>,
         reason: SessionRejectReasonBase,
-    ) -> DeserializeError {
+    ) -> DeserializeErrorKind {
         let seq_num = if let Some(seq_num) = self.seq_num {
             seq_num
         } else {
@@ -554,7 +554,7 @@ impl<'de> Deserializer<'de> {
             }
         };
 
-        DeserializeError::Reject {
+        DeserializeErrorKind::Reject {
             msg_type: self.msg_type.clone().map(|msg_type| {
                 FixString::from_ascii_lossy(self.raw_message.body[msg_type].to_vec())
             }),
@@ -569,7 +569,7 @@ impl<'de> Deserializer<'de> {
         expected_tags: &[u16],
         processed_tags: &[u16],
         current_tag: u16,
-    ) -> DeserializeError {
+    ) -> DeserializeErrorKind {
         let mut current_tag_found = false;
         'outer: for processed_tag in processed_tags {
             for expected_tag in expected_tags {
@@ -603,7 +603,7 @@ impl<'de> Deserializer<'de> {
     // Build a Reject for a malformed field value, skipping the remainder of
     // the current field first so the fallback MsgSeqNum scan inside `reject`
     // cannot match bytes of the malformed value itself.
-    fn reject_value(&mut self, reason: SessionRejectReasonBase) -> DeserializeError {
+    fn reject_value(&mut self, reason: SessionRejectReasonBase) -> DeserializeErrorKind {
         match memchr(b'\x01', self.buf) {
             Some(i) => self.buf = &self.buf[i + 1..],
             None => self.buf = &[],
@@ -613,25 +613,28 @@ impl<'de> Deserializer<'de> {
 
     // Map a value-parser error: exhausted input is a garbled message, a
     // format violation is a Reject (built after skipping the field).
-    fn garbled_or_reject_value(&mut self, error: DeserializeErrorInternal) -> DeserializeError {
+    fn garbled_or_reject_value(
+        &mut self,
+        error: DeserializeErrorKindInternal,
+    ) -> DeserializeErrorKind {
         match error {
-            DeserializeErrorInternal::Incomplete => {
-                DeserializeError::Garbled(GarbledReason::IncompleteMessageData)
+            DeserializeErrorKindInternal::Incomplete => {
+                DeserializeErrorKind::Garbled(GarbledReason::IncompleteMessageData)
             }
-            DeserializeErrorInternal::Error(reason) => self.reject_value(reason),
+            DeserializeErrorKindInternal::Error(reason) => self.reject_value(reason),
         }
     }
 
     // Consume the SOH terminating a just-parsed value whose unconsumed tail
     // is `rest`, advancing the buffer past it.
-    fn finish_value<T>(&mut self, value: T, rest: &'de [u8]) -> Result<T, DeserializeError> {
+    fn finish_value<T>(&mut self, value: T, rest: &'de [u8]) -> Result<T, DeserializeErrorKind> {
         match rest {
             [b'\x01', tail @ ..] => {
                 self.buf = tail;
                 Ok(value)
             }
             // Buffer ended before the terminating SOH
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             // Value bytes not followed by SOH
@@ -647,7 +650,7 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize MsgType
-    pub fn deserialize_msg_type(&mut self) -> Result<std::ops::Range<usize>, DeserializeError> {
+    pub fn deserialize_msg_type(&mut self) -> Result<std::ops::Range<usize>, DeserializeErrorKind> {
         let raw_message_pointer = self.raw_message.body.as_ptr();
 
         let msg_type_range = {
@@ -670,7 +673,7 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize sequence of character digits without commas or decimals.
     /// Value must be positive and may not contain leading zeros.
-    pub fn deserialize_tag_num(&mut self) -> Result<Option<TagNum>, DeserializeError> {
+    pub fn deserialize_tag_num(&mut self) -> Result<Option<TagNum>, DeserializeErrorKind> {
         if self.tmp_tag.is_some() {
             return Ok(self.tmp_tag.take());
         }
@@ -715,7 +718,7 @@ impl<'de> Deserializer<'de> {
         }
 
         // End of stream
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))
     }
@@ -726,11 +729,11 @@ impl<'de> Deserializer<'de> {
     /// while negative int is “-99999”).
     ///
     /// Note that int values may contain leading zeros (e.g. “00023” = “23”).
-    pub fn deserialize_int(&mut self) -> Result<Int, DeserializeError> {
+    pub fn deserialize_int(&mut self) -> Result<Int, DeserializeErrorKind> {
         let negative = match self.buf {
             // MSG Garbled
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -779,22 +782,24 @@ impl<'de> Deserializer<'de> {
             }
         }
 
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
     /// Value must be positive.
-    pub fn deserialize_seq_num(&mut self) -> Result<SeqNum, DeserializeError> {
+    pub fn deserialize_seq_num(&mut self) -> Result<SeqNum, DeserializeErrorKind> {
         match self.buf {
             // No more data, MSG Garbled
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
-            [b'\x01', ..] => return Err(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing)),
+            [b'\x01', ..] => {
+                return Err(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing));
+            }
             _ => {}
         }
 
@@ -805,7 +810,7 @@ impl<'de> Deserializer<'de> {
                     value = value
                         .checked_mul(10)
                         .and_then(|v| v.checked_add((n - b'0') as SeqNum))
-                        .ok_or(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing))?;
+                        .ok_or(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing))?;
                 }
                 b'\x01' => {
                     // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
@@ -814,22 +819,22 @@ impl<'de> Deserializer<'de> {
                     // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
                     return Ok(value);
                 }
-                _ => return Err(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing)),
+                _ => return Err(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing)),
             }
         }
 
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
     /// Value must be positive.
-    pub fn deserialize_num_in_group(&mut self) -> Result<NumInGroup, DeserializeError> {
+    pub fn deserialize_num_in_group(&mut self) -> Result<NumInGroup, DeserializeErrorKind> {
         match self.buf {
             // MSG Garbled
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -873,18 +878,18 @@ impl<'de> Deserializer<'de> {
             }
         }
 
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals
     /// (values 1 to 31).
-    pub fn deserialize_day_of_month(&mut self) -> Result<DayOfMonth, DeserializeError> {
+    pub fn deserialize_day_of_month(&mut self) -> Result<DayOfMonth, DeserializeErrorKind> {
         match self.buf {
             // MSG Garbled
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -945,10 +950,10 @@ impl<'de> Deserializer<'de> {
     /// All float fields must accommodate up to fifteen significant digits.
     /// The number of decimal places used should be a factor of business/market
     /// needs and mutual agreement between counterparties.
-    pub fn deserialize_float(&mut self) -> Result<Float, DeserializeError> {
+    pub fn deserialize_float(&mut self) -> Result<Float, DeserializeErrorKind> {
         let (negative, buf) = match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1009,43 +1014,43 @@ impl<'de> Deserializer<'de> {
             }
         }
 
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))
     }
 
     #[inline(always)]
-    pub fn deserialize_qty(&mut self) -> Result<Qty, DeserializeError> {
+    pub fn deserialize_qty(&mut self) -> Result<Qty, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
     #[inline(always)]
-    pub fn deserialize_price(&mut self) -> Result<Price, DeserializeError> {
+    pub fn deserialize_price(&mut self) -> Result<Price, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
     #[inline(always)]
-    pub fn deserialize_price_offset(&mut self) -> Result<PriceOffset, DeserializeError> {
+    pub fn deserialize_price_offset(&mut self) -> Result<PriceOffset, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
     #[inline(always)]
-    pub fn deserialize_amt(&mut self) -> Result<Amt, DeserializeError> {
+    pub fn deserialize_amt(&mut self) -> Result<Amt, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
     #[inline(always)]
-    pub fn deserialize_percentage(&mut self) -> Result<Percentage, DeserializeError> {
+    pub fn deserialize_percentage(&mut self) -> Result<Percentage, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
-    pub fn deserialize_boolean(&mut self) -> Result<Boolean, DeserializeError> {
+    pub fn deserialize_boolean(&mut self) -> Result<Boolean, DeserializeErrorKind> {
         match self.buf {
             // Empty or missing separator at the end
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
-            [b'Y'] | [b'N'] => Err(DeserializeError::Garbled(
+            [b'Y'] | [b'N'] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1068,9 +1073,9 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize any ASCII character except control characters.
-    pub fn deserialize_char(&mut self) -> Result<Char, DeserializeError> {
+    pub fn deserialize_char(&mut self) -> Result<Char, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1086,7 +1091,7 @@ impl<'de> Deserializer<'de> {
                 Ok(*n)
             }
             // Missing separator at the end
-            [_, byte] if *byte != b'\x01' => Err(DeserializeError::Garbled(
+            [_, byte] if *byte != b'\x01' => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::MessageNotWellFormed,
             )),
             _ => Err(self.reject(
@@ -1100,10 +1105,10 @@ impl<'de> Deserializer<'de> {
     /// character values, e.g. “2 A F”.
     pub fn deserialize_multiple_char_value(
         &mut self,
-    ) -> Result<MultipleCharValue, DeserializeError> {
+    ) -> Result<MultipleCharValue, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1116,7 +1121,7 @@ impl<'de> Deserializer<'de> {
             _ => {}
         }
 
-        let i = memchr(b'\x01', self.buf).ok_or(DeserializeError::Garbled(
+        let i = memchr(b'\x01', self.buf).ok_or(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))?;
 
@@ -1157,16 +1162,16 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
-    pub fn deserialize_str(&mut self) -> Result<&FixStr, DeserializeError> {
+    pub fn deserialize_str(&mut self) -> Result<&FixStr, DeserializeErrorKind> {
         match deserialize_str(self.buf) {
             Ok((leftover, fix_str)) => {
                 self.buf = leftover;
                 Ok(fix_str)
             }
-            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::Garbled(
+            Err(DeserializeErrorKindInternal::Incomplete) => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
-            Err(DeserializeErrorInternal::Error(reason)) => {
+            Err(DeserializeErrorKindInternal::Error(reason)) => {
                 Err(self.reject(self.current_tag, reason))
             }
         }
@@ -1175,7 +1180,7 @@ impl<'de> Deserializer<'de> {
     /// Deserialize alphanumeric free-format strings can include any character
     /// except control characters.
     #[inline(always)]
-    pub fn deserialize_string(&mut self) -> Result<FixString, DeserializeError> {
+    pub fn deserialize_string(&mut self) -> Result<FixString, DeserializeErrorKind> {
         self.deserialize_str().map(FixString::from)
     }
 
@@ -1183,10 +1188,10 @@ impl<'de> Deserializer<'de> {
     /// character values, e.g. “AV AN A”.
     pub fn deserialize_multiple_string_value(
         &mut self,
-    ) -> Result<MultipleStringValue, DeserializeError> {
+    ) -> Result<MultipleStringValue, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1199,7 +1204,7 @@ impl<'de> Deserializer<'de> {
             _ => {}
         }
 
-        let i = memchr(b'\x01', self.buf).ok_or(DeserializeError::Garbled(
+        let i = memchr(b'\x01', self.buf).ok_or(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData,
         ))?;
 
@@ -1230,9 +1235,9 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize ISO 3166-1:2013 Codes for the representation of names of
     /// countries and their subdivision (2-character code).
-    pub fn deserialize_country(&mut self) -> Result<Country, DeserializeError> {
+    pub fn deserialize_country(&mut self) -> Result<Country, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1256,7 +1261,7 @@ impl<'de> Deserializer<'de> {
             // TODO: and do it in every deserialize_* function without loop
             // TODO: or maybe better just check if len < expected message size
             &[a, b, c] if a != b'\x01' && b != b'\x01' && c != b'\x01' => Err(
-                DeserializeError::Garbled(GarbledReason::MessageNotWellFormed),
+                DeserializeErrorKind::Garbled(GarbledReason::MessageNotWellFormed),
             ),
             _ => Err(self.reject(
                 self.current_tag,
@@ -1267,9 +1272,9 @@ impl<'de> Deserializer<'de> {
 
     /// Deserialize ISO 4217:2015 Codes for the representation of currencies
     /// and funds (3-character code).
-    pub fn deserialize_currency(&mut self) -> Result<Currency, DeserializeError> {
+    pub fn deserialize_currency(&mut self) -> Result<Currency, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1295,9 +1300,9 @@ impl<'de> Deserializer<'de> {
     /// Deserialize ISO 10383:2012 Securities and related financial instruments
     /// – Codes for exchanges and market identification (MIC)
     /// (4-character code).
-    pub fn deserialize_exchange(&mut self) -> Result<Exchange, DeserializeError> {
+    pub fn deserialize_exchange(&mut self) -> Result<Exchange, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1343,15 +1348,15 @@ impl<'de> Deserializer<'de> {
     /// The format is not enforced: the value is accepted as a plain string,
     /// and format conformance is left to the application.
     #[inline(always)]
-    pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeError> {
+    pub fn deserialize_month_year(&mut self) -> Result<MonthYear, DeserializeErrorKind> {
         self.deserialize_string()
     }
 
     /// Deserialize ISO 639-1:2002 Codes for the representation of names
     /// of languages (2-character code).
-    pub fn deserialize_language(&mut self) -> Result<Language, DeserializeError> {
+    pub fn deserialize_language(&mut self) -> Result<Language, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1391,10 +1396,10 @@ impl<'de> Deserializer<'de> {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds
     ///   (truncated to nanosecond resolution);
-    pub fn deserialize_utc_timestamp(&mut self) -> Result<UtcTimestamp, DeserializeError> {
+    pub fn deserialize_utc_timestamp(&mut self) -> Result<UtcTimestamp, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1430,10 +1435,10 @@ impl<'de> Deserializer<'de> {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds
     ///   (truncated to nanosecond resolution);
-    pub fn deserialize_utc_time_only(&mut self) -> Result<UtcTimeOnly, DeserializeError> {
+    pub fn deserialize_utc_time_only(&mut self) -> Result<UtcTimeOnly, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1459,9 +1464,9 @@ impl<'de> Deserializer<'de> {
     /// - YYYY = 0000-9999,
     /// - MM = 01-12,
     /// - DD = 01-31.
-    pub fn deserialize_utc_date_only(&mut self) -> Result<UtcDateOnly, DeserializeError> {
+    pub fn deserialize_utc_date_only(&mut self) -> Result<UtcDateOnly, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1469,7 +1474,7 @@ impl<'de> Deserializer<'de> {
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::Garbled(
+            [_] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [
@@ -1516,9 +1521,9 @@ impl<'de> Deserializer<'de> {
     /// - SS = 00-59 seconds.
     ///
     /// In general only the hour token is non-zero.
-    pub fn deserialize_local_mkt_time(&mut self) -> Result<LocalMktTime, DeserializeError> {
+    pub fn deserialize_local_mkt_time(&mut self) -> Result<LocalMktTime, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1526,7 +1531,7 @@ impl<'de> Deserializer<'de> {
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::Garbled(
+            [_] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
 
@@ -1567,9 +1572,9 @@ impl<'de> Deserializer<'de> {
     /// - YYYY = 0000-9999,
     /// - MM = 01-12,
     /// - DD = 01-31.
-    pub fn deserialize_local_mkt_date(&mut self) -> Result<LocalMktDate, DeserializeError> {
+    pub fn deserialize_local_mkt_date(&mut self) -> Result<LocalMktDate, DeserializeErrorKind> {
         match self.buf {
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [b'\x01', ..] => Err(self.reject(
@@ -1577,7 +1582,7 @@ impl<'de> Deserializer<'de> {
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
             // Missing separator at the end
-            [_] => Err(DeserializeError::Garbled(
+            [_] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             [
@@ -1616,7 +1621,7 @@ impl<'de> Deserializer<'de> {
 
     /// Parse timezone offset: Z, +hh, +hh:mm, -hh, -hh:mm.
     /// Consumes the offset and trailing SOH delimiter.
-    fn deserialize_tz_offset(&mut self) -> Result<FixedOffset, DeserializeError> {
+    fn deserialize_tz_offset(&mut self) -> Result<FixedOffset, DeserializeErrorKind> {
         match self.buf {
             [b'Z', b'\x01', rest @ ..] => {
                 self.buf = rest;
@@ -1664,7 +1669,7 @@ impl<'de> Deserializer<'de> {
                     self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
                 })
             }
-            [] => Err(DeserializeError::Garbled(
+            [] => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
             _ => Err(self.reject(
@@ -1695,10 +1700,10 @@ impl<'de> Deserializer<'de> {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds
     ///   (truncated to nanosecond resolution);
-    pub fn deserialize_tz_timestamp(&mut self) -> Result<TzTimestamp, DeserializeError> {
+    pub fn deserialize_tz_timestamp(&mut self) -> Result<TzTimestamp, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1721,7 +1726,7 @@ impl<'de> Deserializer<'de> {
                 ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
             }
             _ if rest.len() < 2 => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1760,10 +1765,10 @@ impl<'de> Deserializer<'de> {
     /// - SS = 00-59 seconds,
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes.
-    pub fn deserialize_tz_timeonly(&mut self) -> Result<TzTimeOnly, DeserializeError> {
+    pub fn deserialize_tz_timeonly(&mut self) -> Result<TzTimeOnly, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1792,7 +1797,7 @@ impl<'de> Deserializer<'de> {
                 rest,
             ),
             _ if self.buf.len() < 5 => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1832,16 +1837,16 @@ impl<'de> Deserializer<'de> {
     /// The Length field must specify the number of octets of the value
     /// contained in the associated data field up to but not including
     /// the terminating `<SOH>`.
-    pub fn deserialize_length(&mut self) -> Result<Length, DeserializeError> {
+    pub fn deserialize_length(&mut self) -> Result<Length, DeserializeErrorKind> {
         match deserialize_length(self.buf) {
             Ok((leftover, len)) => {
                 self.buf = leftover;
                 Ok(len)
             }
-            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::Garbled(
+            Err(DeserializeErrorKindInternal::Incomplete) => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
-            Err(DeserializeErrorInternal::Error(reject)) => {
+            Err(DeserializeErrorKindInternal::Error(reject)) => {
                 Err(self.reject(self.current_tag, reject))
             }
         }
@@ -1852,23 +1857,23 @@ impl<'de> Deserializer<'de> {
     /// Fields of datatype data must have an associated field of type Length.
     /// Fields of datatype data must be immediately preceded by their
     /// associated Length field.
-    pub fn deserialize_data(&mut self, len: usize) -> Result<Data, DeserializeError> {
+    pub fn deserialize_data(&mut self, len: usize) -> Result<Data, DeserializeErrorKind> {
         if self.buf.is_empty() {
-            return Err(DeserializeError::Garbled(
+            return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             ));
         }
 
         // Data length + separator (SOH)
         if self.buf.len() < len + 1 {
-            return Err(DeserializeError::Garbled(
+            return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             ));
         }
 
         // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
         if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
-            return Err(DeserializeError::Garbled(
+            return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::MessageNotWellFormed,
             ));
         }
@@ -1890,10 +1895,10 @@ impl<'de> Deserializer<'de> {
     ///   Length.
     /// - Fields of datatype XMLData must be immediately preceded by their
     ///   associated Length field.
-    pub fn deserialize_xml(&mut self, len: usize) -> Result<XmlData, DeserializeError> {
+    pub fn deserialize_xml(&mut self, len: usize) -> Result<XmlData, DeserializeErrorKind> {
         match self.buf {
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1908,14 +1913,14 @@ impl<'de> Deserializer<'de> {
 
         // XML length + separator (SOH)
         if self.buf.len() < len + 1 {
-            return Err(DeserializeError::Garbled(
+            return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             ));
         }
 
         // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
         if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
-            return Err(DeserializeError::Garbled(
+            return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::MessageNotWellFormed,
             ));
         }
@@ -1928,14 +1933,14 @@ impl<'de> Deserializer<'de> {
         Ok(xml.into())
     }
 
-    pub fn deserialize_tenor(&mut self) -> Result<Tenor, DeserializeError> {
+    pub fn deserialize_tenor(&mut self) -> Result<Tenor, DeserializeErrorKind> {
         let (unit, rest) = match self.buf {
             [b'D', rest @ ..] => (TenorUnit::Days, rest),
             [b'M', rest @ ..] => (TenorUnit::Months, rest),
             [b'W', rest @ ..] => (TenorUnit::Weeks, rest),
             [b'Y', rest @ ..] => (TenorUnit::Years, rest),
             [] => {
-                return Err(DeserializeError::Garbled(
+                return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
@@ -1951,23 +1956,23 @@ impl<'de> Deserializer<'de> {
                 self.buf = leftover;
                 Ok(Tenor { unit, value })
             }
-            Err(DeserializeErrorInternal::Incomplete) => Err(DeserializeError::Garbled(
+            Err(DeserializeErrorKindInternal::Incomplete) => Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             )),
-            Err(DeserializeErrorInternal::Error(reason)) => {
+            Err(DeserializeErrorKindInternal::Error(reason)) => {
                 Err(self.reject(self.current_tag, reason))
             }
         }
     }
 
-    pub fn deserialize_int_enum<T>(&mut self) -> Result<T, DeserializeError>
+    pub fn deserialize_int_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         T: TryFrom<Int, Error = SessionRejectReasonBase>,
     {
         T::try_from(self.deserialize_int()?).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
-    pub fn deserialize_num_in_group_enum<T>(&mut self) -> Result<T, DeserializeError>
+    pub fn deserialize_num_in_group_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         T: TryFrom<NumInGroup, Error = SessionRejectReasonBase>,
     {
@@ -1975,7 +1980,7 @@ impl<'de> Deserializer<'de> {
             .map_err(|reason| self.reject(self.current_tag, reason))
     }
 
-    pub fn deserialize_char_enum<T>(&mut self) -> Result<T, DeserializeError>
+    pub fn deserialize_char_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         T: TryFrom<Char, Error = SessionRejectReasonBase>,
     {
@@ -1983,7 +1988,7 @@ impl<'de> Deserializer<'de> {
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
-    pub fn deserialize_string_enum<T>(&mut self) -> Result<T, DeserializeError>
+    pub fn deserialize_string_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReasonBase>,
     {
@@ -1991,7 +1996,9 @@ impl<'de> Deserializer<'de> {
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
-    pub fn deserialize_multiple_char_value_enum<T>(&mut self) -> Result<Vec<T>, DeserializeError>
+    pub fn deserialize_multiple_char_value_enum<T>(
+        &mut self,
+    ) -> Result<Vec<T>, DeserializeErrorKind>
     where
         T: TryFrom<Char, Error = SessionRejectReasonBase>,
     {
@@ -2004,7 +2011,9 @@ impl<'de> Deserializer<'de> {
         Ok(result)
     }
 
-    pub fn deserialize_multiple_string_value_enum<T>(&mut self) -> Result<Vec<T>, DeserializeError>
+    pub fn deserialize_multiple_string_value_enum<T>(
+        &mut self,
+    ) -> Result<Vec<T>, DeserializeErrorKind>
     where
         for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReasonBase>,
     {

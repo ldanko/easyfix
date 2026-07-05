@@ -26,9 +26,9 @@ use std::{borrow::Cow, collections::HashMap, fmt, str::FromStr};
 use easyfix_core::{
     base_messages::*,
     basic_types::*,
-    deserializer::{self, DeserializeError, Deserializer, GarbledReason, RawMessage},
+    deserializer::{self, DeserializeErrorKind, Deserializer, GarbledReason, RawMessage},
     fix_str,
-    message::{HeaderAccess, MsgCat, SessionMessage},
+    message::{DeserializeError, HeaderAccess, MsgCat, SessionMessage},
     serializer::{SerializeError, Serializer},
     version::Version,
 };
@@ -595,7 +595,7 @@ fn required_body_tags(msg_type: &[u8]) -> &'static [TagNum] {
     }
 }
 
-fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, DeserializeError> {
+fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, DeserializeErrorKind> {
     let mut des = Deserializer::from_raw_message(raw);
     let begin_string = des.begin_string();
 
@@ -604,7 +604,9 @@ fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, Deser
     // with deserialize_tag_num(), then read the value with deserialize_msg_type().
     // Copy msg_type bytes immediately to release the borrow on `des`.
     if !matches!(des.deserialize_tag_num(), Ok(Some(35))) {
-        return Err(DeserializeError::Garbled(GarbledReason::MsgTypeNotThirdTag));
+        return Err(DeserializeErrorKind::Garbled(
+            GarbledReason::MsgTypeNotThirdTag,
+        ));
     }
     let msg_type_range = des.deserialize_msg_type()?;
     let msg_type_bytes: Vec<u8> = des.range_to_fixstr(msg_type_range).as_bytes().to_vec();
@@ -669,7 +671,7 @@ fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, Deser
 fn deserialize_field_value(
     des: &mut Deserializer<'_>,
     tag: TagNum,
-) -> Result<Value, DeserializeError> {
+) -> Result<Value, DeserializeErrorKind> {
     match tag {
         // Int fields
         TAG_ENCRYPT_METHOD | TAG_REF_TAG_ID | TAG_SESSION_REJECT_REASON => {
@@ -708,7 +710,7 @@ impl fmt::Display for DynamicMessage {
 
 impl SessionMessage for DynamicMessage {
     fn from_raw_message(raw: RawMessage<'_>) -> Result<Box<Self>, DeserializeError> {
-        deserialize_message(raw)
+        deserialize_message(raw).map_err(DeserializeError::from)
     }
 
     fn serialize(&self, buf: &mut [u8]) -> Result<usize, SerializeError> {

@@ -10,7 +10,7 @@ use crate::{
         FixStr, LocalMktDate, Price, SessionRejectReasonField, Tenor, TenorUnit, TimePrecision,
     },
     deserializer::{
-        DeserializeError, GarbledReason, LogoutReason, RawMessageError, deserialize_checksum,
+        DeserializeErrorKind, GarbledReason, LogoutReason, RawMessageError, deserialize_checksum,
     },
     fix_str,
 };
@@ -283,7 +283,7 @@ fn deserialize_utc_timestamp_rejects_overlong_fraction() {
     let mut deserializer = deserializer(&input);
     assert_matches!(
         deserializer.deserialize_utc_timestamp(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -298,7 +298,7 @@ fn deserialize_utc_timestamp_overlong_fraction_does_not_overflow() {
     let mut deserializer = deserializer(&input);
     assert_matches!(
         deserializer.deserialize_utc_timestamp(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -308,7 +308,7 @@ fn deserialize_utc_timestamp_rejects_thirteen_digit_fraction() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_utc_timestamp(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -320,7 +320,7 @@ fn deserialize_utc_timestamp_reject_scan_skips_own_value() {
     let mut deserializer = deserializer_without_seq_num(input);
     assert_matches!(
         deserializer.deserialize_utc_timestamp(),
-        Err(DeserializeError::Reject { seq_num: 2, .. })
+        Err(DeserializeErrorKind::Reject { seq_num: 2, .. })
     );
 }
 
@@ -332,7 +332,7 @@ fn deserialize_utc_timestamp_reject_without_seq_num_is_logout() {
     let mut deserializer = deserializer_without_seq_num(input);
     assert_matches!(
         deserializer.deserialize_utc_timestamp(),
-        Err(DeserializeError::Logout(LogoutReason::MsgSeqNumMissing))
+        Err(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing))
     );
 }
 
@@ -352,7 +352,7 @@ fn deserialize_utc_timestamp_truncated_value_is_garbled() {
         let mut deserializer = deserializer(input);
         assert_matches!(
             deserializer.deserialize_utc_timestamp(),
-            Err(DeserializeError::Garbled(
+            Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData
             )),
             "input: {input:?}"
@@ -366,7 +366,7 @@ fn deserialize_utc_timeonly_truncated_value_is_garbled() {
         let mut deserializer = deserializer(input);
         assert_matches!(
             deserializer.deserialize_utc_time_only(),
-            Err(DeserializeError::Garbled(
+            Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData
             )),
             "input: {input:?}"
@@ -380,7 +380,7 @@ fn deserialize_tz_timestamp_truncated_fraction_is_garbled() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tz_timestamp(),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -558,7 +558,7 @@ fn deserialize_tenor_invalid_unit() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -568,7 +568,7 @@ fn deserialize_tenor_zero_value() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -578,7 +578,7 @@ fn deserialize_tenor_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -688,7 +688,7 @@ fn deserialize_tz_timestamp_invalid_format() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tz_timestamp(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -698,7 +698,7 @@ fn deserialize_tz_timestamp_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tz_timestamp(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -769,7 +769,7 @@ fn deserialize_tz_timeonly_invalid_format() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tz_timeonly(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -779,7 +779,7 @@ fn deserialize_tz_timeonly_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tz_timeonly(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -836,7 +836,7 @@ fn deserialize_multiple_char_value_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -848,7 +848,7 @@ fn deserialize_multiple_char_value_no_value() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -858,7 +858,7 @@ fn deserialize_multiple_char_value_leading_space() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -868,7 +868,7 @@ fn deserialize_multiple_char_value_control_char() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -878,7 +878,7 @@ fn deserialize_multiple_char_value_high_byte() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -888,7 +888,7 @@ fn deserialize_multiple_char_value_two_chars_no_space() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -898,7 +898,7 @@ fn deserialize_multiple_char_value_no_soh() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -941,7 +941,7 @@ fn deserialize_multiple_string_value_empty() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -953,7 +953,7 @@ fn deserialize_multiple_string_value_no_value() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -963,7 +963,7 @@ fn deserialize_multiple_string_value_control_char() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -973,7 +973,7 @@ fn deserialize_multiple_string_value_high_byte() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::Reject { .. })
+        Err(DeserializeErrorKind::Reject { .. })
     );
 }
 
@@ -983,7 +983,7 @@ fn deserialize_multiple_string_value_no_soh() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -1022,7 +1022,7 @@ fn deserialize_data_missing_separator() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_data(5),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::MessageNotWellFormed
         ))
     );
@@ -1034,7 +1034,7 @@ fn deserialize_data_empty_buf() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_data(5),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -1046,7 +1046,7 @@ fn deserialize_data_buf_too_short() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_data(5),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::IncompleteMessageData
         ))
     );
@@ -1082,7 +1082,7 @@ fn deserialize_xml_missing_separator() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_xml(4),
-        Err(DeserializeError::Garbled(
+        Err(DeserializeErrorKind::Garbled(
             GarbledReason::MessageNotWellFormed
         ))
     );
@@ -1105,7 +1105,7 @@ fn deserialize_exchange_control_char() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_exchange(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1116,7 +1116,7 @@ fn deserialize_exchange_high_byte() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_exchange(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1127,7 +1127,7 @@ fn deserialize_exchange_wrong_length() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_exchange(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
     );
 }
@@ -1149,7 +1149,7 @@ fn deserialize_language_control_char() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_language(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1161,7 +1161,7 @@ fn deserialize_char_del() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_char(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1172,7 +1172,7 @@ fn deserialize_multiple_char_value_del() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_char_value(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1183,7 +1183,7 @@ fn deserialize_multiple_string_value_del() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_multiple_string_value(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1194,7 +1194,7 @@ fn deserialize_str_del() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_str(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1205,7 +1205,7 @@ fn deserialize_exchange_del() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_exchange(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1216,7 +1216,7 @@ fn deserialize_language_del() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_language(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
@@ -1227,7 +1227,7 @@ fn deserialize_language_high_byte() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_language(),
-        Err(DeserializeError::Reject { reason, .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }

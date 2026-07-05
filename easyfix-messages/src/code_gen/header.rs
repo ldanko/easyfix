@@ -101,7 +101,7 @@ impl Header {
             fn deserialize(
                 deserializer: &mut Deserializer,
                 body_length: Length,
-            ) -> Result<Header, DeserializeError> {
+            ) -> Result<Header, DeserializeErrorKind> {
                 #(#variables_definitions)*
 
                 while let Some(tag) = deserializer.deserialize_tag_num()? {

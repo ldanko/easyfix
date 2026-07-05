@@ -105,7 +105,7 @@ impl GroupCodeGen {
                 num_in_group_tag: u16,
                 expected_tags: &[u16],
                 last_run: bool,
-            ) -> Result<#name, DeserializeError> {
+            ) -> Result<#name, DeserializeErrorKind> {
                 // Check if tag of first group member is present
                 #first_member_def
                 #(#variables_definitions)*

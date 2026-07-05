@@ -2,7 +2,7 @@ use assert_matches::assert_matches;
 use easyfix_core::{
     base_messages::SessionRejectReasonBase,
     basic_types::{FixString, ToFixString, Utc, UtcTimestamp},
-    deserializer::DeserializeError,
+    deserializer::DeserializeErrorKind,
     message::SessionMessage,
 };
 use easyfix_test_messages as messages;
@@ -117,8 +117,8 @@ fn unknown_msg_type() {
     let msg_str = "8=FIXT.1.1|9=0077|35=UNKNOWN|49=test_sender|56=test_target|34=1|52=20230713-21:55:13.436187000|10=254|";
 
     assert_matches!(
-        Message::from_bytes(msg_str.replace("|", "\x01").as_bytes()),
-        Err(DeserializeError::Reject {
+        Message::from_bytes(msg_str.replace("|", "\x01").as_bytes()).map_err(|e| e.kind),
+        Err(DeserializeErrorKind::Reject {
             tag: Some(35),
             reason,
             ..
@@ -169,8 +169,8 @@ fn undefined_tag_in_body_rejected_with_invalid_tag_number() {
     ]);
 
     assert_matches!(
-        Message::from_bytes(&bytes),
-        Err(DeserializeError::Reject {
+        Message::from_bytes(&bytes).map_err(|e| e.kind),
+        Err(DeserializeErrorKind::Reject {
             tag: Some(9999),
             reason,
             ..
@@ -193,8 +193,8 @@ fn undefined_tag_in_header_rejected_with_invalid_tag_number() {
     ]);
 
     assert_matches!(
-        Message::from_bytes(&bytes),
-        Err(DeserializeError::Reject {
+        Message::from_bytes(&bytes).map_err(|e| e.kind),
+        Err(DeserializeErrorKind::Reject {
             tag: Some(9999),
             reason,
             ..
@@ -223,8 +223,8 @@ fn header_field_in_body_rejected_with_out_of_required_order() {
     ]);
 
     assert_matches!(
-        Message::from_bytes(&bytes),
-        Err(DeserializeError::Reject {
+        Message::from_bytes(&bytes).map_err(|e| e.kind),
+        Err(DeserializeErrorKind::Reject {
             tag: Some(43),
             reason,
             ..
@@ -251,8 +251,8 @@ fn out_of_codeset_default_appl_ver_id_rejected() {
         ]);
 
         assert_matches!(
-            Message::from_bytes(&bytes),
-            Err(DeserializeError::Reject {
+            Message::from_bytes(&bytes).map_err(|e| e.kind),
+            Err(DeserializeErrorKind::Reject {
                 tag: Some(1137),
                 reason,
                 ..

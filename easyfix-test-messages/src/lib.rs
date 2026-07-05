@@ -953,7 +953,7 @@ impl MsgTypeGrp {
         num_in_group_tag: u16,
         expected_tags: &[u16],
         last_run: bool,
-    ) -> Result<MsgTypeGrp, DeserializeError> {
+    ) -> Result<MsgTypeGrp, DeserializeErrorKind> {
         let mut ref_msg_type: Option<FixString> = None;
         let mut msg_direction: Option<MsgDirection> = None;
         let mut default_ver_indicator: Option<Boolean> = None;
@@ -1045,8 +1045,8 @@ use easyfix_core::{
         SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
         ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
     },
-    deserializer::{DeserializeError, Deserializer, GarbledReason, LogoutReason, RawMessage},
-    message::{HeaderAccess, SessionMessage},
+    deserializer::{DeserializeErrorKind, Deserializer, GarbledReason, LogoutReason, RawMessage},
+    message::{DeserializeError, HeaderAccess, SessionMessage},
     serializer::{SerializeError, Serializer},
     version::Version,
 };
@@ -1301,7 +1301,7 @@ impl Header {
     fn deserialize(
         deserializer: &mut Deserializer,
         body_length: Length,
-    ) -> Result<Header, DeserializeError> {
+    ) -> Result<Header, DeserializeErrorKind> {
         let mut appl_ver_id: Option<ApplVerId> = None;
         let mut sender_comp_id: Option<FixString> = None;
         let mut target_comp_id: Option<FixString> = None;
@@ -1612,7 +1612,7 @@ impl Trailer {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Trailer, DeserializeErrorKind> {
         let mut signature_length: Option<Length> = None;
         let mut signature: Option<Data> = None;
         let check_sum = deserializer.check_sum();
@@ -1692,7 +1692,7 @@ impl Heartbeat {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut test_req_id: Option<FixString> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
             match tag {
@@ -1750,7 +1750,7 @@ impl TestRequest {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut test_req_id: Option<FixString> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
             match tag {
@@ -1817,7 +1817,7 @@ impl ResendRequest {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut begin_seq_no: Option<SeqNum> = None;
         let mut end_seq_no: Option<SeqNum> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
@@ -1916,7 +1916,7 @@ impl Reject {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut ref_seq_num: Option<SeqNum> = None;
         let mut ref_tag_id: Option<Int> = None;
         let mut ref_msg_type: Option<FixString> = None;
@@ -2025,7 +2025,7 @@ impl SequenceReset {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut gap_fill_flag: Option<Boolean> = None;
         let mut new_seq_no: Option<SeqNum> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
@@ -2112,7 +2112,7 @@ impl Logout {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut session_status: Option<SessionStatus> = None;
         let mut next_expected_msg_seq_num: Option<SeqNum> = None;
         let mut text: Option<FixString> = None;
@@ -2265,7 +2265,7 @@ impl Logon {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut encrypt_method: Option<EncryptMethod> = None;
         let mut heart_bt_int: Option<Int> = None;
         let mut raw_data_length: Option<Length> = None;
@@ -2496,7 +2496,7 @@ impl NewOrderSingle {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut cl_ord_id: Option<FixString> = None;
         let mut symbol: Option<FixString> = None;
         let mut side: Option<Side> = None;
@@ -2683,7 +2683,7 @@ impl ExecutionReport {
         Ok(())
     }
 
-    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeError> {
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
         let mut order_id: Option<FixString> = None;
         let mut exec_id: Option<FixString> = None;
         let mut exec_type: Option<ExecType> = None;
@@ -3026,7 +3026,7 @@ impl Body {
     fn deserialize(
         deserializer: &mut Deserializer,
         msg_type: MsgType,
-    ) -> Result<Box<Body>, DeserializeError> {
+    ) -> Result<Box<Body>, DeserializeErrorKind> {
         match msg_type {
             MsgType::Heartbeat => Ok(Heartbeat::deserialize(deserializer)?),
             MsgType::TestRequest => Ok(TestRequest::deserialize(deserializer)?),
@@ -3153,21 +3153,27 @@ impl Message {
         let begin_string = deserializer.begin_string();
         if begin_string != VERSION.begin_str() {
             return match begin_string.as_utf8().parse::<Version>() {
-                Ok(_) => Err(DeserializeError::Logout(LogoutReason::BeginStringMismatch)),
-                Err(_) => Err(DeserializeError::Garbled(GarbledReason::InvalidBeginString)),
+                Ok(_) => {
+                    Err(DeserializeErrorKind::Logout(LogoutReason::BeginStringMismatch).into())
+                }
+                Err(_) => {
+                    Err(DeserializeErrorKind::Garbled(GarbledReason::InvalidBeginString).into())
+                }
             };
         }
         let body_length = deserializer.body_length();
         if !matches!(deserializer.deserialize_tag_num(), Ok(Some(35))) {
-            return Err(DeserializeError::Garbled(GarbledReason::MsgTypeNotThirdTag));
+            return Err(DeserializeErrorKind::Garbled(GarbledReason::MsgTypeNotThirdTag).into());
         }
         let msg_type_range = deserializer.deserialize_msg_type()?;
         let msg_type_fixstr = deserializer.range_to_fixstr(msg_type_range);
         let Ok(msg_type) = MsgType::try_from(msg_type_fixstr) else {
-            return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType));
+            return Err(deserializer
+                .reject(Some(35), SessionRejectReasonBase::InvalidMsgType)
+                .into());
         };
         let header = Header::deserialize(&mut deserializer, body_length).map_err(|err| {
-            if let DeserializeError::Reject { reason, .. } = err
+            if let DeserializeErrorKind::Reject { reason, .. } = err
                 && reason == SessionRejectReasonBase::RequiredTagMissing
                 && let Ok(Some(tag)) = deserializer.deserialize_tag_num()
             {
@@ -3179,8 +3185,14 @@ impl Message {
                 err
             }
         })?;
-        let body = Body::deserialize(&mut deserializer, msg_type)?;
-        let trailer = Trailer::deserialize(&mut deserializer)?;
+        let attach_header = |kind: DeserializeErrorKind, header: &Header| DeserializeError {
+            kind,
+            header: Some(Box::new(HeaderBase::from(header).into_owned())),
+        };
+        let body = Body::deserialize(&mut deserializer, msg_type)
+            .map_err(|error| attach_header(error, &header))?;
+        let trailer = Trailer::deserialize(&mut deserializer)
+            .map_err(|error| attach_header(error, &header))?;
         Ok(Box::new(Message {
             header,
             body,
