@@ -113,10 +113,12 @@ impl Dictionary {
 
         let header = Component {
             name: fix_str!("Header").to_owned(),
+            doc: None,
             members: resolver.create_members(raw_dictionary.header.members, None)?,
         };
         let trailer = Component {
             name: fix_str!("Trailer").to_owned(),
+            doc: None,
             members: resolver.create_members(raw_dictionary.trailer.members, None)?,
         };
         if strict_check {
@@ -296,6 +298,7 @@ impl Dictionary {
         let flattened_group = Rc::new(Group {
             name: group.name.clone(),
             num_in_group: group.num_in_group.clone(),
+            doc: group.doc.clone(),
             members: flattened_members,
         });
 
@@ -314,6 +317,7 @@ impl Dictionary {
                 name: msg.name.clone(),
                 msg_type: msg.msg_type,
                 msg_cat: msg.msg_cat,
+                doc: msg.doc.clone(),
                 members: flattened_members,
             });
 
@@ -335,10 +339,12 @@ impl Dictionary {
 
         let header = Component {
             name: self.header.name.clone(),
+            doc: self.header.doc.clone(),
             members: flattened_header_members,
         };
         let trailer = Component {
             name: self.trailer.name.clone(),
+            doc: self.trailer.doc.clone(),
             members: flattened_trailer_members,
         };
 

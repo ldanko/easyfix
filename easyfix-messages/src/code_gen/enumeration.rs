@@ -6,7 +6,7 @@ use easyfix_dictionary::Variant;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use super::{ident::ToIdent, member::EnumerableType, serde_derives};
+use super::{doc_attrs, doc_text_attrs, ident::ToIdent, member::EnumerableType, serde_derives};
 
 /// Defines a mapping from session-relevant traits/newtypes (in easyfix-core)
 /// to generated enums. For each mapping, the generator produces:
@@ -92,6 +92,7 @@ pub struct EnumCodeGen {
     tag: u16,
     enumerable_type: EnumerableType,
     variants: Vec<Variant>,
+    doc: Option<String>,
 }
 impl EnumCodeGen {
     pub fn new(
@@ -99,12 +100,14 @@ impl EnumCodeGen {
         tag: u16,
         enumerable_type: EnumerableType,
         variants: Vec<Variant>,
+        doc: Option<&str>,
     ) -> EnumCodeGen {
         EnumCodeGen {
             name: name.to_pascal_ident(),
             tag,
             enumerable_type,
             variants,
+            doc: doc.map(String::from),
         }
     }
 
@@ -278,9 +281,10 @@ impl EnumCodeGen {
         for variant in &self.variants {
             let v_name = variant.name().to_pascal_ident();
             let v_value_as_bytes = Literal::byte_string(variant.value().as_bytes());
-            let variant_doc_comment = format!("Value \"{}\"", variant.value());
+            let variant_doc_attrs =
+                doc_attrs(variant.doc(), &format!("Value \"{}\"", variant.value()));
             variant_def.push(quote! {
-                #[doc = #variant_doc_comment]
+                #variant_doc_attrs
                 #v_name
             });
             variant_name.push(v_name);
@@ -342,7 +346,9 @@ impl EnumCodeGen {
                 #serde_derives
             }
         };
+        let type_doc_attrs = doc_text_attrs(self.doc.as_deref());
         quote! {
+            #type_doc_attrs
             #derives
             pub enum #name {
                 #[default]

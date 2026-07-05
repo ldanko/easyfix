@@ -103,6 +103,40 @@ def camel_to_upper_snake(name: str) -> str:
     return result.upper()
 
 
+def normalize_doc(text: str | None) -> str | None:
+    """Normalize documentation text.
+
+    Strips per-line whitespace, drops empty edge lines and collapses runs
+    of blank interior lines, keeping meaningful line breaks.
+    """
+    if not text:
+        return None
+    lines = [line.strip() for line in text.splitlines()]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    out: list[str] = []
+    prev_blank = False
+    for line in lines:
+        if not line:
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        out.append(line)
+    result = "\n".join(out)
+    return result if result else None
+
+
+def is_trivial_enum_doc(doc: str, symbolic_name: str) -> bool:
+    """True when the doc adds nothing over the enum's symbolic name."""
+    def norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", s.lower())
+    return norm(doc) == norm(symbolic_name)
+
+
 def parse_position(pos_str: str) -> tuple[float, ...]:
     """Parse position string for sorting.
 
@@ -143,6 +177,7 @@ class RepoField:
     tag: int
     name: str
     type_name: str
+    description: str | None = None
 
     @property
     def is_numingroup(self) -> bool:
@@ -155,6 +190,7 @@ class RepoEnum:
     value: str
     symbolic_name: str
     sort: int
+    description: str | None = None
 
 
 @dataclass
@@ -162,6 +198,7 @@ class RepoComponent:
     id: str
     name: str
     component_type: str
+    description: str | None = None
 
     @property
     def is_repeating(self) -> bool:
@@ -174,6 +211,7 @@ class RepoMessage:
     name: str
     msg_type: str
     category_id: str
+    description: str | None = None
 
     @property
     def is_session(self) -> bool:
@@ -225,6 +263,11 @@ class Repository:
         self._load_messages(base_dir)
         self._load_msg_contents(base_dir)
 
+    @staticmethod
+    def _description(elem: ET.Element) -> str | None:
+        desc_el = elem.find("Description")
+        return normalize_doc(desc_el.text if desc_el is not None else None)
+
     def _load_fields(self, base_dir: str) -> None:
         tree = ET.parse(os.path.join(base_dir, "Fields.xml"))
         for elem in tree.getroot().findall("Field"):
@@ -232,6 +275,7 @@ class Repository:
                 tag=int(elem.find("Tag").text),
                 name=elem.find("Name").text,
                 type_name=elem.find("Type").text,
+                description=self._description(elem),
             )
             self.fields_by_tag[f.tag] = f
             self.fields_by_name[f.name] = f
@@ -247,7 +291,8 @@ class Repository:
             sort_val = int(sort_el.text) if sort_el is not None and sort_el.text else 0
             if symbolic:
                 self.enums_by_tag[tag].append(
-                    RepoEnum(tag=tag, value=value, symbolic_name=symbolic, sort=sort_val)
+                    RepoEnum(tag=tag, value=value, symbolic_name=symbolic, sort=sort_val,
+                             description=self._description(elem))
                 )
 
     def _load_components(self, base_dir: str) -> None:
@@ -257,6 +302,7 @@ class Repository:
                 id=elem.find("ComponentID").text,
                 name=elem.find("Name").text,
                 component_type=elem.find("ComponentType").text,
+                description=self._description(elem),
             )
             self.components_by_id[c.id] = c
             self.components_by_name[c.name] = c
@@ -269,6 +315,7 @@ class Repository:
                 name=elem.find("Name").text,
                 msg_type=elem.find("MsgType").text,
                 category_id=elem.find("CategoryID").text,
+                description=self._description(elem),
             ))
 
     def _load_msg_contents(self, base_dir: str) -> None:
@@ -308,6 +355,7 @@ class GroupMember:
     name: str
     required: str
     members: list[Member]
+    doc: str | None = None
 
 
 Member = Union[FieldMember, ComponentRef, GroupMember]
@@ -317,6 +365,7 @@ Member = Union[FieldMember, ComponentRef, GroupMember]
 class EnumValue:
     enum: str
     description: str
+    doc: str | None = None
 
 
 @dataclass
@@ -325,6 +374,7 @@ class FieldDef:
     name: str
     type: str
     values: list[EnumValue]
+    doc: str | None = None
 
 
 @dataclass
@@ -333,12 +383,14 @@ class MessageDef:
     msgtype: str
     msgcat: str
     members: list[Member]
+    doc: str | None = None
 
 
 @dataclass
 class ComponentDef:
     name: str
     members: list[Member]
+    doc: str | None = None
 
 
 @dataclass
@@ -492,11 +544,13 @@ class Resolver:
             else:
                 ref_comp = self._lookup_component(mc.tag_text)
                 if ref_comp and self._is_group_component(ref_comp.id):
-                    # Inline the group directly into header
+                    # Inline the group directly into header; the group carries
+                    # the wrapping component's documentation
                     group_members = self._resolve_component_body(ref_comp.id)
                     for gm in group_members:
                         if isinstance(gm, GroupMember):
                             gm.required = required
+                            gm.doc = ref_comp.description
                     members.extend(group_members)
                 else:
                     members.append(ComponentRef(name=mc.tag_text, required=required))
@@ -579,12 +633,20 @@ class Resolver:
                 enums = self.fallback.enums_by_tag.get(tag, [])
 
             enums_sorted = sorted(enums, key=lambda e: (e.sort, e.value))
-            values = [
-                EnumValue(enum=e.value, description=camel_to_upper_snake(e.symbolic_name))
-                for e in enums_sorted
-            ]
+            values = []
+            for e in enums_sorted:
+                # Skip docs that add nothing over the symbolic name
+                doc = e.description
+                if doc and is_trivial_enum_doc(doc, e.symbolic_name):
+                    doc = None
+                values.append(EnumValue(
+                    enum=e.value,
+                    description=camel_to_upper_snake(e.symbolic_name),
+                    doc=doc,
+                ))
 
-            fields.append(FieldDef(number=tag, name=f.name, type=mapped_type, values=values))
+            fields.append(FieldDef(number=tag, name=f.name, type=mapped_type,
+                                   values=values, doc=f.description))
 
         return fields
 
@@ -627,6 +689,7 @@ class Resolver:
             messages.append(MessageDef(
                 name=msg.name, msgtype=msg.msg_type,
                 msgcat=msgcat, members=members,
+                doc=msg.description,
             ))
         # Remove messages with no body members (e.g., XMLnonFIX)
         messages = [m for m in messages if m.members]
@@ -651,7 +714,8 @@ class Resolver:
             if comp.name in header_inlined:
                 continue
             body = self._resolve_component_body(cid)
-            components.append(ComponentDef(name=comp.name, members=body))
+            components.append(ComponentDef(name=comp.name, members=body,
+                                           doc=comp.description))
 
         # Collect referenced field tags
         referenced_tags = self._collect_referenced_tags(messages, components, header, trailer)
@@ -676,7 +740,14 @@ class Resolver:
 # Serialization (Dictionary -> XML)
 # ---------------------------------------------------------------------------
 
-def _serialize_members(parent: ET.Element, members: list[Member]) -> None:
+def _set_doc(el: ET.Element, doc: str | None, include_docs: bool) -> None:
+    """Set the doc attribute when docs are enabled and text is present."""
+    if include_docs and doc:
+        el.set("doc", doc)
+
+
+def _serialize_members(parent: ET.Element, members: list[Member],
+                       include_docs: bool = False) -> None:
     """Recursively add member elements to an ET parent."""
     for m in members:
         if isinstance(m, FieldMember):
@@ -685,10 +756,11 @@ def _serialize_members(parent: ET.Element, members: list[Member]) -> None:
             ET.SubElement(parent, "component", name=rename_component(m.name), required=m.required)
         elif isinstance(m, GroupMember):
             group_el = ET.SubElement(parent, "group", name=m.name, required=m.required)
-            _serialize_members(group_el, m.members)
+            _set_doc(group_el, m.doc, include_docs)
+            _serialize_members(group_el, m.members, include_docs)
 
 
-def serialize(dictionary: Dictionary) -> str:
+def serialize(dictionary: Dictionary, include_docs: bool = False) -> str:
     """Serialize a Dictionary to XML string."""
     root = ET.Element("fix",
                        type=dictionary.fix_type,
@@ -699,33 +771,37 @@ def serialize(dictionary: Dictionary) -> str:
     # Header
     header_el = ET.SubElement(root, "header")
     if dictionary.header:
-        _serialize_members(header_el, dictionary.header)
+        _serialize_members(header_el, dictionary.header, include_docs)
 
     # Messages
     messages_el = ET.SubElement(root, "messages")
     for msg in dictionary.messages:
         msg_el = ET.SubElement(messages_el, "message",
                                name=msg.name, msgtype=msg.msgtype, msgcat=msg.msgcat)
-        _serialize_members(msg_el, msg.members)
+        _set_doc(msg_el, msg.doc, include_docs)
+        _serialize_members(msg_el, msg.members, include_docs)
 
     # Trailer
     trailer_el = ET.SubElement(root, "trailer")
     if dictionary.trailer:
-        _serialize_members(trailer_el, dictionary.trailer)
+        _serialize_members(trailer_el, dictionary.trailer, include_docs)
 
     # Components
     components_el = ET.SubElement(root, "components")
     for comp in dictionary.components:
         comp_el = ET.SubElement(components_el, "component", name=rename_component(comp.name))
-        _serialize_members(comp_el, comp.members)
+        _set_doc(comp_el, comp.doc, include_docs)
+        _serialize_members(comp_el, comp.members, include_docs)
 
     # Fields
     fields_el = ET.SubElement(root, "fields")
     for f in dictionary.fields:
         field_el = ET.SubElement(fields_el, "field",
                                   number=str(f.number), name=f.name, type=f.type)
+        _set_doc(field_el, f.doc, include_docs)
         for v in f.values:
-            ET.SubElement(field_el, "value", enum=v.enum, description=v.description)
+            value_el = ET.SubElement(field_el, "value", enum=v.enum, description=v.description)
+            _set_doc(value_el, v.doc, include_docs)
 
     ET.indent(root, space=" ")
     return ET.tostring(root, encoding="unicode") + "\n"
@@ -745,6 +821,8 @@ def main():
                         help="Output XML file path")
     parser.add_argument("--fallback-version", default=None,
                         help="Fallback version for cross-version references")
+    parser.add_argument("--docs", action="store_true",
+                        help="Emit doc attributes with documentation from the repository")
     args = parser.parse_args()
 
     print(f"Loading {args.version} from {args.repo_dir}...")
@@ -762,7 +840,7 @@ def main():
     print("Generating XML...")
     resolver = Resolver(repo, fallback)
     dictionary = resolver.resolve(args.version)
-    xml_output = serialize(dictionary)
+    xml_output = serialize(dictionary, include_docs=args.docs)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:

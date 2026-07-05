@@ -18,6 +18,8 @@ pub struct Variant {
     name: FixString,
     /// The raw value from the field definition (e.g., "1", "2")
     value: FixString,
+    /// Optional documentation text for this variant
+    doc: Option<String>,
 }
 
 impl Variant {
@@ -30,6 +32,11 @@ impl Variant {
     pub fn value(&self) -> &FixStr {
         &self.value
     }
+
+    /// Returns the documentation text of this variant, if any
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
+    }
 }
 
 impl From<xml::Value> for Variant {
@@ -37,6 +44,7 @@ impl From<xml::Value> for Variant {
         Variant {
             name: v.description,
             value: v.value_enum,
+            doc: v.doc,
         }
     }
 }
@@ -53,6 +61,8 @@ pub struct Field {
     pub(super) name: FixString,
     /// The data type of this field
     pub(super) data_type: BasicType,
+    /// Optional documentation text for this field
+    pub(super) doc: Option<String>,
     /// Enumerated variants for this field
     pub(super) variants: Vec<Variant>,
 }
@@ -77,6 +87,11 @@ impl Field {
     pub fn variants(&self) -> &[Variant] {
         &self.variants
     }
+
+    /// Returns the documentation text of this field, if any
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
+    }
 }
 
 impl From<xml::Field> for Field {
@@ -85,6 +100,7 @@ impl From<xml::Field> for Field {
             number: f.number,
             name: f.name,
             data_type: f.data_type,
+            doc: f.doc,
             variants: f
                 .values
                 .unwrap_or_default()
@@ -326,6 +342,9 @@ pub struct Group {
     /// The NumInGroup counter field (with "No" prefix)
     pub(super) num_in_group: Rc<Field>,
 
+    /// Optional documentation text for this group
+    pub(super) doc: Option<String>,
+
     /// Members (fields, components, and nested groups) within this group
     pub(super) members: Vec<Member>,
 }
@@ -334,6 +353,16 @@ impl Group {
     /// Returns the name of this group
     pub fn name(&self) -> &FixStr {
         &self.name
+    }
+
+    /// Returns the documentation text of this group, if any
+    ///
+    /// For a group unwrapped from a component that contained only this group,
+    /// this is the component's documentation if present, otherwise the
+    /// group's own documentation - mirroring how the group takes over the
+    /// component's name.
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
     }
 
     /// Returns a reference to the NumInGroup field that counts instances of this group
@@ -359,6 +388,9 @@ pub struct Component {
     /// Name of the component
     pub(super) name: FixString,
 
+    /// Optional documentation text for this component
+    pub(super) doc: Option<String>,
+
     /// Members (fields, groups, and other components) within this component
     pub(super) members: Vec<Member>,
 }
@@ -367,6 +399,11 @@ impl Component {
     /// Returns the name of this component
     pub fn name(&self) -> &FixStr {
         &self.name
+    }
+
+    /// Returns the documentation text of this component, if any
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
     }
 
     /// Returns all members (fields, components, and groups) in this component
@@ -390,6 +427,9 @@ pub struct Message {
     /// Category of the message (Admin or App)
     pub(super) msg_cat: MsgCat,
 
+    /// Optional documentation text for this message
+    pub(super) doc: Option<String>,
+
     /// Members (fields, components, and groups) that make up this message
     pub(super) members: Vec<Member>,
 }
@@ -411,6 +451,11 @@ impl Message {
     /// Returns the category of this message (Admin or App)
     pub fn msg_cat(&self) -> MsgCat {
         self.msg_cat
+    }
+
+    /// Returns the documentation text of this message, if any
+    pub fn doc(&self) -> Option<&str> {
+        self.doc.as_deref()
     }
 
     /// Returns all members (fields, components, and groups) in this message

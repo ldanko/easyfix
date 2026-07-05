@@ -2,21 +2,28 @@ use easyfix_core::basic_types::FixStr;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
-use super::{ident::ToIdent, member::Member, serde_derives};
+use super::{doc_attrs, ident::ToIdent, member::Member, serde_derives};
 
 /// Repeating group definition (generated into groups.rs)
 pub struct GroupCodeGen {
     name: Ident,
     num_in_group_tag: u16,
     members: Vec<Member>,
+    doc: Option<String>,
 }
 
 impl GroupCodeGen {
-    pub fn new(name: &FixStr, num_in_group_tag: u16, members: Vec<Member>) -> GroupCodeGen {
+    pub fn new(
+        name: &FixStr,
+        num_in_group_tag: u16,
+        members: Vec<Member>,
+        doc: Option<&str>,
+    ) -> GroupCodeGen {
         GroupCodeGen {
             name: name.to_pascal_ident(),
             num_in_group_tag,
             members,
+            doc: doc.map(String::from),
         }
     }
 
@@ -136,10 +143,13 @@ impl GroupCodeGen {
         let serialize = self.members.iter().map(|member| member.gen_serialize());
         let fn_deserialize = self.generate_de_group();
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
-        let doc_comment = format!("NumInGroup tag {}.", self.num_in_group_tag);
+        let doc_attrs = doc_attrs(
+            self.doc.as_deref(),
+            &format!("NumInGroup tag {}.", self.num_in_group_tag),
+        );
 
         quote! {
-            #[doc = #doc_comment]
+            #doc_attrs
             #[allow(dead_code)]
             #[derive(Clone, Debug, Default)]
             #serde_derives

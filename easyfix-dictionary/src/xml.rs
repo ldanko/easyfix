@@ -97,6 +97,11 @@ pub struct Trailer {
 pub struct Component {
     #[serde(rename = "@name")]
     pub name: FixString,
+
+    /// Optional documentation text for this component
+    #[serde(rename = "@doc", default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+
     //pub group: Option<Group>,
     #[serde(rename = "$value")]
     // enable `default`, empty members list is handled on higher layer
@@ -111,6 +116,11 @@ pub struct Group {
     #[serde(rename = "@required")]
     #[serde(with = "required_flag")]
     pub required: bool,
+
+    /// Optional documentation text for this group
+    #[serde(rename = "@doc", default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+
     #[serde(rename = "$value")]
     pub members: Vec<Member>,
 }
@@ -201,6 +211,10 @@ pub struct Field {
     #[serde(rename = "@type")]
     pub data_type: BasicType,
 
+    /// Optional documentation text for this field
+    #[serde(rename = "@doc", default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+
     /// Optional enumerated values for this field
     #[serde(rename = "$value")]
     pub values: Option<Vec<Value>>,
@@ -219,6 +233,10 @@ pub struct Value {
     /// Human-readable description of what this value means
     #[serde(rename = "@description")]
     pub description: FixString,
+
+    /// Optional documentation text for this value
+    #[serde(rename = "@doc", default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// Message category in the FIX protocol.
@@ -246,6 +264,11 @@ pub struct Message {
     pub msg_type: MsgType,
     #[serde(rename = "@msgcat")]
     pub msg_cat: MsgCat,
+
+    /// Optional documentation text for this message
+    #[serde(rename = "@doc", default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
+
     #[serde(rename = "$value")]
     // enable `default`, empty members list is handled on higher layer
     #[serde(default)]

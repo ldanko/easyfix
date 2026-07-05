@@ -5,7 +5,7 @@ use easyfix_dictionary::{self as dict, BasicType};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use super::ident::ToIdent;
+use super::{doc_attrs, ident::ToIdent};
 
 /// BasicType variants that can be represented as Rust enumerations.
 /// Only 6 of 27 BasicType variants support enumerations.
@@ -319,6 +319,7 @@ struct Field {
     name: Ident,
     number: u16,
     data_type: DataType,
+    doc: Option<String>,
 }
 
 impl Field {
@@ -330,6 +331,7 @@ impl Field {
             name,
             number,
             data_type,
+            doc: field.doc().map(String::from),
         }
     }
 
@@ -344,15 +346,15 @@ impl Field {
     fn gen_definition(&self, required: bool) -> TokenStream {
         let name = &self.name;
         let data_type = self.gen_type();
-        let doc_comment = format!("Tag {}.", self.number);
+        let doc_attrs = doc_attrs(self.doc.as_deref(), &format!("Tag {}.", self.number));
         if required {
             quote! {
-                #[doc = #doc_comment]
+                #doc_attrs
                 pub #name: #data_type
             }
         } else {
             quote! {
-                #[doc = #doc_comment]
+                #doc_attrs
                 pub #name: Option<#data_type>
             }
         }
@@ -565,6 +567,7 @@ struct RawData {
     data_name: Ident,
     data_number: u16,
     raw_data_type: RawDataType,
+    doc: Option<String>,
 }
 
 impl RawData {
@@ -576,6 +579,7 @@ impl RawData {
             data_name: data.name().to_snake_ident(),
             data_number: data.number(),
             raw_data_type,
+            doc: data.doc().map(String::from),
         }
     }
 
@@ -587,15 +591,15 @@ impl RawData {
     fn gen_definition(&self, required: bool) -> TokenStream {
         let data_name = &self.data_name;
         let raw_data_type = self.raw_data_type.rust_type();
-        let data_doc_comment = format!("Tag {}.", self.data_number);
+        let doc_attrs = doc_attrs(self.doc.as_deref(), &format!("Tag {}.", self.data_number));
         if required {
             quote! {
-                #[doc = #data_doc_comment]
+                #doc_attrs
                 pub #data_name: #raw_data_type
             }
         } else {
             quote! {
-                #[doc = #data_doc_comment]
+                #doc_attrs
                 pub #data_name: Option<#raw_data_type>
             }
         }
@@ -731,6 +735,7 @@ struct Group {
     num_in_group_name: Ident,
     num_in_group_number: u16,
     expected_tags: Vec<u16>,
+    doc: Option<String>,
 }
 
 impl Group {
@@ -741,6 +746,7 @@ impl Group {
             num_in_group_name: group.num_in_group().name().to_snake_ident(),
             num_in_group_number: group.num_in_group().number(),
             expected_tags: compute_expected_tags(group.members()),
+            doc: group.doc().map(String::from),
         }
     }
 
@@ -752,15 +758,18 @@ impl Group {
     fn gen_definition(&self, required: bool) -> TokenStream {
         let name = &self.name;
         let data_type = &self.data_type;
-        let doc_comment = format!("Tag {}.", self.num_in_group_number);
+        let doc_attrs = doc_attrs(
+            self.doc.as_deref(),
+            &format!("Tag {}.", self.num_in_group_number),
+        );
         if required {
             quote! {
-                #[doc = #doc_comment]
+                #doc_attrs
                 pub #name: Vec<#data_type>
             }
         } else {
             quote! {
-                #[doc = #doc_comment]
+                #doc_attrs
                 pub #name: Option<Vec<#data_type>>
             }
         }

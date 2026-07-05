@@ -13,6 +13,14 @@ use super::{
 };
 use crate::{xml, xml::BasicType};
 
+/// Identity of a component that wraps a single group, passed down so the
+/// group can take over the component's name and documentation.
+#[derive(Clone, Copy)]
+pub(super) struct ParentComponent<'a> {
+    pub(super) name: &'a FixStr,
+    pub(super) doc: Option<&'a str>,
+}
+
 /// Resolved dictionary elements ready to be consumed by `Dictionary`.
 pub(super) struct Elements {
     pub(super) fields: HashMap<FixString, Rc<Field>>,
@@ -119,11 +127,18 @@ impl Resolver {
         }
 
         let mut branch_visited = visited.clone();
-        let members =
-            self.create_members_impl(raw_component.members, Some(&name), &mut branch_visited)?;
+        let doc = raw_component.doc;
+        let members = self.create_members_impl(
+            raw_component.members,
+            Some(ParentComponent {
+                name: &name,
+                doc: doc.as_deref(),
+            }),
+            &mut branch_visited,
+        )?;
 
         visited.remove(&name);
-        let component = Rc::new(Component { name, members });
+        let component = Rc::new(Component { name, doc, members });
         self.components
             .insert(component.name.clone(), component.clone());
 
@@ -169,13 +184,13 @@ impl Resolver {
     fn create_group(
         &mut self,
         raw_group: xml::Group,
-        parent_component: Option<&FixStr>,
+        parent_component: Option<ParentComponent<'_>>,
         visited: &mut HashSet<FixString>,
     ) -> Result<Rc<Group>, Error> {
         // Determine the group name
         let group_name = if let Some(parent_component) = parent_component {
             // Use parent component name when component contains only this group
-            parent_component.to_owned()
+            parent_component.name.to_owned()
         } else if raw_group.name.as_bytes().starts_with(b"No") {
             // Strip "No" prefix: "NoHops" -> "Hops"
             // SAFETY: a subslice of a valid FixStr is still printable ASCII.
@@ -198,11 +213,18 @@ impl Resolver {
             group_name
         };
 
+        // The group takes over a wrapping component's documentation the same
+        // way it takes over its name; fall back to the group's own doc.
+        let doc = parent_component
+            .and_then(|parent_component| parent_component.doc.map(String::from))
+            .or(raw_group.doc);
+
         let mut branch_visited = visited.clone();
         let group = Rc::new(Group {
             num_in_group: self.create_field(&raw_group.name)?,
             members: self.create_members_impl(raw_group.members, None, &mut branch_visited)?,
             name: group_name,
+            doc,
         });
 
         if self
@@ -242,7 +264,7 @@ impl Resolver {
     fn create_members_impl(
         &mut self,
         raw_members: Vec<xml::Member>,
-        parent_component: Option<&FixStr>,
+        parent_component: Option<ParentComponent<'_>>,
         visited: &mut HashSet<FixString>,
     ) -> Result<Vec<Member>, Error> {
         let raw_members_len = raw_members.len();
@@ -312,7 +334,7 @@ impl Resolver {
     pub(super) fn create_members(
         &mut self,
         raw_members: Vec<xml::Member>,
-        parent_component: Option<&FixStr>,
+        parent_component: Option<ParentComponent<'_>>,
     ) -> Result<Vec<Member>, Error> {
         let mut visited = HashSet::new();
         self.create_members_impl(raw_members, parent_component, &mut visited)
@@ -330,6 +352,7 @@ impl Resolver {
             name: msg.name,
             msg_type: msg.msg_type,
             msg_cat: msg.msg_cat,
+            doc: msg.doc,
             members,
         })
     }
@@ -365,8 +388,15 @@ impl Resolver {
                     name.into(),
                 )));
             }
-            let members = self.create_members(raw_component.members, Some(&name))?;
-            let component = Rc::new(Component { name, members });
+            let doc = raw_component.doc;
+            let members = self.create_members(
+                raw_component.members,
+                Some(ParentComponent {
+                    name: &name,
+                    doc: doc.as_deref(),
+                }),
+            )?;
+            let component = Rc::new(Component { name, doc, members });
             self.components
                 .insert(component.name.clone(), component.clone());
         }

@@ -1756,3 +1756,136 @@ fn test_builder_with_strict_check_fix50_msg_type_not_unused() {
         result.err()
     );
 }
+
+// Dictionary with `doc` attributes on all supported elements
+const DOC_DICT: &str = r#"
+<?xml version='1.0' encoding='UTF-8'?>
+<fix type='FIX' major='4' minor='4' servicepack='0'>
+  <header>
+    <field name='BeginString' required='Y'/>
+    <field name='BodyLength' required='Y'/>
+  </header>
+  <trailer>
+    <field name='CheckSum' required='Y'/>
+  </trailer>
+  <messages>
+    <message msgcat='app' msgtype='D' name='NewOrderSingle' doc='Submits a new order.'>
+      <field name='ClOrdID' required='Y'/>
+      <field name='Side' required='Y'/>
+      <component name='Instrument' required='Y'/>
+      <component name='Parties' required='N'/>
+      <component name='Undocumented' required='N'/>
+      <group name='NoAllocs' required='N' doc='Allocations of the order.'>
+        <field name='AllocAccount' required='N'/>
+      </group>
+    </message>
+  </messages>
+  <components>
+    <component name='Instrument' doc='Instrument identification.'>
+      <field name='Symbol' required='Y'/>
+    </component>
+    <component name='Parties' doc='Parties of the order.'>
+      <group name='NoPartyIDs' required='N' doc='Party group own doc.'>
+        <field name='PartyID' required='Y'/>
+      </group>
+    </component>
+    <component name='Undocumented'>
+      <group name='NoUndocEntries' required='N' doc='Group own doc.'>
+        <field name='UndocEntry' required='Y'/>
+      </group>
+    </component>
+  </components>
+  <fields>
+    <field name='BeginString' number='8' type='STRING'/>
+    <field name='BodyLength' number='9' type='LENGTH'/>
+    <field name='CheckSum' number='10' type='STRING'/>
+    <field name='ClOrdID' number='11' type='STRING' doc='Unique order id.'/>
+    <field name='Side' number='54' type='CHAR' doc='Side of order.'>
+      <value enum='1' description='BUY' doc='Buy order.'/>
+      <value enum='2' description='SELL'/>
+    </field>
+    <field name='Symbol' number='55' type='STRING'/>
+    <field name='NoAllocs' number='78' type='NUMINGROUP'/>
+    <field name='AllocAccount' number='79' type='STRING'/>
+    <field name='NoPartyIDs' number='453' type='NUMINGROUP'/>
+    <field name='PartyID' number='448' type='STRING'/>
+    <field name='NoUndocEntries' number='1001' type='NUMINGROUP'/>
+    <field name='UndocEntry' number='1002' type='STRING'/>
+  </fields>
+</fix>
+"#;
+
+fn doc_dictionary() -> Dictionary {
+    let raw: xml::Dictionary = from_str(DOC_DICT).unwrap();
+    Dictionary::from_raw_dictionary(raw, false, false).unwrap()
+}
+
+#[test]
+fn test_doc_propagation() {
+    let dictionary = doc_dictionary();
+
+    // Field doc
+    let cl_ord_id = dictionary.field_by_id(11).unwrap();
+    assert_eq!(cl_ord_id.doc(), Some("Unique order id."));
+    // Field without doc
+    assert_eq!(dictionary.field_by_id(55).unwrap().doc(), None);
+
+    // Variant doc
+    let side = dictionary.field_by_id(54).unwrap();
+    assert_eq!(side.doc(), Some("Side of order."));
+    assert_eq!(side.variants()[0].doc(), Some("Buy order."));
+    assert_eq!(side.variants()[1].doc(), None);
+
+    // Message doc
+    let msg = dictionary
+        .message_by_name(fix_str!("NewOrderSingle"))
+        .unwrap();
+    assert_eq!(msg.doc(), Some("Submits a new order."));
+
+    // Component doc
+    let instrument = dictionary.component(fix_str!("Instrument")).unwrap();
+    assert_eq!(instrument.doc(), Some("Instrument identification."));
+
+    // Inline group doc ("NoAllocs" -> "Allocs")
+    let allocs = dictionary.group(fix_str!("Allocs")).unwrap();
+    assert_eq!(allocs.doc(), Some("Allocations of the order."));
+}
+
+#[test]
+fn test_group_doc_inherited_from_wrapping_component() {
+    let dictionary = doc_dictionary();
+
+    // Component wrapping a single group: the group takes the component's
+    // name and doc - the component's doc wins over the group's own doc
+    let parties = dictionary.group(fix_str!("Parties")).unwrap();
+    assert_eq!(parties.doc(), Some("Parties of the order."));
+
+    // Component without doc: fall back to the group's own doc
+    let undocumented = dictionary.group(fix_str!("Undocumented")).unwrap();
+    assert_eq!(undocumented.doc(), Some("Group own doc."));
+}
+
+#[test]
+fn test_doc_survives_flatten() {
+    let dictionary = doc_dictionary().flatten().unwrap();
+
+    assert_eq!(
+        dictionary.field_by_id(11).unwrap().doc(),
+        Some("Unique order id.")
+    );
+    assert_eq!(
+        dictionary
+            .message_by_name(fix_str!("NewOrderSingle"))
+            .unwrap()
+            .doc(),
+        Some("Submits a new order.")
+    );
+    assert_eq!(
+        dictionary.group(fix_str!("Allocs")).unwrap().doc(),
+        Some("Allocations of the order.")
+    );
+    assert_eq!(
+        dictionary.group(fix_str!("Parties")).unwrap().doc(),
+        Some("Parties of the order.")
+    );
+}

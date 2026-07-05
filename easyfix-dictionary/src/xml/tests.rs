@@ -118,6 +118,74 @@ fn parse_field_with_values() {
 }
 
 #[test]
+fn parse_field_doc() {
+    let xml = r#"
+    <field name='ClOrdID' number='11' type='STRING' doc='Unique identifier for an order.'>
+        <value enum='1' description='ONE' doc='Value one.'/>
+        <value enum='2' description='TWO'/>
+    </field>
+    "#;
+
+    let field: Field = from_str(xml).unwrap();
+
+    assert_eq!(
+        field.doc.as_deref(),
+        Some("Unique identifier for an order.")
+    );
+    let values = field.values.as_ref().expect("No values found");
+    assert_eq!(values[0].doc.as_deref(), Some("Value one."));
+    assert_eq!(values[1].doc, None);
+}
+
+#[test]
+fn parse_field_without_doc() {
+    let xml = r#"<field name='ClOrdID' number='11' type='STRING'/>"#;
+    let field: Field = from_str(xml).unwrap();
+    assert_eq!(field.doc, None);
+}
+
+#[test]
+fn parse_message_doc() {
+    let xml = r#"
+        <message msgcat='app' msgtype='AP' name='PositionReport' doc='Reports open positions.'>
+          <field name='PosMaintRptID' required='Y'/>
+        </message>
+    "#;
+    let message: Message = from_str(xml).unwrap();
+    assert_eq!(message.doc.as_deref(), Some("Reports open positions."));
+}
+
+#[test]
+fn parse_component_doc() {
+    let xml = r#"
+        <component name='Instrument' doc='Instrument identification.'>
+          <field name='Symbol' required='Y'/>
+        </component>
+    "#;
+    let component: Component = from_str(xml).unwrap();
+    assert_eq!(component.doc.as_deref(), Some("Instrument identification."));
+}
+
+#[test]
+fn parse_group_doc() {
+    let xml = r#"
+        <group name='NoPartyIDs' required='Y' doc='Parties of the order.'>
+          <field name='PartyID' required='Y'/>
+        </group>
+    "#;
+    let group: Group = from_str(xml).unwrap();
+    assert_eq!(group.doc.as_deref(), Some("Parties of the order."));
+}
+
+#[test]
+fn parse_doc_accepts_non_ascii() {
+    // doc is prose, not wire data - it is not restricted to printable ASCII
+    let xml = "<field name='Account' number='1' type='STRING' doc='Some \u{2014} dash'/>";
+    let field: Field = from_str(xml).unwrap();
+    assert_eq!(field.doc.as_deref(), Some("Some \u{2014} dash"));
+}
+
+#[test]
 fn reject_non_ascii_field_name() {
     let xml = "<field name='Bad\u{f3}Name' number='1000' type='STRING'/>";
     let result: Result<Field, _> = from_str(xml);
@@ -224,6 +292,7 @@ fn test_member_variants() {
     let group_member = Member::Group(Group {
         name: fix_str!("TestGroup").to_owned(),
         required: true,
+        doc: None,
         members: vec![],
     });
     assert_matches!(group_member, Member::Group(g) if g.name == "TestGroup" && g.required);
