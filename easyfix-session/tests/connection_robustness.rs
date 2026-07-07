@@ -131,6 +131,7 @@ fn logon() -> AdminBase<'static> {
         encrypt_method_raw: EncryptMethodBase::None as Int,
         heart_bt_int: 10,
         reset_seq_num_flag: None,
+        max_message_size: None,
         next_expected_msg_seq_num: None,
         default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
         session_status: None,

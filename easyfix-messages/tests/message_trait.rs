@@ -130,6 +130,7 @@ fn from_admin_constructs_logon() {
         encrypt_method_raw: 0,
         heart_bt_int: 30,
         reset_seq_num_flag: None,
+        max_message_size: None,
         next_expected_msg_seq_num: None,
         default_appl_ver_id: None,
         session_status: None,

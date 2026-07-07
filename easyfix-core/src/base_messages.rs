@@ -20,8 +20,9 @@
 use std::{borrow::Cow, mem::variant_count};
 
 use crate::basic_types::{
-    ApplVerId, Boolean, FixStr, Int, MsgTypeField, MsgTypeValue, SeqNum, SessionRejectReasonField,
-    SessionRejectReasonValue, SessionStatusField, SessionStatusValue, UtcTimestamp,
+    ApplVerId, Boolean, FixStr, Int, Length, MsgTypeField, MsgTypeValue, SeqNum,
+    SessionRejectReasonField, SessionRejectReasonValue, SessionStatusField, SessionStatusValue,
+    UtcTimestamp,
 };
 
 // ---------------------------------------------------------------------------
@@ -259,6 +260,13 @@ pub struct LogonBase {
     pub encrypt_method_raw: Int,
     pub heart_bt_int: Int,
     pub reset_seq_num_flag: Option<Boolean>,
+    /// Maximum number of octets the sender supports for messages it
+    /// receives (FIX Session Layer §4.3.6). `None` for FIX < 4.2, and
+    /// whenever the peer did not advertise a limit.
+    ///
+    /// Never `Some(0)` on the incoming path - a zero-valued Length field
+    /// is rejected while parsing.
+    pub max_message_size: Option<Length>,
     /// `None` for FIX < 4.4.
     pub next_expected_msg_seq_num: Option<SeqNum>,
     /// `None` for pre-FIXT.

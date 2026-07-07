@@ -446,6 +446,29 @@ impl From<DeserializeErrorKindInternal> for RawMessageError {
     }
 }
 
+/// Frame one message out of `bytes`, returning the unconsumed remainder
+/// alongside it. Zero-copy: the [`RawMessage`] borrows from `bytes`.
+///
+/// The error tells the caller what to do with its buffer, and the
+/// distinction is load-bearing for anything reading from a socket:
+///
+/// - [`Incomplete`] - a well-formed prefix, keep the bytes and read more.
+/// - [`Garbled`] / [`InvalidChecksum`] - the bytes are not a message and
+///   never will be; drop them and resynchronize.
+///
+/// That split is what bounds the caller's buffer. `BodyLength<9>` is parsed
+/// into a [`Length`], so a value above 65535 is *out of range* rather than
+/// merely unsatisfied, and comes back as [`Garbled`] - not [`Incomplete`] -
+/// as soon as the length field itself has arrived, long before a body of
+/// that size could be buffered. A caller that keeps calling this before
+/// each read therefore never holds more than one message's worth of bytes,
+/// roughly 65.5 KB. Widening [`Length`] would silently turn a hostile
+/// `9=99999999` into an unbounded read.
+///
+/// [`Incomplete`]: RawMessageError::Incomplete
+/// [`Garbled`]: RawMessageError::Garbled
+/// [`InvalidChecksum`]: RawMessageError::InvalidChecksum
+/// [`Length`]: crate::basic_types::Length
 pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageError> {
     let orig_bytes = bytes;
 

@@ -198,6 +198,7 @@ impl DynamicMessage {
                     .expect("Logon requires HeartBtInt(108)")
                     .as_int(),
                 reset_seq_num_flag: self.get(TAG_RESET_SEQ_NUM_FLAG).map(Value::as_bool),
+                max_message_size: None,
                 next_expected_msg_seq_num: self
                     .get(TAG_NEXT_EXPECTED_MSG_SEQ_NUM)
                     .map(Value::as_seq_num),

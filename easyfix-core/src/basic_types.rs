@@ -100,7 +100,20 @@ pub struct TzTimeOnly {
     precision: TimePrecision,
 }
 
+/// Wire type of every FIX `Length` field - including `BodyLength<9>`.
+///
+/// The `u16` width is a deliberate ceiling, not an incidental choice: it
+/// caps a message body at 65535 octets, so a whole TagValue message tops
+/// out around 65.5 KB once `8=`, `9=` and the `10=` trailer are counted.
+/// Everything reading from a socket depends on it - see [`raw_message`],
+/// which turns an out-of-range `BodyLength<9>` into
+/// [`RawMessageError::Garbled`] before any body is buffered. Widening this
+/// type would surrender that bound.
+///
+/// [`raw_message`]: crate::deserializer::raw_message
+/// [`RawMessageError::Garbled`]: crate::deserializer::RawMessageError::Garbled
 pub type Length = u16;
+pub type NonZeroLength = NonZero<Length>;
 pub type Data = Vec<u8>;
 pub type XmlData = Data;
 

@@ -428,6 +428,7 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
 //   encrypt_method / encrypt_method_raw (tag 98,   Int enum,  required)
 //   heart_bt_int                        (tag 108,  Int,       required)
 //   reset_seq_num_flag                  (tag 141,  Boolean,   optional, FIX 4.1+)
+//   max_message_size                    (tag 383,  Length,    optional, FIX 4.2+)
 //   next_expected_msg_seq_num           (tag 789,  SeqNum,    optional, FIX 4.4+)
 //   default_appl_ver_id                 (tag 1137, String enum, FIXT 1.1)
 //   session_status / session_status_raw (tag 1409, Int enum,  optional, FIX 5.0SP1+)
@@ -443,6 +444,10 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     let has_reset_seq_num_flag = map.contains_key(&141);
     if has_reset_seq_num_flag {
         validate_tag(&map, 141, "ResetSeqNumFlag", BasicType::Boolean);
+    }
+    let has_max_message_size = map.contains_key(&383);
+    if has_max_message_size {
+        validate_tag(&map, 383, "MaxMessageSize", BasicType::Length);
     }
     let has_next_expected = map.contains_key(&789);
     if has_next_expected {
@@ -462,6 +467,9 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     if has_reset_seq_num_flag && version < Version::FIX41 {
         panic!("ResetSeqNumFlag (tag 141) is not valid before FIX 4.1");
     }
+    if has_max_message_size && version < Version::FIX42 {
+        panic!("MaxMessageSize (tag 383) is not valid before FIX 4.2");
+    }
     if has_next_expected && version < Version::FIX44 {
         panic!("NextExpectedMsgSeqNum (tag 789) is not valid before FIX 4.4");
     }
@@ -478,6 +486,12 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     // --- Incoming: conditional fields ---
     let incoming_reset_seq_num_flag = if has_reset_seq_num_flag {
         quote! { msg.reset_seq_num_flag }
+    } else {
+        quote! { None }
+    };
+
+    let incoming_max_message_size = if has_max_message_size {
+        quote! { msg.max_message_size }
     } else {
         quote! { None }
     };
@@ -509,6 +523,12 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     // --- Outgoing: conditional fields ---
     let outgoing_reset_seq_num_flag = if has_reset_seq_num_flag {
         quote! { reset_seq_num_flag: base.reset_seq_num_flag, }
+    } else {
+        quote! {}
+    };
+
+    let outgoing_max_message_size = if has_max_message_size {
+        quote! { max_message_size: base.max_message_size, }
     } else {
         quote! {}
     };
@@ -545,6 +565,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
 
     let base_field_count = 2
         + has_reset_seq_num_flag as usize
+        + has_max_message_size as usize
         + has_next_expected as usize
         + has_default_appl_ver_id as usize
         + has_session_status as usize;
@@ -562,6 +583,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
                     encrypt_method_raw: msg.encrypt_method.as_int(),
                     heart_bt_int: msg.heart_bt_int,
                     reset_seq_num_flag: #incoming_reset_seq_num_flag,
+                    max_message_size: #incoming_max_message_size,
                     next_expected_msg_seq_num: #incoming_next_expected,
                     default_appl_ver_id: #incoming_default_appl_ver_id,
                     session_status: #incoming_session_status,
@@ -575,6 +597,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
                     encrypt_method: EncryptMethod::from(base.encrypt_method),
                     heart_bt_int: base.heart_bt_int,
                     #outgoing_reset_seq_num_flag
+                    #outgoing_max_message_size
                     #outgoing_next_expected
                     #outgoing_default_appl_ver_id
                     #outgoing_session_status

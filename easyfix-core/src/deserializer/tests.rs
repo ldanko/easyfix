@@ -91,6 +91,31 @@ fn raw_message_ok() {
     assert!(raw_message(input).is_ok());
 }
 
+/// A `BodyLength<9>` above `Length::MAX` must be **Garbled**, never
+/// Incomplete. This is the whole inbound memory bound: `Garbled` tells the
+/// caller to drop the bytes, `Incomplete` tells it to read more, so a
+/// hostile `9=99999999` answered with `Incomplete` would be an unbounded
+/// read. The verdict lands as soon as the length field itself is parsed -
+/// no body of the declared size is ever buffered. Widening `Length` past
+/// `u16` silently forfeits this; that is what this test guards.
+#[test]
+fn raw_message_body_length_above_length_max_is_garbled() {
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x019=65536\x0135=A\x01"),
+        Err(RawMessageError::Garbled)
+    );
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x019=99999999\x0135=A\x01"),
+        Err(RawMessageError::Garbled)
+    );
+    // Just inside the range is only unsatisfied, not malformed - the
+    // caller is told to keep reading.
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x019=65535\x0135=A\x01"),
+        Err(RawMessageError::Incomplete)
+    );
+}
+
 #[test]
 fn raw_message_from_chunks_ok() {
     let input = &[

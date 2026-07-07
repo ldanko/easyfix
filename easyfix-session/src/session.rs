@@ -422,6 +422,8 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
             encrypt_method_raw: EncryptMethodBase::None as Int,
             heart_bt_int: self.heartbeat_interval.get().try_into().unwrap_or(Int::MAX),
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
+            // MaxMessageSize(383) negotiation is not implemented here.
+            max_message_size: None,
             next_expected_msg_seq_num,
             // TODO: should be conditional on FIXT version
             default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
@@ -443,6 +445,8 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
             encrypt_method_raw: EncryptMethodBase::None as Int,
             heart_bt_int: self.heartbeat_interval.get().try_into().unwrap_or(Int::MAX),
             reset_seq_num_flag: self.should_send_reset(state).then_some(true),
+            // MaxMessageSize(383) negotiation is not implemented here.
+            max_message_size: None,
             next_expected_msg_seq_num,
             // TODO: should be conditional on FIXT version
             default_appl_ver_id: Some(DEFAULT_APPL_VER_ID),
@@ -1043,6 +1047,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
                             encrypt_method_raw: 0,
                             heart_bt_int: 0,
                             reset_seq_num_flag: None,
+                            max_message_size: None,
                             next_expected_msg_seq_num: None,
                             // Explicit: with the required generated slot,
                             // `None` would now fill DEFAULT_IF_ABSENT

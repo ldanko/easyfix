@@ -1098,6 +1098,7 @@ pub enum FieldTag {
     RefTagId = 371u16,
     RefMsgType = 372u16,
     SessionRejectReason = 373u16,
+    MaxMessageSize = 383u16,
     NoMsgTypes = 384u16,
     MsgDirection = 385u16,
     NextExpectedMsgSeqNum = 789u16,
@@ -1157,6 +1158,7 @@ impl FieldTag {
             371u16 => Some(FieldTag::RefTagId),
             372u16 => Some(FieldTag::RefMsgType),
             373u16 => Some(FieldTag::SessionRejectReason),
+            383u16 => Some(FieldTag::MaxMessageSize),
             384u16 => Some(FieldTag::NoMsgTypes),
             385u16 => Some(FieldTag::MsgDirection),
             789u16 => Some(FieldTag::NextExpectedMsgSeqNum),
@@ -1212,6 +1214,7 @@ impl FieldTag {
             FieldTag::RefTagId => b"RefTagId",
             FieldTag::RefMsgType => b"RefMsgType",
             FieldTag::SessionRejectReason => b"SessionRejectReason",
+            FieldTag::MaxMessageSize => b"MaxMessageSize",
             FieldTag::NoMsgTypes => b"NoMsgTypes",
             FieldTag::MsgDirection => b"MsgDirection",
             FieldTag::NextExpectedMsgSeqNum => b"NextExpectedMsgSeqNum",
@@ -2188,6 +2191,8 @@ pub struct Logon {
     pub raw_data: Option<Data>,
     ///Tag 141.
     pub reset_seq_num_flag: Option<Boolean>,
+    ///Tag 383.
+    pub max_message_size: Option<Length>,
     ///Tag 789.
     pub next_expected_msg_seq_num: Option<SeqNum>,
     ///Tag 384.
@@ -2206,6 +2211,7 @@ impl Default for Logon {
             heart_bt_int: Default::default(),
             raw_data: Default::default(),
             reset_seq_num_flag: Default::default(),
+            max_message_size: Default::default(),
             next_expected_msg_seq_num: Default::default(),
             msg_type_grp: Default::default(),
             session_status: Default::default(),
@@ -2234,6 +2240,11 @@ impl Logon {
         if let Some(reset_seq_num_flag) = &self.reset_seq_num_flag {
             serializer.put_slice(b"141=")?;
             serializer.serialize_boolean(reset_seq_num_flag)?;
+            serializer.put_soh()?;
+        }
+        if let Some(max_message_size) = &self.max_message_size {
+            serializer.put_slice(b"383=")?;
+            serializer.serialize_length(max_message_size)?;
             serializer.put_soh()?;
         }
         if let Some(next_expected_msg_seq_num) = &self.next_expected_msg_seq_num {
@@ -2271,6 +2282,7 @@ impl Logon {
         let mut raw_data_length: Option<Length> = None;
         let mut raw_data: Option<Data> = None;
         let mut reset_seq_num_flag: Option<Boolean> = None;
+        let mut max_message_size: Option<Length> = None;
         let mut next_expected_msg_seq_num: Option<SeqNum> = None;
         let mut no_msg_types: Option<NumInGroup> = None;
         let mut msg_type_grp: Option<Vec<MsgTypeGrp>> = None;
@@ -2332,6 +2344,15 @@ impl Logon {
                         ));
                     }
                     reset_seq_num_flag = Some(deserializer.deserialize_boolean()?);
+                }
+                383u16 => {
+                    if max_message_size.is_some() {
+                        return Err(deserializer.reject(
+                            Some(383u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    max_message_size = Some(deserializer.deserialize_length()?);
                 }
                 789u16 => {
                     if next_expected_msg_seq_num.is_some() {
@@ -2430,6 +2451,7 @@ impl Logon {
             })?,
             raw_data,
             reset_seq_num_flag,
+            max_message_size,
             next_expected_msg_seq_num,
             msg_type_grp,
             session_status,
@@ -2956,6 +2978,7 @@ impl From<&Logon> for LogonBase {
             encrypt_method_raw: msg.encrypt_method.as_int(),
             heart_bt_int: msg.heart_bt_int,
             reset_seq_num_flag: msg.reset_seq_num_flag,
+            max_message_size: msg.max_message_size,
             next_expected_msg_seq_num: msg.next_expected_msg_seq_num,
             default_appl_ver_id: Some(msg.default_appl_ver_id),
             session_status: msg
@@ -2971,6 +2994,7 @@ impl From<LogonBase> for Logon {
             encrypt_method: EncryptMethod::from(base.encrypt_method),
             heart_bt_int: base.heart_bt_int,
             reset_seq_num_flag: base.reset_seq_num_flag,
+            max_message_size: base.max_message_size,
             next_expected_msg_seq_num: base.next_expected_msg_seq_num,
             default_appl_ver_id: base
                 .default_appl_ver_id

@@ -46,6 +46,7 @@
    <field name="RawDataLength" required="N" />
    <field name="RawData" required="N" />
    <field name="ResetSeqNumFlag" required="N" />
+   <field name="MaxMessageSize" required="N" />
    <field name="NextExpectedMsgSeqNum" required="N" />
    <component name="MsgTypeGrp" required="N" />
    <field name="SessionStatus" required="N" />
@@ -144,6 +145,7 @@
    <value enum="17" description="FIELD_DELIMITER_IN_FIELD_VALUE" />
    <value enum="18" description="INVALID_UNSUPPORTED_APP_VERSION" />
   </field>
+  <field number="383" name="MaxMessageSize" type="LENGTH" />
   <field number="384" name="NoMsgTypes" type="NUMINGROUP" />
   <field number="385" name="MsgDirection" type="CHAR">
    <value enum="S" description="SEND" />

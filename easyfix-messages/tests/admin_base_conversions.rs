@@ -324,6 +324,7 @@ fn logon_incoming() {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
         heart_bt_int: 30,
         reset_seq_num_flag: Some(true),
+        max_message_size: Some(8192),
         next_expected_msg_seq_num: Some(5),
         default_appl_ver_id: ApplVerId::Fix50Sp2,
         session_status: Some(SessionStatus::try_from(0i64).unwrap()), // SessionActive
@@ -335,6 +336,7 @@ fn logon_incoming() {
     assert_eq!(base.encrypt_method_raw, 0);
     assert_eq!(base.heart_bt_int, 30);
     assert_eq!(base.reset_seq_num_flag, Some(true));
+    assert_eq!(base.max_message_size, Some(8192));
     assert_eq!(base.next_expected_msg_seq_num, Some(5));
     assert_eq!(base.default_appl_ver_id, Some(ApplVerId::Fix50Sp2));
     // SessionStatus: newtype field has the validated Int value
@@ -355,6 +357,7 @@ fn logon_incoming_minimal() {
     assert_eq!(base.encrypt_method_raw, 0);
     assert_eq!(base.heart_bt_int, 60);
     assert!(base.reset_seq_num_flag.is_none());
+    assert!(base.max_message_size.is_none());
     assert!(base.next_expected_msg_seq_num.is_none());
     assert!(base.session_status.is_none());
 }
@@ -366,6 +369,7 @@ fn logon_outgoing() {
         encrypt_method_raw: 0,
         heart_bt_int: 30,
         reset_seq_num_flag: None,
+        max_message_size: Some(4096),
         next_expected_msg_seq_num: Some(1),
         default_appl_ver_id: Some(messages::ApplVerId::Fix50Sp2),
         session_status: Some(SessionStatusBase::SessionActive.into()),
@@ -376,6 +380,7 @@ fn logon_outgoing() {
     assert_eq!(msg.encrypt_method.as_bytes(), b"0");
     assert_eq!(msg.heart_bt_int, 30);
     assert!(msg.reset_seq_num_flag.is_none());
+    assert_eq!(msg.max_message_size, Some(4096));
     assert_eq!(msg.next_expected_msg_seq_num, Some(1));
     // DefaultApplVerId value "9"
     assert_eq!(msg.default_appl_ver_id.as_bytes(), b"9");
@@ -393,6 +398,7 @@ fn logon_outgoing_without_optional_fields() {
         encrypt_method_raw: 0,
         heart_bt_int: 60,
         reset_seq_num_flag: None,
+        max_message_size: None,
         next_expected_msg_seq_num: None,
         default_appl_ver_id: None,
         session_status: None,
@@ -400,6 +406,7 @@ fn logon_outgoing_without_optional_fields() {
     let msg = Logon::from(base);
     assert_eq!(msg.heart_bt_int, 60);
     assert!(msg.reset_seq_num_flag.is_none());
+    assert!(msg.max_message_size.is_none());
     assert!(msg.next_expected_msg_seq_num.is_none());
     assert!(msg.session_status.is_none());
     // `None` into the required 1137 slot fills the spec's meaning of
@@ -432,6 +439,7 @@ fn logon_round_trip_copy_fields() {
         encrypt_method: EncryptMethod::try_from(0i64).unwrap(),
         heart_bt_int: 30,
         reset_seq_num_flag: Some(true),
+        max_message_size: Some(16384),
         next_expected_msg_seq_num: Some(10),
         default_appl_ver_id: ApplVerId::Fix50Sp2,
         ..Default::default()
@@ -443,6 +451,7 @@ fn logon_round_trip_copy_fields() {
         original.reset_seq_num_flag,
         reconstructed.reset_seq_num_flag
     );
+    assert_eq!(original.max_message_size, reconstructed.max_message_size);
     assert_eq!(
         original.next_expected_msg_seq_num,
         reconstructed.next_expected_msg_seq_num
@@ -483,6 +492,7 @@ fn admin_base_dispatch_outgoing_logon() {
         encrypt_method_raw: 0,
         heart_bt_int: 30,
         reset_seq_num_flag: Some(true),
+        max_message_size: None,
         next_expected_msg_seq_num: Some(7),
         default_appl_ver_id: Some(messages::ApplVerId::Fix50Sp2),
         session_status: None,
