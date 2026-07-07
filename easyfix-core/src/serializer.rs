@@ -4,8 +4,7 @@ use crate::basic_types::{
     Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, FixedOffset, Float,
     Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
     MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum, Tenor,
-    TenorUnit, TimePrecision, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp,
-    XmlData,
+    TimePrecision, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
 };
 
 /// Number of digits reserved for the BodyLength(9) placeholder, derived
@@ -529,13 +528,7 @@ impl<'a> Serializer<'a> {
     }
 
     pub fn serialize_tenor(&mut self, input: &Tenor) -> Result<(), SerializeError> {
-        let unit_byte = match input.unit {
-            TenorUnit::Days => b'D',
-            TenorUnit::Months => b'M',
-            TenorUnit::Weeks => b'W',
-            TenorUnit::Years => b'Y',
-        };
-        self.put_u8(unit_byte)?;
+        self.put_u8(input.unit.as_byte())?;
         let mut buffer = itoa::Buffer::new();
         self.put_slice(buffer.format(input.value).as_bytes())
     }

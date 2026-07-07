@@ -583,7 +583,32 @@ fn deserialize_tenor_invalid_unit() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
-        Err(DeserializeErrorKind::Reject { .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
+}
+
+#[test]
+fn deserialize_tenor_unit_without_value() {
+    // The value is present but malformed, which is a syntax error - not the
+    // empty-value case (FIX Session Test Cases Scenario 14, rows d and f).
+    let input = b"D\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
+}
+
+#[test]
+fn deserialize_tenor_trailing_garbage() {
+    let input = b"D5x\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
     );
 }
 
@@ -593,18 +618,46 @@ fn deserialize_tenor_zero_value() {
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
-        Err(DeserializeErrorKind::Reject { .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
+#[test]
+fn deserialize_tenor_value_out_of_range() {
+    let input = b"D65536\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
 }
 
 #[test]
 fn deserialize_tenor_empty() {
+    // Tag specified with no value at all (FIX Session Test Cases
+    // Scenario 14, row d).
     let input = b"\x01\x00";
     let mut deserializer = deserializer(input);
     assert_matches!(
         deserializer.deserialize_tenor(),
-        Err(DeserializeErrorKind::Reject { .. })
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::TagSpecifiedWithoutAValue)
     );
+}
+
+#[test]
+fn deserialize_tenor_truncated() {
+    for input in [b"D5".as_slice(), b"D".as_slice(), b"".as_slice()] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_tenor(),
+            Err(DeserializeErrorKind::Garbled(
+                GarbledReason::IncompleteMessageData
+            ))
+        );
+    }
 }
 
 // --- TzTimestamp tests ---

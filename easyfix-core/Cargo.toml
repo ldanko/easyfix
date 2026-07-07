@@ -8,8 +8,12 @@ repository = "https://github.com/ldanko/easyfix"
 edition = "2024"
 
 [features]
-serde-serialize = ["dep:serde", "chrono/serde"]
-serde-deserialize = ["dep:serde", "chrono/serde"]
+# `rust_decimal/serde` covers both directions in one feature - it cannot be
+# split into ser and de - so both features enable it. The plain `serde` variant
+# is deliberate: it writes `Decimal` as a string, preserving the scale of the
+# received value, where `serde-float` would round-trip through f64.
+serde-serialize = ["dep:serde", "chrono/serde", "rust_decimal/serde"]
+serde-deserialize = ["dep:serde", "chrono/serde", "rust_decimal/serde"]
 
 [dependencies]
 chrono = { workspace = true }

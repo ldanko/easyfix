@@ -125,6 +125,30 @@ pub enum TenorUnit {
     Years,
 }
 
+impl TenorUnit {
+    /// The FIX wire code of this unit.
+    pub const fn as_byte(self) -> u8 {
+        match self {
+            TenorUnit::Days => b'D',
+            TenorUnit::Months => b'M',
+            TenorUnit::Weeks => b'W',
+            TenorUnit::Years => b'Y',
+        }
+    }
+
+    /// The unit denoted by a FIX wire code, or `None` when the code is not
+    /// one of the four defined units.
+    pub const fn from_byte(byte: u8) -> Option<TenorUnit> {
+        match byte {
+            b'D' => Some(TenorUnit::Days),
+            b'M' => Some(TenorUnit::Months),
+            b'W' => Some(TenorUnit::Weeks),
+            b'Y' => Some(TenorUnit::Years),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Tenor {
     pub unit: TenorUnit,
@@ -726,6 +750,66 @@ mod utc_timestamp_serde_de {
         {
             deserializer.deserialize_str(UtcTimestampVisitor)
         }
+    }
+}
+
+#[cfg(feature = "serde-deserialize")]
+mod tenor_serde_de {
+    use serde::{
+        Deserializer,
+        de::{self, Visitor},
+    };
+
+    use super::*;
+    use crate::deserializer::parse_tenor;
+
+    struct TenorVisitor;
+
+    impl Visitor<'_> for TenorVisitor {
+        type Value = Tenor;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string")
+        }
+
+        /// Deserialize a tenor in the FIX wire format. The grammar is defined
+        /// by the shared parser also used by the tag-value deserializer;
+        /// unlike the tag-value form the value here is length-delimited, so
+        /// the whole input must be consumed.
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            match parse_tenor(value.as_bytes()) {
+                // The whole input must be consumed - a length-delimited
+                // value has no terminator after the digits.
+                Ok((tenor, [])) => Ok(tenor),
+                _ => Err(de::Error::custom("incorrect data format for Tenor")),
+            }
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for Tenor {
+        fn deserialize<D>(deserializer: D) -> Result<Tenor, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(TenorVisitor)
+        }
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+impl serde::Serialize for Tenor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(&format_args!(
+            "{}{}",
+            char::from(self.unit.as_byte()),
+            self.value
+        ))
     }
 }
 
@@ -1678,5 +1762,94 @@ mod utc_timestamp_serde_ser_tests {
     fn in_range_timestamp_serializes_to_plain_string() {
         let ts = UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap());
         assert_eq!(serde_json::to_string(&ts).unwrap(), "\"20240102-03:04:05\"");
+    }
+}
+
+#[cfg(all(test, feature = "serde-deserialize"))]
+mod tenor_serde_de_tests {
+    use serde::{
+        Deserialize,
+        de::value::{Error as DeError, StrDeserializer},
+    };
+
+    use super::*;
+
+    fn de(input: &str) -> Result<Tenor, DeError> {
+        Tenor::deserialize(StrDeserializer::<DeError>::new(input))
+    }
+
+    #[test]
+    fn every_unit_round_trips() {
+        for (input, unit, value) in [
+            ("D5", TenorUnit::Days, 5),
+            ("M3", TenorUnit::Months, 3),
+            ("W13", TenorUnit::Weeks, 13),
+            ("Y1", TenorUnit::Years, 1),
+        ] {
+            let parsed = de(input).expect("valid tenor rejected");
+            assert_eq!(parsed, Tenor { unit, value });
+        }
+    }
+
+    #[test]
+    fn malformed_values_are_rejected() {
+        // Unknown unit code.
+        assert!(de("X5").is_err());
+        // Unit without a value.
+        assert!(de("D").is_err());
+        // Zero value - rejected on the wire as well.
+        assert!(de("D0").is_err());
+        // Value before the unit.
+        assert!(de("5D").is_err());
+        // Trailing garbage - the whole input must be consumed.
+        assert!(de("D5x").is_err());
+        assert!(de("D5\x01").is_err());
+        // Value above the u16 range of Length.
+        assert!(de("D65536").is_err());
+        assert!(de("").is_err());
+    }
+}
+
+#[cfg(all(test, feature = "serde-serialize"))]
+mod tenor_serde_ser_tests {
+    use super::*;
+
+    #[test]
+    fn tenor_serializes_to_wire_string() {
+        for (unit, value, expected) in [
+            (TenorUnit::Days, 5, "\"D5\""),
+            (TenorUnit::Months, 3, "\"M3\""),
+            (TenorUnit::Weeks, 13, "\"W13\""),
+            (TenorUnit::Years, 1, "\"Y1\""),
+        ] {
+            let tenor = Tenor { unit, value };
+            assert_eq!(serde_json::to_string(&tenor).unwrap(), expected);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "serde-serialize", feature = "serde-deserialize"))]
+mod decimal_serde_tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn decimal_is_a_string_that_keeps_its_scale() {
+        // The `rust_decimal/serde` representation must stay string-based:
+        // switching it to a float would drop trailing zeros and round values
+        // that FIX carries exactly.
+        let price = Decimal::from_str("97.0340").unwrap();
+        let json = serde_json::to_string(&price).unwrap();
+        assert_eq!(json, "\"97.0340\"");
+        let parsed: Decimal = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, price);
+        assert_eq!(parsed.scale(), price.scale());
+    }
+
+    #[test]
+    fn decimal_accepts_a_json_number() {
+        let parsed: Decimal = serde_json::from_str("97.0347").unwrap();
+        assert_eq!(parsed, Decimal::from_str("97.0347").unwrap());
     }
 }

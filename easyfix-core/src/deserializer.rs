@@ -355,6 +355,54 @@ fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeEr
     Ok((UtcTimeOnly::with_precision(time, precision), rest))
 }
 
+/// Parse a Tenor value from the start of `buf` without consuming any
+/// terminator, mirroring the [`parse_utc_timestamp`] contract.
+///
+/// Accepted format is a unit code (`D`, `M`, `W` or `Y`) followed by a
+/// non-zero decimal value, e.g. `M3`. Digits are consumed greedily, so a
+/// tag-value caller must still check that the tail starts with SOH.
+pub(crate) fn parse_tenor(buf: &[u8]) -> Result<(Tenor, &[u8]), DeserializeErrorKindInternal> {
+    let [unit, rest @ ..] = buf else {
+        return Err(DeserializeErrorKindInternal::Incomplete);
+    };
+    let unit = TenorUnit::from_byte(*unit).ok_or(DeserializeErrorKindInternal::Error(
+        SessionRejectReasonBase::IncorrectDataFormatForValue,
+    ))?;
+
+    let mut value: Length = 0;
+    let mut digits = 0;
+    let mut rest = rest;
+    while let [d @ b'0'..=b'9', tail @ ..] = rest {
+        value = value
+            .checked_mul(10)
+            .and_then(|v| v.checked_add(Length::from(d - b'0')))
+            .ok_or(DeserializeErrorKindInternal::Error(
+                SessionRejectReasonBase::ValueIsIncorrect,
+            ))?;
+        digits += 1;
+        rest = tail;
+    }
+
+    // With nothing but digits consumed so far, more input could still turn
+    // both of these into a valid value - only an exhausted buffer separates
+    // truncation from malformation.
+    if digits == 0 || value == 0 {
+        return if rest.is_empty() {
+            Err(DeserializeErrorKindInternal::Incomplete)
+        } else if digits == 0 {
+            Err(DeserializeErrorKindInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ))
+        } else {
+            Err(DeserializeErrorKindInternal::Error(
+                SessionRejectReasonBase::ValueIsIncorrect,
+            ))
+        };
+    }
+
+    Ok((Tenor { unit, value }, rest))
+}
+
 fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorKindInternal> {
     for (i, b) in bytes.iter().enumerate() {
         match b {
@@ -1956,35 +2004,27 @@ impl<'de> Deserializer<'de> {
         Ok(xml.into())
     }
 
+    /// Deserialize a tenor: a unit code (`D`, `M`, `W` or `Y`) followed by
+    /// a non-zero value, e.g. `M3` for three months.
     pub fn deserialize_tenor(&mut self) -> Result<Tenor, DeserializeErrorKind> {
-        let (unit, rest) = match self.buf {
-            [b'D', rest @ ..] => (TenorUnit::Days, rest),
-            [b'M', rest @ ..] => (TenorUnit::Months, rest),
-            [b'W', rest @ ..] => (TenorUnit::Weeks, rest),
-            [b'Y', rest @ ..] => (TenorUnit::Years, rest),
+        match self.buf {
             [] => {
                 return Err(DeserializeErrorKind::Garbled(
                     GarbledReason::IncompleteMessageData,
                 ));
             }
-            _ => {
+            [b'\x01', ..] => {
                 return Err(self.reject(
                     self.current_tag,
-                    SessionRejectReasonBase::IncorrectDataFormatForValue,
+                    SessionRejectReasonBase::TagSpecifiedWithoutAValue,
                 ));
             }
-        };
-        match deserialize_length(rest) {
-            Ok((leftover, value)) => {
-                self.buf = leftover;
-                Ok(Tenor { unit, value })
-            }
-            Err(DeserializeErrorKindInternal::Incomplete) => Err(DeserializeErrorKind::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            Err(DeserializeErrorKindInternal::Error(reason)) => {
-                Err(self.reject(self.current_tag, reason))
-            }
+            _ => {}
+        }
+
+        match parse_tenor(self.buf) {
+            Ok((tenor, rest)) => self.finish_value(tenor, rest),
+            Err(error) => Err(self.garbled_or_reject_value(error)),
         }
     }
 
