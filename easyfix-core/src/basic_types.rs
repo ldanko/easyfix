@@ -62,6 +62,7 @@ pub type Language = [u8; 2];
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub enum TimePrecision {
     Secs = 0,
     Millis = 3,
@@ -76,8 +77,21 @@ pub struct UtcTimestamp {
     precision: TimePrecision,
 }
 
+/// Nanoseconds to keep when reducing `time` to whole-second precision.
+///
+/// A UTC leap second is not a fractional part: chrono represents `:60` as
+/// `:59` carrying a nanosecond value of at least a whole second (see
+/// [`Timelike::nanosecond`]). Clearing that field outright would silently
+/// move `23:59:60` to `23:59:59` - a different instant, and a different
+/// value on the wire, where `SS = 00-60` is valid (TagValue Encoding
+/// section 6.2.2). So the leap offset survives the reduction; only the
+/// sub-second fraction is dropped.
+fn whole_second_nanos(time: &impl Timelike) -> u32 {
+    const LEAP: u32 = 1_000_000_000;
+    if time.nanosecond() >= LEAP { LEAP } else { 0 }
+}
+
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 pub struct UtcTimeOnly {
     timestamp: NaiveTime,
     precision: TimePrecision,
@@ -87,12 +101,35 @@ pub type UtcDateOnly = NaiveDate;
 pub type LocalMktTime = NaiveTime;
 pub type LocalMktDate = NaiveDate;
 
+/// Date and time carrying a timezone offset, e.g. `20060901-07:39:00+05:30`.
+///
+/// The offset is required, in this type and on the wire. FIX defines the
+/// datatype as "local time with an offset to UTC to allow identification of
+/// local time and time zone offset of that time" (TagValue Encoding section
+/// 6.2.2), so the offset is what the type exists to carry - and what makes
+/// a value a point in time rather than a wall clock reading that cannot be
+/// placed on a timeline. The grammar in that section brackets the offset,
+/// but every example it gives carries one.
+///
+/// A local time whose zone does *not* follow from the value belongs in
+/// [`LocalMktDate`] and [`LocalMktTime`] instead. Those name a time local to
+/// a market center, with the market center identified by a separate field -
+/// which is exactly the information an omitted offset would leave unstated.
+///
+/// The seconds are optional on input (the spec's own examples omit them) and
+/// always present on output.
 #[derive(Clone, Copy, Debug)]
 pub struct TzTimestamp {
     timestamp: DateTime<FixedOffset>,
     precision: TimePrecision,
 }
 
+/// Time of day carrying a timezone offset, e.g. `07:39:00+05:30`.
+///
+/// The offset is required for the same reason as in [`TzTimestamp`]: without
+/// it the value is a wall clock reading with no way to place it in time, and
+/// FIX already covers that case with [`LocalMktTime`], where the market
+/// center supplying the zone is named in a separate field.
 #[derive(Clone, Copy, Debug)]
 pub struct TzTimeOnly {
     timestamp: NaiveTime,
@@ -835,6 +872,188 @@ impl serde::Serialize for UtcTimestamp {
     }
 }
 
+#[cfg(feature = "serde-deserialize")]
+mod utc_time_only_serde_de {
+    use serde::{
+        Deserializer,
+        de::{self, Visitor},
+    };
+
+    use super::*;
+    use crate::deserializer::parse_utc_time_only;
+
+    struct UtcTimeOnlyVisitor;
+
+    impl Visitor<'_> for UtcTimeOnlyVisitor {
+        type Value = UtcTimeOnly;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string")
+        }
+
+        /// Deserialize a UTC time-only value in the FIX wire format. The
+        /// grammar is defined by the shared parser also used by the tag-value
+        /// deserializer; unlike the tag-value form the value here is
+        /// length-delimited, so the whole input must be consumed.
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            match parse_utc_time_only(value.as_bytes()) {
+                Ok((time, [])) => Ok(time),
+                _ => Err(de::Error::custom("incorrect data format for UtcTimeOnly")),
+            }
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for UtcTimeOnly {
+        fn deserialize<D>(deserializer: D) -> Result<UtcTimeOnly, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(UtcTimeOnlyVisitor)
+        }
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+impl serde::Serialize for UtcTimeOnly {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde-deserialize")]
+mod tz_timestamp_serde_de {
+    use serde::{
+        Deserializer,
+        de::{self, Visitor},
+    };
+
+    use super::*;
+    use crate::deserializer::parse_tz_timestamp;
+
+    struct TzTimestampVisitor;
+
+    impl Visitor<'_> for TzTimestampVisitor {
+        type Value = TzTimestamp;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string")
+        }
+
+        /// Deserialize a timestamp with a timezone offset in the FIX wire
+        /// format. The grammar is defined by the shared parser also used by
+        /// the tag-value deserializer; unlike the tag-value form the value
+        /// here is length-delimited, so the whole input must be consumed.
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            match parse_tz_timestamp(value.as_bytes()) {
+                Ok((timestamp, [])) => Ok(timestamp),
+                _ => Err(de::Error::custom("incorrect data format for TzTimestamp")),
+            }
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for TzTimestamp {
+        fn deserialize<D>(deserializer: D) -> Result<TzTimestamp, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(TzTimestampVisitor)
+        }
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+impl serde::Serialize for TzTimestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::Error;
+
+        let year = self.timestamp.year();
+        if !year_is_wire_representable(year) {
+            return Err(S::Error::custom(format!(
+                "year {year} not representable in the 4-digit FIX timestamp format"
+            )));
+        }
+        if !offset_is_wire_representable(*self.timestamp.offset()) {
+            return Err(S::Error::custom(
+                "timezone offset with a sub-minute part is not representable in the FIX format",
+            ));
+        }
+        serializer.collect_str(self)
+    }
+}
+
+#[cfg(feature = "serde-deserialize")]
+mod tz_time_only_serde_de {
+    use serde::{
+        Deserializer,
+        de::{self, Visitor},
+    };
+
+    use super::*;
+    use crate::deserializer::parse_tz_time_only;
+
+    struct TzTimeOnlyVisitor;
+
+    impl Visitor<'_> for TzTimeOnlyVisitor {
+        type Value = TzTimeOnly;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("string")
+        }
+
+        /// Deserialize a time of day with a timezone offset in the FIX wire
+        /// format. The grammar is defined by the shared parser also used by
+        /// the tag-value deserializer; unlike the tag-value form the value
+        /// here is length-delimited, so the whole input must be consumed.
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            match parse_tz_time_only(value.as_bytes()) {
+                Ok((time, [])) => Ok(time),
+                _ => Err(de::Error::custom("incorrect data format for TzTimeOnly")),
+            }
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for TzTimeOnly {
+        fn deserialize<D>(deserializer: D) -> Result<TzTimeOnly, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_str(TzTimeOnlyVisitor)
+        }
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+impl serde::Serialize for TzTimeOnly {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::Error;
+
+        if !offset_is_wire_representable(self.offset) {
+            return Err(S::Error::custom(
+                "timezone offset with a sub-minute part is not representable in the FIX format",
+            ));
+        }
+        serializer.collect_str(self)
+    }
+}
+
 impl PartialEq for UtcTimestamp {
     fn eq(&self, other: &Self) -> bool {
         self.timestamp == other.timestamp
@@ -906,7 +1125,7 @@ impl UtcTimestamp {
     pub fn with_secs(date_time: DateTime<Utc>) -> UtcTimestamp {
         let secs = date_time.timestamp();
         UtcTimestamp {
-            timestamp: Self::timestamp_from_secs_and_nsecs(secs, 0),
+            timestamp: Self::timestamp_from_secs_and_nsecs(secs, whole_second_nanos(&date_time)),
             precision: TimePrecision::Secs,
         }
     }
@@ -987,7 +1206,7 @@ impl UtcTimeOnly {
     /// input's precision is adjusted to requested one
     pub fn with_secs(time: NaiveTime) -> UtcTimeOnly {
         UtcTimeOnly {
-            timestamp: time.with_nanosecond(0).unwrap(),
+            timestamp: time.with_nanosecond(whole_second_nanos(&time)).unwrap(),
             precision: TimePrecision::Secs,
         }
     }
@@ -1025,6 +1244,16 @@ impl UtcTimeOnly {
         }
     }
 
+    /// Formats the time with the precision set inside the struct.
+    pub fn format_precisely(&self) -> DelayedFormat<StrftimeItems<'_>> {
+        match self.precision {
+            TimePrecision::Secs => self.format("%H:%M:%S"),
+            TimePrecision::Millis => self.format("%H:%M:%S%.3f"),
+            TimePrecision::Micros => self.format("%H:%M:%S%.6f"),
+            TimePrecision::Nanos => self.format("%H:%M:%S%.9f"),
+        }
+    }
+
     pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
         self.timestamp.format(fmt)
     }
@@ -1036,6 +1265,51 @@ impl UtcTimeOnly {
     pub fn precision(&self) -> TimePrecision {
         self.precision
     }
+}
+
+/// Renders the FIX wire form, honouring the precision carried by the value.
+impl fmt::Display for UtcTimeOnly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.format_precisely())
+    }
+}
+
+/// Whether a year can be rendered in the FIX wire form, which is exactly
+/// four digits (TagValue Encoding section 6.2.2, `YYYY = 0000-9999`).
+///
+/// chrono renders anything outside that range with a sign and more digits,
+/// producing a value no parser accepts - and one that still travels inside a
+/// well-formed message, since BodyLength and CheckSum are computed over
+/// whatever was written. Both the serializer and the serde impls reject such
+/// a value instead.
+pub(crate) fn year_is_wire_representable(year: i32) -> bool {
+    (0..=9999).contains(&year)
+}
+
+/// Whether a UTC offset can be rendered in the FIX wire form, which carries
+/// whole minutes only (`hh[:mm]`). A `FixedOffset` can hold seconds; those
+/// would be silently dropped by the renderer.
+pub(crate) fn offset_is_wire_representable(offset: FixedOffset) -> bool {
+    offset.local_minus_utc() % 60 == 0
+}
+
+/// Write a UTC offset in the FIX wire form: `Z` for UTC, otherwise a signed
+/// two-digit hour with `:mm` appended only when the offset has a non-zero
+/// minute part.
+fn write_tz_offset(f: &mut fmt::Formatter<'_>, offset: FixedOffset) -> fmt::Result {
+    let total_secs = offset.local_minus_utc();
+    if total_secs == 0 {
+        return f.write_str("Z");
+    }
+    let sign = if total_secs < 0 { '-' } else { '+' };
+    let abs_secs = total_secs.unsigned_abs();
+    let hours = abs_secs / 3600;
+    let minutes = (abs_secs % 3600) / 60;
+    write!(f, "{sign}{hours:02}")?;
+    if minutes != 0 {
+        write!(f, ":{minutes:02}")?;
+    }
+    Ok(())
 }
 
 impl TzTimestamp {
@@ -1077,12 +1351,35 @@ impl TzTimestamp {
         }
     }
 
+    /// Formats the timestamp with the precision set inside the struct,
+    /// without the timezone offset.
+    pub fn format_precisely(&self) -> DelayedFormat<StrftimeItems<'_>> {
+        match self.precision {
+            TimePrecision::Secs => self.format("%Y%m%d-%H:%M:%S"),
+            TimePrecision::Millis => self.format("%Y%m%d-%H:%M:%S%.3f"),
+            TimePrecision::Micros => self.format("%Y%m%d-%H:%M:%S%.6f"),
+            TimePrecision::Nanos => self.format("%Y%m%d-%H:%M:%S%.9f"),
+        }
+    }
+
+    pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
+        self.timestamp.format(fmt)
+    }
+
     pub fn timestamp(&self) -> DateTime<FixedOffset> {
         self.timestamp
     }
 
     pub fn precision(&self) -> TimePrecision {
         self.precision
+    }
+}
+
+/// Renders the FIX wire form, honouring the precision carried by the value.
+impl fmt::Display for TzTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.format_precisely())?;
+        write_tz_offset(f, *self.timestamp.offset())
     }
 }
 
@@ -1131,6 +1428,21 @@ impl TzTimeOnly {
         }
     }
 
+    /// Formats the time with the precision set inside the struct, without
+    /// the timezone offset.
+    pub fn format_precisely(&self) -> DelayedFormat<StrftimeItems<'_>> {
+        match self.precision {
+            TimePrecision::Secs => self.format("%H:%M:%S"),
+            TimePrecision::Millis => self.format("%H:%M:%S%.3f"),
+            TimePrecision::Micros => self.format("%H:%M:%S%.6f"),
+            TimePrecision::Nanos => self.format("%H:%M:%S%.9f"),
+        }
+    }
+
+    pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
+        self.timestamp.format(fmt)
+    }
+
     pub fn timestamp(&self) -> NaiveTime {
         self.timestamp
     }
@@ -1141,6 +1453,14 @@ impl TzTimeOnly {
 
     pub fn precision(&self) -> TimePrecision {
         self.precision
+    }
+}
+
+/// Renders the FIX wire form, honouring the precision carried by the value.
+impl fmt::Display for TzTimeOnly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.format_precisely())?;
+        write_tz_offset(f, self.offset)
     }
 }
 
@@ -1687,15 +2007,18 @@ mod utc_timestamp_serde_tests {
     }
 
     #[test]
-    fn leap_second_is_accepted() {
-        // chrono represents a leap second as sec=59 with nanos >= 1_000_000_000,
-        // and `with_secs` zeroes the subsecond part - so at Secs precision the
-        // leap second collapses to :59 (same as the tag-value deserializer).
-        let expected =
-            UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2023, 12, 31, 23, 59, 59).unwrap());
+    fn leap_second_survives_whole_second_precision() {
+        // chrono represents a leap second as sec=59 with nanos >= 1_000_000_000.
+        // Reducing to whole seconds keeps that offset, so :60 stays :60 - it is
+        // a valid wire value (TagValue Encoding section 6.2.2, SS = 00-60) and
+        // collapsing it to :59 would name a different instant.
         let parsed = de("20231231-23:59:60").expect("leap second rejected");
-        assert_eq!(parsed, expected);
         assert_eq!(parsed.precision(), TimePrecision::Secs);
+        assert_eq!(parsed.format_precisely().to_string(), "20231231-23:59:60");
+        assert_ne!(
+            parsed,
+            UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2023, 12, 31, 23, 59, 59).unwrap())
+        );
     }
 
     #[test]
@@ -1762,6 +2085,182 @@ mod utc_timestamp_serde_ser_tests {
     fn in_range_timestamp_serializes_to_plain_string() {
         let ts = UtcTimestamp::with_secs(Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap());
         assert_eq!(serde_json::to_string(&ts).unwrap(), "\"20240102-03:04:05\"");
+    }
+}
+
+#[cfg(all(test, feature = "serde-serialize", feature = "serde-deserialize"))]
+mod time_serde_tests {
+    use serde::{
+        Deserialize,
+        de::value::{Error as DeError, StrDeserializer},
+    };
+
+    use super::*;
+
+    fn de<'de, T: Deserialize<'de>>(input: &'de str) -> Result<T, DeError> {
+        T::deserialize(StrDeserializer::<DeError>::new(input))
+    }
+
+    /// Serialize, deserialize, serialize again, and check the string never
+    /// changed. The wire form encodes every part of these values - offset
+    /// and precision included - so a round-trip that silently widens `Secs`
+    /// to `Nanos` or drops an offset shows up here as a different string.
+    fn assert_round_trip<T>(value: T, expected: &str)
+    where
+        T: serde::Serialize + for<'de> Deserialize<'de>,
+    {
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(json, format!("\"{expected}\""));
+        let parsed: T = de(expected).expect("valid value rejected");
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), json);
+    }
+
+    #[test]
+    fn utc_time_only_round_trips_at_every_precision() {
+        let time = NaiveTime::from_hms_nano_opt(3, 4, 5, 123_456_789).unwrap();
+        assert_round_trip(UtcTimeOnly::with_secs(time), "03:04:05");
+        assert_round_trip(UtcTimeOnly::with_millis(time), "03:04:05.123");
+        assert_round_trip(UtcTimeOnly::with_micros(time), "03:04:05.123456");
+        assert_round_trip(UtcTimeOnly::with_nanos(time), "03:04:05.123456789");
+    }
+
+    #[test]
+    fn tz_timestamp_round_trips_every_offset_form() {
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
+            .unwrap()
+            .and_hms_opt(7, 39, 0)
+            .unwrap();
+        for (offset_secs, expected) in [
+            (0, "20060901-07:39:00Z"),
+            (3600, "20060901-07:39:00+01"),
+            (-3600, "20060901-07:39:00-01"),
+            (5400, "20060901-07:39:00+01:30"),
+            (-19_800, "20060901-07:39:00-05:30"),
+        ] {
+            let offset = FixedOffset::east_opt(offset_secs).unwrap();
+            let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
+            assert_round_trip(value, expected);
+        }
+    }
+
+    #[test]
+    fn tz_timestamp_round_trips_at_every_precision() {
+        let offset = FixedOffset::east_opt(3600).unwrap();
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
+            .unwrap()
+            .and_hms_nano_opt(7, 39, 0, 123_456_789)
+            .unwrap();
+        let timestamp = offset.from_local_datetime(&naive).unwrap();
+        // Precision selects how much of the fraction reaches the wire; the
+        // Secs form drops it entirely.
+        assert_round_trip(TzTimestamp::with_secs(timestamp), "20060901-07:39:00+01");
+        assert_round_trip(
+            TzTimestamp::with_millis(timestamp),
+            "20060901-07:39:00.123+01",
+        );
+        assert_round_trip(
+            TzTimestamp::with_micros(timestamp),
+            "20060901-07:39:00.123456+01",
+        );
+        assert_round_trip(
+            TzTimestamp::with_nanos(timestamp),
+            "20060901-07:39:00.123456789+01",
+        );
+    }
+
+    #[test]
+    fn tz_time_only_round_trips_at_every_precision() {
+        let time = NaiveTime::from_hms_nano_opt(7, 39, 0, 123_456_789).unwrap();
+        let offset = FixedOffset::east_opt(-18_000).unwrap();
+        assert_round_trip(TzTimeOnly::with_secs(time, offset), "07:39:00-05");
+        assert_round_trip(TzTimeOnly::with_millis(time, offset), "07:39:00.123-05");
+        assert_round_trip(TzTimeOnly::with_micros(time, offset), "07:39:00.123456-05");
+        assert_round_trip(
+            TzTimeOnly::with_nanos(time, offset),
+            "07:39:00.123456789-05",
+        );
+    }
+
+    #[test]
+    fn tz_time_only_accepts_the_wire_form_without_seconds() {
+        // The grammar makes :SS optional on input; the value defaults to
+        // whole seconds, which is what the output form then carries.
+        let parsed: TzTimeOnly = de("07:39Z").expect("valid value rejected");
+        assert_eq!(
+            parsed.timestamp(),
+            NaiveTime::from_hms_opt(7, 39, 0).unwrap()
+        );
+        assert_eq!(parsed.precision(), TimePrecision::Secs);
+        assert_eq!(parsed.offset(), FixedOffset::east_opt(0).unwrap());
+    }
+
+    #[test]
+    fn tz_timestamp_accepts_the_wire_form_without_seconds() {
+        // The grammar in TagValue Encoding section 6.2.2 shows SS, but every
+        // example in that table omits it - including the spec's own
+        // "20060901-07:39Z". Output always carries seconds.
+        let parsed: TzTimestamp = de("20060901-07:39Z").expect("valid value rejected");
+        assert_eq!(parsed.precision(), TimePrecision::Secs);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            "\"20060901-07:39:00Z\""
+        );
+        let with_fraction: TzTimestamp =
+            de("20060901-13:09.123+05:30").expect("valid value rejected");
+        assert_eq!(
+            serde_json::to_string(&with_fraction).unwrap(),
+            "\"20060901-13:09:00.123+05:30\""
+        );
+    }
+
+    #[test]
+    fn sub_minute_offset_fails_to_serialize() {
+        // The wire form of an offset carries whole minutes only, so rendering
+        // such a value would silently drop the seconds part.
+        let offset = FixedOffset::east_opt(45).unwrap();
+        let time = NaiveTime::from_hms_opt(7, 39, 0).unwrap();
+        assert!(serde_json::to_string(&TzTimeOnly::with_secs(time, offset)).is_err());
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
+            .unwrap()
+            .and_hms_opt(7, 39, 0)
+            .unwrap();
+        let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
+        assert!(serde_json::to_string(&value).is_err());
+    }
+
+    #[test]
+    fn out_of_range_year_fails_to_serialize() {
+        // Same guard as UtcTimestamp: chrono renders such years with a sign
+        // and extra digits, producing a string no deserializer accepts.
+        let naive = NaiveDate::from_ymd_opt(-1, 9, 1)
+            .unwrap()
+            .and_hms_opt(7, 39, 0)
+            .unwrap();
+        let offset = FixedOffset::east_opt(0).unwrap();
+        let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
+        assert!(serde_json::to_string(&value).is_err());
+    }
+
+    #[test]
+    fn malformed_values_are_rejected() {
+        // Missing offset.
+        assert!(de::<TzTimestamp>("20060901-07:39:00").is_err());
+        assert!(de::<TzTimeOnly>("07:39:00").is_err());
+        // Leap second - TZ values carry none.
+        assert!(de::<TzTimestamp>("20060901-07:39:60Z").is_err());
+        // Offset out of range.
+        assert!(de::<TzTimestamp>("20060901-07:39:00+99").is_err());
+        // Trailing garbage - the whole input must be consumed.
+        assert!(de::<TzTimestamp>("20060901-07:39:00Zx").is_err());
+        assert!(de::<TzTimeOnly>("07:39:00Z\x01").is_err());
+        assert!(de::<UtcTimeOnly>("03:04:05x").is_err());
+        // Truncated.
+        assert!(de::<TzTimestamp>("20060901-07:39").is_err());
+        assert!(de::<TzTimeOnly>("07:39:00+0").is_err());
+        assert!(de::<UtcTimeOnly>("03:04").is_err());
+        assert!(de::<TzTimestamp>("").is_err());
+        assert!(de::<TzTimeOnly>("").is_err());
+        assert!(de::<UtcTimeOnly>("").is_err());
     }
 }
 

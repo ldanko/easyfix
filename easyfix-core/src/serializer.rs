@@ -1,10 +1,13 @@
 use std::fmt::{self, Write};
 
+use chrono::Datelike;
+
 use crate::basic_types::{
-    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, FixedOffset, Float,
-    Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
+    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Exchange, FixStr, Float, Int,
+    Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
     MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum, Tenor,
-    TimePrecision, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+    TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+    offset_is_wire_representable, year_is_wire_representable,
 };
 
 /// Number of digits reserved for the BodyLength(9) placeholder, derived
@@ -366,6 +369,9 @@ impl<'a> Serializer<'a> {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn serialize_utc_timestamp(&mut self, input: &UtcTimestamp) -> Result<(), SerializeError> {
+        if !year_is_wire_representable(input.timestamp().year()) {
+            return Err(SerializeError::InvalidValue);
+        }
         write!(self, "{}", input.format_precisely())
             .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
@@ -386,10 +392,8 @@ impl<'a> Serializer<'a> {
     ///   is not conveyed), it may include 3 digits to convey
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
-    ///   // TODO: set precision!
     pub fn serialize_utc_time_only(&mut self, input: &UtcTimeOnly) -> Result<(), SerializeError> {
-        write!(self, "{}", input.format("%H:%M:%S.%f"))
-            .map_err(|_| SerializeError::MaxMessageSizeExceeded)
+        write!(self, "{input}").map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize date represented in UTC (Universal Time Coordinated)
@@ -400,6 +404,9 @@ impl<'a> Serializer<'a> {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn serialize_utc_date_only(&mut self, input: &UtcDateOnly) -> Result<(), SerializeError> {
+        if !year_is_wire_representable(input.year()) {
+            return Err(SerializeError::InvalidValue);
+        }
         write!(self, "{}", input.format("%Y%m%d"))
             .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
@@ -427,6 +434,9 @@ impl<'a> Serializer<'a> {
     /// - MM = 01-12,
     /// - DD = 01-31.
     pub fn serialize_local_mkt_date(&mut self, input: &LocalMktDate) -> Result<(), SerializeError> {
+        if !year_is_wire_representable(input.year()) {
+            return Err(SerializeError::InvalidValue);
+        }
         write!(self, "{}", input.format("%Y%m%d"))
             .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
@@ -451,15 +461,13 @@ impl<'a> Serializer<'a> {
     ///   milliseconds, 6 digits to convey microseconds, 9 digits
     ///   to convey nanoseconds, 12 digits to convey picoseconds;
     pub fn serialize_tz_timestamp(&mut self, input: &TzTimestamp) -> Result<(), SerializeError> {
-        let ts = input.timestamp();
-        let fmt = match input.precision() {
-            TimePrecision::Secs => "%Y%m%d-%H:%M:%S",
-            TimePrecision::Millis => "%Y%m%d-%H:%M:%S%.3f",
-            TimePrecision::Micros => "%Y%m%d-%H:%M:%S%.6f",
-            TimePrecision::Nanos => "%Y%m%d-%H:%M:%S%.9f",
-        };
-        write!(self, "{}", ts.format(fmt)).map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
-        self.serialize_tz_offset(ts.offset())
+        let timestamp = input.timestamp();
+        if !year_is_wire_representable(timestamp.year())
+            || !offset_is_wire_representable(*timestamp.offset())
+        {
+            return Err(SerializeError::InvalidValue);
+        }
+        write!(self, "{input}").map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize time of day with timezone. Time represented based on
@@ -473,32 +481,10 @@ impl<'a> Serializer<'a> {
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes.
     pub fn serialize_tz_timeonly(&mut self, input: &TzTimeOnly) -> Result<(), SerializeError> {
-        let fmt = match input.precision() {
-            TimePrecision::Secs => "%H:%M:%S",
-            TimePrecision::Millis => "%H:%M:%S%.3f",
-            TimePrecision::Micros => "%H:%M:%S%.6f",
-            TimePrecision::Nanos => "%H:%M:%S%.9f",
-        };
-        write!(self, "{}", input.timestamp().format(fmt))
-            .map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
-        self.serialize_tz_offset(&input.offset())
-    }
-
-    fn serialize_tz_offset(&mut self, offset: &FixedOffset) -> Result<(), SerializeError> {
-        let total_secs = offset.local_minus_utc();
-        if total_secs == 0 {
-            return self.put_u8(b'Z');
+        if !offset_is_wire_representable(input.offset()) {
+            return Err(SerializeError::InvalidValue);
         }
-        let sign = if total_secs < 0 { b'-' } else { b'+' };
-        let abs_secs = total_secs.unsigned_abs();
-        let hours = abs_secs / 3600;
-        let minutes = (abs_secs % 3600) / 60;
-        self.put_u8(sign)?;
-        write!(self, "{hours:02}").map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
-        if minutes != 0 {
-            write!(self, ":{minutes:02}").map_err(|_| SerializeError::MaxMessageSizeExceeded)?;
-        }
-        Ok(())
+        write!(self, "{input}").map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
 
     /// Serialize sequence of character digits without commas or decimals.
@@ -575,6 +561,10 @@ mod tests {
     use assert_matches::assert_matches;
 
     use super::{SerializeError, Serializer, max_body_len_digits};
+    use crate::basic_types::{
+        FixedOffset, NaiveDate, NaiveTime, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcTimeOnly,
+        UtcTimestamp,
+    };
 
     const BEGIN_STRING: &[u8] = b"8=FIXT.1.1\x01";
 
@@ -601,6 +591,118 @@ mod tests {
     /// field). The CheckSum field is always exactly `10=NNN\x01`.
     fn split_checksum(msg: &[u8]) -> (&[u8], &[u8]) {
         msg.split_at(msg.len() - 7)
+    }
+
+    /// Serialize a single value and return the bytes it wrote.
+    fn serialize_value(f: impl FnOnce(&mut Serializer) -> Result<(), SerializeError>) -> Vec<u8> {
+        let mut buf = [0u8; 64];
+        let mut serializer = Serializer::new(&mut buf);
+        f(&mut serializer).unwrap();
+        serializer.written().to_vec()
+    }
+
+    #[test]
+    fn utc_time_only_is_written_with_the_precision_it_carries() {
+        let time = NaiveTime::from_hms_nano_opt(3, 4, 5, 123_456_789).unwrap();
+        for (value, expected) in [
+            (UtcTimeOnly::with_secs(time), "03:04:05"),
+            (UtcTimeOnly::with_millis(time), "03:04:05.123"),
+            (UtcTimeOnly::with_micros(time), "03:04:05.123456"),
+            (UtcTimeOnly::with_nanos(time), "03:04:05.123456789"),
+        ] {
+            let written = serialize_value(|s| s.serialize_utc_time_only(&value));
+            assert_eq!(written, expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn tz_timestamp_offsets_use_the_wire_form() {
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
+            .unwrap()
+            .and_hms_opt(7, 39, 0)
+            .unwrap();
+        for (offset_secs, expected) in [
+            (0, "20060901-07:39:00Z"),
+            (3600, "20060901-07:39:00+01"),
+            (-3600, "20060901-07:39:00-01"),
+            (5400, "20060901-07:39:00+01:30"),
+            (-5400, "20060901-07:39:00-01:30"),
+        ] {
+            let offset = FixedOffset::east_opt(offset_secs).unwrap();
+            let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
+            let written = serialize_value(|s| s.serialize_tz_timestamp(&value));
+            assert_eq!(written, expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn values_outside_the_wire_grammar_fail_instead_of_corrupting_the_message() {
+        // BodyLength and CheckSum are computed over whatever was written, so
+        // an unrepresentable value would travel inside a well-formed message
+        // and only surface as a reject at the counterparty.
+        let out_of_range_year = NaiveDate::from_ymd_opt(10_000, 9, 1)
+            .unwrap()
+            .and_hms_opt(7, 39, 0)
+            .unwrap();
+        let utc = Utc.from_utc_datetime(&out_of_range_year);
+        let mut buf = [0u8; 64];
+        let mut serializer = Serializer::new(&mut buf);
+        assert_matches!(
+            serializer.serialize_utc_timestamp(&UtcTimestamp::with_secs(utc)),
+            Err(SerializeError::InvalidValue)
+        );
+        assert_matches!(
+            serializer.serialize_utc_date_only(&out_of_range_year.date()),
+            Err(SerializeError::InvalidValue)
+        );
+        assert_matches!(
+            serializer.serialize_local_mkt_date(&out_of_range_year.date()),
+            Err(SerializeError::InvalidValue)
+        );
+
+        let utc_offset = FixedOffset::east_opt(0).unwrap();
+        assert_matches!(
+            serializer.serialize_tz_timestamp(&TzTimestamp::with_secs(
+                utc_offset.from_local_datetime(&out_of_range_year).unwrap()
+            )),
+            Err(SerializeError::InvalidValue)
+        );
+
+        // The wire form of an offset carries whole minutes only.
+        let sub_minute = FixedOffset::east_opt(45).unwrap();
+        let time = NaiveTime::from_hms_opt(7, 39, 0).unwrap();
+        assert_matches!(
+            serializer.serialize_tz_timeonly(&TzTimeOnly::with_secs(time, sub_minute)),
+            Err(SerializeError::InvalidValue)
+        );
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
+            .unwrap()
+            .and_hms_opt(7, 39, 0)
+            .unwrap();
+        assert_matches!(
+            serializer.serialize_tz_timestamp(&TzTimestamp::with_secs(
+                sub_minute.from_local_datetime(&naive).unwrap()
+            )),
+            Err(SerializeError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn tz_time_only_is_written_with_the_precision_it_carries() {
+        let time = NaiveTime::from_hms_nano_opt(7, 39, 0, 123_456_789).unwrap();
+        let offset = FixedOffset::east_opt(-18_000).unwrap();
+        for (value, expected) in [
+            (TzTimeOnly::with_secs(time, offset), "07:39:00-05"),
+            (TzTimeOnly::with_millis(time, offset), "07:39:00.123-05"),
+            (TzTimeOnly::with_micros(time, offset), "07:39:00.123456-05"),
+            (
+                TzTimeOnly::with_nanos(time, offset),
+                "07:39:00.123456789-05",
+            ),
+        ] {
+            let written = serialize_value(|s| s.serialize_tz_timeonly(&value));
+            assert_eq!(written, expected.as_bytes());
+        }
     }
 
     #[test]

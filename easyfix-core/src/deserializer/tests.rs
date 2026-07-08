@@ -13,6 +13,7 @@ use crate::{
         DeserializeErrorKind, GarbledReason, LogoutReason, RawMessageError, deserialize_checksum,
     },
     fix_str,
+    serializer::Serializer,
 };
 
 const BEGIN_STRING: &FixStr = fix_str!("FIXT.1.1");
@@ -761,6 +762,27 @@ fn deserialize_tz_timestamp_with_nanos_utc() {
 }
 
 #[test]
+fn deserialize_tz_timestamp_without_seconds() {
+    // The spec's own TZTimestamp example (TagValue Encoding section 6.2.2).
+    let input = b"20060901-07:39Z\x01\x00";
+    let mut deserializer = deserializer(input);
+    let ts = deserializer
+        .deserialize_tz_timestamp()
+        .expect("failed to deserialize tz timestamp without seconds");
+    let offset = FixedOffset::east_opt(0).unwrap();
+    let expected = NaiveDate::from_ymd_opt(2006, 9, 1)
+        .unwrap()
+        .and_hms_opt(7, 39, 0)
+        .unwrap();
+    assert_eq!(
+        ts.timestamp(),
+        offset.from_local_datetime(&expected).unwrap()
+    );
+    assert_eq!(ts.precision(), TimePrecision::Secs);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
 fn deserialize_tz_timestamp_invalid_format() {
     let input = b"not-a-timestamp\x01\x00";
     let mut deserializer = deserializer(input);
@@ -858,6 +880,184 @@ fn deserialize_tz_timeonly_empty() {
     assert_matches!(
         deserializer.deserialize_tz_timeonly(),
         Err(DeserializeErrorKind::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_tz_timeonly_dangling_seconds_separator_is_rejected() {
+    // The value is framed by its SOH, so it is malformed rather than
+    // truncated, even when it is the last field in the buffer - a Reject,
+    // not a garbled message (FIX Session Test Cases Scenario 14, row f).
+    let input = b"07:39:\x01";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timeonly(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
+}
+
+#[test]
+fn deserialize_tz_timeonly_offset_minutes_out_of_range() {
+    // mm = 00-59 (TagValue Encoding section 6.2.2); ":99" must not be
+    // folded into the hour.
+    let input = b"07:39:00+00:99\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timeonly(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
+}
+
+#[test]
+fn deserialize_tz_timestamp_offset_minutes_out_of_range() {
+    let input = b"20060901-07:39:00+00:99\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tz_timestamp(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
+}
+
+/// Serialize a value with `ser` after parsing `input` with `de`, and return
+/// what was written.
+fn round_trip<T>(
+    input: &[u8],
+    de: impl FnOnce(&mut Deserializer) -> T,
+    ser: impl FnOnce(&mut Serializer, &T),
+) -> Vec<u8> {
+    let mut body = input.to_vec();
+    body.push(b'\x01');
+    let mut deserializer = deserializer(&body);
+    let value = de(&mut deserializer);
+    let mut buf = [0u8; 128];
+    let mut serializer = Serializer::new(&mut buf);
+    ser(&mut serializer, &value);
+    serializer.written().to_vec()
+}
+
+/// Assert that `input` - a value in the form this serializer emits - comes
+/// back byte-identical after a parse and a re-serialize.
+///
+/// This is the invariant the resend path rides on. A retransmission is
+/// produced by decoding a stored message, rewriting header fields and
+/// serializing it again, while FIX Transport section 3.4 allows only
+/// CheckSum, OrigSendingTime, SendingTime, BodyLength and PossDupFlag to
+/// differ from the original. Every other field therefore has to be a fixed
+/// point of parse -> serialize. Values in *other* valid wire forms (leading
+/// zeros, `+01:00` for a whole-hour offset) are deliberately not covered:
+/// they normalize on the way in, and they never reach storage because we
+/// never emit them.
+macro_rules! assert_round_trips {
+    ($de:ident, $ser:ident, $($input:expr),+ $(,)?) => {
+        $(
+            let input: &[u8] = $input;
+            let output = round_trip(
+                input,
+                |d| d.$de().expect("valid value rejected"),
+                |s, v| s.$ser(v).expect("serialization failed"),
+            );
+            assert_eq!(
+                output,
+                input,
+                "{} is not a fixed point of {} -> {}",
+                String::from_utf8_lossy(input),
+                stringify!($de),
+                stringify!($ser),
+            );
+        )+
+    };
+}
+
+#[test]
+fn numeric_values_round_trip_unchanged() {
+    assert_round_trips!(deserialize_int, serialize_int, b"23", b"-99999", b"0");
+    assert_round_trips!(deserialize_length, serialize_length, b"23");
+    assert_round_trips!(deserialize_seq_num, serialize_seq_num, b"7");
+    assert_round_trips!(
+        deserialize_float,
+        serialize_float,
+        b"23.23",
+        b"23.0000",
+        b"-97.0347",
+        b"0",
+    );
+    assert_round_trips!(
+        deserialize_tenor,
+        serialize_tenor,
+        b"D5",
+        b"M3",
+        b"W13",
+        b"Y1"
+    );
+}
+
+#[test]
+fn time_values_round_trip_unchanged() {
+    assert_round_trips!(
+        deserialize_utc_timestamp,
+        serialize_utc_timestamp,
+        b"20240102-03:04:05",
+        b"20240102-03:04:05.123",
+        b"20240102-03:04:05.123456",
+        b"20240102-03:04:05.123456789",
+        // A leap second is a valid wire value at every precision, and it
+        // must not degrade to :59 on the way through the type.
+        b"19981231-23:59:60",
+        b"19981231-23:59:60.123",
+    );
+    assert_round_trips!(
+        deserialize_utc_time_only,
+        serialize_utc_time_only,
+        b"03:04:05",
+        b"03:04:05.123456789",
+        b"23:59:60",
+        b"23:59:60.123",
+    );
+    assert_round_trips!(
+        deserialize_utc_date_only,
+        serialize_utc_date_only,
+        b"20240102"
+    );
+    assert_round_trips!(
+        deserialize_tz_timestamp,
+        serialize_tz_timestamp,
+        b"20060901-07:39:00Z",
+        b"20060901-07:39:00+01",
+        b"20060901-07:39:00-05",
+        b"20060901-07:39:00+05:30",
+        b"20060901-07:39:00.123+01",
+    );
+    assert_round_trips!(
+        deserialize_tz_timeonly,
+        serialize_tz_timeonly,
+        b"07:39:00Z",
+        b"07:39:00-05",
+        b"07:39:00.123456789+05:30",
+    );
+}
+
+#[test]
+fn textual_values_round_trip_unchanged() {
+    assert_round_trips!(deserialize_string, serialize_string, b"IBM");
+    assert_round_trips!(deserialize_boolean, serialize_boolean, b"Y", b"N");
+    assert_round_trips!(deserialize_char, serialize_char, b"F");
+    assert_round_trips!(deserialize_country, serialize_country, b"PL");
+    assert_round_trips!(deserialize_currency, serialize_currency, b"PLN");
+    assert_round_trips!(deserialize_exchange, serialize_exchange, b"XNAS");
+    assert_round_trips!(deserialize_language, serialize_language, b"pl");
+    assert_round_trips!(deserialize_month_year, serialize_month_year, b"202401");
+    assert_round_trips!(
+        deserialize_multiple_char_value,
+        serialize_multiple_char_value,
+        b"2 A F"
+    );
+    assert_round_trips!(
+        deserialize_multiple_string_value,
+        serialize_multiple_string_value,
+        b"AV AN A"
     );
 }
 

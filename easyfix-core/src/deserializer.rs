@@ -166,10 +166,13 @@ fn deserialize_checksum(bytes: &[u8]) -> Result<(&[u8], u8), RawMessageError> {
 /// Longest valid fractional-second width: 12 digits (picoseconds).
 const MAX_FRACTION_DIGITS: usize = 12;
 
-/// Parse the fixed-width `YYYYMMDD-HH:MM:` prefix shared by UTC and TZ
+/// Parse the fixed-width `YYYYMMDD-HH:MM` prefix shared by UTC and TZ
 /// timestamps. Returns the date, hour, minute and the unconsumed tail.
 /// The month and day are shape-checked here and range-checked by the
 /// calendar (`ValueIsIncorrect` when out of range).
+///
+/// The seconds are left to the caller: UTC timestamps require them, TZ
+/// timestamps do not (TagValue Encoding section 6.2.2).
 fn parse_timestamp_head(
     buf: &[u8],
 ) -> Result<(NaiveDate, u32, u32, &[u8]), DeserializeErrorKindInternal> {
@@ -193,13 +196,12 @@ fn parse_timestamp_head(
         // Minute
         mm1 @ b'0'..=b'5',
         mm0 @ b'0'..=b'9',
-        b':',
         rest @ ..,
     ] = buf
     else {
         // Too short to hold the prefix at all - only more bytes can tell
         // truncation from malformation.
-        return if buf.len() < 15 {
+        return if buf.len() < 14 {
             Err(DeserializeErrorKindInternal::Incomplete)
         } else {
             Err(DeserializeErrorKindInternal::Error(
@@ -304,6 +306,16 @@ pub(crate) fn parse_utc_timestamp(
     buf: &[u8],
 ) -> Result<(UtcTimestamp, &[u8]), DeserializeErrorKindInternal> {
     let (naive_date, hour, min, rest) = parse_timestamp_head(buf)?;
+    // UTC timestamps always carry seconds.
+    let rest = match rest {
+        [b':', rest @ ..] => rest,
+        [] => return Err(DeserializeErrorKindInternal::Incomplete),
+        _ => {
+            return Err(DeserializeErrorKindInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ));
+        }
+    };
     let (sec, leap_offset, rest) = parse_utc_seconds(rest)?;
     let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
 
@@ -321,7 +333,9 @@ pub(crate) fn parse_utc_timestamp(
 ///
 /// Accepted format is HH:MM:SS with the same optional fraction as
 /// UtcTimestamp; SS = 60 is accepted as a UTC leap second.
-fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeErrorKindInternal> {
+pub(crate) fn parse_utc_time_only(
+    buf: &[u8],
+) -> Result<(UtcTimeOnly, &[u8]), DeserializeErrorKindInternal> {
     let [
         // Hour
         h1 @ b'0'..=b'2',
@@ -353,6 +367,161 @@ fn parse_utc_time_only(buf: &[u8]) -> Result<(UtcTimeOnly, &[u8]), DeserializeEr
             SessionRejectReasonBase::ValueIsIncorrect,
         ))?;
     Ok((UtcTimeOnly::with_precision(time, precision), rest))
+}
+
+/// Parse a timezone offset from the start of `buf` without consuming any
+/// terminator, mirroring the [`parse_utc_timestamp`] contract.
+///
+/// Accepted format is `Z`, `+hh`, `-hh`, `+hh:mm` or `-hh:mm`, with
+/// `mm` = 00-59 (TagValue Encoding section 6.2.2). The form with minutes is
+/// matched first, so an offset that carries them is never truncated to whole
+/// hours; an out-of-range `mm` falls through to the whole-hour form and is
+/// rejected by the caller, which finds the leftover digits where a
+/// terminator or the end of the value should be.
+///
+/// The hour range is left to [`FixedOffset`], which bounds it to less than
+/// a day. The spec text says `hh` = 01-12, but offsets of +13 and +14 exist
+/// and a conforming counterparty may send them.
+fn parse_tz_offset(buf: &[u8]) -> Result<(FixedOffset, &[u8]), DeserializeErrorKindInternal> {
+    let (total_secs, rest) = match buf {
+        [b'Z', rest @ ..] => (0, rest),
+        [
+            sign @ (b'+' | b'-'),
+            h1 @ b'0'..=b'9',
+            h0 @ b'0'..=b'9',
+            b':',
+            m1 @ b'0'..=b'5',
+            m0 @ b'0'..=b'9',
+            rest @ ..,
+        ] => {
+            let hours = (h1 - b'0') as i32 * 10 + (h0 - b'0') as i32;
+            let minutes = (m1 - b'0') as i32 * 10 + (m0 - b'0') as i32;
+            let total_secs = hours * 3600 + minutes * 60;
+            (
+                if *sign == b'-' {
+                    -total_secs
+                } else {
+                    total_secs
+                },
+                rest,
+            )
+        }
+        [
+            sign @ (b'+' | b'-'),
+            h1 @ b'0'..=b'9',
+            h0 @ b'0'..=b'9',
+            rest @ ..,
+        ] => {
+            let total_secs = ((h1 - b'0') as i32 * 10 + (h0 - b'0') as i32) * 3600;
+            (
+                if *sign == b'-' {
+                    -total_secs
+                } else {
+                    total_secs
+                },
+                rest,
+            )
+        }
+        [] => return Err(DeserializeErrorKindInternal::Incomplete),
+        _ => {
+            return Err(DeserializeErrorKindInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ));
+        }
+    };
+
+    let offset = FixedOffset::east_opt(total_secs).ok_or(DeserializeErrorKindInternal::Error(
+        SessionRejectReasonBase::ValueIsIncorrect,
+    ))?;
+    Ok((offset, rest))
+}
+
+/// Parse a TzTimestamp value from the start of `buf` without consuming any
+/// terminator, mirroring the [`parse_utc_timestamp`] contract.
+///
+/// Accepted format is `YYYYMMDD-HH:MM[:SS][.sss*]` followed by a timezone
+/// offset. Unlike UTC timestamps there is no leap second here (SS = 00-59),
+/// and the seconds are optional: the grammar in TagValue Encoding section
+/// 6.2.2 shows them, but every example in that table omits them
+/// ("20060901-07:39Z", "20060901-13:09.123+05:30"). The offset, in contrast,
+/// is required - see [`TzTimestamp`] for why.
+pub(crate) fn parse_tz_timestamp(
+    buf: &[u8],
+) -> Result<(TzTimestamp, &[u8]), DeserializeErrorKindInternal> {
+    let (naive_date, hour, min, rest) = parse_timestamp_head(buf)?;
+    // Optional :SS, same shape as TzTimeOnly - a colon followed by anything
+    // else is left for the stages below to reject.
+    let (sec, rest) = match rest {
+        [b':', s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
+            ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
+        }
+        _ => (0, rest),
+    };
+    let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
+    let (offset, rest) = parse_tz_offset(rest)?;
+
+    let naive_date_time = naive_date
+        .and_hms_nano_opt(hour, min, sec, fraction_of_second)
+        .ok_or(DeserializeErrorKindInternal::Error(
+            SessionRejectReasonBase::ValueIsIncorrect,
+        ))?;
+    let timestamp = offset
+        .from_local_datetime(&naive_date_time)
+        .single()
+        .ok_or(DeserializeErrorKindInternal::Error(
+            SessionRejectReasonBase::ValueIsIncorrect,
+        ))?;
+    Ok((TzTimestamp::with_precision(timestamp, precision), rest))
+}
+
+/// Parse a TzTimeOnly value from the start of `buf` without consuming any
+/// terminator, mirroring the [`parse_utc_timestamp`] contract.
+///
+/// Accepted format is `HH:MM[:SS][.sss*]` followed by a timezone offset -
+/// the seconds are optional here, and default to zero when absent. The
+/// offset is required - see [`TzTimestamp`] for why.
+pub(crate) fn parse_tz_time_only(
+    buf: &[u8],
+) -> Result<(TzTimeOnly, &[u8]), DeserializeErrorKindInternal> {
+    let [
+        // Hour
+        h1 @ b'0'..=b'2',
+        h0 @ b'0'..=b'9',
+        b':',
+        // Minute
+        m1 @ b'0'..=b'5',
+        m0 @ b'0'..=b'9',
+        rest @ ..,
+    ] = buf
+    else {
+        return if buf.len() < 5 {
+            Err(DeserializeErrorKindInternal::Incomplete)
+        } else {
+            Err(DeserializeErrorKindInternal::Error(
+                SessionRejectReasonBase::IncorrectDataFormatForValue,
+            ))
+        };
+    };
+    let hour = (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32;
+    let min = (m1 - b'0') as u32 * 10 + (m0 - b'0') as u32;
+
+    // Optional :SS. A colon followed by anything else is left for the stages
+    // below to reject - treating it as truncation here would turn a framed
+    // but malformed value into a garbled message, which drops it without a
+    // Reject (FIX Session Test Cases Scenario 14, row f).
+    let (sec, rest) = match rest {
+        [b':', s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
+            ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
+        }
+        _ => (0, rest),
+    };
+    let (fraction_of_second, precision, rest) = parse_fraction_of_second(rest)?;
+    let (offset, rest) = parse_tz_offset(rest)?;
+
+    let time = NaiveTime::from_hms_nano_opt(hour, min, sec, fraction_of_second).ok_or(
+        DeserializeErrorKindInternal::Error(SessionRejectReasonBase::ValueIsIncorrect),
+    )?;
+    Ok((TzTimeOnly::new(time, offset, precision), rest))
 }
 
 /// Parse a Tenor value from the start of `buf` without consuming any
@@ -1690,66 +1859,6 @@ impl<'de> Deserializer<'de> {
         }
     }
 
-    /// Parse timezone offset: Z, +hh, +hh:mm, -hh, -hh:mm.
-    /// Consumes the offset and trailing SOH delimiter.
-    fn deserialize_tz_offset(&mut self) -> Result<FixedOffset, DeserializeErrorKind> {
-        match self.buf {
-            [b'Z', b'\x01', rest @ ..] => {
-                self.buf = rest;
-                Ok(FixedOffset::east_opt(0).unwrap())
-            }
-            [
-                sign @ (b'+' | b'-'),
-                h1 @ b'0'..=b'9',
-                h0 @ b'0'..=b'9',
-                b':',
-                m1 @ b'0'..=b'9',
-                m0 @ b'0'..=b'9',
-                b'\x01',
-                rest @ ..,
-            ] => {
-                let hours = (*h1 - b'0') as i32 * 10 + (*h0 - b'0') as i32;
-                let minutes = (*m1 - b'0') as i32 * 10 + (*m0 - b'0') as i32;
-                let total_secs = hours * 3600 + minutes * 60;
-                let total_secs = if *sign == b'-' {
-                    -total_secs
-                } else {
-                    total_secs
-                };
-                self.buf = rest;
-                FixedOffset::east_opt(total_secs).ok_or_else(|| {
-                    self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                })
-            }
-            [
-                sign @ (b'+' | b'-'),
-                h1 @ b'0'..=b'9',
-                h0 @ b'0'..=b'9',
-                b'\x01',
-                rest @ ..,
-            ] => {
-                let hours = (*h1 - b'0') as i32 * 10 + (*h0 - b'0') as i32;
-                let total_secs = hours * 3600;
-                let total_secs = if *sign == b'-' {
-                    -total_secs
-                } else {
-                    total_secs
-                };
-                self.buf = rest;
-                FixedOffset::east_opt(total_secs).ok_or_else(|| {
-                    self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-                })
-            }
-            [] => Err(DeserializeErrorKind::Garbled(
-                GarbledReason::IncompleteMessageData,
-            )),
-            _ => Err(self.reject(
-                self.current_tag,
-                SessionRejectReasonBase::IncorrectDataFormatForValue,
-            )),
-        }
-    }
-
     /// Deserialize string representing a time/date combination representing
     /// local time with an offset to UTC to allow identification of local time
     /// and time zone offset of that time.
@@ -1787,43 +1896,10 @@ impl<'de> Deserializer<'de> {
             _ => {}
         }
 
-        let (naive_date, hour, min, rest) = match parse_timestamp_head(self.buf) {
-            Ok(head) => head,
-            Err(error) => return Err(self.garbled_or_reject_value(error)),
-        };
-        // TZ times carry no leap second: SS = 00-59 only.
-        let (sec, rest) = match rest {
-            [s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
-                ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
-            }
-            _ if rest.len() < 2 => {
-                return Err(DeserializeErrorKind::Garbled(
-                    GarbledReason::IncompleteMessageData,
-                ));
-            }
-            _ => {
-                return Err(self.reject_value(SessionRejectReasonBase::IncorrectDataFormatForValue));
-            }
-        };
-        let (fraction_of_second, precision, rest) = match parse_fraction_of_second(rest) {
-            Ok(fraction) => fraction,
-            Err(error) => return Err(self.garbled_or_reject_value(error)),
-        };
-        self.buf = rest;
-        let offset = self.deserialize_tz_offset()?;
-
-        let naive_date_time = naive_date
-            .and_hms_nano_opt(hour, min, sec, fraction_of_second)
-            .ok_or_else(|| {
-                self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-            })?;
-        let timestamp = offset
-            .from_local_datetime(&naive_date_time)
-            .single()
-            .ok_or_else(|| {
-                self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-            })?;
-        Ok(TzTimestamp::with_precision(timestamp, precision))
+        match parse_tz_timestamp(self.buf) {
+            Ok((timestamp, rest)) => self.finish_value(timestamp, rest),
+            Err(error) => Err(self.garbled_or_reject_value(error)),
+        }
     }
 
     /// Deserialize time of day with timezone. Time represented based on
@@ -1852,51 +1928,10 @@ impl<'de> Deserializer<'de> {
             _ => {}
         }
 
-        let (hour, min, rest) = match self.buf {
-            [
-                // Hour
-                h1 @ b'0'..=b'2',
-                h0 @ b'0'..=b'9',
-                b':',
-                // Minute
-                mm1 @ b'0'..=b'5',
-                mm0 @ b'0'..=b'9',
-                rest @ ..,
-            ] => (
-                (h1 - b'0') as u32 * 10 + (h0 - b'0') as u32,
-                (mm1 - b'0') as u32 * 10 + (mm0 - b'0') as u32,
-                rest,
-            ),
-            _ if self.buf.len() < 5 => {
-                return Err(DeserializeErrorKind::Garbled(
-                    GarbledReason::IncompleteMessageData,
-                ));
-            }
-            _ => {
-                return Err(self.reject_value(SessionRejectReasonBase::IncorrectDataFormatForValue));
-            }
-        };
-
-        // Optional :SS
-        let (sec, rest) = match rest {
-            [b':', s1 @ b'0'..=b'5', s0 @ b'0'..=b'9', rest @ ..] => {
-                ((s1 - b'0') as u32 * 10 + (s0 - b'0') as u32, rest)
-            }
-            _ => (0, rest),
-        };
-
-        let (fraction_of_second, precision, rest) = match parse_fraction_of_second(rest) {
-            Ok(fraction) => fraction,
-            Err(error) => return Err(self.garbled_or_reject_value(error)),
-        };
-        self.buf = rest;
-        let offset = self.deserialize_tz_offset()?;
-
-        let time =
-            NaiveTime::from_hms_nano_opt(hour, min, sec, fraction_of_second).ok_or_else(|| {
-                self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
-            })?;
-        Ok(TzTimeOnly::new(time, offset, precision))
+        match parse_tz_time_only(self.buf) {
+            Ok((time, rest)) => self.finish_value(time, rest),
+            Err(error) => Err(self.garbled_or_reject_value(error)),
+        }
     }
 
     /// Deserialize sequence of character digits without commas or decimals.
