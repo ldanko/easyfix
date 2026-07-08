@@ -1,21 +1,21 @@
-//! Base messages and base enumerations — the contract between the session
-//! layer and `Message` trait implementations.
+//! Base messages and base enumerations - the contract between the session
+//! layer and [`SessionMessage`] implementations.
 //!
-//! Types in this module are used by code that implements the [`Message`] trait
+//! Types in this module are used by code that implements [`SessionMessage`]
 //! (typically the code generator, but also custom implementations). The session
 //! layer produces and consumes these types without knowing the concrete message
 //! representation.
 //!
-//! - **Base messages** (`HeaderBase`, `AdminBase`, `LogonBase`, etc.) — minimal
+//! - **Base messages** (`HeaderBase`, `AdminBase`, `LogonBase`, etc.) - minimal
 //!   typed structures with only the fields the session needs. String fields use
 //!   `Cow` for zero-copy borrowing on incoming and owned construction on outgoing.
 //!
 //! - **Base enums** (`MsgTypeBase`, `SessionStatusBase`, `SessionRejectReasonBase`,
-//!   `EncryptMethodBase`) — typed constants for session-relevant FIX enumeration
-//!   values. `Message` implementations convert between these and the concrete
-//!   generated enums via `From` impls.
+//!   `EncryptMethodBase`) - typed constants for session-relevant FIX enumeration
+//!   values. [`SessionMessage`] implementations convert between these and the
+//!   concrete generated enums via `From` impls.
 //!
-//! [`Message`]: crate::message::Message
+//! [`SessionMessage`]: crate::message::SessionMessage
 
 use std::{borrow::Cow, mem::variant_count};
 
@@ -29,9 +29,8 @@ use crate::basic_types::{
 // MsgTypeBase (tag 35)
 // ---------------------------------------------------------------------------
 
-/// MsgType (tag 35) base enum — typed constants for session-relevant
-/// admin message types. Session code dispatches on these instead of
-/// raw byte comparisons.
+/// MsgType (tag 35) base enum - typed constants for session-relevant
+/// admin message types.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MsgTypeBase {
     Heartbeat,     // "0"
@@ -92,8 +91,7 @@ impl PartialEq<MsgTypeField> for MsgTypeBase {
 // SessionStatus (tag 1409)
 // ---------------------------------------------------------------------------
 
-/// SessionStatus (tag 1409). FIXT Logon/Logout — session reads on incoming
-/// and sets on outgoing.
+/// SessionStatus (tag 1409), carried on FIXT Logon and Logout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionStatusBase {
     SessionActive = 0,
@@ -128,7 +126,7 @@ impl SessionStatusValue for SessionStatusBase {
 // SessionRejectReason (tag 373)
 // ---------------------------------------------------------------------------
 
-/// SessionRejectReason (tag 373). Session uses this to build outgoing Reject messages.
+/// SessionRejectReason (tag 373), carried on Reject.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionRejectReasonBase {
     InvalidTagNumber = 0,
@@ -189,7 +187,7 @@ impl PartialEq<SessionRejectReasonBase> for SessionRejectReasonField {
 // EncryptMethod (tag 98)
 // ---------------------------------------------------------------------------
 
-/// EncryptMethod (tag 98). Session sets `None` (= 0) on outgoing Logon.
+/// EncryptMethod (tag 98). Only `None` (wire value `0`) is modelled here.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EncryptMethodBase {
     #[default]
@@ -209,7 +207,7 @@ const _: () = assert!(
 
 /// Base header containing only the fields the session layer reads/writes.
 ///
-/// - **Incoming**: returned by `Message::header()` with `Cow::Borrowed` — zero allocations.
+/// - **Incoming**: returned by `SessionMessage::header` with `Cow::Borrowed` - zero allocations.
 /// - **Outgoing**: built by session with `Cow::Owned`, consumed via `From` conversion.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderBase<'a> {
@@ -240,7 +238,7 @@ impl HeaderBase<'_> {
     }
 }
 
-/// Admin message base — the session dispatches on this after checking `msg.try_as_admin()`.
+/// Admin message base, obtained from `SessionMessage::try_as_admin`.
 #[derive(Clone, Debug)]
 pub enum AdminBase<'a> {
     Logon(LogonBase),

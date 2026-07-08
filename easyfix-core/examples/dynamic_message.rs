@@ -2,7 +2,7 @@
 //!
 //! This example shows how to implement the [`SessionMessage`] and [`HeaderAccess`] traits
 //! for a custom message type. Unlike the generated `Message`, this implementation
-//! does not use code generation — all fields are stored dynamically in a hash map.
+//! does not use code generation - all fields are stored dynamically in a hash map.
 //!
 //! This approach trades type safety for flexibility: you can handle any FIX message
 //! without generating code from XML dictionaries. The downside is that field access
@@ -34,7 +34,7 @@ use easyfix_core::{
 };
 
 // ---------------------------------------------------------------------------
-// Value type — a tagged union for FIX field values
+// Value type - a tagged union for FIX field values
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
@@ -444,7 +444,7 @@ fn serialize_message(msg: &DynamicMessage, buf: &mut [u8]) -> Result<usize, Seri
         serialize_tag_timestamp(&mut s, TAG_ORIG_SENDING_TIME, &time)?;
     }
 
-    // Body fields — serialize all non-header tags in tag-number order
+    // Body fields - serialize all non-header tags in tag-number order
     // for deterministic output.
     let header_tags = [
         TAG_BEGIN_STRING,
@@ -600,7 +600,7 @@ fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, Deser
     let mut des = Deserializer::from_raw_message(raw);
     let begin_string = des.begin_string();
 
-    // Tag 35: MsgType — the first tag in RawMessage.body (tags 8 and 9
+    // Tag 35: MsgType - the first tag in RawMessage.body (tags 8 and 9
     // are already consumed by raw_message()). First consume the tag number
     // with deserialize_tag_num(), then read the value with deserialize_msg_type().
     // Copy msg_type bytes immediately to release the borrow on `des`.
@@ -643,12 +643,12 @@ fn deserialize_message(raw: RawMessage<'_>) -> Result<Box<DynamicMessage>, Deser
             TAG_ORIG_SENDING_TIME => {
                 msg.set(tag, Value::Timestamp(des.deserialize_utc_timestamp()?));
             }
-            // Body tags — dispatch by type based on what we know about the tag
+            // Body tags - dispatch by type based on what we know about the tag
             t if known_tags.contains(&t) => {
                 let value = deserialize_field_value(&mut des, t)?;
                 msg.set(t, value);
             }
-            // Unknown tags — skip by reading the value as a string
+            // Unknown tags - skip by reading the value as a string
             _ => {
                 let _ = des.deserialize_string()?;
             }

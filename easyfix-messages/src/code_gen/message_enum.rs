@@ -169,7 +169,7 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
 
                 let body_length = deserializer.body_length();
 
-                // The FIX framing rule requires MsgType(35) as the third tag —
+                // The FIX framing rule requires MsgType(35) as the third tag -
                 // any other outcome (malformed tag number, wrong tag, EOF) is
                 // the same protocol violation.
                 if !matches!(deserializer.deserialize_tag_num(), Ok(Some(35))) {

@@ -1,7 +1,8 @@
-//! The `Message` trait and related types.
+//! The [`SessionMessage`] trait and related types.
 //!
-//! `Session<M: Message>` is generic over the message type. Implementations
-//! provide the bridge between session logic and concrete message definitions.
+//! The session layer is generic over `M: SessionMessage`, so it never names a
+//! concrete message type. Implementations provide the bridge between session
+//! logic and concrete message definitions.
 
 use std::fmt::Debug;
 
@@ -54,15 +55,15 @@ pub enum MsgCat {
 
 /// Core message trait that bridges session logic and concrete message types.
 ///
-/// `Session<M: SessionMessage>` uses this trait to deserialize, inspect,
-/// construct, and serialize messages without knowing the concrete type.
+/// The session layer uses this trait to deserialize, inspect, construct, and
+/// serialize messages without knowing the concrete type.
 pub trait SessionMessage: Sized + Debug + HeaderAccess {
-    /// Deserialize from a structurally validated `RawMessage`. Returns
-    /// `Box<Self>` because concrete message types can be large
-    /// (e.g. `ExecutionReport`).
+    /// Deserialize from a structurally validated `RawMessage`.
     ///
     /// On failure the [`DeserializeError`] carries the parsed header whenever
     /// header parsing succeeded before the failure.
+    //
+    // Boxed because concrete message types can be large (e.g. ExecutionReport).
     fn from_raw_message(raw: RawMessage<'_>) -> Result<Box<Self>, DeserializeError>;
 
     /// Deserialize from FIX tag-value wire bytes. Composes [`raw_message`]
@@ -85,11 +86,9 @@ pub trait SessionMessage: Sized + Debug + HeaderAccess {
     /// Compact message type identifier (e.g. `"A"` for Logon, `"D"` for
     /// NewOrderSingle).
     ///
-    /// Returns [`MsgTypeField`] — a compact, copyable representation that
-    /// can be compared against [`MsgTypeBase`] variants for admin message
-    /// dispatch, or converted to a richer type via `TryFrom` when exhaustive
-    /// matching is needed (fallible: the field may hold a value the richer
-    /// type does not define).
+    /// Compare against [`MsgTypeBase`] variants for admin dispatch, or
+    /// `TryFrom` into a richer generated type for exhaustive matching -
+    /// fallible, since the field may hold a value that type does not define.
     ///
     /// [`MsgTypeBase`]: crate::base_messages::MsgTypeBase
     fn msg_type(&self) -> MsgTypeField;
@@ -104,38 +103,33 @@ pub trait SessionMessage: Sized + Debug + HeaderAccess {
     fn from_admin(header: HeaderBase<'static>, admin: AdminBase<'static>) -> Self;
 }
 
-/// Direct get/set access to header fields on `M`.
-///
-/// Used by session for: filling headers on outgoing app messages, setting
-/// `PossDupFlag` + `OrigSendingTime` on resend, incoming validation.
+/// Get/set access to the header fields the session layer reads and fills in.
 pub trait HeaderAccess {
-    /// BeginString (tag 8) — FIX protocol version.
+    /// BeginString (tag 8) - FIX protocol version.
     ///
-    /// Implementations return a compile-time constant defined by the
-    /// generated messages crate, so this accessor is infallible and
-    /// never varies per instance.
+    /// Constant per message type; it never varies between instances.
     fn version(&self) -> Version;
 
-    /// SenderCompID (tag 49) — identifier of the message sender.
+    /// SenderCompID (tag 49) - identifier of the message sender.
     fn sender_comp_id(&self) -> &FixStr;
 
-    /// TargetCompID (tag 56) — identifier of the message recipient.
+    /// TargetCompID (tag 56) - identifier of the message recipient.
     fn target_comp_id(&self) -> &FixStr;
 
-    /// MsgSeqNum (tag 34) — message sequence number within the session.
+    /// MsgSeqNum (tag 34) - message sequence number within the session.
     fn msg_seq_num(&self) -> SeqNum;
 
-    /// SendingTime (tag 52) — time the message was sent (UTC).
+    /// SendingTime (tag 52) - time the message was sent (UTC).
     fn sending_time(&self) -> UtcTimestamp;
 
-    /// PossDupFlag (tag 43) — `true` if this is a possible duplicate (resend).
+    /// PossDupFlag (tag 43) - `true` if this is a possible duplicate (resend).
     fn poss_dup_flag(&self) -> Option<Boolean>;
 
-    /// OrigSendingTime (tag 122) — original sending time for resent messages.
+    /// OrigSendingTime (tag 122) - original sending time for resent messages.
     /// Returns `None` if the field is absent or the FIX version doesn't define it.
     fn orig_sending_time(&self) -> Option<UtcTimestamp>;
 
-    /// ApplVerID (tag 1128) — application-level protocol version.
+    /// ApplVerID (tag 1128) - application-level protocol version.
     /// Only relevant for FIXT (FIX 5.0+); return `None` for FIX 4.x.
     fn appl_ver_id(&self) -> Option<ApplVerId>;
 

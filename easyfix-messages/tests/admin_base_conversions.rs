@@ -1,8 +1,8 @@
-//! Round-trip tests for admin base message ↔ generated message conversions.
+//! Round-trip tests for admin base message <-> generated message conversions.
 //!
 //! Each test verifies that fields survive the conversion in both directions:
-//! - Incoming: Generated → Base (zero-copy borrow)
-//! - Outgoing: Base → Generated (owned construction)
+//! - Incoming: Generated -> Base (zero-copy borrow)
+//! - Outgoing: Base -> Generated (owned construction)
 
 use std::borrow::Cow;
 
@@ -18,7 +18,7 @@ use easyfix_test_messages as messages;
 use messages::{Body, Heartbeat, Logon, Logout, Reject, ResendRequest, SequenceReset, TestRequest};
 
 // ---------------------------------------------------------------------------
-// HeartbeatBase ↔ Heartbeat
+// HeartbeatBase <-> Heartbeat
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -67,7 +67,7 @@ fn heartbeat_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// TestRequestBase ↔ TestRequest
+// TestRequestBase <-> TestRequest
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -99,7 +99,7 @@ fn test_request_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// ResendRequestBase ↔ ResendRequest
+// ResendRequestBase <-> ResendRequest
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -137,7 +137,7 @@ fn resend_request_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// SequenceResetBase ↔ SequenceReset
+// SequenceResetBase <-> SequenceReset
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -186,7 +186,7 @@ fn sequence_reset_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// LogoutBase ↔ Logout
+// LogoutBase <-> Logout
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -231,7 +231,7 @@ fn logout_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// RejectBase ↔ Reject
+// RejectBase <-> Reject
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -313,7 +313,7 @@ fn reject_round_trip_preserves_copy_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// LogonBase ↔ Logon
+// LogonBase <-> Logon
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -464,7 +464,7 @@ fn logon_round_trip_copy_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// AdminBase dispatch ↔ Message
+// AdminBase dispatch <-> Message
 // ---------------------------------------------------------------------------
 
 #[test]

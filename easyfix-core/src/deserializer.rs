@@ -1,3 +1,13 @@
+//! Reading FIX tag-value messages.
+//!
+//! Two stages: [`raw_message`] frames one message out of a byte stream,
+//! checking BeginString, BodyLength and CheckSum without looking inside;
+//! [`Deserializer`] then walks that frame's body, handing typed values to the
+//! generated message types. Both borrow from the input rather than copying it.
+//!
+//! Failures are classified by what the session must do about them - see
+//! [`DeserializeErrorKind`].
+
 use std::{error::Error, fmt, sync::LazyLock};
 
 use memchr::{memchr, memmem};
@@ -17,9 +27,15 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+/// Why a message could not be framed or parsed as FIX at all.
+///
+/// A garbled message is logged and dropped without a reply - the session
+/// neither rejects it nor advances a sequence number (FIX Session Layer
+/// §4.5.2). The gap it leaves is recovered by the next well-formed message
+/// triggering a `ResendRequest`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GarbledReason {
-    /// The byte stream ended before a complete message could be parsed — either
+    /// The byte stream ended before a complete message could be parsed - either
     /// at the framing level (`RawMessageError::Incomplete`) or inside a field
     /// value whose terminating SOH never appeared.
     IncompleteMessageData,
@@ -50,7 +66,7 @@ impl fmt::Display for GarbledReason {
     }
 }
 
-/// Cause of a [`DeserializeErrorKind::Logout`] — a well-formed message that the
+/// Cause of a [`DeserializeErrorKind::Logout`] - a well-formed message that the
 /// session must answer with a Logout(35=5) and disconnect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogoutReason {
@@ -70,14 +86,28 @@ impl fmt::Display for LogoutReason {
     }
 }
 
+/// A failed deserialization, classified by what the session must do about it.
+///
+/// The three variants are three different reactions, not three severities.
 #[derive(Debug)]
 pub enum DeserializeErrorKind {
+    /// Not a FIX message. Log it and drop it silently; do not reply and do not
+    /// touch sequence numbers.
     Garbled(GarbledReason),
+    /// Well-formed, but the session cannot continue. Send `Logout<5>` and
+    /// disconnect.
     Logout(LogoutReason),
+    /// A field-level violation in an otherwise well-formed message. Send
+    /// `Reject<3>` and carry on.
     Reject {
+        /// MsgType(35) of the failed message, when it was parsed.
         msg_type: Option<FixString>,
+        /// MsgSeqNum(34) to quote as `RefSeqNum(45)` on the Reject.
         seq_num: SeqNum,
+        /// Tag that failed, quoted as `RefTagID(371)`. `None` when no single
+        /// tag is to blame.
         tag: Option<TagNum>,
+        /// Value for `SessionRejectReason(373)`.
         reason: SessionRejectReasonField,
     },
 }
@@ -373,15 +403,16 @@ pub(crate) fn parse_utc_time_only(
 /// terminator, mirroring the [`parse_utc_timestamp`] contract.
 ///
 /// Accepted format is `Z`, `+hh`, `-hh`, `+hh:mm` or `-hh:mm`, with
-/// `mm` = 00-59 (TagValue Encoding section 6.2.2). The form with minutes is
-/// matched first, so an offset that carries them is never truncated to whole
-/// hours; an out-of-range `mm` falls through to the whole-hour form and is
-/// rejected by the caller, which finds the leftover digits where a
-/// terminator or the end of the value should be.
+/// `mm` = 00-59 (TagValue Encoding section 6.2.2).
 ///
 /// The hour range is left to [`FixedOffset`], which bounds it to less than
 /// a day. The spec text says `hh` = 01-12, but offsets of +13 and +14 exist
 /// and a conforming counterparty may send them.
+//
+// The form with minutes is matched first, so an offset that carries them is
+// never truncated to whole hours; an out-of-range `mm` falls through to the
+// whole-hour form and is rejected by the caller, which finds the leftover
+// digits where a terminator or the end of the value should be.
 fn parse_tz_offset(buf: &[u8]) -> Result<(FixedOffset, &[u8]), DeserializeErrorKindInternal> {
     let (total_secs, rest) = match buf {
         [b'Z', rest @ ..] => (0, rest),
@@ -637,19 +668,36 @@ fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorK
     Err(DeserializeErrorKindInternal::Incomplete)
 }
 
+/// One structurally valid FIX message framed out of a byte stream by
+/// [`raw_message`], borrowing from that stream - no bytes are copied.
+///
+/// Framing proves only that BeginString(8), BodyLength(9) and CheckSum(10)
+/// are present and consistent. The body is still unparsed.
 #[derive(Debug)]
 pub struct RawMessage<'a> {
+    /// BeginString(8) value, e.g. `FIXT.1.1`.
     pub begin_string: &'a FixStr,
+    /// Everything between BodyLength(9) and CheckSum(10), the length that
+    /// tag 9 declared.
     pub body: &'a [u8],
+    /// CheckSum(10) value, already verified against the framed bytes.
     pub checksum: u8,
 }
 
+/// Why [`raw_message`] could not frame a message.
+///
+/// The split tells a caller reading from a socket what to do with its buffer;
+/// see [`raw_message`] for how it bounds that buffer.
 #[derive(Debug, thiserror::Error)]
 pub enum RawMessageError {
+    /// A well-formed prefix that stops short. Keep the bytes and read more.
     #[error("Incomplete")]
     Incomplete,
+    /// The bytes are not a message and no further input can make them one.
+    /// Drop them and resynchronize.
     #[error("Garbled")]
     Garbled,
+    /// Framing held, but CheckSum(10) disagrees with the bytes it covers.
     #[error("Invalid checksum")]
     InvalidChecksum,
 }
@@ -679,13 +727,15 @@ impl From<DeserializeErrorKindInternal> for RawMessageError {
 /// as soon as the length field itself has arrived, long before a body of
 /// that size could be buffered. A caller that keeps calling this before
 /// each read therefore never holds more than one message's worth of bytes,
-/// roughly 65.5 KB. Widening [`Length`] would silently turn a hostile
-/// `9=99999999` into an unbounded read.
+/// roughly 65.5 KB.
 ///
 /// [`Incomplete`]: RawMessageError::Incomplete
 /// [`Garbled`]: RawMessageError::Garbled
 /// [`InvalidChecksum`]: RawMessageError::InvalidChecksum
 /// [`Length`]: crate::basic_types::Length
+//
+// Widening Length would silently turn a hostile `9=99999999` into an
+// unbounded read.
 pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageError> {
     let orig_bytes = bytes;
 
@@ -723,6 +773,17 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageEr
     ))
 }
 
+/// Reads typed FIX values out of a framed [`RawMessage`], field by field.
+///
+/// A cursor walks the body: [`deserialize_tag_num`](Self::deserialize_tag_num)
+/// yields the next tag, and the matching `deserialize_*` call consumes that
+/// tag's value together with its SOH. String-valued reads borrow from the
+/// original bytes, so parsing a message copies nothing that is not owned.
+///
+/// Generated code drives this in three phases - declare an `Option` per
+/// field, loop over tags dispatching to `deserialize_*`, then build the
+/// struct - and hands a tag back with [`put_tag`](Self::put_tag) when it
+/// belongs to the next message section.
 #[derive(Debug)]
 pub struct Deserializer<'de> {
     raw_message: RawMessage<'de>,
@@ -736,6 +797,7 @@ pub struct Deserializer<'de> {
 }
 
 impl<'de> Deserializer<'de> {
+    /// Start reading `raw_message`'s body from its first tag.
     pub fn from_raw_message(raw_message: RawMessage) -> Deserializer {
         let buf = raw_message.body;
         Deserializer {
@@ -748,18 +810,29 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    /// BeginString(8), as an owned copy. Consumed by the framing, so it is
+    /// read from here rather than from the tag stream.
     pub fn begin_string(&self) -> FixString {
         self.raw_message.begin_string.to_owned()
     }
 
+    /// BodyLength(9). Consumed by the framing, so it is read from here rather
+    /// than from the tag stream.
     pub fn body_length(&self) -> Length {
         self.raw_message.body.len() as Length
     }
 
+    /// CheckSum(10), zero-padded to three digits. Consumed by the framing, so
+    /// it is read from here rather than from the tag stream.
     pub fn check_sum(&self) -> FixString {
         FixString::from_ascii_lossy(format!("{:03}", self.raw_message.checksum).into_bytes())
     }
 
+    /// Record MsgSeqNum(34) so a later [`reject`](Self::reject) can quote it.
+    ///
+    /// Call once, right after reading tag 34; a second call is a bug and trips
+    /// a debug assertion. Without it a reject falls back to scanning the body
+    /// for `34=`, which a binary field can defeat.
     pub fn set_seq_num(&mut self, seq_num: SeqNum) {
         debug_assert!(self.seq_num.is_none());
 
@@ -780,6 +853,12 @@ impl<'de> Deserializer<'de> {
         self.deserialize_seq_num()
     }
 
+    /// Build a [`DeserializeErrorKind::Reject`] blaming `tag` for `reason`,
+    /// quoting the MsgSeqNum and MsgType read so far.
+    ///
+    /// Returns [`DeserializeErrorKind::Logout`] instead when MsgSeqNum(34) was
+    /// neither recorded nor recoverable - a message without tag 34 is a logout
+    /// offence, not a reject (FIX Session Layer §4.5.3).
     pub fn reject(
         &mut self,
         tag: Option<TagNum>,
@@ -804,6 +883,14 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    /// Build a `RepeatingGroupFieldsOutOfOrder` reject, blaming whichever tag
+    /// the group's declared order says is misplaced.
+    ///
+    /// `expected_tags` is the group's field order from the dictionary,
+    /// `processed_tags` those already seen in this group instance, and
+    /// `current_tag` the one that triggered the check. When an earlier
+    /// processed tag should have come after `current_tag`, that tag is quoted
+    /// as `RefTagID(371)`; otherwise `current_tag` is.
     pub fn repeating_group_fields_out_of_order(
         &mut self,
         expected_tags: &[u16],
@@ -836,6 +923,13 @@ impl<'de> Deserializer<'de> {
         )
     }
 
+    /// Push `tag` back so the next
+    /// [`deserialize_tag_num`](Self::deserialize_tag_num) returns it again.
+    ///
+    /// One tag of lookahead, used when a section's parser reads a tag that
+    /// belongs to the next section - a trailer tag surfacing while the body is
+    /// still being read, say. A second push before the tag is taken overwrites
+    /// the first.
     pub fn put_tag(&mut self, tag: TagNum) {
         self.tmp_tag = Some(tag);
     }
@@ -882,6 +976,21 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    /// Resolve a range handed out by
+    /// [`deserialize_msg_type`](Self::deserialize_msg_type) back into the
+    /// bytes it names, borrowed from the message.
+    ///
+    /// Only pass ranges this deserializer produced. The bytes are **not**
+    /// re-validated: a range naming anything other than an already-checked
+    /// value yields a `FixStr` that breaks its printable-ASCII invariant, and
+    /// reading it back - `as_utf8` skips UTF-8 validation on the strength of
+    /// that invariant - is then undefined behavior. A message body may hold
+    /// arbitrary bytes inside a `Data` field, so an in-bounds range is not
+    /// enough to make this safe.
+    ///
+    /// # Panics
+    ///
+    /// If `range` is out of the message body's bounds.
     pub fn range_to_fixstr(&self, range: std::ops::Range<usize>) -> &FixStr {
         // SAFETY: ranges handed out by this deserializer come from
         // `deserialize_msg_type`, which validated the bytes as printable
@@ -889,7 +998,12 @@ impl<'de> Deserializer<'de> {
         unsafe { FixStr::from_ascii_unchecked(&self.raw_message.body[range]) }
     }
 
-    /// Deserialize MsgType
+    /// Read MsgType(35) and remember it for later rejects.
+    ///
+    /// Returns the value's range within the message body rather than the
+    /// bytes, so the borrow ends here and the deserializer stays mutably
+    /// usable; resolve it with
+    /// [`range_to_fixstr`](Self::range_to_fixstr) when the bytes are needed.
     pub fn deserialize_msg_type(&mut self) -> Result<std::ops::Range<usize>, DeserializeErrorKind> {
         let raw_message_pointer = self.raw_message.body.as_ptr();
 
@@ -964,11 +1078,11 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize sequence of character digits without commas or decimals
-    /// and optional sign character (characters “-” and “0” – “9” ).
-    /// The sign character utilizes one octet (i.e., positive int is “99999”
-    /// while negative int is “-99999”).
+    /// and optional sign character (characters `-` and `0` - `9`).
+    /// The sign character utilizes one octet (i.e., positive int is `99999`
+    /// while negative int is `-99999`).
     ///
-    /// Note that int values may contain leading zeros (e.g. “00023” = “23”).
+    /// Note that int values may contain leading zeros (e.g. `00023` = `23`).
     pub fn deserialize_int(&mut self) -> Result<Int, DeserializeErrorKind> {
         let negative = match self.buf {
             // MSG Garbled
@@ -1180,12 +1294,12 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize sequence of character digits with optional decimal point
-    /// and sign character (characters “-”, “0” – “9” and “.”);
+    /// and sign character (characters `-`, `0` - `9` and `.`);
     /// the absence of the decimal point within the string will be interpreted
     /// as the float representation of an integer value. Note that float values
-    /// may contain leading zeros (e.g. “00023.23” = “23.23”) and may contain
+    /// may contain leading zeros (e.g. `00023.23` = `23.23`) and may contain
     /// or omit trailing zeros after the decimal point
-    /// (e.g. “23.0” = “23.0000” = “23” = “23.”).
+    /// (e.g. `23.0` = `23.0000` = `23` = `23.`).
     ///
     /// All float fields must accommodate up to fifteen significant digits.
     /// The number of decimal places used should be a factor of business/market
@@ -1259,31 +1373,39 @@ impl<'de> Deserializer<'de> {
         ))
     }
 
+    /// Deserialize a `Qty` - the `Float` grammar under a different name.
     #[inline(always)]
     pub fn deserialize_qty(&mut self) -> Result<Qty, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
+    /// Deserialize a `Price` - the `Float` grammar under a different name.
     #[inline(always)]
     pub fn deserialize_price(&mut self) -> Result<Price, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
+    /// Deserialize a `PriceOffset` - the `Float` grammar under a different
+    /// name.
     #[inline(always)]
     pub fn deserialize_price_offset(&mut self) -> Result<PriceOffset, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
+    /// Deserialize an `Amt` - the `Float` grammar under a different name.
     #[inline(always)]
     pub fn deserialize_amt(&mut self) -> Result<Amt, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
+    /// Deserialize a `Percentage` - the `Float` grammar under a different
+    /// name.
     #[inline(always)]
     pub fn deserialize_percentage(&mut self) -> Result<Percentage, DeserializeErrorKind> {
         self.deserialize_float()
     }
 
+    /// Deserialize a single-character boolean: `Y` for true, `N` for false.
     pub fn deserialize_boolean(&mut self) -> Result<Boolean, DeserializeErrorKind> {
         match self.buf {
             // Empty or missing separator at the end
@@ -1342,7 +1464,7 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize string containing one or more space-delimited single
-    /// character values, e.g. “2 A F”.
+    /// character values, e.g. `2 A F`.
     pub fn deserialize_multiple_char_value(
         &mut self,
     ) -> Result<MultipleCharValue, DeserializeErrorKind> {
@@ -1425,7 +1547,7 @@ impl<'de> Deserializer<'de> {
     }
 
     /// Deserialize string containing one or more space-delimited multiple
-    /// character values, e.g. “AV AN A”.
+    /// character values, e.g. `AV AN A`.
     pub fn deserialize_multiple_string_value(
         &mut self,
     ) -> Result<MultipleStringValue, DeserializeErrorKind> {
@@ -1537,8 +1659,8 @@ impl<'de> Deserializer<'de> {
         }
     }
 
-    /// Deserialize ISO 10383:2012 Securities and related financial instruments
-    /// – Codes for exchanges and market identification (MIC)
+    /// Deserialize ISO 10383:2012 Securities and related financial
+    /// instruments - Codes for exchanges and market identification (MIC)
     /// (4-character code).
     pub fn deserialize_exchange(&mut self) -> Result<Exchange, DeserializeErrorKind> {
         match self.buf {
@@ -1865,7 +1987,7 @@ impl<'de> Deserializer<'de> {
     ///
     /// The representation is based on ISO 8601.
     ///
-    /// Format is `YYYYMMDD-HH:MM[:SS][.sss*][Z | [ + | – hh[:mm]]]` where:
+    /// Format is `YYYYMMDD-HH:MM[:SS][.sss*][Z | [ + | - hh[:mm]]]` where:
     /// - YYYY = 0000 to 9999,
     /// - MM = 01-12,
     /// - DD = 01-31,
@@ -1907,7 +2029,7 @@ impl<'de> Deserializer<'de> {
     /// ISO 8601. This is the time with a UTC offset to allow identification of
     /// local time and time zone of that time.
     ///
-    /// Format is `HH:MM[:SS][Z | [ + | – hh[:mm]]]` where:
+    /// Format is `HH:MM[:SS][Z | [ + | - hh[:mm]]]` where:
     /// - HH = 00-23 hours,
     /// - MM = 00-59 minutes,
     /// - SS = 00-59 seconds,
@@ -2064,6 +2186,10 @@ impl<'de> Deserializer<'de> {
         }
     }
 
+    /// Deserialize an `Int` and convert it into the enum `T`.
+    ///
+    /// A value outside `T`'s variants is a `Reject` carrying the reason
+    /// `T` chose, blamed on the tag currently being read.
     pub fn deserialize_int_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         T: TryFrom<Int, Error = SessionRejectReasonBase>,
@@ -2071,6 +2197,9 @@ impl<'de> Deserializer<'de> {
         T::try_from(self.deserialize_int()?).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
+    /// Deserialize a `NumInGroup` and convert it into the enum `T`, with the
+    /// same reject behavior as
+    /// [`deserialize_int_enum`](Self::deserialize_int_enum).
     pub fn deserialize_num_in_group_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         T: TryFrom<NumInGroup, Error = SessionRejectReasonBase>,
@@ -2079,6 +2208,9 @@ impl<'de> Deserializer<'de> {
             .map_err(|reason| self.reject(self.current_tag, reason))
     }
 
+    /// Deserialize a `Char` and convert it into the enum `T`, with the same
+    /// reject behavior as
+    /// [`deserialize_int_enum`](Self::deserialize_int_enum).
     pub fn deserialize_char_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         T: TryFrom<Char, Error = SessionRejectReasonBase>,
@@ -2087,6 +2219,9 @@ impl<'de> Deserializer<'de> {
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
+    /// Deserialize a `FixStr` and convert it into the enum `T`, with the same
+    /// reject behavior as
+    /// [`deserialize_int_enum`](Self::deserialize_int_enum).
     pub fn deserialize_string_enum<T>(&mut self) -> Result<T, DeserializeErrorKind>
     where
         for<'a> T: TryFrom<&'a FixStr, Error = SessionRejectReasonBase>,
@@ -2095,6 +2230,9 @@ impl<'de> Deserializer<'de> {
         T::try_from(value).map_err(|reason| self.reject(self.current_tag, reason))
     }
 
+    /// Deserialize a space-delimited `MultipleCharValue` and convert every
+    /// element into the enum `T`. The first element outside `T`'s variants
+    /// rejects the whole field.
     pub fn deserialize_multiple_char_value_enum<T>(
         &mut self,
     ) -> Result<Vec<T>, DeserializeErrorKind>
@@ -2110,6 +2248,9 @@ impl<'de> Deserializer<'de> {
         Ok(result)
     }
 
+    /// Deserialize a space-delimited `MultipleStringValue` and convert every
+    /// element into the enum `T`. The first element outside `T`'s variants
+    /// rejects the whole field.
     pub fn deserialize_multiple_string_value_enum<T>(
         &mut self,
     ) -> Result<Vec<T>, DeserializeErrorKind>

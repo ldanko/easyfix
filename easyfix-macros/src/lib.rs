@@ -1,3 +1,8 @@
+//! Compile-time macros for easyfix.
+//!
+//! Currently just [`fix_str!`], which turns a string literal into a
+//! `&'static FixStr` after validating it at expansion time.
+
 #![feature(proc_macro_diagnostic)]
 
 use proc_macro::TokenStream;
@@ -38,6 +43,30 @@ fn find_easyfix_core_path() -> proc_macro2::TokenStream {
     }
 }
 
+/// Builds a `&'static FixStr` from a string literal.
+///
+/// Every byte is checked at expansion time to be printable ASCII
+/// (`0x20`-`0x7e`); a literal containing anything else is a compile error
+/// naming the offending position. Usable in `const` context and in ordinary
+/// expressions alike, so it is the way to write a `FixStr` literal - reach
+/// for `FixStr::from_ascii_unchecked` only for runtime bytes, which this
+/// macro cannot see.
+///
+/// The expansion names the `easyfix-core` types through whichever of
+/// `easyfix-core` or `easyfix` the calling crate depends on; one of the two
+/// must be in its `Cargo.toml`.
+///
+/// ```
+/// # use easyfix_core::{basic_types::FixStr, fix_str};
+/// const BEGIN_STRING: &FixStr = fix_str!("FIXT.1.1");
+/// assert_eq!(BEGIN_STRING.as_utf8(), "FIXT.1.1");
+/// ```
+///
+/// ```compile_fail
+/// # use easyfix_core::fix_str;
+/// // SOH is a control character - rejected at compile time.
+/// let bad = fix_str!("FIXT\x01");
+/// ```
 #[proc_macro]
 pub fn fix_str(ts: TokenStream) -> TokenStream {
     let input = parse_macro_input!(ts as LitStr);

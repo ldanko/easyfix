@@ -3,11 +3,6 @@ use std::io;
 use crate::xml::{BasicType, MsgCat, MsgType};
 
 /// Errors that can occur during dictionary operations.
-///
-/// This enum organizes errors into categories based on their source:
-/// - I/O and parsing errors
-/// - Dictionary validation errors
-/// - Builder configuration errors
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Input/output error during file operations

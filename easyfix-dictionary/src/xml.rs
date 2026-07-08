@@ -1,11 +1,8 @@
 //! XML parsing and representation of FIX dictionary elements.
 //!
 //! This module handles the deserialization of FIX XML dictionaries into
-//! Rust structures using serde and quick-xml. It defines the basic types
-//! and structures that represent the components of a FIX dictionary:
-//! - Data types (FixType, BasicType, etc.)
-//! - XML-based structures (Field, Component, Group, etc.)
-//! - Serialization/deserialization helpers for FIX-specific formats
+//! Rust structures using serde and quick-xml. The types here mirror the XML
+//! 1:1; the semantic domain model lives in `dictionary::types`.
 
 use easyfix_core::{basic_types::FixString, version::SessionProtocol};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -43,11 +40,6 @@ mod required_flag {
 }
 
 /// A member of a message, component, or group in the FIX dictionary.
-///
-/// This enum represents the three possible member types in the FIX protocol:
-/// - Field: A simple data element
-/// - Component: A reusable collection of fields/components/groups
-/// - Group: A repeating section
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Member {
     /// A field member with name and required flag
@@ -177,7 +169,7 @@ pub enum BasicType {
     SeqNum,
     /// Character string (non-binary)
     String,
-    /// FX tenor expression ([DMWY]\d+, e.g. "D5", "M3", "W13", "Y1")
+    /// FX tenor expression (`[DMWY]\d+`, e.g. `D5`, `M3`, `W13`, `Y1`)
     Tenor,
     /// Time with timezone
     TzTimeOnly,

@@ -1,3 +1,18 @@
+//! The FIX datatypes every message is built from.
+//!
+//! Three groups live here:
+//!
+//! - **String types** - [`FixStr`] / [`FixString`], a `str`/`String` pair
+//!   restricted to printable ASCII (`0x20`-`0x7e`), so a value can never
+//!   carry an SOH and break message framing.
+//! - **Wire-format types** - the timestamps ([`UtcTimestamp`],
+//!   [`TzTimestamp`], ...), each carrying the [`TimePrecision`] it renders
+//!   with, plus [`Tenor`], [`Country`], [`Currency`] and the numeric aliases.
+//!   Money is [`Decimal`], never a float.
+//! - **Field newtypes** - [`MsgTypeField`], [`SessionStatusField`],
+//!   [`SessionRejectReasonField`] and [`ApplVerId`], which the session layer
+//!   compares against the base enums without knowing the generated ones.
+
 use std::{borrow, fmt, mem, num::NonZero, ops};
 
 #[cfg(feature = "serde-serialize")]
@@ -84,40 +99,54 @@ pub type Language = [u8; 2];
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub enum TimePrecision {
+    /// Whole seconds, no fractional part and no period.
     Secs = 0,
+    /// Milliseconds - 3 digits. The FIX baseline.
     Millis = 3,
+    /// Microseconds - 6 digits.
     Micros = 6,
+    /// Nanoseconds - 9 digits. The finest width representable here; a
+    /// 12-digit picosecond fraction read off the wire lands as this.
     Nanos = 9,
 }
 
+/// Date and time in UTC, e.g. `20060901-07:39:00.123`, carrying the
+/// fractional-second width it is rendered with.
 #[derive(Clone, Copy, Debug)]
 pub struct UtcTimestamp {
     timestamp: DateTime<Utc>,
     precision: TimePrecision,
 }
 
-/// Nanoseconds to keep when reducing `time` to whole-second precision.
-///
-/// A UTC leap second is not a fractional part: chrono represents `:60` as
-/// `:59` carrying a nanosecond value of at least a whole second (see
-/// [`Timelike::nanosecond`]). Clearing that field outright would silently
-/// move `23:59:60` to `23:59:59` - a different instant, and a different
-/// value on the wire, where `SS = 00-60` is valid (TagValue Encoding
-/// section 6.2.2). So the leap offset survives the reduction; only the
-/// sub-second fraction is dropped.
+/// Nanoseconds to keep when reducing `time` to whole-second precision: `0`
+/// for an ordinary time, a whole second for a UTC leap second, which chrono
+/// represents as `:59` carrying a nanosecond value of at least a second (see
+/// [`Timelike::nanosecond`]). Only the sub-second fraction is dropped; the
+/// leap offset survives.
+//
+// Clearing the nanosecond field outright would silently move `23:59:60` to
+// `23:59:59` - a different instant, and a different value on the wire, where
+// `SS = 00-60` is valid (TagValue Encoding section 6.2.2).
 fn whole_second_nanos(time: &impl Timelike) -> u32 {
     const LEAP: u32 = 1_000_000_000;
     if time.nanosecond() >= LEAP { LEAP } else { 0 }
 }
 
+/// Time of day in UTC, e.g. `07:39:00.123`, carrying the fractional-second
+/// width it is rendered with. Paired with a [`UtcDateOnly`] where a full
+/// timestamp would cost bandwidth.
 #[derive(Clone, Copy, Debug)]
 pub struct UtcTimeOnly {
     timestamp: NaiveTime,
     precision: TimePrecision,
 }
+/// Date in UTC, rendered `YYYYMMDD`.
 pub type UtcDateOnly = NaiveDate;
 
+/// Time local to a market center, rendered `HH:MM:SS`. The zone does not
+/// follow from the value - a separate field names the market center.
 pub type LocalMktTime = NaiveTime;
+/// Date local to a market center, rendered `YYYYMMDD`.
 pub type LocalMktDate = NaiveDate;
 
 /// Date and time carrying a timezone offset, e.g. `20060901-07:39:00+05:30`.
@@ -125,18 +154,18 @@ pub type LocalMktDate = NaiveDate;
 /// The offset is required, in this type and on the wire. FIX defines the
 /// datatype as "local time with an offset to UTC to allow identification of
 /// local time and time zone offset of that time" (TagValue Encoding section
-/// 6.2.2), so the offset is what the type exists to carry - and what makes
-/// a value a point in time rather than a wall clock reading that cannot be
-/// placed on a timeline. The grammar in that section brackets the offset,
-/// but every example it gives carries one.
+/// 6.2.2).
 ///
 /// A local time whose zone does *not* follow from the value belongs in
 /// [`LocalMktDate`] and [`LocalMktTime`] instead. Those name a time local to
-/// a market center, with the market center identified by a separate field -
-/// which is exactly the information an omitted offset would leave unstated.
+/// a market center, with the market center identified by a separate field.
 ///
 /// The seconds are optional on input (the spec's own examples omit them) and
 /// always present on output.
+//
+// The grammar in TagValue Encoding section 6.2.2 brackets the offset, but
+// every example it gives carries one, and without it the value is a wall
+// clock reading that cannot be placed on a timeline. Do not make it optional.
 #[derive(Clone, Copy, Debug)]
 pub struct TzTimestamp {
     timestamp: DateTime<FixedOffset>,
@@ -145,10 +174,9 @@ pub struct TzTimestamp {
 
 /// Time of day carrying a timezone offset, e.g. `07:39:00+05:30`.
 ///
-/// The offset is required for the same reason as in [`TzTimestamp`]: without
-/// it the value is a wall clock reading with no way to place it in time, and
-/// FIX already covers that case with [`LocalMktTime`], where the market
-/// center supplying the zone is named in a separate field.
+/// The offset is required, as in [`TzTimestamp`]. A time of day whose zone
+/// does *not* follow from the value belongs in [`LocalMktTime`], where the
+/// market center supplying the zone is named in a separate field.
 #[derive(Clone, Copy, Debug)]
 pub struct TzTimeOnly {
     timestamp: NaiveTime,
@@ -158,26 +186,35 @@ pub struct TzTimeOnly {
 
 /// Wire type of every FIX `Length` field - including `BodyLength<9>`.
 ///
-/// The `u16` width is a deliberate ceiling, not an incidental choice: it
-/// caps a message body at 65535 octets, so a whole TagValue message tops
-/// out around 65.5 KB once `8=`, `9=` and the `10=` trailer are counted.
-/// Everything reading from a socket depends on it - see [`raw_message`],
-/// which turns an out-of-range `BodyLength<9>` into
-/// [`RawMessageError::Garbled`] before any body is buffered. Widening this
-/// type would surrender that bound.
+/// The `u16` width caps a message body at 65535 octets, so a whole TagValue
+/// message tops out around 65.5 KB once `8=`, `9=` and the `10=` trailer are
+/// counted. [`raw_message`] turns an out-of-range `BodyLength<9>` into
+/// [`RawMessageError::Garbled`] before any body is buffered.
 ///
 /// [`raw_message`]: crate::deserializer::raw_message
 /// [`RawMessageError::Garbled`]: crate::deserializer::RawMessageError::Garbled
+//
+// The width is a deliberate ceiling, not an incidental choice: everything
+// reading from a socket depends on it to bound its buffer. Widening this type
+// would surrender that bound.
 pub type Length = u16;
 pub type NonZeroLength = NonZero<Length>;
+/// Raw bytes with no format restrictions. Delimited by a preceding `Length`
+/// field, not by SOH, so the content may contain any byte.
 pub type Data = Vec<u8>;
+/// An XML document, delimited the same way as [`Data`].
 pub type XmlData = Data;
 
+/// Time unit of a [`Tenor`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TenorUnit {
+    /// Wire code `D`.
     Days,
+    /// Wire code `M`.
     Months,
+    /// Wire code `W`.
     Weeks,
+    /// Wire code `Y`.
     Years,
 }
 
@@ -205,12 +242,23 @@ impl TenorUnit {
     }
 }
 
+/// A time-to-maturity expressed as a unit and a count, e.g. `M3` for three
+/// months. Rendered as the unit code followed by the value, with no
+/// separator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Tenor {
+    /// The unit the value counts.
     pub unit: TenorUnit,
+    /// How many units.
+    ///
+    /// A zero is **not** caught on the way out - serialization writes `M0`
+    /// happily - but it is on the way in: parsing one is a reject with
+    /// `ValueIsIncorrect`. Sending a zero therefore produces a field the
+    /// counterparty is entitled to reject, so validate it upstream.
     pub value: Length,
 }
 
+/// A byte that cannot appear in a [`FixStr`], with where it was found.
 #[derive(Debug)]
 pub struct FixStringError {
     idx: usize,
@@ -248,34 +296,18 @@ const fn is_non_control_ascii_char(byte: u8) -> bool {
 impl FixStr {
     /// Converts a slice of bytes to a string slice.
     ///
-    /// A FIX string slice ([`&FixStr`]) is made of bytes ([`u8`]), and a byte
-    /// slice ([`&[u8]`][slice]) is made of bytes, so this function
-    /// converts between the two. Not all byte slices are valid string slices,
-    /// however: [`&FixStr`] requires that it is valid ASCII without controll
-    /// characters.
-    /// `from_ascii()` checks to ensure that the bytes are valid, and then does
-    /// the conversion.
-    ///
-    /// [`&FixStr`]: FixStr
-    ///
-    /// If you are sure that the byte slice is valid ASCII without controll
-    /// characters, and you don't want to incur the overhead of the validity
-    /// check, there is an unsafe version of this function,
-    /// [`from_ascii_unchecked`], which has the same behavior but skips
-    /// the check.
-    ///
-    /// [`from_ascii_unchecked`]: FixStr::from_ascii_unchecked
-    ///
-    /// If you need a `FixString` instead of a `&FixStr`, consider
+    /// A [`&FixStr`] requires printable ASCII (`0x20`-`0x7e`); `from_ascii`
+    /// checks every byte before converting. To skip the check see
+    /// [`from_ascii_unchecked`]; for an owned result see
     /// [`FixString::from_ascii`].
     ///
-    /// Because you can stack-allocate a `[u8; N]`, and you can take a
-    /// [`&[u8]`][slice] of it, this function is one way to have a
-    /// stack-allocated string.
+    /// [`&FixStr`]: FixStr
+    /// [`from_ascii_unchecked`]: FixStr::from_ascii_unchecked
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the slice is not ASCII.
+    /// Returns `Err` if any byte is outside printable ASCII, reporting its
+    /// index and value.
     pub const fn from_ascii(buf: &[u8]) -> Result<&FixStr, FixStringError> {
         let mut i = 0;
         while i < buf.len() {
@@ -289,8 +321,7 @@ impl FixStr {
         unsafe { Ok(FixStr::from_ascii_unchecked(buf)) }
     }
 
-    /// Converts a slice of bytes to a FIX string slice without checking
-    /// that it contains only ASCII characters.
+    /// Converts a slice of bytes to a FIX string slice without checking it.
     ///
     /// See the safe version, [`from_ascii`], for more information.
     ///
@@ -298,7 +329,7 @@ impl FixStr {
     ///
     /// # Safety
     ///
-    /// The bytes passed in must consists from ASCII characters only.
+    /// Every byte passed in must be printable ASCII (`0x20`-`0x7e`).
     pub const unsafe fn from_ascii_unchecked(buf: &[u8]) -> &FixStr {
         // SAFETY: the caller must guarantee that the bytes `buf` are valid ASCII.
         // Also relies on `&FixStr` and `&[u8]` having the same layout.
@@ -463,11 +494,9 @@ impl FixString {
     ///
     /// Every FIX field must carry at least one byte, so an empty value
     /// never reaches the wire: serializing it fails with
-    /// [`SerializeError::EmptyValue`]. It exists so structs with
-    /// `FixString` fields can implement `Default` (`..Default::default()`
-    /// construction, session headers filled in at transmit time) and to
-    /// give generic code a `const` starting value. To express a genuinely
-    /// absent value, use `Option<FixString>` instead.
+    /// [`SerializeError::EmptyValue`]. Use it where a `Default` or a `const`
+    /// starting value is needed; to express a genuinely absent value, use
+    /// `Option<FixString>` instead.
     ///
     /// [`SerializeError::EmptyValue`]: crate::serializer::SerializeError::EmptyValue
     pub const fn new() -> FixString {
@@ -476,34 +505,18 @@ impl FixString {
 
     /// Converts a vector of bytes to a `FixString`.
     ///
-    /// A FIX string ([`FixString`]) is made of bytes ([`u8`]),
-    /// and a vector of bytes ([`Vec<u8>`]) is made of bytes, so this function
-    /// converts between the two. Not all byte slices are valid `FixString`s,
-    /// however: `FixString` requires that it is valid ASCII.
-    /// `from_ascii()` checks to ensure that the bytes are valid ASCII,
-    /// and then does the conversion.
-    ///
-    /// If you are sure that the byte slice is valid ASCII, and you don't want
-    /// to incur the overhead of the validity check, there is an unsafe version
-    /// of this function, [`from_ascii_unchecked`], which has the same behavior
-    /// but skips the check.
-    ///
-    /// This method will take care to not copy the vector, for efficiency's
-    /// sake.
-    ///
-    /// If you need a [`&FixStr`] instead of a `FixString`, consider
-    /// [`FixStr::from_ascii`].
-    ///
-    /// The inverse of this method is [`into_bytes`].
+    /// A `FixString` requires printable ASCII (`0x20`-`0x7e`); `from_ascii`
+    /// checks every byte and then takes ownership of the vector without
+    /// copying it. To skip the check see [`from_ascii_unchecked`]; for a
+    /// borrowed result see [`FixStr::from_ascii`]. The inverse is
+    /// [`into_bytes`].
     ///
     /// # Errors
     ///
-    /// Returns [`Err`] if the slice is not ASCII with a description as to why
-    /// the provided bytes are not ASCII.
+    /// Returns [`Err`] if any byte is outside printable ASCII, reporting its
+    /// index and value.
     ///
     /// [`from_ascii_unchecked`]: FixString::from_ascii_unchecked
-    /// [`Vec<u8>`]: std::vec::Vec "Vec"
-    /// [`&FixStr`]: FixStr
     /// [`into_bytes`]: FixString::into_bytes
     pub fn from_ascii(buf: Vec<u8>) -> Result<FixString, FixStringError> {
         for i in 0..buf.len() {
@@ -516,8 +529,7 @@ impl FixString {
         Ok(FixString(buf))
     }
 
-    /// Converts a vector of bytes to a `FixString` without checking that the
-    /// it contains only ASCII characters.
+    /// Converts a vector of bytes to a `FixString` without checking it.
     ///
     /// See the safe version, [`from_ascii`], for more details.
     ///
@@ -525,10 +537,9 @@ impl FixString {
     ///
     /// # Safety
     ///
-    /// This function is unsafe because it does not check that the bytes passed
-    /// to it are valid ASCII. If this constraint is violated, it may cause
-    /// memory unsafety issues with future users of the `FixString`,
-    /// as the rest of the library assumes that `FixString`s are valid ASCII.
+    /// Every byte passed in must be printable ASCII (`0x20`-`0x7e`).
+    /// Violating this is undefined behavior: the rest of the library relies
+    /// on the invariant, including `as_utf8`, which skips UTF-8 validation.
     pub unsafe fn from_ascii_unchecked(buf: Vec<u8>) -> FixString {
         FixString(buf)
     }
@@ -1145,10 +1156,8 @@ impl UtcTimestamp {
     /// means the epoch - not as a stand-in for "not set", which is what the
     /// sentinel is for.
     ///
-    /// The precision is an argument for the same reason it is everywhere else
-    /// on this type: this value does go on the wire, so its width is the
-    /// caller's to state. Truncation is a no-op here - the epoch has no
-    /// fraction to lose.
+    /// Truncation to `precision` is a no-op here - the epoch has no fraction
+    /// to lose.
     pub const fn unix_epoch(precision: TimePrecision) -> UtcTimestamp {
         UtcTimestamp {
             timestamp: DateTime::<Utc>::UNIX_EPOCH,
@@ -1204,6 +1213,7 @@ impl UtcTimestamp {
         }
     }
 
+    /// Current date and time, truncated to whole seconds.
     pub fn now_with_secs() -> UtcTimestamp {
         UtcTimestamp::with_secs(Utc::now())
     }
@@ -1350,19 +1360,20 @@ impl fmt::Display for UtcTimeOnly {
 
 /// Whether a year can be rendered in the FIX wire form, which is exactly
 /// four digits (TagValue Encoding section 6.2.2, `YYYY = 0000-9999`).
-///
-/// chrono renders anything outside that range with a sign and more digits,
-/// producing a value no parser accepts - and one that still travels inside a
-/// well-formed message, since BodyLength and CheckSum are computed over
-/// whatever was written. Both the serializer and the serde impls reject such
-/// a value instead.
+//
+// chrono renders anything outside that range with a sign and more digits,
+// producing a value no parser accepts - and one that still travels inside a
+// well-formed message, since BodyLength and CheckSum are computed over
+// whatever was written. Both the serializer and the serde impls refuse such a
+// value instead of emitting it.
 pub(crate) fn year_is_wire_representable(year: i32) -> bool {
     (0..=9999).contains(&year)
 }
 
 /// Whether a UTC offset can be rendered in the FIX wire form, which carries
-/// whole minutes only (`hh[:mm]`). A `FixedOffset` can hold seconds; those
-/// would be silently dropped by the renderer.
+/// whole minutes only (`hh[:mm]`).
+//
+// A `FixedOffset` can hold seconds; the renderer would silently drop them.
 pub(crate) fn offset_is_wire_representable(offset: FixedOffset) -> bool {
     offset.local_minus_utc() % 60 == 0
 }
@@ -1404,6 +1415,8 @@ fn write_tz_offset(f: &mut fmt::Formatter<'_>, offset: FixedOffset) -> fmt::Resu
 }
 
 impl TzTimestamp {
+    /// Build a value rendered with `precision` fractional-second digits,
+    /// truncating anything finer.
     pub fn with_precision(
         timestamp: DateTime<FixedOffset>,
         precision: TimePrecision,
@@ -1416,6 +1429,7 @@ impl TzTimestamp {
         }
     }
 
+    /// Build a value rendered with whole seconds, dropping any fraction.
     pub fn with_secs(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
             timestamp: timestamp
@@ -1425,6 +1439,7 @@ impl TzTimestamp {
         }
     }
 
+    /// Build a value rendered with 3 fractional digits, truncating finer.
     pub fn with_millis(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
             timestamp: timestamp
@@ -1434,6 +1449,7 @@ impl TzTimestamp {
         }
     }
 
+    /// Build a value rendered with 6 fractional digits, truncating finer.
     pub fn with_micros(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
             timestamp: timestamp
@@ -1443,6 +1459,8 @@ impl TzTimestamp {
         }
     }
 
+    /// Build a value rendered with 9 fractional digits - the full
+    /// resolution chrono carries.
     pub fn with_nanos(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
             timestamp,
@@ -1483,6 +1501,8 @@ impl fmt::Display for TzTimestamp {
 }
 
 impl TzTimeOnly {
+    /// Build a value rendered with `precision` fractional-second digits,
+    /// truncating anything finer.
     pub fn new(timestamp: NaiveTime, offset: FixedOffset, precision: TimePrecision) -> TzTimeOnly {
         match precision {
             TimePrecision::Secs => TzTimeOnly::with_secs(timestamp, offset),
@@ -1492,6 +1512,7 @@ impl TzTimeOnly {
         }
     }
 
+    /// Build a value rendered with whole seconds, dropping any fraction.
     pub fn with_secs(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
         TzTimeOnly {
             timestamp: timestamp
@@ -1502,6 +1523,7 @@ impl TzTimeOnly {
         }
     }
 
+    /// Build a value rendered with 3 fractional digits, truncating finer.
     pub fn with_millis(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
         TzTimeOnly {
             timestamp: timestamp
@@ -1512,6 +1534,7 @@ impl TzTimeOnly {
         }
     }
 
+    /// Build a value rendered with 6 fractional digits, truncating finer.
     pub fn with_micros(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
         TzTimeOnly {
             timestamp: timestamp
@@ -1522,6 +1545,8 @@ impl TzTimeOnly {
         }
     }
 
+    /// Build a value rendered with 9 fractional digits - the full
+    /// resolution chrono carries.
     pub fn with_nanos(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
         TzTimeOnly {
             timestamp,
@@ -1567,15 +1592,19 @@ impl fmt::Display for TzTimeOnly {
 }
 
 // ---------------------------------------------------------------------------
-// MsgType (tag 35) — compact 1-2 byte representation
+// MsgType (tag 35) - compact 1-2 byte representation
 // ---------------------------------------------------------------------------
 
+/// Why bytes could not be read as a [`MsgTypeField`].
 #[derive(Debug, thiserror::Error)]
 pub enum MsgTypeError {
+    /// No bytes at all.
     #[error("Empty message type")]
     Empty,
+    /// A byte outside `0-9`, `a-z`, `A-Z`.
     #[error("Invalid character in message type: {0}")]
     InvalidChar(u8),
+    /// More than two bytes.
     #[error("Message type too long: expected 1-2 bytes, got {0}")]
     TooLong(usize),
 }
@@ -1591,14 +1620,15 @@ pub trait MsgTypeValue {
     fn raw_value(&self) -> MsgTypeField;
 }
 
-/// Compact, `Copy` newtype wrapping a validated MsgType raw value.
+/// Compact, `Copy` newtype wrapping a validated MsgType raw value: 1-2 ASCII
+/// alphanumeric bytes, stored inline.
 ///
-/// Stores 1-2 ASCII alphanumeric bytes inline. Single-byte values use
-/// `0` as sentinel in the second position.
-///
-/// `Borrow<[u8]>` returns only the live bytes (enables `HashMap<MsgTypeField, _>`
-/// lookup by `&[u8]`). `Hash` is implemented manually to hash only the live
-/// bytes, satisfying the `Borrow` contract.
+/// `Borrow<[u8]>` yields only the live bytes, so a `HashMap<MsgTypeField, _>`
+/// can be looked up by a `&[u8]` slice without allocating.
+//
+// Single-byte values keep `0` as a sentinel in the second position, and `Hash`
+// is implemented manually over the live bytes only - hashing the sentinel too
+// would break the `Borrow` contract.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct MsgTypeField {
     buf: [u8; 2],
@@ -1617,12 +1647,19 @@ impl<T: MsgTypeValue> From<T> for MsgTypeField {
 }
 
 impl MsgTypeField {
-    /// Construct from a 1-2 byte raw MsgType value. Used internally by
-    /// `MsgTypeBase::raw_value()`.
+    /// Construct from a 1-2 byte raw MsgType value, unvalidated. A single-byte
+    /// value must be padded with `0`.
     pub(crate) const fn from_raw(buf: [u8; 2]) -> Self {
         MsgTypeField { buf }
     }
 
+    /// Validate 1-2 ASCII alphanumeric bytes as a MsgType value.
+    ///
+    /// # Errors
+    ///
+    /// [`MsgTypeError::Empty`] for no bytes, [`MsgTypeError::TooLong`] for
+    /// more than two, [`MsgTypeError::InvalidChar`] for anything outside
+    /// `0-9`, `a-z`, `A-Z`.
     pub const fn from_bytes(bytes: &[u8]) -> Result<MsgTypeField, MsgTypeError> {
         match bytes {
             [] => Err(MsgTypeError::Empty),
@@ -1646,6 +1683,7 @@ impl MsgTypeField {
         }
     }
 
+    /// The live bytes - one or two, never the padding.
     pub fn as_bytes(&self) -> &[u8] {
         match self.buf {
             [_, 0] => &self.buf[..1],
@@ -1653,12 +1691,15 @@ impl MsgTypeField {
         }
     }
 
+    /// The live bytes as `&str`. Infallible - the validated bytes are ASCII.
     pub fn as_str(&self) -> &str {
         // SAFETY: We validate during construction that all bytes are ASCII
         //         alphanumeric (0-9, a-z, A-Z), which are all valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
     }
 
+    /// The live bytes as `&FixStr`. Infallible - the validated bytes are
+    /// within the printable-ASCII range `FixStr` requires.
     pub fn as_fix_str(&self) -> &FixStr {
         // SAFETY: MsgType bytes are ASCII alphanumeric (0x30-0x39, 0x41-0x5A,
         //         0x61-0x7A), all within the valid FixStr range (0x20-0x7E)
@@ -1755,6 +1796,7 @@ impl<T: SessionStatusValue> From<T> for SessionStatusField {
 }
 
 impl SessionStatusField {
+    /// The raw tag 1409 value.
     pub fn into_inner(self) -> Int {
         self.0
     }
@@ -1783,6 +1825,7 @@ impl<T: SessionRejectReasonValue> From<T> for SessionRejectReasonField {
 }
 
 impl SessionRejectReasonField {
+    /// The raw tag 373 value.
     pub fn into_inner(self) -> Int {
         self.0
     }
@@ -1803,8 +1846,11 @@ pub struct InvalidApplVerId(pub FixString);
 /// The codeset is closed by the standard (FIX Session Layer §11.2 - values
 /// are assigned only at service-pack release; custom application versions
 /// live in `CstmApplVerID(1129)` / `DefaultCstmApplVerID(1408)`, never
-/// here). Deliberately no `Default` impl - an implicit application version
-/// is how a silent `1137=0` (FIX 2.7) ends up on the wire.
+/// here). There is no `Default` - every construction names a version, and
+/// [`ApplVerId::DEFAULT_IF_ABSENT`] covers the one case the spec defines.
+//
+// No `Default`, deliberately: an implicit application version is how a silent
+// `1137=0` (FIX 2.7) ends up on the wire. Do not add one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ApplVerId {
     Fix27,
@@ -1828,6 +1874,7 @@ impl ApplVerId {
     /// default for non-FIXT profiles.
     pub const DEFAULT_IF_ABSENT: ApplVerId = ApplVerId::FixLatest;
 
+    /// The FIX wire value, e.g. `9` for FIX 5.0 SP2.
     pub const fn as_fix_str(self) -> &'static FixStr {
         match self {
             ApplVerId::Fix27 => fix_str!("0"),
@@ -1844,10 +1891,13 @@ impl ApplVerId {
         }
     }
 
+    /// The FIX wire value as bytes.
     pub const fn as_bytes(self) -> &'static [u8] {
         self.as_fix_str().as_bytes()
     }
 
+    /// Parse a FIX wire value, or `None` when it is outside the
+    /// ApplVerIDCodeSet.
     pub fn from_bytes(bytes: &[u8]) -> Option<ApplVerId> {
         match bytes {
             b"0" => Some(ApplVerId::Fix27),
@@ -1865,6 +1915,8 @@ impl ApplVerId {
         }
     }
 
+    /// Parse a FIX wire value, reporting the offending value on failure.
+    /// [`from_bytes`](Self::from_bytes) is the same check with an `Option`.
     pub fn from_fix_str(value: &FixStr) -> Result<ApplVerId, InvalidApplVerId> {
         ApplVerId::from_bytes(value.as_bytes()).ok_or_else(|| InvalidApplVerId(value.to_owned()))
     }

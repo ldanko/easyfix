@@ -135,7 +135,7 @@ fn known_msg_type() {
 }
 
 /// Build a properly-framed FIXT.1.1 message from the `(tag, value)` pairs
-/// that follow BodyLength(9) — i.e. starting at MsgType(35) and ending
+/// that follow BodyLength(9) - i.e. starting at MsgType(35) and ending
 /// before CheckSum(10). Computes BodyLength and CheckSum so the framing
 /// layer accepts the message and parsing reaches the field-level checks.
 fn build_fix(body_fields: &[(&str, &str)]) -> Vec<u8> {
@@ -164,7 +164,7 @@ fn undefined_tag_in_body_rejected_with_invalid_tag_number() {
         ("56", "test_target"),
         ("34", "1"),
         ("52", "20230713-21:55:13.436187000"),
-        ("112", "ABC"), // TestReqID — a body field, hands off header → body
+        ("112", "ABC"), // TestReqID - a body field, hands off header -> body
         ("9999", "X"),  // undefined tag, reaches the body catch-all
     ]);
 
@@ -208,7 +208,7 @@ fn undefined_tag_in_header_rejected_with_invalid_tag_number() {
 /// A header field appearing in the Body section violates that order and must
 /// be rejected with reason 14 (Tag specified out of required order),
 /// NOT 2 (Tag not defined for this message type).
-/// Here `PossDupFlag(43)` — an optional Standard Header field — appears after
+/// Here `PossDupFlag(43)` - an optional Standard Header field - appears after
 /// a body field (`TestReqID 112`).
 #[test]
 fn header_field_in_body_rejected_with_out_of_required_order() {
@@ -218,7 +218,7 @@ fn header_field_in_body_rejected_with_out_of_required_order() {
         ("56", "test_target"),
         ("34", "1"),
         ("52", "20230713-21:55:13.436187000"),
-        ("112", "ABC"), // TestReqID body field — header section has ended
+        ("112", "ABC"), // TestReqID body field - header section has ended
         ("43", "Y"),    // PossDupFlag, a Standard Header field, now out of order
     ]);
 

@@ -1,3 +1,41 @@
+//! Code generator turning FIX XML dictionaries into Rust message types.
+//!
+//! [`Generator`] parses the dictionaries, then emits one Rust source file
+//! holding every field enum, repeating group, message struct, the `Header` /
+//! `Trailer` pair and the `Message` enum that ties them together, along with
+//! their `SessionMessage` implementations. The output is pretty-printed, so it
+//! stays readable when a generated deserializer needs debugging - though not
+//! by `rustfmt`, so it does not follow the consuming project's `rustfmt.toml`.
+//!
+//! The caller picks the output path. Build scripts write into `OUT_DIR` and
+//! `include!` the result:
+//!
+//! ```no_run
+//! // build.rs
+//! use std::{env, path::PathBuf};
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+//!
+//! easyfix_messages::Generator::new()
+//!     .fixt_xml("xml/FIXT11.xml")
+//!     .fix_xml("xml/FIX50SP2.xml")
+//!     .output(out_dir.join("messages.rs"))
+//!     .generate()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The consuming crate then pulls the file in with
+//! `include!(concat!(env!("OUT_DIR"), "/messages.rs"))`. Test fixtures take
+//! the other route: `easyfix-test-messages` commits the generated file and
+//! regenerates it through `scripts/regenerate-test-messages.sh`.
+//!
+//! Generation is strict: the dictionaries are validated
+//! (`with_strict_check(true)`) and a dictionary that customizes a codeset the
+//! FIX standard closes - `ApplVerID(1128)` / `DefaultApplVerID(1137)` - fails
+//! the build rather than silently changing accept/reject behavior.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -55,7 +93,7 @@ impl Generator {
     }
 
     /// Path to FIXT transport XML (e.g., FIXT11.xml).
-    /// Optional — omit for FIX versions that don't use FIXT (pre-FIX5).
+    /// Optional - omit for FIX versions that don't use FIXT (pre-FIX5).
     pub fn fixt_xml(mut self, path: impl AsRef<Path>) -> Self {
         self.fixt_xml = Some(path.as_ref().to_owned());
         self

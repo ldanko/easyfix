@@ -4,7 +4,7 @@ use quote::quote;
 
 use super::{doc_attrs, ident::ToIdent, member::Member, serde_derives};
 
-/// Repeating group definition (generated into groups.rs)
+/// Code generator for one repeating group struct.
 pub struct GroupCodeGen {
     name: Ident,
     num_in_group_tag: u16,

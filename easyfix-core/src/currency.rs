@@ -1,3 +1,5 @@
+//! ISO 4217 currency codes, as the three-character FIX `Currency` datatype.
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
@@ -72,7 +74,7 @@ pub enum Currency {
     INR, // Indian rupee
     IQD, // Iraqi dinar
     IRR, // Iranian rial
-    ISK, // Icelandic króna (plural: krónur)
+    ISK, // Icelandic krona (plural: kronur)
     JMD, // Jamaican dollar
     JOD, // Jordanian dinar
     JPY, // Japanese yen
@@ -96,7 +98,7 @@ pub enum Currency {
     MGA, // Malagasy ariary
     MKD, // Macedonian denar
     MMK, // Myanmar kyat
-    MNT, // Mongolian tögrög
+    MNT, // Mongolian togrog
     MOP, // Macanese pataca
     MRU, // Mauritanian ouguiya
     MUR, // Mauritian rupee
@@ -108,7 +110,7 @@ pub enum Currency {
     MZN, // Mozambican metical
     NAD, // Namibian dollar
     NGN, // Nigerian naira
-    NIO, // Nicaraguan córdoba
+    NIO, // Nicaraguan cordoba
     NOK, // Norwegian krone
     NPR, // Nepalese rupee
     NZD, // New Zealand dollar
@@ -118,8 +120,8 @@ pub enum Currency {
     PGK, // Papua New Guinean kina
     PHP, // Philippine peso[13]
     PKR, // Pakistani rupee
-    PLN, // Polish złoty
-    PYG, // Paraguayan guaraní
+    PLN, // Polish zloty
+    PYG, // Paraguayan guarani
     QAR, // Qatari riyal
     RON, // Romanian leu
     RSD, // Serbian dinar
@@ -136,15 +138,15 @@ pub enum Currency {
     SOS, // Somali shilling
     SRD, // Surinamese dollar
     SSP, // South Sudanese pound
-    STN, // São Tomé and Príncipe dobra
-    SVC, // Salvadoran colón
+    STN, // Sao Tome and Principe dobra
+    SVC, // Salvadoran colon
     SYP, // Syrian pound
     SZL, // Swazi lilangeni
     THB, // Thai baht
     TJS, // Tajikistani somoni
     TMT, // Turkmenistan manat
     TND, // Tunisian dinar
-    TOP, // Tongan paʻanga
+    TOP, // Tongan pa'anga
     TRY, // Turkish lira
     TTD, // Trinidad and Tobago dollar
     TWD, // New Taiwan dollar
@@ -157,9 +159,9 @@ pub enum Currency {
     UYU, // Uruguayan peso
     UYW, // Unidad previsional[15]
     UZS, // Uzbekistan som
-    VED, // Venezuelan bolívar digital[16]
-    VES, // Venezuelan bolívar soberano[13]
-    VND, // Vietnamese đồng
+    VED, // Venezuelan bolivar digital[16]
+    VES, // Venezuelan bolivar soberano[13]
+    VND, // Vietnamese dong
     VUV, // Vanuatu vatu
     WST, // Samoan tala
     XAF, // CFA franc BEAC

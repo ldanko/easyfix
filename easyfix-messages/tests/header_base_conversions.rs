@@ -1,8 +1,8 @@
-//! Round-trip tests for header base ↔ generated header conversions.
+//! Round-trip tests for header base <-> generated header conversions.
 //!
 //! Each test verifies that fields survive the conversion in both directions:
-//! - Incoming: Generated → Base (zero-copy borrow)
-//! - Outgoing: Base → Generated (owned construction)
+//! - Incoming: Generated -> Base (zero-copy borrow)
+//! - Outgoing: Base -> Generated (owned construction)
 
 use std::borrow::Cow;
 
@@ -15,7 +15,7 @@ use easyfix_test_messages as messages;
 use messages::{ApplVerId, Header};
 
 // ---------------------------------------------------------------------------
-// HeaderBase ↔ Header
+// HeaderBase <-> Header
 // ---------------------------------------------------------------------------
 
 #[test]

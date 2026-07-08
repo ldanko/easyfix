@@ -837,7 +837,7 @@ fn test_component_flattening() {
         .message_by_name(fix_str!("Heartbeat"))
         .unwrap();
 
-    // In the flattened case, components are inlined — message should have
+    // In the flattened case, components are inlined - message should have
     // TestField1 and TestField2 directly, both as fields, both required
     // (preserving their own required flags from component definitions).
     assert_eq!(flattened_heartbeat.members().len(), 2);
@@ -1000,7 +1000,7 @@ fn test_nested_required_flag_propagation() {
                     "SecurityID" => {
                         assert!(!member.required(), "SecurityID should not be required")
                     }
-                    // OrderID is required in OrderComponent — flattening preserves
+                    // OrderID is required in OrderComponent - flattening preserves
                     // the member's own required flag from its component definition
                     "OrderID" => assert!(
                         member.required(),

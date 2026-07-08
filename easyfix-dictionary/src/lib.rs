@@ -6,14 +6,6 @@
 //! It supports different FIX protocol versions (FIX 4.0-5.0, FIXT1.1), component and group membership,
 //! field definitions with data types, and message specifications.
 //!
-//! ## Features
-//!
-//! - XML parsing of FIX dictionary formats
-//! - Rich type representation of FIX protocol components
-//! - Support for field types, message types, and component hierarchies
-//! - Builder pattern for dictionary configuration
-//! - Comprehensive error handling
-//!
 //! ## Basic Usage
 //!
 //! ```rust,no_run
@@ -41,13 +33,12 @@
 mod dictionary;
 mod xml;
 
-// Re-export the string types used across the dictionary API so consumers
-// don't need a direct easyfix-core dependency to call lookups.
-// Re-export all public items from the dictionary module
 pub use dictionary::{
     BasicType, BuilderError, Component, Dictionary, DictionaryBuilder, Error, Field, Group, Member,
     MemberDefinition, Message, MsgCat, MsgType, SessionProtocol, ValidationError, Variant, Version,
 };
+// The string types used across the dictionary API, re-exported so consumers
+// don't need a direct easyfix-core dependency to call lookups.
 pub use easyfix_core::{
     basic_types::{FixStr, FixString},
     fix_str,

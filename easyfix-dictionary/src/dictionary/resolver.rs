@@ -35,7 +35,7 @@ pub(super) struct Elements {
 /// resolution by name, and circular-reference detection.
 ///
 /// This is a transient structure: create it, call its resolve/create
-/// methods, then consume via `finish()`.
+/// methods, then consume it via [`Resolver::into_elements`].
 pub(super) struct Resolver {
     raw_fields: HashMap<FixString, xml::Field>,
     fields: HashMap<FixString, Rc<Field>>,
@@ -147,40 +147,11 @@ impl Resolver {
 
     /// Creates a group from the XML representation.
     ///
-    /// # Group Naming Convention
-    ///
-    /// XML dictionaries use a specific naming convention for repeating groups:
-    /// - The **counter field** is prefixed with "No" (e.g., "NoHops", "NoLegs", "NoPartyIDs")
-    /// - The **group name** itself omits the "No" prefix (e.g., "Hops", "Legs", "PartyIDs")
-    ///
-    /// ## Example from FIXT11.xml:
-    /// ```xml
-    /// <header>
-    ///   <group name='NoHops' required='N'>
-    ///     <field name='HopCompID' required='N' />
-    ///     <field name='HopSendingTime' required='N' />
-    ///     <field name='HopRefID' required='N' />
-    ///   </group>
-    /// </header>
-    /// ```
-    ///
-    /// This creates:
-    /// - A group named **"Hops"** (without "No" prefix)
-    /// - With a counter field **"NoHops"** (tag 627, NumInGroup type)
-    /// - Containing three fields: HopCompID, HopSendingTime, HopRefID
-    ///
-    /// ## Special Case: Component-Wrapped Groups
-    ///
-    /// When a component contains only a single group, the group inherits the component's name:
-    /// ```xml
-    /// <component name='Parties'>
-    ///   <group name='NoPartyIDs' required='N'>
-    ///     <field name='PartyID' required='Y'/>
-    ///     <field name='PartyRole' required='Y'/>
-    ///   </group>
-    /// </component>
-    /// ```
-    /// Here, the group will be named **"Parties"** (from the component), not "PartyIDs".
+    /// The group name drops the counter field's "No" prefix (`NoHops` ->
+    /// `Hops`), except when `parent_component` is set: a group that is the
+    /// sole member of a component takes that component's name and
+    /// documentation instead (`Parties`, not `PartyIDs`). See [`Group`] for
+    /// the naming convention.
     fn create_group(
         &mut self,
         raw_group: xml::Group,
@@ -299,7 +270,7 @@ impl Resolver {
                 xml::Member::Component(member_ref) => {
                     let component = self.create_component(member_ref.name, visited)?;
                     // A component wrapping a single group is semantically
-                    // a group — flatten it so consumers see MemberDefinition::Group
+                    // a group - flatten it so consumers see MemberDefinition::Group
                     // directly, with the required flag from the usage site.
                     if let [
                         Member {
@@ -359,7 +330,7 @@ impl Resolver {
 
     pub(super) fn check_unused_elements(&self) -> Result<(), Error> {
         // MsgType is skipped because in app dictionaries it may be defined
-        // in <fields> but not referenced by any message — the header that uses
+        // in <fields> but not referenced by any message - the header that uses
         // it is defined separately in the FIXT dictionary.
         if let Some(field) = self.raw_fields.values().find(|f| f.name != "MsgType") {
             Err(Error::Validation(ValidationError::UnusedField(
@@ -416,10 +387,15 @@ pub(super) fn check_required_fields(
         ("MsgType", 35, BasicType::String),
     ];
 
+    // Fields the standard header must carry somewhere, in no particular
+    // order. Not checked yet - the walk below only enforces REQUIRED_IN_ORDER.
+    // Turning this on would reject dictionaries that pass today, so it needs a
+    // deliberate decision rather than being slipped in.
+    #[expect(dead_code, reason = "out-of-order header check not implemented yet")]
     const REQUIRED_OUT_OF_ORDER: &[(&str, u16, BasicType)] = &[
         ("SenderCompID", 49, BasicType::String),
         ("TargetCompID", 56, BasicType::String),
-        ("MsgSeqNum", 35, BasicType::SeqNum),
+        ("MsgSeqNum", 34, BasicType::SeqNum),
     ];
 
     if header.members.is_empty() {
@@ -431,9 +407,10 @@ pub(super) fn check_required_fields(
                 "Header".into(),
             )));
         }
-    } else if header.members.len() < REQUIRED_IN_ORDER.len() + REQUIRED_OUT_OF_ORDER.len() {
     }
 
+    // No length pre-check: the walk below already reports the first required
+    // field the header runs out of, as `UnknownField`.
     let mut iter = header.members.iter();
 
     for (expected_name, expected_tag, expected_type) in REQUIRED_IN_ORDER {

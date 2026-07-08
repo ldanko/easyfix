@@ -1,7 +1,7 @@
 //! Core types for session-message decoupling in easyfix.
 //!
 //! This crate defines the contract between the session layer and generated
-//! message code: basic types, base messages, the `Message` trait, and
+//! message code: basic types, base messages, the [`SessionMessage`] trait, and
 //! deserialization error types.
 //!
 //! # Basic types
@@ -14,14 +14,18 @@
 //!
 //! Minimal typed structures (`HeaderBase`, `AdminBase`, etc.) containing only
 //! the fields the session needs, plus base enumerations (`MsgTypeBase`,
-//! `SessionStatusBase`, etc.) — typed constants for session-relevant FIX
-//! enumeration values. Used by `Message` trait implementations.
+//! `SessionStatusBase`, etc.) - typed constants for session-relevant FIX
+//! enumeration values. Used by [`SessionMessage`] implementations.
 //!
-//! # Message trait
+//! # SessionMessage trait
 //!
-//! `Session<M: Message>` is generic over the message type. The `Message` and
-//! `HeaderAccess` traits are implemented by generated code, bridging session
-//! logic to concrete message definitions.
+//! The session layer is generic over `M: SessionMessage`, so it never names a
+//! concrete message type. [`SessionMessage`] and [`HeaderAccess`] are
+//! implemented by generated code, bridging session logic to concrete message
+//! definitions.
+//!
+//! [`SessionMessage`]: crate::message::SessionMessage
+//! [`HeaderAccess`]: crate::message::HeaderAccess
 
 // `variant_count` backs the compile-time completeness guards on the base
 // enums' `ALL` slices in `base_messages`.

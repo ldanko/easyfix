@@ -1,3 +1,5 @@
+//! ISO 3166-1 country codes, as the two-character FIX `Country` datatype.
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
@@ -17,7 +19,7 @@ pub enum Country {
     AT, // Austria
     AU, // Australia
     AW, // Aruba
-    AX, // Åland Islands
+    AX, // Aland Islands
     AZ, // Azerbaijan
     BA, // Bosnia and Herzegovina
     BB, // Barbados
@@ -28,7 +30,7 @@ pub enum Country {
     BH, // Bahrain
     BI, // Burundi
     BJ, // Benin
-    BL, // Saint Barthélemy
+    BL, // Saint Barthelemy
     BM, // Bermuda
     BN, // Brunei Darussalam
     BO, // Bolivia (Plurinational State of)
@@ -46,7 +48,7 @@ pub enum Country {
     CF, // Central African Republic
     CG, // Congo
     CH, // Switzerland
-    CI, // Côte d'Ivoire
+    CI, // Cote d'Ivoire
     CK, // Cook Islands
     CL, // Chile
     CM, // Cameroon
@@ -55,7 +57,7 @@ pub enum Country {
     CR, // Costa Rica
     CU, // Cuba
     CV, // Cabo Verde
-    CW, // Curaçao
+    CW, // Curacao
     CX, // Christmas Island
     CY, // Cyprus
     CZ, // Czechia
@@ -190,7 +192,7 @@ pub enum Country {
     PW, // Palau
     PY, // Paraguay
     QA, // Qatar
-    RE, // Réunion
+    RE, // Reunion
     RO, // Romania
     RS, // Serbia
     RU, // Russian Federation

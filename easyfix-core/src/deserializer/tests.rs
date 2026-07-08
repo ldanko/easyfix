@@ -1323,7 +1323,7 @@ fn deserialize_data_ok() {
 
 #[test]
 fn deserialize_data_with_soh_inside() {
-    // Data can contain any bytes including SOH — length delimits, not SOH
+    // Data can contain any bytes including SOH - length delimits, not SOH
     let input = b"ab\x01cd\x01\x00";
     let mut deserializer = deserializer(input);
     let result = deserializer
@@ -1335,7 +1335,7 @@ fn deserialize_data_with_soh_inside() {
 
 #[test]
 fn deserialize_data_missing_separator() {
-    // Data without SOH separator after — should be detected as error
+    // Data without SOH separator after - should be detected as error
     let input = b"helloX\x00";
     let mut deserializer = deserializer(input);
     assert_matches!(

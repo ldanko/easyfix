@@ -5,7 +5,7 @@ use quote::quote;
 
 use super::{doc_attrs, ident::ToIdent, member::Member, serde_derives};
 
-/// Message body definition (generated into messages.rs)
+/// Code generator for one message body struct.
 pub struct MessageCodeGen {
     name: Ident,
     msg_type: MsgTypeField,

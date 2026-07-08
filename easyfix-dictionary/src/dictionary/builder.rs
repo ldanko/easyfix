@@ -179,11 +179,9 @@ impl DictionaryBuilder {
     /// resulting in direct field references in messages and groups.
     ///
     /// For example, if Message A contains Component B which contains Field C,
-    /// flattening would make Message A directly contain Field C.
-    ///
-    /// This is useful when you want to simplify the structure and reduce indirection,
-    /// particularly for code generation or processing that works better with
-    /// flattened structures.
+    /// flattening would make Message A directly contain Field C. The resulting
+    /// dictionary has no components left, so code generation never has to
+    /// resolve one.
     pub fn flatten_components(mut self, flatten_components: bool) -> Self {
         self.flatten_components = flatten_components;
         self

@@ -262,7 +262,7 @@ impl Generator {
             msg_names.push(msg.name());
         }
 
-        // `Version::FIX44` / `Version::FIXT11` / `Version::FIX50SP2` — the
+        // `Version::FIX44` / `Version::FIXT11` / `Version::FIX50SP2` - the
         // identifier is the canonical BeginString with dots stripped.
         let version_const: String = self
             .version
@@ -333,12 +333,14 @@ impl Generator {
 /// The 11 legal ApplVerIDCodeSet wire values (FIX Session Layer §11.2).
 const APPL_VER_ID_CODESET: [&str; 11] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
 
-/// Hard generation-time check for tags 1128/1137: the ApplVerIDCodeSet is
-/// closed by the standard, and the generated code represents these fields
-/// with `easyfix_core::basic_types::ApplVerId`, which only speaks the spec
-/// values. A dictionary that trims or extends the codeset would silently
-/// change accept/reject behavior, so it is rejected loudly instead. An
-/// empty `<value>` list is fine - the field type is forced by tag anyway.
+/// Hard generation-time check for tags 1128/1137: panics unless the
+/// dictionary declares exactly the spec ApplVerIDCodeSet. An empty
+/// `<value>` list is fine - the field type is forced by tag anyway.
+//
+// The generated code represents these fields with
+// `easyfix_core::basic_types::ApplVerId`, which only speaks the spec values,
+// so a dictionary that trims or extends the codeset would silently change
+// accept/reject behavior. Fail loudly at generation time instead.
 fn validate_appl_ver_id_codeset(name: &str, tag: u16, values: &[&str]) {
     if values.is_empty() {
         return;

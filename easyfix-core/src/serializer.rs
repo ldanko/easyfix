@@ -1,3 +1,9 @@
+//! Writing FIX tag-value messages.
+//!
+//! [`Serializer`] appends fields into a caller-owned buffer; the generated
+//! message types drive it one field at a time. Nothing is allocated, so the
+//! buffer's length is the message size limit.
+
 use std::fmt::{self, Write};
 
 use chrono::Datelike;
@@ -35,12 +41,23 @@ const fn max_body_len_digits(max_msg_size: usize) -> usize {
     }
 }
 
+/// Why a value could not be written to the wire.
 #[derive(Debug, thiserror::Error)]
 pub enum SerializeError {
+    /// The write would run past the end of the output buffer, or the patched
+    /// BodyLength(9) does not fit the placeholder reserved for it.
     #[error("max message size exceeded")]
     MaxMessageSizeExceeded,
+    /// A field that must carry at least one byte was empty: `FixStr`, `Data`,
+    /// `XmlData`, a `MultipleCharValue` / `MultipleStringValue` collection or
+    /// one of its elements, or an enum collection.
     #[error("empty value")]
     EmptyValue,
+    /// A value outside the range its FIX datatype allows: a zero `TagNum`,
+    /// `SeqNum`, `NumInGroup` or `Length`, a `Char` outside printable ASCII
+    /// (`0x20..=0x7e`), or a timestamp the wire grammar cannot render (year
+    /// outside `0000-9999`, sub-minute UTC offset, leap second in a zoned
+    /// type).
     #[error("invalid value")]
     InvalidValue,
 }
@@ -53,6 +70,32 @@ fn validate_char(c: Char) -> Result<(), SerializeError> {
     }
 }
 
+/// Writes FIX tag-value fields into a caller-provided byte buffer.
+///
+/// The buffer is the message size limit: nothing is ever allocated, and a
+/// message that does not fit fails with
+/// [`SerializeError::MaxMessageSizeExceeded`] rather than growing. Size the
+/// buffer for the largest message the session may emit.
+///
+/// A field is three calls - tag prefix, typed value, delimiter:
+///
+/// ```
+/// # use easyfix_core::{basic_types::FixStr, fix_str, serializer::Serializer};
+/// # fn main() -> Result<(), easyfix_core::serializer::SerializeError> {
+/// let mut buf = [0u8; 64];
+/// let mut serializer = Serializer::new(&mut buf);
+/// serializer.put_slice(b"49=")?;
+/// serializer.serialize_string(fix_str!("SENDER"))?;
+/// serializer.put_soh()?;
+/// assert_eq!(serializer.written(), b"49=SENDER\x01");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// A whole message additionally brackets the body with
+/// [`serialize_body_len`](Self::serialize_body_len) (which reserves the
+/// BodyLength(9) placeholder) and [`serialize_checksum`](Self::serialize_checksum)
+/// (which patches that placeholder and appends CheckSum(10)).
 pub struct Serializer<'a> {
     output: &'a mut [u8],
     pos: usize,
@@ -63,6 +106,7 @@ pub struct Serializer<'a> {
 }
 
 impl<'a> Serializer<'a> {
+    /// Wraps `output`, whose length becomes this message's size limit.
     pub fn new(output: &'a mut [u8]) -> Serializer<'a> {
         Serializer {
             output,
@@ -72,14 +116,17 @@ impl<'a> Serializer<'a> {
         }
     }
 
+    /// Number of bytes written so far.
     pub fn pos(&self) -> usize {
         self.pos
     }
 
+    /// The bytes written so far.
     pub fn written(&self) -> &[u8] {
         &self.output[..self.pos]
     }
 
+    /// Append raw bytes.
     pub fn put_slice(&mut self, bytes: &[u8]) -> Result<(), SerializeError> {
         if bytes.len() > self.output.len() - self.pos {
             return Err(SerializeError::MaxMessageSizeExceeded);
@@ -90,6 +137,7 @@ impl<'a> Serializer<'a> {
         Ok(())
     }
 
+    /// Append a single byte.
     pub fn put_u8(&mut self, byte: u8) -> Result<(), SerializeError> {
         if self.pos >= self.output.len() {
             return Err(SerializeError::MaxMessageSizeExceeded);
@@ -104,6 +152,13 @@ impl<'a> Serializer<'a> {
         self.put_u8(b'\x01')
     }
 
+    /// Write the BodyLength(9) field as an all-zero placeholder and mark the
+    /// body start.
+    ///
+    /// The placeholder width comes from the buffer size, not from the message,
+    /// so the real length is patched in later by
+    /// [`serialize_checksum`](Self::serialize_checksum). Call this once,
+    /// directly after BeginString(8).
     pub fn serialize_body_len(&mut self) -> Result<(), SerializeError> {
         const PLACEHOLDERS: [&[u8]; 8] = [
             b"9=0\x01",
@@ -122,6 +177,13 @@ impl<'a> Serializer<'a> {
         Ok(())
     }
 
+    /// Close the message: patch the real body length into the placeholder,
+    /// then append CheckSum(10) over every byte written before it.
+    ///
+    /// Returns [`SerializeError::MaxMessageSizeExceeded`] when the body length
+    /// needs more digits than the placeholder reserved - including the case
+    /// where [`serialize_body_len`](Self::serialize_body_len) was never
+    /// called, which leaves no placeholder to patch.
     pub fn serialize_checksum(&mut self) -> Result<(), SerializeError> {
         let mut buffer = itoa::Buffer::new();
 
@@ -163,9 +225,9 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serialize sequence of character digits without commas or decimals
-    /// and optional sign character (characters “-” and “0” – “9” ).
-    /// The sign character utilizes one octet (i.e., positive int is “99999”
-    /// while negative int is “-99999”).
+    /// and optional sign character (characters `-` and `0` - `9`).
+    /// The sign character utilizes one octet (i.e., positive int is `99999`
+    /// while negative int is `-99999`).
     pub fn serialize_int(&mut self, int: &Int) -> Result<(), SerializeError> {
         let mut buffer = itoa::Buffer::new();
         self.put_slice(buffer.format(*int).as_bytes())
@@ -205,12 +267,12 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serialize sequence of character digits with optional decimal point
-    /// and sign character (characters “-”, “0” – “9” and “.”);
+    /// and sign character (characters `-`, `0` - `9` and `.`);
     /// the absence of the decimal point within the string will be interpreted
     /// as the float representation of an integer value. Note that float values
-    /// may contain leading zeros (e.g. “00023.23” = “23.23”) and may contain
+    /// may contain leading zeros (e.g. `00023.23` = `23.23`) and may contain
     /// or omit trailing zeros after the decimal point
-    /// (e.g. “23.0” = “23.0000” = “23” = “23.”).
+    /// (e.g. `23.0` = `23.0000` = `23` = `23.`).
     ///
     /// All float fields must accommodate up to fifteen significant digits.
     /// The number of decimal places used should be a factor of business/market
@@ -219,14 +281,17 @@ impl<'a> Serializer<'a> {
         self.put_slice(float.to_string().as_bytes())
     }
 
+    /// Serialize a `Qty` - the `Float` grammar under a different name.
     pub fn serialize_qty(&mut self, qty: &Qty) -> Result<(), SerializeError> {
         self.serialize_float(qty)
     }
 
+    /// Serialize a `Price` - the `Float` grammar under a different name.
     pub fn serialize_price(&mut self, price: &Price) -> Result<(), SerializeError> {
         self.serialize_float(price)
     }
 
+    /// Serialize a `PriceOffset` - the `Float` grammar under a different name.
     pub fn serialize_price_offset(
         &mut self,
         price_offset: &PriceOffset,
@@ -234,14 +299,17 @@ impl<'a> Serializer<'a> {
         self.serialize_float(price_offset)
     }
 
+    /// Serialize an `Amt` - the `Float` grammar under a different name.
     pub fn serialize_amt(&mut self, amt: &Amt) -> Result<(), SerializeError> {
         self.serialize_float(amt)
     }
 
+    /// Serialize a `Percentage` - the `Float` grammar under a different name.
     pub fn serialize_percentage(&mut self, percentage: &Percentage) -> Result<(), SerializeError> {
         self.serialize_float(percentage)
     }
 
+    /// Serialize a single-character boolean: `Y` for true, `N` for false.
     pub fn serialize_boolean(&mut self, boolean: &Boolean) -> Result<(), SerializeError> {
         if *boolean {
             self.put_u8(b'Y')
@@ -257,7 +325,7 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serialize string containing one or more space-delimited single
-    /// character values, e.g. “2 A F”.
+    /// character values, e.g. `2 A F`.
     pub fn serialize_multiple_char_value(
         &mut self,
         mcv: &MultipleCharValue,
@@ -285,7 +353,7 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serialize string containing one or more space-delimited multiple
-    /// character values, e.g. “AV AN A”.
+    /// character values, e.g. `AV AN A`.
     pub fn serialize_multiple_string_value(
         &mut self,
         input: &MultipleStringValue,
@@ -317,8 +385,8 @@ impl<'a> Serializer<'a> {
         self.put_slice(currency.to_bytes())
     }
 
-    /// Serialize ISO 10383:2012 Securities and related financial instruments
-    /// – Codes for exchanges and market identification (MIC)
+    /// Serialize ISO 10383:2012 Securities and related financial
+    /// instruments - Codes for exchanges and market identification (MIC)
     /// (4-character code).
     pub fn serialize_exchange(&mut self, exchange: &Exchange) -> Result<(), SerializeError> {
         for &byte in exchange {
@@ -450,7 +518,7 @@ impl<'a> Serializer<'a> {
     ///
     /// The representation is based on ISO 8601.
     ///
-    /// Format is `YYYYMMDD-HH:MM:SS.sss*[Z | [ + | – hh[:mm]]]` where:
+    /// Format is `YYYYMMDD-HH:MM:SS.sss*[Z | [ + | - hh[:mm]]]` where:
     /// - YYYY = 0000 to 9999,
     /// - MM = 01-12,
     /// - DD = 01-31 HH = 00-23 hours,
@@ -478,7 +546,7 @@ impl<'a> Serializer<'a> {
     /// ISO 8601. This is the time with a UTC offset to allow identification of
     /// local time and time zone of that time.
     ///
-    /// Format is `HH:MM[:SS][Z | [ + | – hh[:mm]]]` where:
+    /// Format is `HH:MM[:SS][Z | [ + | - hh[:mm]]]` where:
     /// - HH = 00-23 hours,
     /// - MM = 00-59 minutes,
     /// - SS = 00-59 seconds,
@@ -519,12 +587,18 @@ impl<'a> Serializer<'a> {
         self.put_slice(xml_data)
     }
 
+    /// Serialize a tenor: the unit code (`D`, `M`, `W` or `Y`) followed by its
+    /// value, e.g. `M3` for three months.
     pub fn serialize_tenor(&mut self, input: &Tenor) -> Result<(), SerializeError> {
         self.put_u8(input.unit.as_byte())?;
         let mut buffer = itoa::Buffer::new();
         self.put_slice(buffer.format(input.value).as_bytes())
     }
 
+    /// Serialize an enum as its FIX wire value.
+    ///
+    /// The value is a `&'static [u8]` held in read-only memory, so this is a
+    /// single copy with nothing allocated.
     pub fn serialize_enum<T>(&mut self, value: &T) -> Result<(), SerializeError>
     where
         T: Copy + Into<&'static [u8]>,
@@ -532,6 +606,10 @@ impl<'a> Serializer<'a> {
         self.put_slice((*value).into())
     }
 
+    /// Serialize enums as a space-delimited list of their FIX wire values.
+    ///
+    /// An empty slice is [`SerializeError::EmptyValue`] - a FIX field must
+    /// carry at least one byte.
     pub fn serialize_enum_collection<T>(&mut self, values: &[T]) -> Result<(), SerializeError>
     where
         T: Copy + Into<&'static [u8]>,

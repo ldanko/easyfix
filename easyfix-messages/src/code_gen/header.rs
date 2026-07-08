@@ -29,7 +29,7 @@ impl Header {
             .filter(|m| !matches!(m.tag_num(), 8 | 35))
             .map(|member| member.gen_definition());
         // Tags 8 (BeginString), 9 (BodyLength), and 35 (MsgType) are serialized
-        // by Message::serialize() — not by Header::serialize().
+        // by Message::serialize() - not by Header::serialize().
         let serialize = self
             .members
             .iter()
@@ -131,8 +131,8 @@ impl Header {
     /// Generate `From` conversions between `HeaderBase` (easyfix-core) and the
     /// generated `Header` struct.
     ///
-    /// - `From<&'a Header> for HeaderBase<'a>` — incoming, zero-copy via `Cow::Borrowed`
-    /// - `From<HeaderBase<'_>> for Header` — outgoing, consumes `Cow`, defaults remaining fields
+    /// - `From<&'a Header> for HeaderBase<'a>` - incoming, zero-copy via `Cow::Borrowed`
+    /// - `From<HeaderBase<'_>> for Header` - outgoing, consumes `Cow`, defaults remaining fields
     fn generate_header_base_conversions(&self, version: Version) -> TokenStream {
         let members_by_tag: std::collections::HashMap<u16, &Member> =
             self.members.iter().map(|m| (m.tag_num(), m)).collect();

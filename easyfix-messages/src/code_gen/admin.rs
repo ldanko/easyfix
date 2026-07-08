@@ -2,8 +2,8 @@
 //! and generated admin message structs.
 //!
 //! For each admin message, two conversions are generated:
-//! - Incoming: `From<&'a Generated> for Base<'a>` — zero-copy via `Cow::Borrowed`
-//! - Outgoing: `From<Base<'_>> for Generated` — consumes `Cow`, defaults remaining fields
+//! - Incoming: `From<&'a Generated> for Base<'a>` - zero-copy via `Cow::Borrowed`
+//! - Outgoing: `From<Base<'_>> for Generated` - consumes `Cow`, defaults remaining fields
 //!
 //! Dual-representation enum fields (typed + raw in base, single enum in generated):
 //! - Incoming: typed field gets `Default`, raw field gets the Int parsed from enum bytes
@@ -96,7 +96,7 @@ fn validate_tag(map: &HashMap<u16, &Member>, tag: u16, name: &str, expected: Bas
 }
 
 // ---------------------------------------------------------------------------
-// HeartbeatBase ↔ Heartbeat
+// HeartbeatBase <-> Heartbeat
 // Fields: test_req_id (tag 112, String, optional)
 // ---------------------------------------------------------------------------
 fn generate_heartbeat(members: &[Member]) -> TokenStream {
@@ -130,7 +130,7 @@ fn generate_heartbeat(members: &[Member]) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// TestRequestBase ↔ TestRequest
+// TestRequestBase <-> TestRequest
 // Fields: test_req_id (tag 112, String, required)
 // ---------------------------------------------------------------------------
 fn generate_test_request(members: &[Member]) -> TokenStream {
@@ -164,7 +164,7 @@ fn generate_test_request(members: &[Member]) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// ResendRequestBase ↔ ResendRequest
+// ResendRequestBase <-> ResendRequest
 // Fields: begin_seq_no (tag 7, SeqNum), end_seq_no (tag 16, SeqNum)
 // ---------------------------------------------------------------------------
 fn generate_resend_request(members: &[Member]) -> TokenStream {
@@ -201,7 +201,7 @@ fn generate_resend_request(members: &[Member]) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// SequenceResetBase ↔ SequenceReset
+// SequenceResetBase <-> SequenceReset
 // Fields: gap_fill_flag (tag 123, Boolean, optional), new_seq_no (tag 36, SeqNum)
 // ---------------------------------------------------------------------------
 fn generate_sequence_reset(members: &[Member]) -> TokenStream {
@@ -238,7 +238,7 @@ fn generate_sequence_reset(members: &[Member]) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// LogoutBase ↔ Logout
+// LogoutBase <-> Logout
 // Fields:
 //   session_status / session_status_raw (tag 1409, Int enum, optional, FIX 5.0SP1+)
 //   text                                (tag 58,   String,   optional)
@@ -303,7 +303,7 @@ fn generate_logout(members: &[Member], version: Version) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// RejectBase ↔ Reject
+// RejectBase <-> Reject
 // Fields:
 //   ref_seq_num       (tag 45,  SeqNum, required)
 //   ref_tag_id        (tag 371, Int,    optional, FIX 4.2+)
@@ -318,7 +318,7 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
     validate_tag(&map, 45, "RefSeqNum", BasicType::SeqNum);
     validate_tag(&map, 58, "Text", BasicType::String);
 
-    // Version-conditional fields (FIX 4.2+) — validate only if present
+    // Version-conditional fields (FIX 4.2+) - validate only if present
     let has_ref_tag_id = map.contains_key(&371);
     if has_ref_tag_id {
         validate_tag(&map, 371, "RefTagID", BasicType::Int);
@@ -423,7 +423,7 @@ fn generate_reject(members: &[Member], version: Version) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// LogonBase ↔ Logon
+// LogonBase <-> Logon
 // Fields:
 //   encrypt_method / encrypt_method_raw (tag 98,   Int enum,  required)
 //   heart_bt_int                        (tag 108,  Int,       required)
@@ -440,7 +440,7 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     validate_tag(&map, 98, "EncryptMethod", BasicType::Int);
     validate_tag(&map, 108, "HeartBtInt", BasicType::Int);
 
-    // Version-conditional fields — validate only if present
+    // Version-conditional fields - validate only if present
     let has_reset_seq_num_flag = map.contains_key(&141);
     if has_reset_seq_num_flag {
         validate_tag(&map, 141, "ResetSeqNumFlag", BasicType::Boolean);

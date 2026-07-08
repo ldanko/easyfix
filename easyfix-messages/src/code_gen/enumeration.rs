@@ -10,14 +10,14 @@ use super::{doc_attrs, doc_text_attrs, ident::ToIdent, member::EnumerableType, s
 
 /// Defines a mapping from session-relevant traits/newtypes (in easyfix-core)
 /// to generated enums. For each mapping, the generator produces:
-/// - `impl TraitName for GeneratedEnum` (raw_value → Int)
+/// - `impl TraitName for GeneratedEnum` (raw_value -> Int)
 /// - `From<NewtypeField> for GeneratedEnum` (using TryFrom + .expect())
 /// - Build-time validation that all base enum variant values exist in the
 ///   generated enum
 ///
 /// Variant matching is by **value** (the FIX wire value), not by name,
 /// because the generated variant names come from XML descriptions (e.g.
-/// "LOGONS_ARE_NOT_ALLOWED_AT_THIS_TIME" → `LogonsAreNotAllowedAtThisTime`)
+/// "LOGONS_ARE_NOT_ALLOWED_AT_THIS_TIME" -> `LogonsAreNotAllowedAtThisTime`)
 /// while base variant names are short session-oriented names.
 struct BaseEnumMapping {
     /// Tag number of the generated enum
@@ -116,7 +116,7 @@ impl EnumCodeGen {
     }
 
     /// If this enum has a corresponding trait/newtype in easyfix-core, generate:
-    /// - `impl TraitName for GeneratedEnum` (raw_value → Int)
+    /// - `impl TraitName for GeneratedEnum` (raw_value -> Int)
     /// - `From<NewtypeField> for GeneratedEnum` (using TryFrom + .expect())
     /// - For MsgType: `TryFrom<MsgTypeField>` instead (fallible, see
     ///   [`Self::generate_msg_type_conversion`])

@@ -20,7 +20,7 @@ pub enum EnumerableType {
 }
 
 impl EnumerableType {
-    /// Single validation point. Replaces scattered panic sites.
+    /// `None` when `bt` has no enumerable representation.
     pub fn try_from_basic_type(bt: BasicType) -> Option<EnumerableType> {
         match bt {
             BasicType::Int => Some(EnumerableType::Int),
@@ -101,7 +101,9 @@ impl EnumerableType {
 }
 
 /// Code generation helpers for BasicType.
-/// Wraps BasicType to provide token generation without modifying the dictionary crate.
+//
+// A wrapper rather than inherent methods so token generation stays out of the
+// dictionary crate, which must not depend on proc-macro2.
 #[derive(Debug)]
 struct BasicTypeCodeGen(BasicType);
 
@@ -222,7 +224,7 @@ impl BasicTypeCodeGen {
 }
 
 /// Special FIX tags that require non-standard handling during serialization
-/// and deserialization. Centralizes all magic-number tag checks.
+/// and deserialization.
 #[derive(Debug, Clone, Copy)]
 enum SpecialTag {
     BeginString, // 8
@@ -415,7 +417,7 @@ impl Field {
     }
 
     /// Generate mutable optional variables set to None for further
-    /// processig in deserializer loop.
+    /// processing in deserializer loop.
     ///
     /// Variables for special tags like 8, 9, 10 are ignored here as they
     /// has already known values.
@@ -637,7 +639,7 @@ impl RawData {
     }
 
     /// Generate mutable optional variables set to None for further
-    /// processig in deserializer loop.
+    /// processing in deserializer loop.
     ///
     /// Variables for special tags like 8, 9, 10 has already known values.
     fn gen_opt_variables(&self) -> TokenStream {
@@ -804,7 +806,7 @@ impl Group {
     }
 
     /// Generate mutable optional variables set to None for further
-    /// processig in deserializer loop.
+    /// processing in deserializer loop.
     ///
     /// Variables for special tags like 8, 9, 10 has already known values.
     fn gen_opt_variables(&self) -> TokenStream {
@@ -939,7 +941,7 @@ impl MemberDefinition {
     }
 
     /// Generate mutable optional variables set to None for further
-    /// processig in deserializer loop.
+    /// processing in deserializer loop.
     ///
     /// Variables for special tags like 8, 9, 10 has already known values.
     fn gen_opt_variables(&self) -> TokenStream {
@@ -1036,7 +1038,7 @@ impl Member {
     }
 
     /// Generate mutable optional variables set to None for further
-    /// processig in deserializer loop.
+    /// processing in deserializer loop.
     ///
     /// Variables for special tags like 8, 9, 10 has already known values.
     pub fn gen_opt_variables(&self) -> TokenStream {

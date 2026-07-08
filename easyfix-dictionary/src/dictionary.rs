@@ -199,7 +199,7 @@ impl Dictionary {
         })?;
 
         // Inline each member of the component with its own required flag.
-        // The component's usage-site required flag is not used — components
+        // The component's usage-site required flag is not used - components
         // are just grouping containers that disappear after flattening.
         for member in &component.members {
             match member.definition() {
@@ -305,6 +305,21 @@ impl Dictionary {
         Ok(flattened_group)
     }
 
+    /// Returns a copy of this dictionary with every component inlined into
+    /// the message, group, header or trailer that used it.
+    ///
+    /// The result has an empty [`components`](Self::components) map and no
+    /// [`MemberDefinition::Component`] anywhere, so a consumer walking members
+    /// never has to resolve one. Everything else survives: message definition
+    /// order, group names, and the subdictionaries, which are flattened too.
+    ///
+    /// Each inlined field keeps the `required` flag from **its own definition
+    /// inside the component**, not the one on the component's usage site - a
+    /// field marked `required='Y'` within a component stays required even
+    /// where that component was included with `required='N'`.
+    ///
+    /// Returns [`ValidationError::UnknownComponent`] if a member references a
+    /// component this dictionary does not define.
     pub fn flatten(&self) -> Result<Dictionary, Error> {
         // Create copies of messages with flattened components, preserving definition order
         let mut new_messages = Vec::with_capacity(self.messages.len());
