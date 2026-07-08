@@ -7,7 +7,8 @@ use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
 use crate::{
     base_messages::SessionRejectReasonBase,
     basic_types::{
-        FixStr, LocalMktDate, Price, SessionRejectReasonField, Tenor, TenorUnit, TimePrecision,
+        FixStr, LocalMktDate, Price, SessionRejectReasonField, Tenor, TenorUnit, TenorValue,
+        TimePrecision,
     },
     deserializer::{
         DeserializeErrorKind, GarbledReason, LogoutReason, RawMessageError, deserialize_checksum,
@@ -521,7 +522,7 @@ fn deserialize_tenor_days() {
         tenor,
         Tenor {
             unit: TenorUnit::Days,
-            value: 5
+            value: TenorValue::new(5).unwrap()
         }
     );
     assert_eq!(deserializer.buf, b"\x00");
@@ -538,7 +539,7 @@ fn deserialize_tenor_months() {
         tenor,
         Tenor {
             unit: TenorUnit::Months,
-            value: 3
+            value: TenorValue::new(3).unwrap()
         }
     );
     assert_eq!(deserializer.buf, b"\x00");
@@ -555,7 +556,7 @@ fn deserialize_tenor_weeks() {
         tenor,
         Tenor {
             unit: TenorUnit::Weeks,
-            value: 13
+            value: TenorValue::new(13).unwrap()
         }
     );
     assert_eq!(deserializer.buf, b"\x00");
@@ -572,7 +573,7 @@ fn deserialize_tenor_years() {
         tenor,
         Tenor {
             unit: TenorUnit::Years,
-            value: 1
+            value: TenorValue::new(1).unwrap()
         }
     );
     assert_eq!(deserializer.buf, b"\x00");

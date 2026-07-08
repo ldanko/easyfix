@@ -242,6 +242,13 @@ impl TenorUnit {
     }
 }
 
+/// How many [`TenorUnit`]s a [`Tenor`] counts.
+///
+/// A tenor of zero units is a reject with `ValueIsIncorrect` on the wire, so
+/// it is unrepresentable here. The `u16` width caps a tenor at 65535 units,
+/// which no maturity reaches in any unit the type offers.
+pub type TenorValue = NonZero<u16>;
+
 /// A time-to-maturity expressed as a unit and a count, e.g. `M3` for three
 /// months. Rendered as the unit code followed by the value, with no
 /// separator.
@@ -250,12 +257,7 @@ pub struct Tenor {
     /// The unit the value counts.
     pub unit: TenorUnit,
     /// How many units.
-    ///
-    /// A zero is **not** caught on the way out - serialization writes `M0`
-    /// happily - but it is on the way in: parsing one is a reject with
-    /// `ValueIsIncorrect`. Sending a zero therefore produces a field the
-    /// counterparty is entitled to reject, so validate it upstream.
-    pub value: Length,
+    pub value: TenorValue,
 }
 
 /// A byte that cannot appear in a [`FixStr`], with where it was found.
@@ -2605,7 +2607,13 @@ mod tenor_serde_de_tests {
             ("Y1", TenorUnit::Years, 1),
         ] {
             let parsed = de(input).expect("valid tenor rejected");
-            assert_eq!(parsed, Tenor { unit, value });
+            assert_eq!(
+                parsed,
+                Tenor {
+                    unit,
+                    value: TenorValue::new(value).unwrap()
+                }
+            );
         }
     }
 
@@ -2622,7 +2630,7 @@ mod tenor_serde_de_tests {
         // Trailing garbage - the whole input must be consumed.
         assert!(de("D5x").is_err());
         assert!(de("D5\x01").is_err());
-        // Value above the u16 range of Length.
+        // Value above the u16 range of TenorValue.
         assert!(de("D65536").is_err());
         assert!(de("").is_err());
     }
@@ -2640,7 +2648,10 @@ mod tenor_serde_ser_tests {
             (TenorUnit::Weeks, 13, "\"W13\""),
             (TenorUnit::Years, 1, "\"Y1\""),
         ] {
-            let tenor = Tenor { unit, value };
+            let tenor = Tenor {
+                unit,
+                value: TenorValue::new(value).unwrap(),
+            };
             assert_eq!(serde_json::to_string(&tenor).unwrap(), expected);
         }
     }

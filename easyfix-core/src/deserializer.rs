@@ -19,8 +19,8 @@ use crate::{
         FixString, FixedOffset, Float, Int, Language, Length, LocalMktDate, LocalMktTime,
         MonthYear, MultipleCharValue, MultipleStringValue, NaiveDate, NaiveTime, NumInGroup,
         Percentage, Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, TagNum, Tenor,
-        TenorUnit, TimePrecision, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly, UtcTimeOnly,
-        UtcTimestamp, XmlData,
+        TenorUnit, TenorValue, TimePrecision, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly,
+        UtcTimeOnly, UtcTimestamp, XmlData,
     },
 };
 
@@ -569,13 +569,13 @@ pub(crate) fn parse_tenor(buf: &[u8]) -> Result<(Tenor, &[u8]), DeserializeError
         SessionRejectReasonBase::IncorrectDataFormatForValue,
     ))?;
 
-    let mut value: Length = 0;
+    let mut value: u16 = 0;
     let mut digits = 0;
     let mut rest = rest;
     while let [d @ b'0'..=b'9', tail @ ..] = rest {
         value = value
             .checked_mul(10)
-            .and_then(|v| v.checked_add(Length::from(d - b'0')))
+            .and_then(|v| v.checked_add(u16::from(d - b'0')))
             .ok_or(DeserializeErrorKindInternal::Error(
                 SessionRejectReasonBase::ValueIsIncorrect,
             ))?;
@@ -583,10 +583,11 @@ pub(crate) fn parse_tenor(buf: &[u8]) -> Result<(Tenor, &[u8]), DeserializeError
         rest = tail;
     }
 
+    // No digits leaves the value at zero, so one check covers both cases.
     // With nothing but digits consumed so far, more input could still turn
-    // both of these into a valid value - only an exhausted buffer separates
+    // either of them into a valid value - only an exhausted buffer separates
     // truncation from malformation.
-    if digits == 0 || value == 0 {
+    let Some(value) = TenorValue::new(value) else {
         return if rest.is_empty() {
             Err(DeserializeErrorKindInternal::Incomplete)
         } else if digits == 0 {
@@ -598,7 +599,7 @@ pub(crate) fn parse_tenor(buf: &[u8]) -> Result<(Tenor, &[u8]), DeserializeError
                 SessionRejectReasonBase::ValueIsIncorrect,
             ))
         };
-    }
+    };
 
     Ok((Tenor { unit, value }, rest))
 }

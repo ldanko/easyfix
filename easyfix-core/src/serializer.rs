@@ -592,7 +592,7 @@ impl<'a> Serializer<'a> {
     pub fn serialize_tenor(&mut self, input: &Tenor) -> Result<(), SerializeError> {
         self.put_u8(input.unit.as_byte())?;
         let mut buffer = itoa::Buffer::new();
-        self.put_slice(buffer.format(input.value).as_bytes())
+        self.put_slice(buffer.format(input.value.get()).as_bytes())
     }
 
     /// Serialize an enum as its FIX wire value.
