@@ -58,6 +58,10 @@ const BASIC_FIXT_DICT: &str = r#"
     <field name='BeginString' required='Y'/>
     <field name='BodyLength' required='Y'/>
     <field name='MsgType' required='Y'/>
+    <field name='SenderCompID' required='Y'/>
+    <field name='TargetCompID' required='Y'/>
+    <field name='MsgSeqNum' required='Y'/>
+    <field name='SendingTime' required='Y'/>
   </header>
   <trailer>
     <field name='CheckSum' required='Y'/>
@@ -79,6 +83,10 @@ const BASIC_FIXT_DICT: &str = r#"
     <field name='MsgType' number='35' type='STRING'/>
     <field name='CheckSum' number='10' type='STRING'/>
     <field name='TestReqID' number='112' type='STRING'/>
+    <field name='SenderCompID' number='49' type='STRING'/>
+    <field name='TargetCompID' number='56' type='STRING'/>
+    <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+    <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
   </fields>
 </fix>
 "#;
@@ -1379,6 +1387,10 @@ fn test_builder_with_strict_check_unused_field() {
             <field name='BeginString' required='Y'/>
             <field name='BodyLength' required='Y'/>
             <field name='MsgType' required='Y'/>
+            <field name='SenderCompID' required='Y'/>
+            <field name='TargetCompID' required='Y'/>
+            <field name='MsgSeqNum' required='Y'/>
+            <field name='SendingTime' required='Y'/>
           </header>
           <trailer>
             <field name='CheckSum' required='Y'/>
@@ -1395,6 +1407,10 @@ fn test_builder_with_strict_check_unused_field() {
             <field name='MsgType' number='35' type='STRING'/>
             <field name='CheckSum' number='10' type='STRING'/>
             <field name='TestReqID' number='112' type='STRING'/>
+            <field name='SenderCompID' number='49' type='STRING'/>
+            <field name='TargetCompID' number='56' type='STRING'/>
+            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
             <!-- This field is defined but not used anywhere -->
             <field name='UnusedField' number='999' type='STRING'/>
           </fields>
@@ -1431,6 +1447,10 @@ fn test_builder_with_strict_check_unused_component() {
             <field name='BeginString' required='Y'/>
             <field name='BodyLength' required='Y'/>
             <field name='MsgType' required='Y'/>
+            <field name='SenderCompID' required='Y'/>
+            <field name='TargetCompID' required='Y'/>
+            <field name='MsgSeqNum' required='Y'/>
+            <field name='SendingTime' required='Y'/>
           </header>
           <trailer>
             <field name='CheckSum' required='Y'/>
@@ -1457,6 +1477,10 @@ fn test_builder_with_strict_check_unused_component() {
             <field name='MsgType' number='35' type='STRING'/>
             <field name='CheckSum' number='10' type='STRING'/>
             <field name='TestReqID' number='112' type='STRING'/>
+            <field name='SenderCompID' number='49' type='STRING'/>
+            <field name='TargetCompID' number='56' type='STRING'/>
+            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
             <field name='UsedField' number='998' type='STRING'/>
             <field name='UnusedCompField' number='999' type='STRING'/>
           </fields>
@@ -1535,6 +1559,224 @@ fn test_builder_with_strict_invalid_header() {
         result,
         Err(Error::Validation(ValidationError::InvalidRequiredField(name, _, _))) if name == "BeginString",
         "Expected InvalidRequiredField error for BeginString"
+    );
+}
+
+// SenderCompID(49), TargetCompID(56), MsgSeqNum(34) and SendingTime(52) are
+// Req'd = Y in the standard header (FIX Session Layer §8.5) but their position
+// is not mandated (TagValue §4.3.3), so the strict check looks for them
+// anywhere among the header fields - here MsgSeqNum sits last and is accepted.
+#[test]
+fn test_builder_with_strict_check_out_of_order_header_fields() {
+    let reordered_header_xml = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+            <field name='SendingTime' required='Y'/>
+            <field name='TargetCompID' required='Y'/>
+            <field name='SenderCompID' required='Y'/>
+            <field name='MsgSeqNum' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <field name='TestReqID' required='N'/>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='TestReqID' number='112' type='STRING'/>
+            <field name='SenderCompID' number='49' type='STRING'/>
+            <field name='TargetCompID' number='56' type='STRING'/>
+            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("reordered_header.xml", reordered_header_xml);
+
+    let result = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .with_strict_check(true)
+        .build();
+    assert!(
+        result.is_ok(),
+        "Strict check should accept required header fields in any order: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_builder_with_strict_check_header_without_sender_comp_id() {
+    let no_sender_comp_id_xml = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+            <!-- SenderCompID is missing -->
+            <field name='TargetCompID' required='Y'/>
+            <field name='MsgSeqNum' required='Y'/>
+            <field name='SendingTime' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <field name='TestReqID' required='N'/>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='TestReqID' number='112' type='STRING'/>
+            <field name='TargetCompID' number='56' type='STRING'/>
+            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("no_sender_comp_id.xml", no_sender_comp_id_xml);
+
+    // Without strict check - should succeed
+    let result = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .with_strict_check(false)
+        .build();
+    assert!(
+        result.is_ok(),
+        "Dictionary without strict check should succeed without SenderCompID"
+    );
+
+    let result = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .with_strict_check(true)
+        .build();
+    assert_matches!(
+        result,
+        Err(Error::Validation(ValidationError::MissingRequiredField(name, tag)))
+            if name == "SenderCompID" && tag == 49,
+        "Expected MissingRequiredField error for SenderCompID"
+    );
+}
+
+#[test]
+fn test_builder_with_strict_check_optional_body_length() {
+    let optional_body_length_xml = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <!-- BodyLength is mandatory in the standard header -->
+            <field name='BodyLength' required='N'/>
+            <field name='MsgType' required='Y'/>
+            <field name='SenderCompID' required='Y'/>
+            <field name='TargetCompID' required='Y'/>
+            <field name='MsgSeqNum' required='Y'/>
+            <field name='SendingTime' required='Y'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <field name='TestReqID' required='N'/>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='TestReqID' number='112' type='STRING'/>
+            <field name='SenderCompID' number='49' type='STRING'/>
+            <field name='TargetCompID' number='56' type='STRING'/>
+            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("optional_body_length.xml", optional_body_length_xml);
+
+    let result = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .with_strict_check(true)
+        .build();
+    assert_matches!(
+        result,
+        Err(Error::Validation(ValidationError::OptionalRequiredField(name, tag)))
+            if name == "BodyLength" && tag == 9,
+        "Expected OptionalRequiredField error for optional BodyLength"
+    );
+}
+
+#[test]
+fn test_builder_with_strict_check_optional_sending_time() {
+    let optional_sending_time_xml = r#"
+        <?xml version='1.0' encoding='UTF-8'?>
+        <fix type='FIX' major='4' minor='4' servicepack='0'>
+          <header>
+            <field name='BeginString' required='Y'/>
+            <field name='BodyLength' required='Y'/>
+            <field name='MsgType' required='Y'/>
+            <field name='SenderCompID' required='Y'/>
+            <field name='TargetCompID' required='Y'/>
+            <field name='MsgSeqNum' required='Y'/>
+            <!-- SendingTime is mandatory in the standard header -->
+            <field name='SendingTime' required='N'/>
+          </header>
+          <trailer>
+            <field name='CheckSum' required='Y'/>
+          </trailer>
+          <messages>
+            <message msgcat='admin' msgtype='0' name='Heartbeat'>
+              <field name='TestReqID' required='N'/>
+            </message>
+          </messages>
+          <components/>
+          <fields>
+            <field name='BeginString' number='8' type='STRING'/>
+            <field name='BodyLength' number='9' type='LENGTH'/>
+            <field name='MsgType' number='35' type='STRING'/>
+            <field name='CheckSum' number='10' type='STRING'/>
+            <field name='TestReqID' number='112' type='STRING'/>
+            <field name='SenderCompID' number='49' type='STRING'/>
+            <field name='TargetCompID' number='56' type='STRING'/>
+            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
+            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
+          </fields>
+        </fix>
+    "#;
+
+    let test_file = TestFile::new("optional_sending_time.xml", optional_sending_time_xml);
+
+    let result = DictionaryBuilder::new()
+        .with_fix_xml(test_file.path())
+        .with_strict_check(true)
+        .build();
+    assert_matches!(
+        result,
+        Err(Error::Validation(ValidationError::OptionalRequiredField(name, tag)))
+            if name == "SendingTime" && tag == 52,
+        "Expected OptionalRequiredField error for optional SendingTime"
     );
 }
 

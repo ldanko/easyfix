@@ -80,10 +80,23 @@ pub enum ValidationError {
     #[error("Unused component {0}")]
     UnusedComponent(String),
 
+    /// A field the standard header/trailer must carry is not defined there
+    ///
+    /// This error only occurs when strict validation is enabled with `with_strict_check(true)`.
+    #[error("Missing required field {0}({1})")]
+    MissingRequiredField(String, u16),
+
+    /// A field the standard header/trailer must carry is declared optional
+    ///
+    /// This error only occurs when strict validation is enabled with `with_strict_check(true)`.
+    #[error("Required field {0}({1}) is marked optional")]
+    OptionalRequiredField(String, u16),
+
     /// A required standard field in the header/trailer has incorrect properties
     ///
     /// This error occurs when a required FIX field (like BeginString or BodyLength)
-    /// has the wrong name, tag number, or data type in the dictionary.
+    /// is defined with the wrong tag number or data type, or - for the fields
+    /// whose position is mandated - does not sit where it must.
     /// This error only occurs when strict validation is enabled with `with_strict_check(true)`.
     #[error("Invalid required field {0}({1}) [{2:?}]")]
     InvalidRequiredField(String, u16, BasicType),

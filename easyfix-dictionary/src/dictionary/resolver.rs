@@ -4,7 +4,10 @@ use std::{
     vec,
 };
 
-use easyfix_core::basic_types::{FixStr, FixString};
+use easyfix_core::{
+    basic_types::{FixStr, FixString},
+    fix_str,
+};
 
 use super::{
     Version,
@@ -381,22 +384,51 @@ pub(super) fn check_required_fields(
     trailer: &Component,
     version: Version,
 ) -> Result<(), Error> {
-    const REQUIRED_IN_ORDER: [(&str, u16, BasicType); 3] = [
-        ("BeginString", 8, BasicType::String),
-        ("BodyLength", 9, BasicType::Length),
-        ("MsgType", 35, BasicType::String),
+    const REQUIRED_IN_ORDER: [(&FixStr, u16, BasicType); 3] = [
+        (fix_str!("BeginString"), 8, BasicType::String),
+        (fix_str!("BodyLength"), 9, BasicType::Length),
+        (fix_str!("MsgType"), 35, BasicType::String),
     ];
 
-    // Fields the standard header must carry somewhere, in no particular
-    // order. Not checked yet - the walk below only enforces REQUIRED_IN_ORDER.
-    // Turning this on would reject dictionaries that pass today, so it needs a
-    // deliberate decision rather than being slipped in.
-    #[expect(dead_code, reason = "out-of-order header check not implemented yet")]
-    const REQUIRED_OUT_OF_ORDER: &[(&str, u16, BasicType)] = &[
-        ("SenderCompID", 49, BasicType::String),
-        ("TargetCompID", 56, BasicType::String),
-        ("MsgSeqNum", 34, BasicType::SeqNum),
+    // Fields the standard header must carry somewhere, in no particular order.
+    // FIX Session Layer §8.5 marks all four Req'd = Y, while TagValue §4.3.3
+    // mandates a position only for the first three fields and CheckSum(10) -
+    // "except where noted, fields within a message can be defined in any
+    // sequence" - so these are matched by name wherever they sit.
+    const REQUIRED_OUT_OF_ORDER: [(&FixStr, u16, BasicType); 4] = [
+        (fix_str!("SenderCompID"), 49, BasicType::String),
+        (fix_str!("TargetCompID"), 56, BasicType::String),
+        (fix_str!("MsgSeqNum"), 34, BasicType::SeqNum),
+        (fix_str!("SendingTime"), 52, BasicType::UtcTimestamp),
     ];
+
+    fn check_field(
+        member: &Member,
+        expected_name: &FixStr,
+        expected_tag: u16,
+        expected_type: BasicType,
+    ) -> Result<(), ValidationError> {
+        if !matches!(
+            member.definition(),
+            MemberDefinition::Field(field)
+                if field.name() == expected_name
+                    && field.number() == expected_tag
+                    && field.data_type() == expected_type)
+        {
+            Err(ValidationError::InvalidRequiredField(
+                expected_name.to_string(),
+                expected_tag,
+                expected_type,
+            ))
+        } else if !member.required() {
+            Err(ValidationError::OptionalRequiredField(
+                expected_name.to_string(),
+                expected_tag,
+            ))
+        } else {
+            Ok(())
+        }
+    }
 
     if header.members.is_empty() {
         if version.is_fix() && version >= Version::FIX50 {
@@ -410,46 +442,45 @@ pub(super) fn check_required_fields(
     }
 
     // No length pre-check: the walk below already reports the first required
-    // field the header runs out of, as `UnknownField`.
+    // field the header runs out of, as `MissingRequiredField`.
     let mut iter = header.members.iter();
 
     for (expected_name, expected_tag, expected_type) in REQUIRED_IN_ORDER {
-        let Some(field) = iter.next() else {
-            return Err(Error::Validation(ValidationError::UnknownField(
-                expected_name.to_string(),
-            )));
-        };
-
-        if !matches!(
-            field.definition(),
-            MemberDefinition::Field(field)
-                if field.name() == expected_name
-                    && field.number() == expected_tag
-                    && field.data_type() == expected_type)
-        {
-            return Err(Error::Validation(ValidationError::InvalidRequiredField(
+        let Some(member) = iter.next() else {
+            return Err(Error::Validation(ValidationError::MissingRequiredField(
                 expected_name.to_string(),
                 expected_tag,
-                expected_type,
             )));
-        }
+        };
+        check_field(member, expected_name, expected_tag, expected_type)?;
     }
 
-    if let Some(checksum) = trailer.members.last() {
-        if !matches!(
-            checksum.definition(),
-            MemberDefinition::Field(field)
-                if field.name() == "CheckSum"
-                    && field.number() == 10
-                    && field.data_type() == BasicType::String)
-        {
-            return Err(Error::Validation(ValidationError::InvalidRequiredField(
-                "CheckSum".to_string(),
-                10,
-                BasicType::String,
-            )));
-        }
+    let mut required: HashMap<&FixStr, (u16, BasicType)> = REQUIRED_OUT_OF_ORDER
+        .iter()
+        .map(|&(name, tag, data_type)| (name, (tag, data_type)))
+        .collect();
+
+    for member in &header.members {
+        let Some((expected_tag, expected_type)) = required.remove(member.name()) else {
+            continue;
+        };
+        check_field(member, member.name(), expected_tag, expected_type)?;
     }
+
+    if let Some((field_name, (field_tag, _))) = required.into_iter().next() {
+        return Err(Error::Validation(ValidationError::MissingRequiredField(
+            field_name.to_string(),
+            field_tag,
+        )));
+    }
+
+    const CHECKSUM: &FixStr = fix_str!("CheckSum");
+    const CHECKSUM_TAG: u16 = 10;
+    let checksum = trailer
+        .members
+        .last()
+        .ok_or_else(|| ValidationError::MissingRequiredField(CHECKSUM.to_string(), CHECKSUM_TAG))?;
+    check_field(checksum, CHECKSUM, CHECKSUM_TAG, BasicType::String)?;
 
     Ok(())
 }
