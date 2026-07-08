@@ -6,7 +6,11 @@
 
 use std::borrow::Cow;
 
-use easyfix_core::{base_messages::HeaderBase, basic_types::UtcTimestamp, fix_str};
+use easyfix_core::{
+    base_messages::HeaderBase,
+    basic_types::{TimePrecision, UtcTimestamp},
+    fix_str,
+};
 use easyfix_test_messages as messages;
 use messages::{ApplVerId, Header};
 
@@ -20,9 +24,9 @@ fn header_incoming() {
         sender_comp_id: fix_str!("SENDER").to_owned(),
         target_comp_id: fix_str!("TARGET").to_owned(),
         msg_seq_num: 42,
-        sending_time: UtcTimestamp::now(),
+        sending_time: UtcTimestamp::now(TimePrecision::Nanos),
         poss_dup_flag: Some(true),
-        orig_sending_time: Some(UtcTimestamp::now()),
+        orig_sending_time: Some(UtcTimestamp::now(TimePrecision::Nanos)),
         appl_ver_id: Some(ApplVerId::from_bytes(b"9").unwrap()),
         ..Default::default()
     };
@@ -43,7 +47,7 @@ fn header_incoming_minimal() {
         sender_comp_id: fix_str!("S").to_owned(),
         target_comp_id: fix_str!("T").to_owned(),
         msg_seq_num: 1,
-        sending_time: UtcTimestamp::now(),
+        sending_time: UtcTimestamp::now(TimePrecision::Nanos),
         ..Default::default()
     };
     let base = HeaderBase::from(&header);
@@ -57,8 +61,8 @@ fn header_incoming_minimal() {
 
 #[test]
 fn header_outgoing() {
-    let sending_time = UtcTimestamp::now();
-    let orig_sending_time = UtcTimestamp::now();
+    let sending_time = UtcTimestamp::now(TimePrecision::Nanos);
+    let orig_sending_time = UtcTimestamp::now(TimePrecision::Nanos);
     let base = HeaderBase {
         sender_comp_id: Cow::Owned(fix_str!("SENDER").to_owned()),
         target_comp_id: Cow::Owned(fix_str!("TARGET").to_owned()),
@@ -88,7 +92,7 @@ fn header_outgoing_without_optional_fields() {
         sender_comp_id: Cow::Owned(fix_str!("S").to_owned()),
         target_comp_id: Cow::Owned(fix_str!("T").to_owned()),
         msg_seq_num: 1,
-        sending_time: UtcTimestamp::now(),
+        sending_time: UtcTimestamp::now(TimePrecision::Nanos),
         poss_dup_flag: None,
         orig_sending_time: None,
         appl_ver_id: None,
@@ -106,9 +110,9 @@ fn header_round_trip() {
         sender_comp_id: fix_str!("SENDER").to_owned(),
         target_comp_id: fix_str!("TARGET").to_owned(),
         msg_seq_num: 42,
-        sending_time: UtcTimestamp::now(),
+        sending_time: UtcTimestamp::now(TimePrecision::Nanos),
         poss_dup_flag: Some(true),
-        orig_sending_time: Some(UtcTimestamp::now()),
+        orig_sending_time: Some(UtcTimestamp::now(TimePrecision::Nanos)),
         appl_ver_id: Some(ApplVerId::from_bytes(b"9").unwrap()),
         ..Default::default()
     };
@@ -130,7 +134,7 @@ fn header_round_trip_minimal() {
         sender_comp_id: fix_str!("A").to_owned(),
         target_comp_id: fix_str!("B").to_owned(),
         msg_seq_num: 1,
-        sending_time: UtcTimestamp::now(),
+        sending_time: UtcTimestamp::now(TimePrecision::Nanos),
         ..Default::default()
     };
     let base = HeaderBase::from(&original);

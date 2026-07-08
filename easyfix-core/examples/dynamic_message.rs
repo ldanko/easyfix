@@ -788,7 +788,10 @@ fn main() {
         Value::Str(fix_str!("TARGET").to_owned()),
     );
     logon.set(TAG_MSG_SEQ_NUM, Value::SeqNum(1));
-    logon.set(TAG_SENDING_TIME, Value::Timestamp(UtcTimestamp::now()));
+    logon.set(
+        TAG_SENDING_TIME,
+        Value::Timestamp(UtcTimestamp::now(TimePrecision::Nanos)),
+    );
     logon.set(TAG_ENCRYPT_METHOD, Value::Int(0));
     logon.set(TAG_HEART_BT_INT, Value::Int(30));
 

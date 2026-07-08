@@ -11,7 +11,10 @@ use tokio_stream::StreamExt;
 use tracing::{debug, instrument};
 
 use super::time::timeout_stream;
-use crate::{DisconnectReason, SenderMsg, messages_storage::MessagesStorage, session::Session};
+use crate::{
+    DisconnectReason, SESSION_TIME_PRECISION, SenderMsg, messages_storage::MessagesStorage,
+    session::Session,
+};
 
 pub(crate) enum OutputEvent {
     Message(Vec<u8>),
@@ -34,7 +37,7 @@ fn fill_header<M: SessionMessage, S: MessagesStorage>(message: &mut M, session: 
         message.set_target_comp_id(session.session_id().target_comp_id().to_owned());
     }
     if message.sending_time() == UtcTimestamp::MIN_UTC {
-        message.set_sending_time(UtcTimestamp::now());
+        message.set_sending_time(UtcTimestamp::now(SESSION_TIME_PRECISION));
     }
 
     if message.msg_seq_num() == 0 {

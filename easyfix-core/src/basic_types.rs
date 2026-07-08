@@ -60,14 +60,33 @@ pub type Exchange = [u8; 4];
 pub type MonthYear = FixString;
 pub type Language = [u8; 2];
 
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+/// Number of fractional-second digits a time value carries on the wire.
+///
+/// The FIX baseline is the millisecond; a finer width is agreed with the
+/// counterparty, per field (TagValue Encoding section 6.2.2). There is no
+/// `Default` - every construction states the width it wants. Session-layer
+/// timestamps take it from the session's configuration; application fields
+/// state their own.
+///
+/// On a parsed value this reports the width that arrived, so re-serializing
+/// reproduces it. Two received forms are exceptions, and matter to code that
+/// echoes a counterparty's timestamp back:
+///
+/// - a zoned value written without seconds (`20060901-07:39Z`, which the
+///   grammar permits) reads back as `Secs` and re-emits as
+///   `20060901-07:39:00Z`;
+/// - a 12-digit picosecond fraction reads back as `Nanos` and re-emits with
+///   9 digits - chrono holds no finer resolution.
+// No `Default`, deliberately: a type-level answer would fix the wire format
+// globally for a choice that belongs to one counterparty and one field, and
+// callers would inherit it without noticing. Do not add one.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub enum TimePrecision {
     Secs = 0,
     Millis = 3,
     Micros = 6,
-    #[default]
     Nanos = 9,
 }
 
@@ -858,11 +877,8 @@ impl serde::Serialize for UtcTimestamp {
     {
         use serde::ser::Error;
 
-        // The FIX grammar has a fixed 4-digit year; chrono formats years
-        // outside that range with a sign and more digits, producing a string
-        // that can never be deserialized back - fail fast instead.
         let year = self.timestamp.year();
-        if !(0..=9999).contains(&year) {
+        if !year_is_wire_representable(year) {
             return Err(S::Error::custom(format!(
                 "year {year} not representable in the 4-digit FIX timestamp format"
             )));
@@ -989,6 +1005,11 @@ impl serde::Serialize for TzTimestamp {
                 "timezone offset with a sub-minute part is not representable in the FIX format",
             ));
         }
+        if !second_is_wire_representable(&self.timestamp) {
+            return Err(S::Error::custom(
+                "leap second is not representable in the FIX TZTimestamp format (SS = 00-59)",
+            ));
+        }
         serializer.collect_str(self)
     }
 }
@@ -1050,10 +1071,17 @@ impl serde::Serialize for TzTimeOnly {
                 "timezone offset with a sub-minute part is not representable in the FIX format",
             ));
         }
+        if !second_is_wire_representable(&self.timestamp) {
+            return Err(S::Error::custom(
+                "leap second is not representable in the FIX TZTimeOnly format (SS = 00-59)",
+            ));
+        }
         serializer.collect_str(self)
     }
 }
 
+/// Compares the instant only - two values are equal whatever
+/// [`TimePrecision`] they carry, even though they would render differently.
 impl PartialEq for UtcTimestamp {
     fn eq(&self, other: &Self) -> bool {
         self.timestamp == other.timestamp
@@ -1083,26 +1111,72 @@ impl fmt::Display for UtcTimestamp {
 }
 
 impl UtcTimestamp {
+    /// Upper bound of the underlying clock. Like [`UtcTimestamp::MIN_UTC`] it
+    /// is a sentinel, not a value - it cannot be put on the wire.
     pub const MAX_UTC: UtcTimestamp = UtcTimestamp {
         timestamp: DateTime::<Utc>::MAX_UTC,
         precision: TimePrecision::Nanos,
     };
+    /// Lower bound of the underlying clock, and the "not set yet" sentinel
+    /// returned by [`UtcTimestamp::default`].
+    ///
+    /// Neither bound can be transmitted: their years (`-262144` and `262143`)
+    /// fall outside the `YYYY = 0000-9999` the grammar allows (TagValue
+    /// Encoding section 6.2.2), so serializing one fails with
+    /// [`SerializeError::InvalidValue`] rather than emitting anything. That is
+    /// what makes the lower bound a usable sentinel: a timestamp left unfilled
+    /// is caught here, not at the counterparty.
+    ///
+    /// The precision they carry is arbitrary - it reaches no renderer, and
+    /// equality ignores it.
+    ///
+    /// [`SerializeError::InvalidValue`]: crate::serializer::SerializeError::InvalidValue
     pub const MIN_UTC: UtcTimestamp = UtcTimestamp {
         timestamp: DateTime::<Utc>::MIN_UTC,
         precision: TimePrecision::Nanos,
     };
+
+    /// The Unix epoch, `1970-01-01 00:00:00 UTC`, rendered with `precision`
+    /// fractional-second digits.
+    ///
+    /// Unlike [`MIN_UTC`](Self::MIN_UTC) this is an ordinary transmittable
+    /// value, so it reaches the counterparty as a real timestamp. Reach for it
+    /// as an explicit placeholder, or when converting from a source where zero
+    /// means the epoch - not as a stand-in for "not set", which is what the
+    /// sentinel is for.
+    ///
+    /// The precision is an argument for the same reason it is everywhere else
+    /// on this type: this value does go on the wire, so its width is the
+    /// caller's to state. Truncation is a no-op here - the epoch has no
+    /// fraction to lose.
+    pub const fn unix_epoch(precision: TimePrecision) -> UtcTimestamp {
+        UtcTimestamp {
+            timestamp: DateTime::<Utc>::UNIX_EPOCH,
+            precision,
+        }
+    }
 }
 
 impl Default for UtcTimestamp {
+    /// [`UtcTimestamp::MIN_UTC`] - the "not set yet" sentinel, **not** a
+    /// usable timestamp.
+    ///
+    /// Leave a `SendingTime<52>` defaulted and the session stamps it at
+    /// transmit time, at the precision configured for the session; set it to
+    /// anything else and that stamping is skipped. Anywhere other than a
+    /// header field the default is a bug - it cannot be put on the wire (see
+    /// [`UtcTimestamp::MIN_UTC`]). Build application timestamps with
+    /// [`UtcTimestamp::now`] or [`UtcTimestamp::with_precision`] instead.
     fn default() -> Self {
         UtcTimestamp::MIN_UTC
     }
 }
 
 impl UtcTimestamp {
-    /// Creates UtcTimestamp that represents current date and time with default precision
-    pub fn now() -> UtcTimestamp {
-        UtcTimestamp::with_precision(Utc::now(), TimePrecision::default())
+    /// Current date and time, rendered with `precision` fractional-second
+    /// digits. See [`TimePrecision`] for choosing one.
+    pub fn now(precision: TimePrecision) -> UtcTimestamp {
+        UtcTimestamp::with_precision(Utc::now(), precision)
     }
 
     /// Creates UtcTimestamp with given time precision
@@ -1293,6 +1367,23 @@ pub(crate) fn offset_is_wire_representable(offset: FixedOffset) -> bool {
     offset.local_minus_utc() % 60 == 0
 }
 
+/// Whether a second can be rendered by the FIX datatypes whose grammar caps
+/// it at `SS = 00-59`: `TZTimestamp`, `TZTimeOnly` and `LocalMktTime`
+/// (TagValue Encoding section 6.2.2). Those are stricter than `UTCTimestamp` /
+/// `UTCTimeOnly`, where the same section allows `SS = 00-60 (60 only if UTC
+/// leap second)`.
+//
+// chrono carries a leap second as a nanosecond value of at least a whole
+// second and renders it as `:60` whatever the type, so without this check a
+// leap-second TzTimestamp emits a field the grammar forbids - and one our own
+// parsers reject, since they accept `0-5` in the tens-of-seconds position. The
+// leap offset stays in the value rather than being normalized away (see
+// `whole_second_nanos`): clearing it would move the instant, so the
+// unrepresentable value is refused here instead of silently rewritten.
+pub(crate) fn second_is_wire_representable(time: &impl Timelike) -> bool {
+    time.nanosecond() < 1_000_000_000
+}
+
 /// Write a UTC offset in the FIX wire form: `Z` for UTC, otherwise a signed
 /// two-digit hour with `:mm` appended only when the offset has a non-zero
 /// minute part.
@@ -1317,29 +1408,37 @@ impl TzTimestamp {
         timestamp: DateTime<FixedOffset>,
         precision: TimePrecision,
     ) -> TzTimestamp {
-        TzTimestamp {
-            timestamp,
-            precision,
+        match precision {
+            TimePrecision::Secs => TzTimestamp::with_secs(timestamp),
+            TimePrecision::Millis => TzTimestamp::with_millis(timestamp),
+            TimePrecision::Micros => TzTimestamp::with_micros(timestamp),
+            TimePrecision::Nanos => TzTimestamp::with_nanos(timestamp),
         }
     }
 
     pub fn with_secs(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
-            timestamp,
+            timestamp: timestamp
+                .with_nanosecond(whole_second_nanos(&timestamp))
+                .unwrap(),
             precision: TimePrecision::Secs,
         }
     }
 
     pub fn with_millis(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
-            timestamp,
+            timestamp: timestamp
+                .with_nanosecond(timestamp.nanosecond() / 1_000_000 * 1_000_000)
+                .unwrap(),
             precision: TimePrecision::Millis,
         }
     }
 
     pub fn with_micros(timestamp: DateTime<FixedOffset>) -> TzTimestamp {
         TzTimestamp {
-            timestamp,
+            timestamp: timestamp
+                .with_nanosecond(timestamp.nanosecond() / 1_000 * 1_000)
+                .unwrap(),
             precision: TimePrecision::Micros,
         }
     }
@@ -1385,16 +1484,19 @@ impl fmt::Display for TzTimestamp {
 
 impl TzTimeOnly {
     pub fn new(timestamp: NaiveTime, offset: FixedOffset, precision: TimePrecision) -> TzTimeOnly {
-        TzTimeOnly {
-            timestamp,
-            offset,
-            precision,
+        match precision {
+            TimePrecision::Secs => TzTimeOnly::with_secs(timestamp, offset),
+            TimePrecision::Millis => TzTimeOnly::with_millis(timestamp, offset),
+            TimePrecision::Micros => TzTimeOnly::with_micros(timestamp, offset),
+            TimePrecision::Nanos => TzTimeOnly::with_nanos(timestamp, offset),
         }
     }
 
     pub fn with_secs(timestamp: NaiveTime, offset: FixedOffset) -> TzTimeOnly {
         TzTimeOnly {
-            timestamp: timestamp.with_nanosecond(0).unwrap(),
+            timestamp: timestamp
+                .with_nanosecond(whole_second_nanos(&timestamp))
+                .unwrap(),
             offset,
             precision: TimePrecision::Secs,
         }
@@ -1918,10 +2020,43 @@ mod tests {
         assert_eq!(FixString::from_ascii_lossy(buf), "Hello?world!");
     }
 
+    /// Unlike the clock bounds, the epoch is transmittable - and it renders at
+    /// the width the caller asked for, since that width is what reaches the
+    /// wire.
     #[test]
-    fn utc_timestamp_default_precision_nanos() {
-        let now = UtcTimestamp::now();
-        assert_eq!(now.precision(), TimePrecision::Nanos);
+    fn unix_epoch_is_transmittable_at_the_requested_width() {
+        for (precision, expected) in [
+            (TimePrecision::Secs, "19700101-00:00:00"),
+            (TimePrecision::Millis, "19700101-00:00:00.000"),
+            (TimePrecision::Nanos, "19700101-00:00:00.000000000"),
+        ] {
+            let epoch = UtcTimestamp::unix_epoch(precision);
+            assert_eq!(epoch.precision(), precision);
+            assert_eq!(epoch.format_precisely().to_string(), expected);
+        }
+
+        // Equality ignores precision, so every width is the same instant.
+        assert_eq!(
+            UtcTimestamp::unix_epoch(TimePrecision::Secs),
+            UtcTimestamp::unix_epoch(TimePrecision::Nanos)
+        );
+        // ... and none of them is the "not set" sentinel.
+        assert_ne!(
+            UtcTimestamp::unix_epoch(TimePrecision::Secs),
+            UtcTimestamp::default()
+        );
+    }
+
+    #[test]
+    fn utc_timestamp_now_keeps_requested_precision() {
+        for precision in [
+            TimePrecision::Secs,
+            TimePrecision::Millis,
+            TimePrecision::Micros,
+            TimePrecision::Nanos,
+        ] {
+            assert_eq!(UtcTimestamp::now(precision).precision(), precision);
+        }
     }
 
     #[test]
@@ -2179,6 +2314,138 @@ mod time_serde_tests {
             TzTimeOnly::with_nanos(time, offset),
             "07:39:00.123456789-05",
         );
+    }
+
+    /// The zoned grammar caps seconds at `SS = 00-59` (TagValue Encoding
+    /// section 6.2.2), unlike the UTC forms which allow `60` for a leap
+    /// second. chrono renders the leap as `:60` regardless of the type, so
+    /// serialization must refuse rather than emit a field the grammar forbids
+    /// and `parse_tz_timestamp` would reject.
+    #[test]
+    fn tz_types_refuse_to_serialize_a_leap_second() {
+        let offset = FixedOffset::east_opt(3600).unwrap();
+        let leap_time = NaiveTime::from_hms_nano_opt(23, 59, 59, 1_000_000_000).unwrap();
+        let leap_naive = NaiveDate::from_ymd_opt(2016, 12, 31)
+            .unwrap()
+            .and_time(leap_time);
+        let leap_ts = TzTimestamp::with_nanos(offset.from_local_datetime(&leap_naive).unwrap());
+
+        assert!(
+            serde_json::to_string(&leap_ts).is_err(),
+            "leap second must not reach the wire as a TZTimestamp"
+        );
+        assert!(
+            serde_json::to_string(&TzTimeOnly::with_nanos(leap_time, offset)).is_err(),
+            "leap second must not reach the wire as a TZTimeOnly"
+        );
+
+        // The UTC forms do carry it - the same section allows SS = 60 there.
+        let utc_leap = UtcTimeOnly::with_nanos(leap_time);
+        assert_eq!(
+            serde_json::to_string(&utc_leap).unwrap(),
+            "\"23:59:60.000000000\""
+        );
+    }
+
+    /// The leap offset survives the precision reduction instead of being
+    /// cleared: dropping it would move the instant to `:59`, a different
+    /// value. Serialization refuses the result; construction does not corrupt
+    /// it.
+    #[test]
+    fn tz_reduction_to_whole_seconds_keeps_the_leap_offset() {
+        let offset = FixedOffset::east_opt(3600).unwrap();
+        let leap_time = NaiveTime::from_hms_nano_opt(23, 59, 59, 1_500_000_000).unwrap();
+
+        let tz_time_only = TzTimeOnly::with_secs(leap_time, offset);
+        assert_eq!(tz_time_only.timestamp().second(), 59);
+        assert_eq!(tz_time_only.timestamp().nanosecond(), 1_000_000_000);
+
+        let leap_naive = NaiveDate::from_ymd_opt(2016, 12, 31)
+            .unwrap()
+            .and_time(leap_time);
+        let tz_timestamp = TzTimestamp::with_secs(offset.from_local_datetime(&leap_naive).unwrap());
+        assert_eq!(tz_timestamp.timestamp().nanosecond(), 1_000_000_000);
+    }
+
+    /// `TzTimestamp::with_*` used to only tag the precision, leaving the
+    /// sub-precision digits in the value - so a value built in-process was not
+    /// equal to the same value parsed back from the bytes it produced.
+    #[test]
+    fn tz_timestamp_construction_truncates_to_the_stated_precision() {
+        let offset = FixedOffset::east_opt(3600).unwrap();
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
+            .unwrap()
+            .and_hms_nano_opt(7, 39, 0, 123_456_789)
+            .unwrap();
+        let timestamp = offset.from_local_datetime(&naive).unwrap();
+
+        assert_eq!(
+            TzTimestamp::with_secs(timestamp).timestamp().nanosecond(),
+            0
+        );
+        assert_eq!(
+            TzTimestamp::with_millis(timestamp).timestamp().nanosecond(),
+            123_000_000
+        );
+        assert_eq!(
+            TzTimestamp::with_micros(timestamp).timestamp().nanosecond(),
+            123_456_000
+        );
+
+        // What was constructed equals what the wire form parses back to.
+        for value in [
+            TzTimestamp::with_secs(timestamp),
+            TzTimestamp::with_millis(timestamp),
+            TzTimestamp::with_micros(timestamp),
+            TzTimestamp::with_nanos(timestamp),
+        ] {
+            let encoded = serde_json::to_string(&value).unwrap();
+            let parsed: TzTimestamp = serde_json::from_str(&encoded).expect("round trip");
+            assert_eq!(parsed.timestamp(), value.timestamp());
+            assert_eq!(parsed.precision(), value.precision());
+        }
+    }
+
+    /// The runtime-precision constructors must truncate exactly like the
+    /// fixed-precision ones they stand in for - they are what a caller reaches
+    /// for when the width comes from configuration rather than a literal.
+    #[test]
+    fn tz_runtime_precision_constructors_match_the_fixed_ones() {
+        let offset = FixedOffset::east_opt(3600).unwrap();
+        let time = NaiveTime::from_hms_nano_opt(7, 39, 0, 123_456_789).unwrap();
+        let naive = NaiveDate::from_ymd_opt(2006, 9, 1).unwrap().and_time(time);
+        let timestamp = offset.from_local_datetime(&naive).unwrap();
+
+        for (precision, fixed_ts, fixed_time_only) in [
+            (
+                TimePrecision::Secs,
+                TzTimestamp::with_secs(timestamp),
+                TzTimeOnly::with_secs(time, offset),
+            ),
+            (
+                TimePrecision::Millis,
+                TzTimestamp::with_millis(timestamp),
+                TzTimeOnly::with_millis(time, offset),
+            ),
+            (
+                TimePrecision::Micros,
+                TzTimestamp::with_micros(timestamp),
+                TzTimeOnly::with_micros(time, offset),
+            ),
+            (
+                TimePrecision::Nanos,
+                TzTimestamp::with_nanos(timestamp),
+                TzTimeOnly::with_nanos(time, offset),
+            ),
+        ] {
+            let runtime_ts = TzTimestamp::with_precision(timestamp, precision);
+            assert_eq!(runtime_ts.timestamp(), fixed_ts.timestamp());
+            assert_eq!(runtime_ts.precision(), fixed_ts.precision());
+
+            let runtime_time_only = TzTimeOnly::new(time, offset, precision);
+            assert_eq!(runtime_time_only.timestamp(), fixed_time_only.timestamp());
+            assert_eq!(runtime_time_only.precision(), fixed_time_only.precision());
+        }
     }
 
     #[test]

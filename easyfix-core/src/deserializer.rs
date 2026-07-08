@@ -1782,7 +1782,7 @@ impl<'de> Deserializer<'de> {
                 b':',
                 // Minute
                 m1 @ b'0'..=b'5',
-                m0 @ b'0'..=b'0',
+                m0 @ b'0'..=b'9',
                 b':',
                 // Second
                 s1 @ b'0'..=b'5',
@@ -1865,13 +1865,14 @@ impl<'de> Deserializer<'de> {
     ///
     /// The representation is based on ISO 8601.
     ///
-    /// Format is `YYYYMMDD-HH:MM:SS[.sss*][Z | [ + | – hh[:mm]]]` where:
+    /// Format is `YYYYMMDD-HH:MM[:SS][.sss*][Z | [ + | – hh[:mm]]]` where:
     /// - YYYY = 0000 to 9999,
     /// - MM = 01-12,
     /// - DD = 01-31,
     /// - HH = 00-23 hours,
     /// - MM = 00-59 minutes,
-    /// - SS = 00-59 seconds,
+    /// - SS = 00-59 seconds, optional on input (the spec's own examples omit
+    ///   them) and taken as `00` when absent,
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes,
     /// - sss* fractions of seconds. The fractions of seconds may be empty when

@@ -7,7 +7,7 @@ use crate::basic_types::{
     Language, Length, LocalMktDate, LocalMktTime, MonthYear, MultipleCharValue,
     MultipleStringValue, NumInGroup, Percentage, Price, PriceOffset, Qty, SeqNum, TagNum, Tenor,
     TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
-    offset_is_wire_representable, year_is_wire_representable,
+    offset_is_wire_representable, second_is_wire_representable, year_is_wire_representable,
 };
 
 /// Number of digits reserved for the BodyLength(9) placeholder, derived
@@ -422,6 +422,9 @@ impl<'a> Serializer<'a> {
     ///
     /// In general only the hour token is non-zero.
     pub fn serialize_local_mkt_time(&mut self, input: &LocalMktTime) -> Result<(), SerializeError> {
+        if !second_is_wire_representable(input) {
+            return Err(SerializeError::InvalidValue);
+        }
         write!(self, "{}", input.format("%H:%M:%S"))
             .map_err(|_| SerializeError::MaxMessageSizeExceeded)
     }
@@ -464,6 +467,7 @@ impl<'a> Serializer<'a> {
         let timestamp = input.timestamp();
         if !year_is_wire_representable(timestamp.year())
             || !offset_is_wire_representable(*timestamp.offset())
+            || !second_is_wire_representable(&timestamp)
         {
             return Err(SerializeError::InvalidValue);
         }
@@ -481,7 +485,9 @@ impl<'a> Serializer<'a> {
     /// - hh = 01-12 offset hours,
     /// - mm = 00-59 offset minutes.
     pub fn serialize_tz_timeonly(&mut self, input: &TzTimeOnly) -> Result<(), SerializeError> {
-        if !offset_is_wire_representable(input.offset()) {
+        if !offset_is_wire_representable(input.offset())
+            || !second_is_wire_representable(&input.timestamp())
+        {
             return Err(SerializeError::InvalidValue);
         }
         write!(self, "{input}").map_err(|_| SerializeError::MaxMessageSizeExceeded)
@@ -684,6 +690,29 @@ mod tests {
                 sub_minute.from_local_datetime(&naive).unwrap()
             )),
             Err(SerializeError::InvalidValue)
+        );
+
+        // The zoned grammar caps seconds at 00-59, so a leap second - which
+        // the UTC forms do carry - has no representation here. chrono renders
+        // it as `:60` regardless, and `parse_tz_timestamp` rejects that.
+        let leap_time = NaiveTime::from_hms_nano_opt(23, 59, 59, 1_000_000_000).unwrap();
+        let leap_naive = NaiveDate::from_ymd_opt(2016, 12, 31)
+            .unwrap()
+            .and_time(leap_time);
+        assert_matches!(
+            serializer.serialize_tz_timestamp(&TzTimestamp::with_nanos(
+                utc_offset.from_local_datetime(&leap_naive).unwrap()
+            )),
+            Err(SerializeError::InvalidValue)
+        );
+        assert_matches!(
+            serializer.serialize_tz_timeonly(&TzTimeOnly::with_nanos(leap_time, utc_offset)),
+            Err(SerializeError::InvalidValue)
+        );
+        // The UTC counterpart is representable and must still go through.
+        assert_eq!(
+            serialize_value(|s| s.serialize_utc_time_only(&UtcTimeOnly::with_secs(leap_time))),
+            b"23:59:60"
         );
     }
 

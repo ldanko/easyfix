@@ -4,7 +4,12 @@
 //! setters modify them correctly, including enum-backed fields
 //! (MsgType, ApplVerID).
 
-use easyfix_core::{basic_types::UtcTimestamp, fix_str, message::HeaderAccess, version::Version};
+use easyfix_core::{
+    basic_types::{TimePrecision, UtcTimestamp},
+    fix_str,
+    message::HeaderAccess,
+    version::Version,
+};
 use easyfix_test_messages as messages;
 use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
 
@@ -14,9 +19,9 @@ fn make_fixt_message() -> Message {
             sender_comp_id: fix_str!("SENDER").to_owned(),
             target_comp_id: fix_str!("TARGET").to_owned(),
             msg_seq_num: 42,
-            sending_time: UtcTimestamp::now(),
+            sending_time: UtcTimestamp::now(TimePrecision::Nanos),
             poss_dup_flag: Some(true),
-            orig_sending_time: Some(UtcTimestamp::now()),
+            orig_sending_time: Some(UtcTimestamp::now(TimePrecision::Nanos)),
             appl_ver_id: Some(ApplVerId::from_bytes(b"9").unwrap()),
             ..Default::default()
         },
@@ -46,7 +51,7 @@ fn getters_return_none_for_absent_optional_fields() {
             sender_comp_id: fix_str!("S").to_owned(),
             target_comp_id: fix_str!("T").to_owned(),
             msg_seq_num: 1,
-            sending_time: UtcTimestamp::now(),
+            sending_time: UtcTimestamp::now(TimePrecision::Nanos),
             ..Default::default()
         },
         body: Box::new(Body::Heartbeat(Heartbeat { test_req_id: None })),
@@ -62,8 +67,8 @@ fn getters_return_none_for_absent_optional_fields() {
 fn setters_modify_header_fields() {
     let mut msg = make_fixt_message();
 
-    let new_sending_time = UtcTimestamp::now();
-    let new_orig_sending_time = UtcTimestamp::now();
+    let new_sending_time = UtcTimestamp::now(TimePrecision::Nanos);
+    let new_orig_sending_time = UtcTimestamp::now(TimePrecision::Nanos);
 
     msg.set_sender_comp_id(fix_str!("NEW_SENDER").to_owned());
     msg.set_target_comp_id(fix_str!("NEW_TARGET").to_owned());

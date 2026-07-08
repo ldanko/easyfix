@@ -661,6 +661,46 @@ fn deserialize_tenor_truncated() {
     }
 }
 
+// --- LocalMktTime tests ---
+
+/// Every minute value must parse, not just multiples of ten - the grammar is
+/// `MM = 00-59` (TagValue Encoding section 6.2.2). A too-narrow digit range
+/// here turns ordinary values like `09:31:00` into a session-level Reject.
+#[test]
+fn deserialize_local_mkt_time_accepts_every_minute_and_second() {
+    for (input, expected) in [
+        (&b"09:31:00\x01\x00"[..], (9, 31, 0)),
+        (b"14:05:07\x01\x00", (14, 5, 7)),
+        (b"00:00:00\x01\x00", (0, 0, 0)),
+        (b"23:59:59\x01\x00", (23, 59, 59)),
+    ] {
+        let mut deserializer = deserializer(input);
+        let (h, m, s) = expected;
+        assert_eq!(
+            deserializer
+                .deserialize_local_mkt_time()
+                .expect("valid LocalMktTime rejected"),
+            NaiveTime::from_hms_opt(h, m, s).unwrap()
+        );
+    }
+}
+
+#[test]
+fn deserialize_local_mkt_time_rejects_out_of_range_components() {
+    for input in [
+        &b"24:00:00\x01\x00"[..],
+        b"09:60:00\x01\x00",
+        // No leap second in this datatype - SS = 00-59.
+        b"23:59:60\x01\x00",
+    ] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_local_mkt_time(),
+            Err(DeserializeErrorKind::Reject { .. })
+        );
+    }
+}
+
 // --- TzTimestamp tests ---
 
 #[test]

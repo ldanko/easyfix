@@ -12,13 +12,19 @@ pub mod settings;
 
 use std::{fmt, time::Duration};
 
-use easyfix_core::message::SessionMessage;
+use easyfix_core::{basic_types::TimePrecision, message::SessionMessage};
 use settings::Settings;
 use tokio::sync::mpsc;
 use tracing::error;
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
 const TEST_REQUEST_THRESHOLD: f32 = 1.2;
+
+/// Fractional-second width of the `SendingTime<52>` and `OrigSendingTime<122>`
+/// this crate stamps.
+// Not configurable here: nanoseconds is what this crate has always emitted, and
+// pinning it keeps existing deployments on the same wire format.
+const SESSION_TIME_PRECISION: TimePrecision = TimePrecision::Nanos;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {

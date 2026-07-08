@@ -14,7 +14,7 @@ use easyfix_core::{
     base_messages::{
         AdminBase, EncryptMethodBase, HeaderBase, LogonBase, SessionStatusBase, TestRequestBase,
     },
-    basic_types::{ApplVerId, FixStr, Int, SeqNum, UtcTimestamp},
+    basic_types::{ApplVerId, FixStr, Int, SeqNum, TimePrecision, UtcTimestamp},
     fix_str,
     message::{HeaderAccess, SessionMessage},
 };
@@ -228,7 +228,11 @@ fn reject_flood_does_not_kill_connection_task() {
         let (mut client_rx, mut client_tx) = tokio::io::split(client);
 
         client_tx
-            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .write_all(&serialize_msg(
+                logon(),
+                1,
+                UtcTimestamp::now(TimePrecision::Nanos),
+            ))
             .await
             .expect("logon write failed");
         pump_until_logon(&mut acceptor).await;
@@ -357,7 +361,11 @@ fn panicked_connection_task_releases_session() {
         let (_client_rx, mut client_tx) = tokio::io::split(client);
 
         client_tx
-            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .write_all(&serialize_msg(
+                logon(),
+                1,
+                UtcTimestamp::now(TimePrecision::Nanos),
+            ))
             .await
             .expect("logon write failed");
         pump_until_logon(&mut acceptor).await;
@@ -369,7 +377,7 @@ fn panicked_connection_task_releases_session() {
             .write_all(&serialize_msg(
                 test_request(fix_str!("boom")),
                 2,
-                UtcTimestamp::now(),
+                UtcTimestamp::now(TimePrecision::Nanos),
             ))
             .await
             .expect("test request write failed");
@@ -391,7 +399,11 @@ fn panicked_connection_task_releases_session() {
         let (mut client2_rx, mut client2_tx) = tokio::io::split(client2);
 
         client2_tx
-            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .write_all(&serialize_msg(
+                logon(),
+                1,
+                UtcTimestamp::now(TimePrecision::Nanos),
+            ))
             .await
             .expect("logon write failed");
         pump_until_logon(&mut acceptor).await;

@@ -21,7 +21,7 @@ use easyfix_core::{
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
-    DisconnectReason, Sender,
+    DisconnectReason, SESSION_TIME_PRECISION, Sender,
     application::{Emitter, FixEventInternal, InputResponderMsg, Responder},
     messages_storage::MessagesStorage,
     session_id::SessionId,
@@ -517,7 +517,7 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
 
         sequence_reset.set_msg_seq_num(seq_num);
         sequence_reset.set_poss_dup_flag(Some(true));
-        let now = UtcTimestamp::now();
+        let now = UtcTimestamp::now(SESSION_TIME_PRECISION);
         sequence_reset.set_sending_time(now);
         sequence_reset.set_orig_sending_time(Some(now));
 
@@ -1366,9 +1366,9 @@ impl<M: SessionMessage, S: MessagesStorage> Session<M, S> {
 
         match &error {
             DeserializeErrorKind::Garbled(reason) => error!("Garbled message: {reason}"),
-            // `LogoutReason` is ignored here: this legacy crate keeps its
-            // existing Logout+disconnect behavior (session2 distinguishes the
-            // reasons). See easyfix-session2 for the BeginString-mismatch path.
+            // `LogoutReason` is ignored here: this crate keeps its existing
+            // Logout+disconnect behavior for every reason, including a
+            // BeginString mismatch.
             DeserializeErrorKind::Logout(reason) => {
                 let mut state = self.state.borrow_mut();
                 self.send_logout(
