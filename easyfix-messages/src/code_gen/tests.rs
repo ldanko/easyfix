@@ -139,6 +139,41 @@ fn enum_doc_comments_emitted() {
 }
 
 #[test]
+fn identical_field_definitions_accepted() {
+    validate_field_agreement(
+        58,
+        "Text",
+        dict::BasicType::String,
+        "Text",
+        dict::BasicType::String,
+    );
+}
+
+#[test]
+#[should_panic(expected = "tag 1130 is DefaultVerIndicator in the transport dictionary")]
+fn field_name_clash_rejected() {
+    validate_field_agreement(
+        1130,
+        "DefaultVerIndicator",
+        dict::BasicType::Boolean,
+        "RefApplVerID",
+        dict::BasicType::String,
+    );
+}
+
+#[test]
+#[should_panic(expected = "field SessionStatus(1409) is Int in the transport dictionary")]
+fn field_type_clash_rejected() {
+    validate_field_agreement(
+        1409,
+        "SessionStatus",
+        dict::BasicType::Int,
+        "SessionStatus",
+        dict::BasicType::String,
+    );
+}
+
+#[test]
 fn full_appl_ver_id_codeset_accepted() {
     validate_appl_ver_id_codeset(
         "DefaultApplVerID",

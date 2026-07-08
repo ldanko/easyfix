@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 
 use easyfix_core::basic_types::FixString;
 use easyfix_dictionary::{self as dict, Dictionary, Version};
@@ -146,14 +146,28 @@ impl Generator {
             ));
         }
 
-        // Collect all fields from FIXT dictionary and FIX50SP2 subdictionary, deduped by tag number
+        // Collect all fields from FIXT dictionary and FIX50SP2 subdictionary,
+        // deduped by tag number. Each dictionary keys its own fields by tag, so
+        // only the application pass can collide - and there the transport
+        // definition wins, carrying its variant list into codegen.
         let mut all_fields_map: HashMap<u16, &dict::Field> = HashMap::new();
         for field in dictionary.fields() {
-            all_fields_map.entry(field.number()).or_insert(field);
+            all_fields_map.insert(field.number(), field);
         }
         if let Some(app_dict) = app_dictionary {
             for field in app_dict.fields() {
-                all_fields_map.entry(field.number()).or_insert(field);
+                match all_fields_map.entry(field.number()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(field);
+                    }
+                    Entry::Occupied(entry) => validate_field_agreement(
+                        field.number(),
+                        entry.get().name().as_utf8(),
+                        entry.get().data_type(),
+                        field.name().as_utf8(),
+                        field.data_type(),
+                    ),
+                }
             }
         }
 
@@ -330,6 +344,45 @@ impl Generator {
 
             #fixt_message_def
         }
+    }
+}
+
+/// Hard generation-time check for a tag defined in both dictionaries: panics
+/// unless the transport and application definitions agree on what the field
+/// is - its name and its data type.
+//
+// The transport definition wins the merge, so a disagreement would otherwise
+// decide silently what the tag *is* for the whole generated module: `FieldTag`
+// carries one variant per tag and a member's type is chosen once. A name clash
+// does not even fail here - message members resolve against their own
+// dictionary and name a type the merge never emitted, so the build breaks in
+// the generated file, two levels away from the cause.
+//
+// Variant lists are deliberately not compared. A codeset that differs between
+// the two dictionaries is expected - `MsgType(35)` is the standard case, the
+// transport listing session and application types where the application
+// dictionary lists only its own - and the transport list is the one that wins.
+fn validate_field_agreement(
+    tag: u16,
+    transport_name: &str,
+    transport_type: dict::BasicType,
+    application_name: &str,
+    application_type: dict::BasicType,
+) {
+    if transport_name != application_name {
+        panic!(
+            "tag {tag} is {transport_name} in the transport dictionary but \
+             {application_name} in the application dictionary; a tag names one \
+             field in the generated code - align the two dictionaries"
+        );
+    }
+    if transport_type != application_type {
+        panic!(
+            "field {transport_name}({tag}) is {transport_type:?} in the \
+             transport dictionary but {application_type:?} in the application \
+             dictionary; a tag has one representation in the generated code - \
+             align the two dictionaries"
+        );
     }
 }
 
