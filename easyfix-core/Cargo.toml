@@ -7,6 +7,9 @@ description = "Easy FIX (Financial Information Exchange) toolset - core types."
 repository = "https://github.com/ldanko/easyfix"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 # `rust_decimal/serde` covers both directions in one feature - it cannot be
 # split into ser and de - so both features enable it. The plain `serde` variant

@@ -1,4 +1,4 @@
-use std::{env, fs};
+use std::{env, fs, process};
 
 use easyfix_dictionary::fix_str;
 
@@ -42,7 +42,7 @@ const DOC_DICT: &str = r#"
 "#;
 
 fn doc_dictionary(file_name: &str) -> Dictionary {
-    let path = env::temp_dir().join(format!("easyfix_{}_{}.xml", file_name, std::process::id()));
+    let path = env::temp_dir().join(format!("easyfix_{}_{}.xml", file_name, process::id()));
     fs::write(&path, DOC_DICT).unwrap();
     let dictionary = Dictionary::new(path.to_str().unwrap())
         .unwrap()

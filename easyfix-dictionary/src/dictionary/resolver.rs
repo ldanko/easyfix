@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    iter, mem,
     rc::Rc,
     vec,
 };
@@ -221,7 +222,7 @@ impl Resolver {
     /// the iterator.
     fn try_take_data_field(
         &mut self,
-        iter: &mut std::iter::Peekable<vec::IntoIter<xml::Member>>,
+        iter: &mut iter::Peekable<vec::IntoIter<xml::Member>>,
     ) -> Result<Option<Rc<Field>>, Error> {
         let Some(xml::Member::Field(next_ref)) = iter.peek() else {
             return Ok(None);
@@ -355,7 +356,7 @@ impl Resolver {
             self.fields.insert(field_name, field.clone());
         }
 
-        let mut raw_components = std::mem::take(&mut self.raw_components);
+        let mut raw_components = mem::take(&mut self.raw_components);
         for (name, raw_component) in raw_components.drain() {
             if raw_component.members.is_empty() {
                 return Err(Error::Validation(ValidationError::EmptyContainer(

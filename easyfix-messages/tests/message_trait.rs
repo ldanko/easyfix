@@ -8,7 +8,7 @@ use easyfix_core::{
         AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, MsgTypeBase,
     },
     basic_types::{TimePrecision, UtcTimestamp},
-    fix_str,
+    deserializer, fix_str,
     message::{MsgCat, SessionMessage},
 };
 use easyfix_test_messages as messages;
@@ -154,7 +154,7 @@ fn serialize_from_raw_message_round_trip() {
     let len = SessionMessage::serialize(&original, &mut bytes).expect("serialize failed");
     bytes.truncate(len);
 
-    let (_, raw) = easyfix_core::deserializer::raw_message(&bytes).unwrap();
+    let (_, raw) = deserializer::raw_message(&bytes).unwrap();
     let restored = Message::from_raw_message(raw).unwrap();
 
     assert_eq!(restored.header.msg_seq_num, original.header.msg_seq_num);

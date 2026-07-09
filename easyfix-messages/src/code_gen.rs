@@ -308,7 +308,7 @@ impl Generator {
             // tags 1128/1137; re-exported so dictionary consumers can name
             // it from the generated crate.
             pub use easyfix_core::basic_types::ApplVerId;
-            #[allow(unused_imports)]
+            #[allow(unused_imports, reason = "fixed import list; a given dictionary need not use every type")]
             use easyfix_core::{
                 base_messages::{
                     AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
@@ -323,6 +323,7 @@ impl Generator {
                     ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
                 },
                 deserializer::{DeserializeErrorKind, Deserializer, GarbledReason, LogoutReason, RawMessage},
+                fix_str,
                 message::{DeserializeError, HeaderAccess, SessionMessage},
                 serializer::{SerializeError, Serializer},
                 version::Version,

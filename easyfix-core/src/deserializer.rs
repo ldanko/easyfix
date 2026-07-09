@@ -8,7 +8,7 @@
 //! Failures are classified by what the session must do about them - see
 //! [`DeserializeErrorKind`].
 
-use std::{error::Error, fmt, sync::LazyLock};
+use std::{error::Error as StdError, fmt, ops, sync::LazyLock};
 
 use memchr::{memchr, memmem};
 
@@ -129,7 +129,7 @@ impl fmt::Display for DeserializeErrorKind {
     }
 }
 
-impl Error for DeserializeErrorKind {}
+impl StdError for DeserializeErrorKind {}
 
 impl From<RawMessageError> for DeserializeErrorKind {
     fn from(error: RawMessageError) -> Self {
@@ -277,6 +277,10 @@ fn parse_utc_seconds(buf: &[u8]) -> Result<(u32, u32, &[u8]), DeserializeErrorKi
 /// caller. A 12-digit (picosecond) fraction is truncated to nanoseconds -
 /// chrono cannot hold picosecond resolution.
 /// Returns (nanoseconds, precision, rest).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the accumulator is reduced to nanoseconds below, so it is at most 999_999_999"
+)]
 fn parse_fraction_of_second(
     buf: &[u8],
 ) -> Result<(u32, TimePrecision, &[u8]), DeserializeErrorKindInternal> {
@@ -789,7 +793,7 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageEr
 pub struct Deserializer<'de> {
     raw_message: RawMessage<'de>,
     buf: &'de [u8],
-    msg_type: Option<std::ops::Range<usize>>,
+    msg_type: Option<ops::Range<usize>>,
     seq_num: Option<SeqNum>,
     current_tag: Option<TagNum>,
     // Used to put tag back to deserializer, when switching to deserialization
@@ -819,6 +823,10 @@ impl<'de> Deserializer<'de> {
 
     /// BodyLength(9). Consumed by the framing, so it is read from here rather
     /// than from the tag stream.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`raw_message` cuts the body to a `Length`-typed BodyLength(9), so it never exceeds `Length::MAX`"
+    )]
     pub fn body_length(&self) -> Length {
         self.raw_message.body.len() as Length
     }
@@ -992,7 +1000,7 @@ impl<'de> Deserializer<'de> {
     /// # Panics
     ///
     /// If `range` is out of the message body's bounds.
-    pub fn range_to_fixstr(&self, range: std::ops::Range<usize>) -> &FixStr {
+    pub fn range_to_fixstr(&self, range: ops::Range<usize>) -> &FixStr {
         // SAFETY: ranges handed out by this deserializer come from
         // `deserialize_msg_type`, which validated the bytes as printable
         // ASCII via `deserialize_str`.
@@ -1005,7 +1013,7 @@ impl<'de> Deserializer<'de> {
     /// bytes, so the borrow ends here and the deserializer stays mutably
     /// usable; resolve it with
     /// [`range_to_fixstr`](Self::range_to_fixstr) when the bytes are needed.
-    pub fn deserialize_msg_type(&mut self) -> Result<std::ops::Range<usize>, DeserializeErrorKind> {
+    pub fn deserialize_msg_type(&mut self) -> Result<ops::Range<usize>, DeserializeErrorKind> {
         let raw_message_pointer = self.raw_message.body.as_ptr();
 
         let msg_type_range = {
@@ -1017,7 +1025,7 @@ impl<'de> Deserializer<'de> {
             // which is always a subslice of `raw_message.body`, so both
             // pointers point into the same allocation.
             let msg_type_start_index =
-                unsafe { msg_type_pointer.offset_from(raw_message_pointer) } as usize;
+                unsafe { msg_type_pointer.offset_from_unsigned(raw_message_pointer) };
             let msg_type_len = deser_str.len();
             msg_type_start_index..(msg_type_start_index + msg_type_len)
         };
@@ -1495,6 +1503,8 @@ impl<'de> Deserializer<'de> {
         // SAFETY: i is from memchr on self.buf, so i < self.buf.len(),
         // thus i + 1 <= self.buf.len()
         let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
+        // SAFETY: rest is self.buf[i..] and i < self.buf.len(), so rest still
+        // holds the separator memchr found - rest.len() >= 1
         let (_, rest) = unsafe { rest.split_at_unchecked(1) };
         self.buf = rest;
         let mut result = MultipleCharValue::with_capacity(data.len() / 2 + 1);
@@ -1580,6 +1590,8 @@ impl<'de> Deserializer<'de> {
         // SAFETY: i is from memchr on self.buf, so i < self.buf.len(),
         // thus i + 1 <= self.buf.len()
         let (data, rest) = unsafe { self.buf.split_at_unchecked(i) };
+        // SAFETY: rest is self.buf[i..] and i < self.buf.len(), so rest still
+        // holds the separator memchr found - rest.len() >= 1
         let (_, rest) = unsafe { rest.split_at_unchecked(1) };
         self.buf = rest;
         const DEFAULT_CAPACITY: usize = 4;
@@ -2094,28 +2106,28 @@ impl<'de> Deserializer<'de> {
     /// Fields of datatype data must be immediately preceded by their
     /// associated Length field.
     pub fn deserialize_data(&mut self, len: usize) -> Result<Data, DeserializeErrorKind> {
-        if self.buf.is_empty() {
+        // Data length + separator (SOH). Phrased as `len >= self.buf.len()`
+        // and not as `self.buf.len() < len + 1`: the latter wraps for
+        // `len == usize::MAX` and waves the unchecked accesses below through.
+        // An empty buffer needs no separate guard - it fails this one for
+        // every `len`, with the same error.
+        if len >= self.buf.len() {
             return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             ));
         }
 
-        // Data length + separator (SOH)
-        if self.buf.len() < len + 1 {
-            return Err(DeserializeErrorKind::Garbled(
-                GarbledReason::IncompleteMessageData,
-            ));
-        }
-
-        // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
+        // SAFETY: guard above ensures len < self.buf.len(), so index len is valid
         if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
             return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::MessageNotWellFormed,
             ));
         }
 
-        // SAFETY: guard ensures len + 1 <= self.buf.len()
+        // SAFETY: guard ensures len < self.buf.len()
         let (data, rest) = unsafe { self.buf.split_at_unchecked(len) };
+        // SAFETY: rest is self.buf[len..] and len < self.buf.len(), so rest
+        // still holds the separator checked above - rest.len() >= 1
         let (_, rest) = unsafe { rest.split_at_unchecked(1) };
         self.buf = rest;
         Ok(data.into())
@@ -2147,14 +2159,16 @@ impl<'de> Deserializer<'de> {
             _ => {}
         }
 
-        // XML length + separator (SOH)
-        if self.buf.len() < len + 1 {
+        // XML length + separator (SOH). Phrased as `len >= self.buf.len()` and
+        // not as `self.buf.len() < len + 1`: the latter wraps for
+        // `len == usize::MAX` and waves the unchecked accesses below through.
+        if len >= self.buf.len() {
             return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::IncompleteMessageData,
             ));
         }
 
-        // SAFETY: guard above ensures self.buf.len() >= len + 1, so index len is valid
+        // SAFETY: guard above ensures len < self.buf.len(), so index len is valid
         if unsafe { *self.buf.get_unchecked(len) } != b'\x01' {
             return Err(DeserializeErrorKind::Garbled(
                 GarbledReason::MessageNotWellFormed,
@@ -2162,8 +2176,10 @@ impl<'de> Deserializer<'de> {
         }
 
         // TODO: XML validation, SessionRejectReasonBase::XmlValidationError when invalid
-        // SAFETY: guard ensures len + 1 <= self.buf.len()
+        // SAFETY: guard ensures len < self.buf.len()
         let (xml, rest) = unsafe { self.buf.split_at_unchecked(len) };
+        // SAFETY: rest is self.buf[len..] and len < self.buf.len(), so rest
+        // still holds the separator checked above - rest.len() >= 1
         let (_, rest) = unsafe { rest.split_at_unchecked(1) };
         self.buf = rest;
         Ok(xml.into())

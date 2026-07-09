@@ -53,4 +53,51 @@ tokio-util = "0.7"
 tracing = "0.1.40"
 
 [workspace.lints.clippy]
+# Inherited only by crates that opt in with `[lints] workspace = true` in their
+# own manifest - a new crate without that block silently ignores all of this.
+# Test-code exceptions live in `clippy.toml`. The float lints are absolute
+# here: FIX values are decimal, so `f32`/`f64` have no place in them at all.
+# The lints left out are listed at the end of this file.
+
 absolute_paths = "deny"
+allow_attributes_without_reason = "warn"
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+dbg_macro = "warn"
+debug_assert_with_mut_call = "warn"
+expl_impl_clone_on_copy = "warn"
+float_cmp = "warn"
+float_cmp_const = "warn"
+get_unwrap = "warn"
+if_let_mutex = "warn"
+infallible_try_from = "warn"
+invalid_upcast_comparisons = "warn"
+iter_not_returning_iterator = "warn"
+large_futures = "warn"
+let_underscore_future = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+multiple_unsafe_ops_per_block = "warn"
+panic_in_result_fn = "warn"
+rc_mutex = "warn"
+string_slice = "warn"
+todo = "warn"
+unchecked_time_subtraction = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unused_result_ok = "warn"
+
+# Measured and deliberately left out: `unwrap_used`, `expect_used`, `panic`,
+# `unreachable`, `unwrap_in_result`, `assertions_on_result_states`,
+# `arithmetic_side_effects`, `let_underscore_must_use`, `map_err_ignore`,
+# `allow_attributes`. Each failed one of two tests: a lint whose only available
+# fix is an annotation on code that is already correct, or one that cannot stay
+# clean in a test, an example or a build script without an attribute - a
+# panicking construct is the expected form there. `indexing_slicing` was
+# audited instead of enabled: all 37 library sites proved in bounds.

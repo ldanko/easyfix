@@ -453,11 +453,12 @@ fn generate_logon(members: &[Member], version: Version) -> TokenStream {
     if has_next_expected {
         validate_tag(&map, 789, "NextExpectedMsgSeqNum", BasicType::SeqNum);
     }
-    let has_default_appl_ver_id = map.contains_key(&1137);
+    let default_appl_ver_id = map.get(&1137);
+    let has_default_appl_ver_id = default_appl_ver_id.is_some();
     if has_default_appl_ver_id {
         validate_tag(&map, 1137, "DefaultApplVerID", BasicType::String);
     }
-    let default_appl_ver_id_required = has_default_appl_ver_id && map[&1137].required();
+    let default_appl_ver_id_required = default_appl_ver_id.is_some_and(|member| member.required());
     let has_session_status = map.contains_key(&1409);
     if has_session_status {
         validate_tag(&map, 1409, "SessionStatus", BasicType::Int);

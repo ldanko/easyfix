@@ -1,5 +1,7 @@
 use std::io;
 
+use quick_xml::de;
+
 use crate::xml::{BasicType, MsgCat, MsgType};
 
 /// Errors that can occur during dictionary operations.
@@ -11,7 +13,7 @@ pub enum Error {
 
     /// XML parsing error when reading dictionary files
     #[error("XML parsing error: {0}")]
-    XmlParse(#[from] quick_xml::de::DeError),
+    XmlParse(#[from] de::DeError),
 
     /// Dictionary validation failed
     #[error("Validation error: {0}")]

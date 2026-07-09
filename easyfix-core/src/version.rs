@@ -261,23 +261,19 @@ impl FromStr for Version {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('.').collect();
 
-        if parts.len() != 3 {
+        let [protocol, major, minor_and_sp] = parts.as_slice() else {
             return Err(UnknownVersionError);
-        }
+        };
 
-        let session_protocol = match parts[0] {
+        let session_protocol = match *protocol {
             "FIX" => SessionProtocol::Fix,
             "FIXT" => SessionProtocol::Fixt,
             _ => return Err(UnknownVersionError),
         };
 
-        let major = parts[1].parse::<u8>().map_err(|_| UnknownVersionError)?;
-
-        let minor_and_sp = parts[2];
-        let (minor, servicepack) = if let Some(sp_pos) = minor_and_sp.find("SP") {
-            let minor_str = &minor_and_sp[..sp_pos];
-            let sp_str = &minor_and_sp[sp_pos + 2..];
-
+        let major = major.parse::<u8>().map_err(|_| UnknownVersionError)?;
+        let (minor, servicepack) = if let Some((minor_str, sp_str)) = minor_and_sp.split_once("SP")
+        {
             let minor = minor_str.parse::<u8>().map_err(|_| UnknownVersionError)?;
             let sp = sp_str.parse::<u8>().map_err(|_| UnknownVersionError)?;
 
@@ -303,8 +299,10 @@ impl serde::Serialize for Version {
 #[cfg(feature = "serde-deserialize")]
 impl<'de> serde::Deserialize<'de> for Version {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use std::borrow;
+
         use serde::de::Error;
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        let s = <borrow::Cow<'de, str>>::deserialize(deserializer)?;
         Version::from_str(&s).map_err(D::Error::custom)
     }
 }

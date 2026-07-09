@@ -1,0 +1,21 @@
+# Panics and indexing are assertions in tests, not defects - the lints that
+# ban them in production code are relaxed for `#[cfg(test)]` code.
+#
+# LIMITATION: clippy recognizes only `#[cfg(test)]` code here. An integration
+# test crate (`tests/*.rs`) is NOT `#[cfg(test)]`, so none of these apply to it,
+# and neither does any manifest-level escape - Cargo refuses to mix
+# `[lints] workspace = true` with local overrides, and integration tests share
+# the library's manifest anyway. The only remaining tool is a crate-level
+# `#![expect(...)]` per test file.
+#
+# We treat needing one as disqualifying: a lint that cannot stay clean in a
+# test, an example or a build script without an attribute does not fit this
+# repo, because a panicking construct is the expected form there. There is no
+# such attribute in the tree - keep it that way. `unwrap_used` and `panic` were
+# weighed against this rule and left out; the workspace `Cargo.toml` records
+# that decision next to the lint config.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true

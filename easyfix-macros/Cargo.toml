@@ -8,6 +8,9 @@ repository = "https://github.com/ldanko/easyfix"
 readme = "README.md"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [lib]
 proc-macro = true
 

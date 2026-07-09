@@ -1,3 +1,5 @@
+use std::str;
+
 use assert_matches::assert_matches;
 
 use super::{SerializeError, Serializer, max_body_len_digits};
@@ -23,6 +25,10 @@ fn frame(buf: &mut [u8], body: &[u8]) -> usize {
 
 /// Independent checksum oracle: plain u32 sum reduced mod 256, rather
 /// than the `u8::wrapping_add` fold the serializer uses.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "reduced mod 256 on the line, so the value fits u8 by construction"
+)]
 fn expected_checksum(bytes: &[u8]) -> u8 {
     (bytes.iter().map(|&b| b as u32).sum::<u32>() % 256) as u8
 }
@@ -388,7 +394,7 @@ fn framed_message_matches_a_hand_computed_reference() {
     let head = b"8=FIXT.1.1\x019=0010\x0135=0\x0134=1\x01";
     let expected = format!(
         "{}10={:03}\x01",
-        std::str::from_utf8(head).unwrap(),
+        str::from_utf8(head).unwrap(),
         expected_checksum(head)
     );
     assert_eq!(&buf[..len], expected.as_bytes());

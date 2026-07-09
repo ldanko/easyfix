@@ -8,5 +8,8 @@ repository = "https://github.com/ldanko/easyfix"
 edition = "2024"
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 easyfix-core = { workspace = true }

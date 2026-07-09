@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use easyfix_dictionary::{BasicType, Version};
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
@@ -48,14 +50,14 @@ impl Header {
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
         quote! {
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
             #[derive(Clone, Debug, Default)]
             #serde_derives
             pub struct Header {
                 #(#members_definitions,)*
             }
 
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
             impl Header {
                 pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
                     #(#serialize)*
@@ -134,7 +136,7 @@ impl Header {
     /// - `From<&'a Header> for HeaderBase<'a>` - incoming, zero-copy via `Cow::Borrowed`
     /// - `From<HeaderBase<'_>> for Header` - outgoing, consumes `Cow`, defaults remaining fields
     fn generate_header_base_conversions(&self, version: Version) -> TokenStream {
-        let members_by_tag: std::collections::HashMap<u16, &Member> =
+        let members_by_tag: HashMap<u16, &Member> =
             self.members.iter().map(|m| (m.tag_num(), m)).collect();
 
         // Validate always-present HeaderBase fields.
@@ -158,9 +160,9 @@ impl Header {
         }
 
         // Version-conditional: OrigSendingTime (tag 122, FIX 4.0+)
-        let has_orig_sending_time = members_by_tag.contains_key(&122);
-        if has_orig_sending_time {
-            let member = members_by_tag.get(&122).unwrap();
+        let orig_sending_time = members_by_tag.get(&122);
+        let has_orig_sending_time = orig_sending_time.is_some();
+        if let Some(member) = orig_sending_time {
             assert!(
                 member.has_basic_type(BasicType::UtcTimestamp),
                 "Header tag 122 (OrigSendingTime) has unexpected type, expected UtcTimestamp",
@@ -183,9 +185,9 @@ impl Header {
         // 14(g) enforces only header-before-body-before-trailer, and
         // reference implementations disagree with each other here, so a
         // conformant receiver must accept 1128 in the 4th position.
-        let has_appl_ver_id = members_by_tag.contains_key(&1128);
-        if has_appl_ver_id {
-            let member = members_by_tag.get(&1128).unwrap();
+        let appl_ver_id = members_by_tag.get(&1128);
+        let has_appl_ver_id = appl_ver_id.is_some();
+        if let Some(member) = appl_ver_id {
             assert!(
                 member.has_basic_type(BasicType::String),
                 "Header tag 1128 (ApplVerID) has unexpected type, expected String",
@@ -266,7 +268,7 @@ impl Header {
     /// `self.header.*`, allowing users to work with a borrowed `&Header`
     /// directly (e.g. when the message body is mutably borrowed).
     fn generate_header_access_for_header_impl(&self, _version: Version) -> TokenStream {
-        let members_by_tag: std::collections::HashMap<u16, &Member> =
+        let members_by_tag: HashMap<u16, &Member> =
             self.members.iter().map(|m| (m.tag_num(), m)).collect();
 
         let has_orig_sending_time = members_by_tag.contains_key(&122);
@@ -371,7 +373,7 @@ impl Header {
     /// fields. Version-conditional fields (OrigSendingTime, ApplVerID) return
     /// `None` / no-op when absent from the generated Header.
     pub fn generate_header_access_impl(&self, _version: Version) -> TokenStream {
-        let members_by_tag: std::collections::HashMap<u16, &Member> =
+        let members_by_tag: HashMap<u16, &Member> =
             self.members.iter().map(|m| (m.tag_num(), m)).collect();
 
         let has_orig_sending_time = members_by_tag.contains_key(&122);

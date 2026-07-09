@@ -1,4 +1,7 @@
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum MsgType {
     #[default]
@@ -45,22 +48,22 @@ impl MsgType {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            MsgType::Heartbeat => b"0",
-            MsgType::TestRequest => b"1",
-            MsgType::ResendRequest => b"2",
-            MsgType::Reject => b"3",
-            MsgType::SequenceReset => b"4",
-            MsgType::Logout => b"5",
-            MsgType::Logon => b"A",
-            MsgType::ExecutionReport => b"8",
-            MsgType::NewOrderSingle => b"D",
-            MsgType::BusinessMessageReject => b"j",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            MsgType::Heartbeat => fix_str!("0"),
+            MsgType::TestRequest => fix_str!("1"),
+            MsgType::ResendRequest => fix_str!("2"),
+            MsgType::Reject => fix_str!("3"),
+            MsgType::SequenceReset => fix_str!("4"),
+            MsgType::Logout => fix_str!("5"),
+            MsgType::Logon => fix_str!("A"),
+            MsgType::ExecutionReport => fix_str!("8"),
+            MsgType::NewOrderSingle => fix_str!("D"),
+            MsgType::BusinessMessageReject => fix_str!("j"),
+        }
     }
 }
 impl ToFixString for MsgType {
@@ -92,7 +95,10 @@ impl From<MsgType> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OrdStatus {
     #[default]
@@ -124,17 +130,17 @@ impl OrdStatus {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            OrdStatus::New => b"0",
-            OrdStatus::PartiallyFilled => b"1",
-            OrdStatus::Filled => b"2",
-            OrdStatus::Canceled => b"4",
-            OrdStatus::Rejected => b"8",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            OrdStatus::New => fix_str!("0"),
+            OrdStatus::PartiallyFilled => fix_str!("1"),
+            OrdStatus::Filled => fix_str!("2"),
+            OrdStatus::Canceled => fix_str!("4"),
+            OrdStatus::Rejected => fix_str!("8"),
+        }
     }
 }
 impl ToFixString for OrdStatus {
@@ -161,7 +167,10 @@ impl From<OrdStatus> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OrdType {
     #[default]
@@ -184,14 +193,14 @@ impl OrdType {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            OrdType::Market => b"1",
-            OrdType::Limit => b"2",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            OrdType::Market => fix_str!("1"),
+            OrdType::Limit => fix_str!("2"),
+        }
     }
 }
 impl ToFixString for OrdType {
@@ -215,7 +224,10 @@ impl From<OrdType> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Side {
     #[default]
@@ -238,14 +250,14 @@ impl Side {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            Side::Buy => b"1",
-            Side::Sell => b"2",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            Side::Buy => fix_str!("1"),
+            Side::Sell => fix_str!("2"),
+        }
     }
 }
 impl ToFixString for Side {
@@ -269,7 +281,10 @@ impl From<Side> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EncryptMethod {
     #[default]
@@ -307,19 +322,19 @@ impl EncryptMethod {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            EncryptMethod::None => b"0",
-            EncryptMethod::Pkcs => b"1",
-            EncryptMethod::Des => b"2",
-            EncryptMethod::PkcsDes => b"3",
-            EncryptMethod::PgpDes => b"4",
-            EncryptMethod::PgpDesMd5 => b"5",
-            EncryptMethod::Pem => b"6",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            EncryptMethod::None => fix_str!("0"),
+            EncryptMethod::Pkcs => fix_str!("1"),
+            EncryptMethod::Des => fix_str!("2"),
+            EncryptMethod::PkcsDes => fix_str!("3"),
+            EncryptMethod::PgpDes => fix_str!("4"),
+            EncryptMethod::PgpDesMd5 => fix_str!("5"),
+            EncryptMethod::Pem => fix_str!("6"),
+        }
     }
 
     pub const fn as_int(&self) -> Int {
@@ -360,7 +375,10 @@ impl From<EncryptMethod> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ExecType {
     #[default]
@@ -389,16 +407,16 @@ impl ExecType {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            ExecType::New => b"0",
-            ExecType::Trade => b"F",
-            ExecType::Canceled => b"4",
-            ExecType::Rejected => b"8",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            ExecType::New => fix_str!("0"),
+            ExecType::Trade => fix_str!("F"),
+            ExecType::Canceled => fix_str!("4"),
+            ExecType::Rejected => fix_str!("8"),
+        }
     }
 }
 impl ToFixString for ExecType {
@@ -424,7 +442,10 @@ impl From<ExecType> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SessionRejectReason {
     #[default]
@@ -498,31 +519,33 @@ impl SessionRejectReason {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            SessionRejectReason::InvalidTagNumber => b"0",
-            SessionRejectReason::RequiredTagMissing => b"1",
-            SessionRejectReason::TagNotDefinedForThisMessageType => b"2",
-            SessionRejectReason::UndefinedTag => b"3",
-            SessionRejectReason::TagSpecifiedWithoutAValue => b"4",
-            SessionRejectReason::ValueIsIncorrect => b"5",
-            SessionRejectReason::IncorrectDataFormatForValue => b"6",
-            SessionRejectReason::DecryptionProblem => b"7",
-            SessionRejectReason::SignatureProblem => b"8",
-            SessionRejectReason::CompIdProblem => b"9",
-            SessionRejectReason::SendingTimeAccuracyProblem => b"10",
-            SessionRejectReason::InvalidMsgType => b"11",
-            SessionRejectReason::XmlValidationError => b"12",
-            SessionRejectReason::TagAppearsMoreThanOnce => b"13",
-            SessionRejectReason::TagSpecifiedOutOfRequiredOrder => b"14",
-            SessionRejectReason::RepeatingGroupFieldsOutOfOrder => b"15",
-            SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup => b"16",
-            SessionRejectReason::FieldDelimiterInFieldValue => b"17",
-            SessionRejectReason::InvalidUnsupportedAppVersion => b"18",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            SessionRejectReason::InvalidTagNumber => fix_str!("0"),
+            SessionRejectReason::RequiredTagMissing => fix_str!("1"),
+            SessionRejectReason::TagNotDefinedForThisMessageType => fix_str!("2"),
+            SessionRejectReason::UndefinedTag => fix_str!("3"),
+            SessionRejectReason::TagSpecifiedWithoutAValue => fix_str!("4"),
+            SessionRejectReason::ValueIsIncorrect => fix_str!("5"),
+            SessionRejectReason::IncorrectDataFormatForValue => fix_str!("6"),
+            SessionRejectReason::DecryptionProblem => fix_str!("7"),
+            SessionRejectReason::SignatureProblem => fix_str!("8"),
+            SessionRejectReason::CompIdProblem => fix_str!("9"),
+            SessionRejectReason::SendingTimeAccuracyProblem => fix_str!("10"),
+            SessionRejectReason::InvalidMsgType => fix_str!("11"),
+            SessionRejectReason::XmlValidationError => fix_str!("12"),
+            SessionRejectReason::TagAppearsMoreThanOnce => fix_str!("13"),
+            SessionRejectReason::TagSpecifiedOutOfRequiredOrder => fix_str!("14"),
+            SessionRejectReason::RepeatingGroupFieldsOutOfOrder => fix_str!("15"),
+            SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup => {
+                fix_str!("16")
+            }
+            SessionRejectReason::FieldDelimiterInFieldValue => fix_str!("17"),
+            SessionRejectReason::InvalidUnsupportedAppVersion => fix_str!("18"),
+        }
     }
 
     pub const fn as_int(&self) -> Int {
@@ -587,7 +610,10 @@ impl From<SessionRejectReason> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum BusinessRejectReason {
     #[default]
@@ -640,24 +666,26 @@ impl BusinessRejectReason {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            BusinessRejectReason::Other => b"0",
-            BusinessRejectReason::UnknownId => b"1",
-            BusinessRejectReason::UnknownSecurity => b"2",
-            BusinessRejectReason::UnsupportedMessageType => b"3",
-            BusinessRejectReason::ApplicationNotAvailable => b"4",
-            BusinessRejectReason::ConditionallyRequiredFieldMissing => b"5",
-            BusinessRejectReason::NotAuthorized => b"6",
-            BusinessRejectReason::DeliverToFirmNotAvailableAtThisTime => b"7",
-            BusinessRejectReason::ThrottleLimitExceeded => b"8",
-            BusinessRejectReason::ThrottleLimitExceededSessionDisconnected => b"9",
-            BusinessRejectReason::ThrottledMessagesRejectedOnRequest => b"10",
-            BusinessRejectReason::InvalidPriceIncrement => b"18",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            BusinessRejectReason::Other => fix_str!("0"),
+            BusinessRejectReason::UnknownId => fix_str!("1"),
+            BusinessRejectReason::UnknownSecurity => fix_str!("2"),
+            BusinessRejectReason::UnsupportedMessageType => fix_str!("3"),
+            BusinessRejectReason::ApplicationNotAvailable => fix_str!("4"),
+            BusinessRejectReason::ConditionallyRequiredFieldMissing => fix_str!("5"),
+            BusinessRejectReason::NotAuthorized => fix_str!("6"),
+            BusinessRejectReason::DeliverToFirmNotAvailableAtThisTime => fix_str!("7"),
+            BusinessRejectReason::ThrottleLimitExceeded => fix_str!("8"),
+            BusinessRejectReason::ThrottleLimitExceededSessionDisconnected => {
+                fix_str!("9")
+            }
+            BusinessRejectReason::ThrottledMessagesRejectedOnRequest => fix_str!("10"),
+            BusinessRejectReason::InvalidPriceIncrement => fix_str!("18"),
+        }
     }
 
     pub const fn as_int(&self) -> Int {
@@ -708,7 +736,10 @@ impl From<BusinessRejectReason> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MsgDirection {
     #[default]
@@ -731,14 +762,14 @@ impl MsgDirection {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            MsgDirection::Send => b"S",
-            MsgDirection::Receive => b"R",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            MsgDirection::Send => fix_str!("S"),
+            MsgDirection::Receive => fix_str!("R"),
+        }
     }
 }
 impl ToFixString for MsgDirection {
@@ -762,7 +793,10 @@ impl From<MsgDirection> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RefApplVerId {
     #[default]
@@ -812,23 +846,23 @@ impl RefApplVerId {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            RefApplVerId::Fix27 => b"0",
-            RefApplVerId::Fix30 => b"1",
-            RefApplVerId::Fix40 => b"2",
-            RefApplVerId::Fix41 => b"3",
-            RefApplVerId::Fix42 => b"4",
-            RefApplVerId::Fix43 => b"5",
-            RefApplVerId::Fix44 => b"6",
-            RefApplVerId::Fix50 => b"7",
-            RefApplVerId::Fix50Sp1 => b"8",
-            RefApplVerId::Fix50Sp2 => b"9",
-            RefApplVerId::FixLatest => b"10",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            RefApplVerId::Fix27 => fix_str!("0"),
+            RefApplVerId::Fix30 => fix_str!("1"),
+            RefApplVerId::Fix40 => fix_str!("2"),
+            RefApplVerId::Fix41 => fix_str!("3"),
+            RefApplVerId::Fix42 => fix_str!("4"),
+            RefApplVerId::Fix43 => fix_str!("5"),
+            RefApplVerId::Fix44 => fix_str!("6"),
+            RefApplVerId::Fix50 => fix_str!("7"),
+            RefApplVerId::Fix50Sp1 => fix_str!("8"),
+            RefApplVerId::Fix50Sp2 => fix_str!("9"),
+            RefApplVerId::FixLatest => fix_str!("10"),
+        }
     }
 }
 impl ToFixString for RefApplVerId {
@@ -861,7 +895,10 @@ impl From<RefApplVerId> for &'static [u8] {
         input.as_bytes()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SessionStatus {
     #[default]
@@ -911,23 +948,23 @@ impl SessionStatus {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            SessionStatus::SessionActive => b"0",
-            SessionStatus::SessionPasswordChanged => b"1",
-            SessionStatus::SessionPasswordDueToExpire => b"2",
-            SessionStatus::NewSessionPasswordDoesNotComplyWithPolicy => b"3",
-            SessionStatus::SessionLogoutComplete => b"4",
-            SessionStatus::InvalidUsernameOrPassword => b"5",
-            SessionStatus::AccountLocked => b"6",
-            SessionStatus::LogonsAreNotAllowedAtThisTime => b"7",
-            SessionStatus::PasswordExpired => b"8",
-            SessionStatus::ReceivedMsgSeqNumTooLow => b"9",
-            SessionStatus::ReceivedNextExpectedMsgSeqNumTooHigh => b"10",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            SessionStatus::SessionActive => fix_str!("0"),
+            SessionStatus::SessionPasswordChanged => fix_str!("1"),
+            SessionStatus::SessionPasswordDueToExpire => fix_str!("2"),
+            SessionStatus::NewSessionPasswordDoesNotComplyWithPolicy => fix_str!("3"),
+            SessionStatus::SessionLogoutComplete => fix_str!("4"),
+            SessionStatus::InvalidUsernameOrPassword => fix_str!("5"),
+            SessionStatus::AccountLocked => fix_str!("6"),
+            SessionStatus::LogonsAreNotAllowedAtThisTime => fix_str!("7"),
+            SessionStatus::PasswordExpired => fix_str!("8"),
+            SessionStatus::ReceivedMsgSeqNumTooLow => fix_str!("9"),
+            SessionStatus::ReceivedNextExpectedMsgSeqNumTooHigh => fix_str!("10"),
+        }
     }
 
     pub const fn as_int(&self) -> Int {
@@ -1152,7 +1189,10 @@ impl From<SessionStatusField> for SessionStatus {
     }
 }
 ///NumInGroup tag 384.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct MsgTypeGrp {
     ///Tag 372.
@@ -1162,7 +1202,10 @@ pub struct MsgTypeGrp {
     ///Tag 1410.
     pub default_ver_indicator: Option<Boolean>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl MsgTypeGrp {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(ref_msg_type) = &self.ref_msg_type {
@@ -1266,7 +1309,10 @@ impl MsgTypeGrp {
 }
 use std::{borrow::Cow, fmt};
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "fixed import list; a given dictionary need not use every type"
+)]
 use easyfix_core::{
     base_messages::{
         AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
@@ -1281,13 +1327,17 @@ use easyfix_core::{
         ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
     },
     deserializer::{DeserializeErrorKind, Deserializer, GarbledReason, LogoutReason, RawMessage},
+    fix_str,
     message::{DeserializeError, HeaderAccess, SessionMessage},
     serializer::{SerializeError, Serializer},
     version::Version,
 };
 pub use easyfix_core::{basic_types::ApplVerId, message::MsgCat};
 pub const VERSION: Version = Version::FIXT11;
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum FieldTag {
@@ -1354,7 +1404,10 @@ impl fmt::Display for FieldTag {
         f.write_str(self.as_fix_str().as_utf8())
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl FieldTag {
     pub const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
         match tag_num {
@@ -1420,69 +1473,69 @@ impl FieldTag {
     }
 
     pub const fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            FieldTag::BeginSeqNo => b"BeginSeqNo",
-            FieldTag::BeginString => b"BeginString",
-            FieldTag::BodyLength => b"BodyLength",
-            FieldTag::CheckSum => b"CheckSum",
-            FieldTag::ClOrdId => b"ClOrdId",
-            FieldTag::CumQty => b"CumQty",
-            FieldTag::EndSeqNo => b"EndSeqNo",
-            FieldTag::ExecId => b"ExecId",
-            FieldTag::MsgSeqNum => b"MsgSeqNum",
-            FieldTag::MsgType => b"MsgType",
-            FieldTag::NewSeqNo => b"NewSeqNo",
-            FieldTag::OrderId => b"OrderId",
-            FieldTag::OrderQty => b"OrderQty",
-            FieldTag::OrdStatus => b"OrdStatus",
-            FieldTag::OrdType => b"OrdType",
-            FieldTag::PossDupFlag => b"PossDupFlag",
-            FieldTag::Price => b"Price",
-            FieldTag::RefSeqNum => b"RefSeqNum",
-            FieldTag::SenderCompId => b"SenderCompId",
-            FieldTag::SenderSubId => b"SenderSubId",
-            FieldTag::SendingTime => b"SendingTime",
-            FieldTag::Side => b"Side",
-            FieldTag::Symbol => b"Symbol",
-            FieldTag::TargetCompId => b"TargetCompId",
-            FieldTag::TargetSubId => b"TargetSubId",
-            FieldTag::Text => b"Text",
-            FieldTag::TransactTime => b"TransactTime",
-            FieldTag::Signature => b"Signature",
-            FieldTag::SignatureLength => b"SignatureLength",
-            FieldTag::RawDataLength => b"RawDataLength",
-            FieldTag::RawData => b"RawData",
-            FieldTag::EncryptMethod => b"EncryptMethod",
-            FieldTag::HeartBtInt => b"HeartBtInt",
-            FieldTag::TestReqId => b"TestReqId",
-            FieldTag::OrigSendingTime => b"OrigSendingTime",
-            FieldTag::GapFillFlag => b"GapFillFlag",
-            FieldTag::ResetSeqNumFlag => b"ResetSeqNumFlag",
-            FieldTag::ExecType => b"ExecType",
-            FieldTag::LeavesQty => b"LeavesQty",
-            FieldTag::EncodedTextLen => b"EncodedTextLen",
-            FieldTag::EncodedText => b"EncodedText",
-            FieldTag::RefTagId => b"RefTagId",
-            FieldTag::RefMsgType => b"RefMsgType",
-            FieldTag::SessionRejectReason => b"SessionRejectReason",
-            FieldTag::BusinessRejectRefId => b"BusinessRejectRefId",
-            FieldTag::BusinessRejectReason => b"BusinessRejectReason",
-            FieldTag::MaxMessageSize => b"MaxMessageSize",
-            FieldTag::NoMsgTypes => b"NoMsgTypes",
-            FieldTag::MsgDirection => b"MsgDirection",
-            FieldTag::NextExpectedMsgSeqNum => b"NextExpectedMsgSeqNum",
-            FieldTag::ApplVerId => b"ApplVerId",
-            FieldTag::RefApplVerId => b"RefApplVerId",
-            FieldTag::RefCstmApplVerId => b"RefCstmApplVerId",
-            FieldTag::DefaultApplVerId => b"DefaultApplVerId",
-            FieldTag::RefApplExtId => b"RefApplExtId",
-            FieldTag::SessionStatus => b"SessionStatus",
-            FieldTag::DefaultVerIndicator => b"DefaultVerIndicator",
-        }
+        self.as_fix_str().as_bytes()
     }
 
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        match self {
+            FieldTag::BeginSeqNo => fix_str!("BeginSeqNo"),
+            FieldTag::BeginString => fix_str!("BeginString"),
+            FieldTag::BodyLength => fix_str!("BodyLength"),
+            FieldTag::CheckSum => fix_str!("CheckSum"),
+            FieldTag::ClOrdId => fix_str!("ClOrdId"),
+            FieldTag::CumQty => fix_str!("CumQty"),
+            FieldTag::EndSeqNo => fix_str!("EndSeqNo"),
+            FieldTag::ExecId => fix_str!("ExecId"),
+            FieldTag::MsgSeqNum => fix_str!("MsgSeqNum"),
+            FieldTag::MsgType => fix_str!("MsgType"),
+            FieldTag::NewSeqNo => fix_str!("NewSeqNo"),
+            FieldTag::OrderId => fix_str!("OrderId"),
+            FieldTag::OrderQty => fix_str!("OrderQty"),
+            FieldTag::OrdStatus => fix_str!("OrdStatus"),
+            FieldTag::OrdType => fix_str!("OrdType"),
+            FieldTag::PossDupFlag => fix_str!("PossDupFlag"),
+            FieldTag::Price => fix_str!("Price"),
+            FieldTag::RefSeqNum => fix_str!("RefSeqNum"),
+            FieldTag::SenderCompId => fix_str!("SenderCompId"),
+            FieldTag::SenderSubId => fix_str!("SenderSubId"),
+            FieldTag::SendingTime => fix_str!("SendingTime"),
+            FieldTag::Side => fix_str!("Side"),
+            FieldTag::Symbol => fix_str!("Symbol"),
+            FieldTag::TargetCompId => fix_str!("TargetCompId"),
+            FieldTag::TargetSubId => fix_str!("TargetSubId"),
+            FieldTag::Text => fix_str!("Text"),
+            FieldTag::TransactTime => fix_str!("TransactTime"),
+            FieldTag::Signature => fix_str!("Signature"),
+            FieldTag::SignatureLength => fix_str!("SignatureLength"),
+            FieldTag::RawDataLength => fix_str!("RawDataLength"),
+            FieldTag::RawData => fix_str!("RawData"),
+            FieldTag::EncryptMethod => fix_str!("EncryptMethod"),
+            FieldTag::HeartBtInt => fix_str!("HeartBtInt"),
+            FieldTag::TestReqId => fix_str!("TestReqId"),
+            FieldTag::OrigSendingTime => fix_str!("OrigSendingTime"),
+            FieldTag::GapFillFlag => fix_str!("GapFillFlag"),
+            FieldTag::ResetSeqNumFlag => fix_str!("ResetSeqNumFlag"),
+            FieldTag::ExecType => fix_str!("ExecType"),
+            FieldTag::LeavesQty => fix_str!("LeavesQty"),
+            FieldTag::EncodedTextLen => fix_str!("EncodedTextLen"),
+            FieldTag::EncodedText => fix_str!("EncodedText"),
+            FieldTag::RefTagId => fix_str!("RefTagId"),
+            FieldTag::RefMsgType => fix_str!("RefMsgType"),
+            FieldTag::SessionRejectReason => fix_str!("SessionRejectReason"),
+            FieldTag::BusinessRejectRefId => fix_str!("BusinessRejectRefId"),
+            FieldTag::BusinessRejectReason => fix_str!("BusinessRejectReason"),
+            FieldTag::MaxMessageSize => fix_str!("MaxMessageSize"),
+            FieldTag::NoMsgTypes => fix_str!("NoMsgTypes"),
+            FieldTag::MsgDirection => fix_str!("MsgDirection"),
+            FieldTag::NextExpectedMsgSeqNum => fix_str!("NextExpectedMsgSeqNum"),
+            FieldTag::ApplVerId => fix_str!("ApplVerId"),
+            FieldTag::RefApplVerId => fix_str!("RefApplVerId"),
+            FieldTag::RefCstmApplVerId => fix_str!("RefCstmApplVerId"),
+            FieldTag::DefaultApplVerId => fix_str!("DefaultApplVerId"),
+            FieldTag::RefApplExtId => fix_str!("RefApplExtId"),
+            FieldTag::SessionStatus => fix_str!("SessionStatus"),
+            FieldTag::DefaultVerIndicator => fix_str!("DefaultVerIndicator"),
+        }
     }
 }
 impl ToFixString for FieldTag {
@@ -1490,7 +1543,10 @@ impl ToFixString for FieldTag {
         self.as_fix_str().to_owned()
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct Header {
     ///Tag 9.
@@ -1514,7 +1570,10 @@ pub struct Header {
     ///Tag 122.
     pub orig_sending_time: Option<UtcTimestamp>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Header {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(appl_ver_id) = &self.appl_ver_id {
@@ -1848,7 +1907,10 @@ impl HeaderAccess for Message {
         self.header.appl_ver_id = value;
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct Trailer {
     ///Tag 89.
@@ -1856,12 +1918,17 @@ pub struct Trailer {
     ///Tag 10.
     pub check_sum: FixString,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Trailer {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(signature) = &self.signature {
             serializer.put_slice(b"93=")?;
-            serializer.serialize_length(&(signature.len() as u16))?;
+            serializer.serialize_length(
+                &Length::try_from(signature.len()).map_err(|_| SerializeError::InvalidValue)?,
+            )?;
             serializer.put_soh()?;
             serializer.put_slice(b"89=")?;
             serializer.serialize_data(signature)?;
@@ -1934,13 +2001,19 @@ impl Trailer {
     }
 }
 ///MsgType "0".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct Heartbeat {
     ///Tag 112.
     pub test_req_id: Option<FixString>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Heartbeat {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(test_req_id) = &self.test_req_id {
@@ -1994,13 +2067,19 @@ impl Heartbeat {
     }
 }
 ///MsgType "1".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct TestRequest {
     ///Tag 112.
     pub test_req_id: FixString,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl TestRequest {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         serializer.put_slice(b"112=")?;
@@ -2056,7 +2135,10 @@ impl TestRequest {
     }
 }
 ///MsgType "2".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct ResendRequest {
     ///Tag 7.
@@ -2064,7 +2146,10 @@ pub struct ResendRequest {
     ///Tag 16.
     pub end_seq_no: SeqNum,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl ResendRequest {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         serializer.put_slice(b"7=")?;
@@ -2132,7 +2217,10 @@ impl ResendRequest {
     }
 }
 ///MsgType "3".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct Reject {
     ///Tag 45.
@@ -2146,7 +2234,10 @@ pub struct Reject {
     ///Tag 58.
     pub text: Option<FixString>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Reject {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         serializer.put_slice(b"45=")?;
@@ -2262,7 +2353,10 @@ impl Reject {
     }
 }
 ///MsgType "4".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct SequenceReset {
     ///Tag 123.
@@ -2270,7 +2364,10 @@ pub struct SequenceReset {
     ///Tag 36.
     pub new_seq_no: SeqNum,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl SequenceReset {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(gap_fill_flag) = &self.gap_fill_flag {
@@ -2340,7 +2437,10 @@ impl SequenceReset {
     }
 }
 ///MsgType "5".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct Logout {
     ///Tag 1409.
@@ -2350,7 +2450,10 @@ pub struct Logout {
     ///Tag 58.
     pub text: Option<FixString>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Logout {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(session_status) = &self.session_status {
@@ -2436,7 +2539,10 @@ impl Logout {
     }
 }
 ///MsgType "A".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug)]
 pub struct Logon {
     ///Tag 98.
@@ -2476,7 +2582,10 @@ impl Default for Logon {
         }
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Logon {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         serializer.put_slice(b"98=")?;
@@ -2487,7 +2596,9 @@ impl Logon {
         serializer.put_soh()?;
         if let Some(raw_data) = &self.raw_data {
             serializer.put_slice(b"95=")?;
-            serializer.serialize_length(&(raw_data.len() as u16))?;
+            serializer.serialize_length(
+                &Length::try_from(raw_data.len()).map_err(|_| SerializeError::InvalidValue)?,
+            )?;
             serializer.put_soh()?;
             serializer.put_slice(b"96=")?;
             serializer.serialize_data(raw_data)?;
@@ -2510,7 +2621,10 @@ impl Logon {
         }
         if let Some(msg_type_grp) = &self.msg_type_grp {
             serializer.put_slice(b"384=")?;
-            serializer.serialize_num_in_group(&(msg_type_grp.len() as NumInGroup))?;
+            serializer.serialize_num_in_group(
+                &NumInGroup::try_from(msg_type_grp.len())
+                    .map_err(|_| SerializeError::InvalidValue)?,
+            )?;
             serializer.put_soh()?;
             for entry in msg_type_grp {
                 entry.serialize(serializer)?;
@@ -2727,7 +2841,10 @@ impl Logon {
     }
 }
 ///MsgType "D".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct NewOrderSingle {
     ///Tag 11.
@@ -2745,7 +2862,10 @@ pub struct NewOrderSingle {
     ///Tag 44.
     pub price: Option<Price>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl NewOrderSingle {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         serializer.put_slice(b"11=")?;
@@ -2883,7 +3003,10 @@ impl NewOrderSingle {
     }
 }
 ///MsgType "8".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionReport {
     ///Tag 37.
@@ -2911,7 +3034,10 @@ pub struct ExecutionReport {
     ///Tag 60.
     pub transact_time: Option<UtcTimestamp>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl ExecutionReport {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         serializer.put_slice(b"37=")?;
@@ -3123,7 +3249,10 @@ impl ExecutionReport {
     }
 }
 ///MsgType "j".
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug, Default)]
 pub struct BusinessMessageReject {
     ///Tag 45.
@@ -3145,7 +3274,10 @@ pub struct BusinessMessageReject {
     ///Tag 355.
     pub encoded_text: Option<Data>,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl BusinessMessageReject {
     pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         if let Some(ref_seq_num) = &self.ref_seq_num {
@@ -3186,7 +3318,9 @@ impl BusinessMessageReject {
         }
         if let Some(encoded_text) = &self.encoded_text {
             serializer.put_slice(b"354=")?;
-            serializer.serialize_length(&(encoded_text.len() as u16))?;
+            serializer.serialize_length(
+                &Length::try_from(encoded_text.len()).map_err(|_| SerializeError::InvalidValue)?,
+            )?;
             serializer.put_soh()?;
             serializer.put_slice(b"355=")?;
             serializer.serialize_data(encoded_text)?;
@@ -3505,9 +3639,15 @@ impl From<AdminBase<'_>> for Body {
         }
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "variant size follows the dictionary's message definitions"
+)]
 pub enum Body {
     Heartbeat(Heartbeat),
     TestRequest(TestRequest),
@@ -3520,7 +3660,10 @@ pub enum Body {
     ExecutionReport(ExecutionReport),
     BusinessMessageReject(BusinessMessageReject),
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Body {
     fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
         match self {
@@ -3663,14 +3806,20 @@ impl From<BusinessMessageReject> for Body {
         Body::BusinessMessageReject(msg)
     }
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 #[derive(Clone, Debug)]
 pub struct Message {
     pub header: Header,
     pub body: Box<Body>,
     pub trailer: Trailer,
 }
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "generated from the whole dictionary; a consumer uses a subset of it"
+)]
 impl Message {
     pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
         let begin_string = deserializer.begin_string();

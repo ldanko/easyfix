@@ -150,14 +150,14 @@ impl GroupCodeGen {
 
         quote! {
             #doc_attrs
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
             #[derive(Clone, Debug, Default)]
             #serde_derives
             pub struct #name {
                 #(#members_definitions,)*
             }
 
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
             impl #name {
                 pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
                     #(#serialize)*

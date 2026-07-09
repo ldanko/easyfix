@@ -10,15 +10,13 @@ pub fn generate_field_tag(
     serde_serialize: bool,
     serde_deserialize: bool,
 ) -> TokenStream {
-    let fields_names_as_bytes = fields_names
-        .iter()
-        .map(|f| Literal::byte_string(f.to_string().as_bytes()));
+    let fields_names_as_str = fields_names.iter().map(|f| Literal::string(&f.to_string()));
     let fields_numbers_literals = fields_numbers.iter().copied().map(Literal::u16_suffixed);
 
     let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
     quote! {
-        #[allow(dead_code)]
+        #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         #serde_derives
         #[repr(u16)]
@@ -32,7 +30,7 @@ pub fn generate_field_tag(
             }
         }
 
-        #[allow(dead_code)]
+        #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         impl FieldTag {
             pub const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
                 match tag_num {
@@ -42,16 +40,13 @@ pub fn generate_field_tag(
             }
 
             pub const fn as_bytes(&self) -> &'static [u8] {
-                match self {
-                    #(FieldTag::#fields_names => #fields_names_as_bytes,)*
-                }
+                self.as_fix_str().as_bytes()
             }
 
             pub const fn as_fix_str(&self) -> &'static FixStr {
-                // SAFETY: variant names are ASCII Rust identifiers derived
-                // from dictionary field names, which are `FixString`s
-                // validated as printable ASCII when the XML is parsed.
-                unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+                match self {
+                    #(FieldTag::#fields_names => fix_str!(#fields_names_as_str),)*
+                }
             }
         }
 
@@ -86,15 +81,15 @@ pub fn generate_message_enum(
     let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
     quote! {
-        #[allow(dead_code)]
+        #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         #[derive(Clone, Debug)]
         #serde_derives
-        #[allow(clippy::large_enum_variant)]
+        #[allow(clippy::large_enum_variant, reason = "variant size follows the dictionary's message definitions")]
         pub enum Body {
             #(#names(#names),)*
         }
 
-        #[allow(dead_code)]
+        #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         impl Body {
             fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
                 match self {
@@ -143,7 +138,7 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
     let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
     quote! {
-        #[allow(dead_code)]
+        #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         #[derive(Clone, Debug)]
         #serde_derives
         pub struct Message {
@@ -152,7 +147,7 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
             pub trailer: Trailer,
         }
 
-        #[allow(dead_code)]
+        #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         impl Message {
             pub fn deserialize(mut deserializer: Deserializer) -> Result<Box<Message>, DeserializeError> {
                 let begin_string = deserializer.begin_string();

@@ -278,9 +278,11 @@ impl EnumCodeGen {
         let mut variant_def = Vec::with_capacity(self.variants.len());
         let mut variant_name = Vec::with_capacity(self.variants.len());
         let mut variant_value_as_bytes = Vec::with_capacity(self.variants.len());
+        let mut variant_value_as_str = Vec::with_capacity(self.variants.len());
         for variant in &self.variants {
             let v_name = variant.name().to_pascal_ident();
             let v_value_as_bytes = Literal::byte_string(variant.value().as_bytes());
+            let v_value_as_str = Literal::string(variant.value().as_utf8());
             let variant_doc_attrs =
                 doc_attrs(variant.doc(), &format!("Value \"{}\"", variant.value()));
             variant_def.push(quote! {
@@ -289,6 +291,7 @@ impl EnumCodeGen {
             });
             variant_name.push(v_name);
             variant_value_as_bytes.push(v_value_as_bytes);
+            variant_value_as_str.push(v_value_as_str);
         }
         let variant_value = self
             .variants
@@ -335,13 +338,13 @@ impl EnumCodeGen {
         let serde_derives = serde_derives(serde_serialize, serde_deserialize);
         let derives = if name == "MsgType" {
             quote! {
-                #[allow(dead_code)]
+                #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
                 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
                 #serde_derives
             }
         } else {
             quote! {
-                #[allow(dead_code)]
+                #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
                 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
                 #serde_derives
             }
@@ -370,16 +373,13 @@ impl EnumCodeGen {
                 }
 
                 pub const fn as_bytes(&self) -> &'static [u8] {
-                    match self {
-                        #(#name::#variant_name => #variant_value_as_bytes,)*
-                    }
+                    self.as_fix_str().as_bytes()
                 }
 
                 pub const fn as_fix_str(&self) -> &'static FixStr {
-                    // SAFETY: enum wire values are `FixString`s in the
-                    // dictionary, validated as printable ASCII when the XML
-                    // is parsed.
-                    unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+                    match self {
+                        #(#name::#variant_name => fix_str!(#variant_value_as_str),)*
+                    }
                 }
 
                 #int_value_method

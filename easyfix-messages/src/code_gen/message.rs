@@ -126,7 +126,7 @@ impl MessageCodeGen {
 
         quote! {
             #doc_attrs
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
             #[derive(Clone, Debug #default_derive)]
             #serde_derives
             pub struct #name {
@@ -135,7 +135,7 @@ impl MessageCodeGen {
 
             #manual_default
 
-            #[allow(dead_code)]
+            #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
             impl #name {
                 pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
                     #(#serialize)*

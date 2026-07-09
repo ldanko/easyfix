@@ -9,6 +9,9 @@ readme = "README.md"
 edition = "2024"
 rust-version = "1.85.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 easyfix-core = { workspace = true, features = ["serde-serialize", "serde-deserialize"] }
 quick-xml = { version = "0.37.2", features = ["serialize"] }

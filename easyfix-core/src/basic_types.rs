@@ -13,7 +13,7 @@
 //!   [`SessionRejectReasonField`] and [`ApplVerId`], which the session layer
 //!   compares against the base enums without knowing the generated ones.
 
-use std::{borrow, fmt, mem, num::NonZero, ops};
+use std::{borrow, cmp, error::Error as StdError, fmt, hash, mem, num::NonZero, ops, str};
 
 #[cfg(feature = "serde-serialize")]
 use chrono::Datelike;
@@ -292,7 +292,7 @@ impl fmt::Display for FixStringError {
     }
 }
 
-impl std::error::Error for FixStringError {}
+impl StdError for FixStringError {}
 
 const fn is_non_control_ascii_char(byte: u8) -> bool {
     byte > 0x1f && byte < 0x7f
@@ -343,7 +343,7 @@ impl FixStr {
 
     pub const fn as_utf8(&self) -> &str {
         // SAFETY: ASCII is always valid UTF-8
-        unsafe { std::str::from_utf8_unchecked(&self.0) }
+        unsafe { str::from_utf8_unchecked(&self.0) }
     }
 
     pub const fn as_bytes(&self) -> &[u8] {
@@ -564,7 +564,7 @@ impl FixString {
 
     pub fn as_utf8(&self) -> &str {
         // SAFETY: ASCII is always valid UTF-8
-        unsafe { std::str::from_utf8_unchecked(&self.0) }
+        unsafe { str::from_utf8_unchecked(&self.0) }
     }
 
     pub fn into_utf8(self) -> String {
@@ -1106,15 +1106,18 @@ impl PartialEq for UtcTimestamp {
 
 impl Eq for UtcTimestamp {}
 
-#[expect(clippy::non_canonical_partial_ord_impl)]
+#[expect(
+    clippy::non_canonical_partial_ord_impl,
+    reason = "ordering is total and compares the timestamp only, exactly like `Ord` below and `PartialEq` above; spelling it out keeps the three impls readable side by side"
+)]
 impl PartialOrd for UtcTimestamp {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.timestamp.cmp(&other.timestamp))
     }
 }
 
 impl Ord for UtcTimestamp {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.timestamp().cmp(&other.timestamp())
     }
 }
@@ -1639,8 +1642,8 @@ pub struct MsgTypeField {
     buf: [u8; 2],
 }
 
-impl std::hash::Hash for MsgTypeField {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl hash::Hash for MsgTypeField {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.as_bytes().hash(state);
     }
 }
@@ -1700,7 +1703,7 @@ impl MsgTypeField {
     pub fn as_str(&self) -> &str {
         // SAFETY: We validate during construction that all bytes are ASCII
         //         alphanumeric (0-9, a-z, A-Z), which are all valid UTF-8
-        unsafe { std::str::from_utf8_unchecked(self.as_bytes()) }
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 
     /// The live bytes as `&FixStr`. Infallible - the validated bytes are
@@ -1730,7 +1733,7 @@ impl borrow::Borrow<[u8]> for MsgTypeField {
     }
 }
 
-impl std::str::FromStr for MsgTypeField {
+impl str::FromStr for MsgTypeField {
     type Err = MsgTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {

@@ -618,7 +618,10 @@ impl RawData {
         if required {
             quote! {
                 serializer.put_slice(#len_num)?;
-                serializer.serialize_length(&(self.#data_name.len() as u16))?;
+                serializer.serialize_length(
+                    &Length::try_from(self.#data_name.len())
+                        .map_err(|_| SerializeError::InvalidValue)?,
+                )?;
                 serializer.put_soh()?;
                 serializer.put_slice(#data_num)?;
                 #serialize_value(&self.#data_name)?;
@@ -628,7 +631,10 @@ impl RawData {
             quote! {
                 if let Some(#data_name) = &self.#data_name {
                     serializer.put_slice(#len_num)?;
-                    serializer.serialize_length(&(#data_name.len() as u16))?;
+                    serializer.serialize_length(
+                        &Length::try_from(#data_name.len())
+                            .map_err(|_| SerializeError::InvalidValue)?,
+                    )?;
                     serializer.put_soh()?;
                     serializer.put_slice(#data_num)?;
                     #serialize_value(#data_name)?;
@@ -784,8 +790,10 @@ impl Group {
         if required {
             quote! {
                 serializer.put_slice(#num_in_group_tag)?;
-                // TODO: possible overflow (impossible in practice)
-                serializer.serialize_num_in_group(&(self.#group_name.len() as NumInGroup))?;
+                serializer.serialize_num_in_group(
+                    &NumInGroup::try_from(self.#group_name.len())
+                        .map_err(|_| SerializeError::InvalidValue)?,
+                )?;
                 serializer.put_soh()?;
                 for entry in &self.#group_name {
                     entry.serialize(serializer)?;
@@ -795,7 +803,10 @@ impl Group {
             quote! {
                 if let Some(#group_name) = &self.#group_name {
                     serializer.put_slice(#num_in_group_tag)?;
-                    serializer.serialize_num_in_group(&(#group_name.len() as NumInGroup))?;
+                    serializer.serialize_num_in_group(
+                        &NumInGroup::try_from(#group_name.len())
+                            .map_err(|_| SerializeError::InvalidValue)?,
+                    )?;
                     serializer.put_soh()?;
                     for entry in #group_name {
                         entry.serialize(serializer)?;
