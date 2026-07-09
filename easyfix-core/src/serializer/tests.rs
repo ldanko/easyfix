@@ -1,6 +1,4 @@
-use std::str;
-
-use assert_matches::assert_matches;
+use std::{assert_matches, str};
 
 use super::{SerializeError, Serializer, max_body_len_digits};
 use crate::basic_types::{

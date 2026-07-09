@@ -1,4 +1,5 @@
-use assert_matches::assert_matches;
+use std::assert_matches;
+
 use easyfix_core::{
     base_messages::SessionRejectReasonBase,
     basic_types::{FixString, ToFixString, Utc, UtcTimestamp},

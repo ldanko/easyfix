@@ -1,9 +1,8 @@
 use std::{
-    env, fs,
+    assert_matches, env, fs,
     path::{Path, PathBuf},
 };
 
-use assert_matches::assert_matches;
 use easyfix_core::fix_str;
 use quick_xml::de::from_str;
 use uuid::Uuid;

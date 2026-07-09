@@ -24,8 +24,6 @@ default-members = [
 
 [workspace.dependencies]
 anyhow = "1.0"
-assert_matches = "1.5"
-async-stream = "0.3.6"
 bytes = "1.6"
 chrono = "0.4.38"
 clap = "4.6"
@@ -39,7 +37,6 @@ easyfix-test-messages = { version = "0.1.0", path = "easyfix-test-messages" }
 futures-util = "0.3.26"
 itoa = "1.0"
 memchr = "2.8.0"
-pin-project = "1.1"
 prettyplease = "0.2"
 proc-macro2 = "1.0"
 quote = "1.0"

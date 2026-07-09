@@ -1,6 +1,5 @@
-use std::str::FromStr;
+use std::{assert_matches, str::FromStr};
 
-use assert_matches::assert_matches;
 use easyfix_core::fix_str;
 use quick_xml::de::from_str;
 

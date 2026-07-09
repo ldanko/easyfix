@@ -1,8 +1,7 @@
 //! Tests for `SessionMessage` trait implementation on `Message`.
 
-use std::borrow::Cow;
+use std::{assert_matches, borrow::Cow};
 
-use assert_matches::assert_matches;
 use easyfix_core::{
     base_messages::{
         AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, MsgTypeBase,
@@ -138,9 +137,7 @@ fn from_admin_constructs_logon() {
 
     let msg = Message::from_admin(header, admin);
 
-    assert_matches!(*msg.body, Body::Logon(ref logon) => {
-        assert_eq!(logon.heart_bt_int, 30);
-    });
+    assert_matches!(&*msg.body, Body::Logon(logon) if logon.heart_bt_int == 30);
 }
 
 // ---------------------------------------------------------------------------

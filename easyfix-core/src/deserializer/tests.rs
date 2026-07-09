@@ -1,6 +1,5 @@
-use std::{iter, str::FromStr};
+use std::{assert_matches, iter, str::FromStr};
 
-use assert_matches::assert_matches;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 
 use super::{Deserializer, RawMessage, deserialize_tag, frame_len, raw_message};
@@ -104,9 +103,7 @@ fn raw_message_invalid_checksum_reports_frame_len() {
     input.extend_from_slice(b"leftover");
     assert_matches!(
         raw_message(&input),
-        Err(RawMessageError::InvalidChecksum { frame_len }) => {
-            assert_eq!(frame_len, frame.len());
-        }
+        Err(RawMessageError::InvalidChecksum { frame_len }) if frame_len == frame.len()
     );
     assert_matches!(
         raw_message(b"8=MSG_BODY\x019=19\x01<lots of tags here>10=999\x01"),

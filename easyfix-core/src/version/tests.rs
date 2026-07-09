@@ -1,6 +1,4 @@
-use std::str::FromStr;
-
-use assert_matches::assert_matches;
+use std::{assert_matches, str::FromStr};
 
 use super::{UnknownVersionError, Version};
 
