@@ -10,6 +10,7 @@
   <field name="SenderSubID" required="N" />
   <field name="TargetSubID" required="N" />
   <field name="PossDupFlag" required="N" />
+  <field name="PossResend" required="N" />
   <field name="SendingTime" required="Y" />
   <field name="OrigSendingTime" required="N" />
  </header>
@@ -103,6 +104,10 @@
   <field number="93" name="SignatureLength" type="LENGTH" />
   <field number="95" name="RawDataLength" type="LENGTH" />
   <field number="96" name="RawData" type="DATA" />
+  <field number="97" name="PossResend" type="BOOLEAN">
+   <value enum="N" description="ORIGINAL_TRANSMISSION" />
+   <value enum="Y" description="POSSIBLE_RESEND" />
+  </field>
   <field number="98" name="EncryptMethod" type="INT">
    <value enum="0" description="NONE" />
    <value enum="1" description="PKCS" />

@@ -1372,6 +1372,7 @@ pub enum FieldTag {
     SignatureLength = 93u16,
     RawDataLength = 95u16,
     RawData = 96u16,
+    PossResend = 97u16,
     EncryptMethod = 98u16,
     HeartBtInt = 108u16,
     TestReqId = 112u16,
@@ -1442,6 +1443,7 @@ impl FieldTag {
             93u16 => Some(FieldTag::SignatureLength),
             95u16 => Some(FieldTag::RawDataLength),
             96u16 => Some(FieldTag::RawData),
+            97u16 => Some(FieldTag::PossResend),
             98u16 => Some(FieldTag::EncryptMethod),
             108u16 => Some(FieldTag::HeartBtInt),
             112u16 => Some(FieldTag::TestReqId),
@@ -1509,6 +1511,7 @@ impl FieldTag {
             FieldTag::SignatureLength => fix_str!("SignatureLength"),
             FieldTag::RawDataLength => fix_str!("RawDataLength"),
             FieldTag::RawData => fix_str!("RawData"),
+            FieldTag::PossResend => fix_str!("PossResend"),
             FieldTag::EncryptMethod => fix_str!("EncryptMethod"),
             FieldTag::HeartBtInt => fix_str!("HeartBtInt"),
             FieldTag::TestReqId => fix_str!("TestReqId"),
@@ -1565,6 +1568,8 @@ pub struct Header {
     pub target_sub_id: Option<FixString>,
     ///Tag 43.
     pub poss_dup_flag: Option<Boolean>,
+    ///Tag 97.
+    pub poss_resend: Option<Boolean>,
     ///Tag 52.
     pub sending_time: UtcTimestamp,
     ///Tag 122.
@@ -1605,6 +1610,11 @@ impl Header {
             serializer.serialize_boolean(poss_dup_flag)?;
             serializer.put_soh()?;
         }
+        if let Some(poss_resend) = &self.poss_resend {
+            serializer.put_slice(b"97=")?;
+            serializer.serialize_boolean(poss_resend)?;
+            serializer.put_soh()?;
+        }
         serializer.put_slice(b"52=")?;
         serializer.serialize_utc_timestamp(&self.sending_time)?;
         serializer.put_soh()?;
@@ -1627,6 +1637,7 @@ impl Header {
         let mut sender_sub_id: Option<FixString> = None;
         let mut target_sub_id: Option<FixString> = None;
         let mut poss_dup_flag: Option<Boolean> = None;
+        let mut poss_resend: Option<Boolean> = None;
         let mut sending_time: Option<UtcTimestamp> = None;
         let mut orig_sending_time: Option<UtcTimestamp> = None;
         while let Some(tag) = deserializer.deserialize_tag_num()? {
@@ -1692,6 +1703,13 @@ impl Header {
                     }
                     poss_dup_flag = Some(deserializer.deserialize_boolean()?);
                 }
+                97u16 => {
+                    if poss_resend.is_some() {
+                        return Err(deserializer
+                            .reject(Some(97u16), SessionRejectReasonBase::TagAppearsMoreThanOnce));
+                    }
+                    poss_resend = Some(deserializer.deserialize_boolean()?);
+                }
                 52u16 => {
                     if sending_time.is_some() {
                         return Err(deserializer
@@ -1734,6 +1752,7 @@ impl Header {
             sender_sub_id,
             target_sub_id,
             poss_dup_flag,
+            poss_resend,
             sending_time: sending_time.ok_or_else(|| {
                 deserializer.reject(Some(52u16), SessionRejectReasonBase::RequiredTagMissing)
             })?,
@@ -1753,6 +1772,7 @@ impl Header {
                 | 50u16
                 | 57u16
                 | 43u16
+                | 97u16
                 | 52u16
                 | 122u16
         )
