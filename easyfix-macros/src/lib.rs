@@ -15,32 +15,34 @@ const fn is_non_control_ascii_char(byte: u8) -> bool {
     byte > 0x1f && byte < 0x7f
 }
 
+// Crates that expose `basic_types` at their root, so the expansion can name
+// `FixStr` through any of them. Whichever the calling crate depends on hosts
+// the expansion; with several present the first match wins and all resolve
+// to the same type.
+const HOST_CRATES: [&str; 3] = ["easyfix-core", "easyfix", "easyfix-session"];
+
 fn find_easyfix_core_path() -> proc_macro2::TokenStream {
-    if let Ok(found) = crate_name("easyfix-core") {
-        match found {
+    for host in HOST_CRATES {
+        let Ok(found) = crate_name(host) else {
+            continue;
+        };
+        return match found {
             // Use `::easyfix_core` even for the "Itself" case. This requires
             // `extern crate self as easyfix_core;` in easyfix-core's lib.rs,
             // but makes the macro work in examples/tests (which are separate
             // binary crate roots where `crate` doesn't point to easyfix_core).
-            FoundCrate::Itself => quote!(::easyfix_core),
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote!(::#ident)
-            }
-        }
-    } else if let Ok(found) = crate_name("easyfix") {
-        match found {
+            FoundCrate::Itself if host == "easyfix-core" => quote!(::easyfix_core),
             FoundCrate::Itself => quote!(crate),
             FoundCrate::Name(name) => {
                 let ident = Ident::new(&name, Span::call_site());
                 quote!(::#ident)
             }
-        }
-    } else {
-        panic!(
-            "Could not find `easyfix-core` or `easyfix` in Cargo.toml. Add one of them as a dependency."
-        );
+        };
     }
+    panic!(
+        "Could not find `easyfix-core`, `easyfix` or `easyfix-session` in Cargo.toml. \
+         Add one of them as a dependency."
+    );
 }
 
 /// Builds a `&'static FixStr` from a string literal.
@@ -53,8 +55,8 @@ fn find_easyfix_core_path() -> proc_macro2::TokenStream {
 /// macro cannot see.
 ///
 /// The expansion names the `easyfix-core` types through whichever of
-/// `easyfix-core` or `easyfix` the calling crate depends on; one of the two
-/// must be in its `Cargo.toml`.
+/// `easyfix-core`, `easyfix` or `easyfix-session` the calling crate depends
+/// on; one of the three must be in its `Cargo.toml`.
 ///
 /// ```
 /// # use easyfix_core::{basic_types::FixStr, fix_str};
