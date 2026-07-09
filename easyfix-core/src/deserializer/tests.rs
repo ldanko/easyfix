@@ -145,6 +145,54 @@ fn raw_message_body_length_above_length_max_is_garbled() {
     );
 }
 
+/// `BodyLength(9)=0` is garbled, not a frame with an empty body. The length
+/// parser rejects the zero outright (`9=0` and `9=000` alike), so the
+/// verdict lands before any body or trailer is looked at - a zero-length
+/// body would otherwise put `CheckSum(10)` right after the framing fields,
+/// where a checksum happening to match would admit a message with no
+/// `MsgType(35)` at all. FIX Session Layer §4.5.2 counts a `BodyLength(9)`
+/// that "does not contain the correct byte count" as garbled.
+#[test]
+fn raw_message_body_length_zero_is_garbled() {
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x019=0\x0110=000\x01"),
+        Err(RawMessageError::Garbled)
+    );
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x019=000\x0110=000\x01"),
+        Err(RawMessageError::Garbled)
+    );
+    assert_matches!(
+        frame_len(b"8=FIXT.1.1\x019=0\x01"),
+        Err(RawMessageError::Garbled)
+    );
+}
+
+/// Test Cases §4.5.1 Scenario 2(t): `BeginString(8)`, `BodyLength(9)` and
+/// `MsgType(35)` not the first three fields is garbled. The framing layer
+/// owns the first two positions, so `MsgType(35)` ahead of `BodyLength(9)`
+/// is garbled here; the third position is judged by message decoding
+/// (`GarbledReason::MsgTypeNotThirdTag`), where the session-layer tests pin
+/// it. Nothing about the shape is "incomplete" - the tag in the second
+/// position is simply not `9`, however many bytes follow.
+#[test]
+fn raw_message_msg_type_before_body_length_is_garbled() {
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x0135=0\x019=5\x01"),
+        Err(RawMessageError::Garbled)
+    );
+    assert_matches!(
+        frame_len(b"8=FIXT.1.1\x0135=0\x019=5\x01"),
+        Err(RawMessageError::Garbled)
+    );
+    // Cut right after the first field the verdict is still pending: the
+    // parser has not seen the second tag yet.
+    assert_matches!(
+        raw_message(b"8=FIXT.1.1\x013"),
+        Err(RawMessageError::Incomplete)
+    );
+}
+
 /// A `BeginString(8)` value that runs past the longest known one without a
 /// SOH is garbled, not incomplete - otherwise a stream of printable bytes
 /// after `8=` would be an unbounded read. Up to that length the verdict stays
