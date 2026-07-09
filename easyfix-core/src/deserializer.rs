@@ -22,6 +22,7 @@ use crate::{
         TenorUnit, TenorValue, TimePrecision, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly,
         UtcTimeOnly, UtcTimestamp, XmlData,
     },
+    version::Version,
 };
 
 #[cfg(test)]
@@ -741,12 +742,16 @@ impl From<DeserializeErrorKindInternal> for RawMessageError {
 ///   match; its length is known, so skip exactly that many bytes.
 ///
 /// That split is what bounds the caller's buffer. `BodyLength<9>` is parsed
-/// into a [`Length`], so a value above 65535 is *out of range* rather than
-/// merely unsatisfied, and comes back as [`Garbled`] - not [`Incomplete`] -
-/// as soon as the length field itself has arrived, long before a body of
-/// that size could be buffered. A caller that keeps calling this before
-/// each read therefore never holds more than one message's worth of bytes,
-/// roughly 65.5 KB.
+/// into a [`Length`], so a value beyond what that type holds is *out of
+/// range* rather than merely unsatisfied, and comes back as [`Garbled`] -
+/// not [`Incomplete`] - as soon as the length field itself has arrived,
+/// long before a body of that size could be buffered. The two fields
+/// before it are bounded the same way: a `BeginString<8>` value with no SOH
+/// within [`Version::MAX_BEGIN_STRING_LEN`] bytes is [`Garbled`], and so is
+/// a `BodyLength<9>` with more digits than a [`Length`] holds. A caller
+/// that keeps calling this before each read therefore never holds more
+/// than one message's worth of bytes, as [`Length`] bounds it - and
+/// [`frame_len`] lets it stop at a tighter limit of its own.
 ///
 /// [`Incomplete`]: RawMessageError::Incomplete
 /// [`Garbled`]: RawMessageError::Garbled
@@ -758,12 +763,7 @@ impl From<DeserializeErrorKindInternal> for RawMessageError {
 pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageError> {
     let orig_bytes = bytes;
 
-    let bytes = deserialize_tag(bytes, b"8=")?;
-    let (bytes, begin_string) = deserialize_str(bytes)?;
-
-    let bytes = deserialize_tag(bytes, b"9=")?;
-    let (bytes, body_length) = deserialize_length(bytes)?;
-    let body_length = usize::from(body_length);
+    let (bytes, begin_string, body_length) = frame_prefix(bytes)?;
 
     const CHECKSUM_LEN: usize = 4;
     if bytes.len() < body_length + CHECKSUM_LEN {
@@ -792,6 +792,49 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageEr
             checksum: calculated_checksum,
         },
     ))
+}
+
+/// Parses the framing prefix - `BeginString(8)` and `BodyLength(9)` - and
+/// returns the bytes after it, the BeginString and the declared body length.
+fn frame_prefix(bytes: &[u8]) -> Result<(&[u8], &FixStr, usize), RawMessageError> {
+    let bytes = deserialize_tag(bytes, b"8=")?;
+    // The value scan stops at SOH, so without one it would stay `Incomplete`
+    // for as long as printable bytes keep coming - an unbounded read. No
+    // known version's BeginString is longer than `MAX_BEGIN_STRING_LEN`, so
+    // once that many bytes are in without a SOH the prefix is not a frame.
+    let (bytes, begin_string) = match deserialize_str(bytes) {
+        Err(DeserializeErrorKindInternal::Incomplete)
+            if bytes.len() > Version::MAX_BEGIN_STRING_LEN =>
+        {
+            return Err(RawMessageError::Garbled);
+        }
+        result => result?,
+    };
+    let bytes = deserialize_tag(bytes, b"9=")?;
+    let (bytes, body_length) = deserialize_length(bytes)?;
+    Ok((bytes, begin_string, usize::from(body_length)))
+}
+
+/// Length of the `CheckSum(10)` trailer: `10=`, three digits, SOH.
+const TRAILER_LEN: usize = 7;
+
+/// Total length of the frame starting at `bytes[0]`, known as soon as its
+/// `BeginString(8)` and `BodyLength(9)` have arrived: the two framing
+/// fields, `BodyLength(9)` bytes of body and the `CheckSum(10)` trailer.
+///
+/// A reader that must not buffer more than a limit asks this before
+/// [`raw_message`]: the verdict comes from the length field alone, long
+/// before a body of that size could arrive. Errors are those of
+/// [`raw_message`] on the same bytes - [`Incomplete`] while the framing
+/// fields themselves are still arriving, [`Garbled`] when they are
+/// malformed. Whether the body and trailer are present, or the checksum
+/// holds, is not judged here.
+///
+/// [`Incomplete`]: RawMessageError::Incomplete
+/// [`Garbled`]: RawMessageError::Garbled
+pub fn frame_len(bytes: &[u8]) -> Result<usize, RawMessageError> {
+    let (rest, _, body_length) = frame_prefix(bytes)?;
+    Ok(bytes.len() - rest.len() + body_length + TRAILER_LEN)
 }
 
 /// Reads typed FIX values out of a framed [`RawMessage`], field by field.

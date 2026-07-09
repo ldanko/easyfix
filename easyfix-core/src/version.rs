@@ -139,6 +139,25 @@ impl Version {
     /// FIX50SP2 - until the FIX Trading Community ever cuts a new frozen
     /// release. Alias: compares equal to [`Version::FIX50SP2`].
     pub const FIX_LATEST: Version = Version::FIX50SP2;
+    /// Length of the longest `BeginString` among [`known_versions`]. A
+    /// `BeginString(8)` value running past this without its SOH cannot name
+    /// a version this crate frames, which is what lets a reader bound its
+    /// buffer before `BodyLength(9)` is even in sight.
+    ///
+    /// [`known_versions`]: Self::known_versions
+    pub const MAX_BEGIN_STRING_LEN: usize = {
+        let versions = Version::known_versions();
+        let mut max = 0;
+        let mut i = 0;
+        while i < versions.len() {
+            let len = versions[i].begin_str().len();
+            if len > max {
+                max = len;
+            }
+            i += 1;
+        }
+        max
+    };
 
     /// All FIX versions recognized by this crate.
     pub const fn known_versions() -> &'static [Version] {
@@ -209,7 +228,7 @@ impl Version {
     /// Returns the canonical `BeginString` representation as a
     /// `&'static FixStr`. This is the zero-allocation form intended for
     /// the serialization path.
-    pub fn begin_str(&self) -> &'static FixStr {
+    pub const fn begin_str(&self) -> &'static FixStr {
         use SessionProtocol::{Fix, Fixt};
         match (
             self.session_protocol,
@@ -228,7 +247,7 @@ impl Version {
             (Fix, 5, 0, 1) => fix_str!("FIX.5.0SP1"),
             (Fix, 5, 0, 2) => fix_str!("FIX.5.0SP2"),
             (Fixt, 1, 1, 0) => fix_str!("FIXT.1.1"),
-            _ => unreachable!("Version constructors only allow known versions"),
+            _ => panic!("Version constructors only allow known versions"),
         }
     }
 

@@ -1,9 +1,9 @@
-use std::str::FromStr;
+use std::{iter, str::FromStr};
 
 use assert_matches::assert_matches;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 
-use super::{Deserializer, RawMessage, deserialize_tag, raw_message};
+use super::{Deserializer, RawMessage, deserialize_tag, frame_len, raw_message};
 use crate::{
     base_messages::SessionRejectReasonBase,
     basic_types::{
@@ -15,6 +15,7 @@ use crate::{
     },
     fix_str,
     serializer::Serializer,
+    version::Version,
 };
 
 const BEGIN_STRING: &FixStr = fix_str!("FIXT.1.1");
@@ -141,6 +142,55 @@ fn raw_message_body_length_above_length_max_is_garbled() {
     assert_matches!(
         raw_message(b"8=FIXT.1.1\x019=65535\x0135=A\x01"),
         Err(RawMessageError::Incomplete)
+    );
+}
+
+/// A `BeginString(8)` value that runs past the longest known one without a
+/// SOH is garbled, not incomplete - otherwise a stream of printable bytes
+/// after `8=` would be an unbounded read. Up to that length the verdict stays
+/// `Incomplete`, so a real BeginString arriving byte by byte is unaffected.
+#[test]
+fn raw_message_unterminated_begin_string_past_the_longest_known_is_garbled() {
+    let longest = Version::MAX_BEGIN_STRING_LEN;
+    let mut bytes = b"8=".to_vec();
+    bytes.extend(iter::repeat_n(b'X', longest));
+    assert_matches!(raw_message(&bytes), Err(RawMessageError::Incomplete));
+    assert_matches!(frame_len(&bytes), Err(RawMessageError::Incomplete));
+    bytes.push(b'X');
+    assert_matches!(raw_message(&bytes), Err(RawMessageError::Garbled));
+    assert_matches!(frame_len(&bytes), Err(RawMessageError::Garbled));
+    // The longest real one, cut just before its SOH, is still incomplete.
+    assert_matches!(
+        raw_message(b"8=FIX.5.0SP2"),
+        Err(RawMessageError::Incomplete)
+    );
+}
+
+/// `frame_len` answers from the framing fields alone: the same verdict for a
+/// complete frame and for one whose body has not arrived, `Incomplete` only
+/// while `BeginString(8)` / `BodyLength(9)` themselves are cut off, and
+/// `Garbled` for what `raw_message` would call garbled.
+#[test]
+fn frame_len_is_known_from_the_framing_fields() {
+    let complete = b"8=FIXT.1.1\x019=5\x0135=0\x0110=123\x01";
+    assert_matches!(frame_len(complete), Ok(len) if len == complete.len());
+    // "8=FIXT.1.1|" is 11 bytes, "9=5000|" is 7, the trailer is 7.
+    assert_matches!(
+        frame_len(b"8=FIXT.1.1\x019=5000\x0135=0\x01"),
+        Ok(len) if len == 11 + 7 + 5000 + 7
+    );
+    assert_matches!(
+        frame_len(b"8=FIXT.1.1\x019=50"),
+        Err(RawMessageError::Incomplete)
+    );
+    assert_matches!(
+        frame_len(b"8=FIXT.1.1\x01"),
+        Err(RawMessageError::Incomplete)
+    );
+    assert_matches!(frame_len(b"9=5\x0135=0\x01"), Err(RawMessageError::Garbled));
+    assert_matches!(
+        frame_len(b"8=FIXT.1.1\x019=65536\x01"),
+        Err(RawMessageError::Garbled)
     );
 }
 
