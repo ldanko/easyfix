@@ -237,11 +237,21 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serialize sequence of character digits without commas or decimals.
-    /// Value must be positive.
+    ///
+    /// Zero is a legal value here, unlike for the other digit types. Several
+    /// SeqNum-typed fields give it a meaning of their own: `EndSeqNo(16)` and
+    /// `ApplEndSeqNum(1183)` use it for "no upper bound", and
+    /// `LastMsgSeqNumProcessed(369)` for "nothing processed yet". Which zeros
+    /// are legal is a per-tag question the codec has no way to answer -
+    /// [`Deserializer::deserialize_seq_num`] already accepts every one of
+    /// them, and rejecting them on the way out would leave the codec able to
+    /// read messages it cannot write.
+    ///
+    /// Sequence-number *validity* belongs to the session layer, which owns
+    /// the counters and checks them against protocol state.
+    ///
+    /// [`Deserializer::deserialize_seq_num`]: crate::deserializer::Deserializer::deserialize_seq_num
     pub fn serialize_seq_num(&mut self, seq_num: &SeqNum) -> Result<(), SerializeError> {
-        if *seq_num == 0 {
-            return Err(SerializeError::InvalidValue);
-        }
         let mut buffer = itoa::Buffer::new();
         self.put_slice(buffer.format(*seq_num).as_bytes())
     }

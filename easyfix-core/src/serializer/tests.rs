@@ -41,6 +41,32 @@ fn serialize_value(f: impl FnOnce(&mut Serializer) -> Result<(), SerializeError>
     serializer.written().to_vec()
 }
 
+/// A zero `SeqNum` reaches the wire. `EndSeqNo(16)` uses it for "no upper
+/// bound" - the form `SessionEngine::process_resend_request` normalizes on
+/// receipt - and `LastMsgSeqNumProcessed(369)` for "nothing processed yet".
+/// The deserializer has always accepted it, so refusing to write it left the
+/// codec able to read messages it could not produce.
+///
+/// The relaxation is specific to `SeqNum`: the neighbouring digit types keep
+/// their guards, since a zero `TagNum` or a zero-entry repeating group has no
+/// valid wire form at all.
+#[test]
+fn seq_num_zero_is_written_while_the_other_digit_types_still_reject_it() {
+    assert_eq!(serialize_value(|s| s.serialize_seq_num(&0)), b"0");
+    assert_eq!(serialize_value(|s| s.serialize_seq_num(&1)), b"1");
+
+    let mut buf = [0u8; 64];
+    let mut serializer = Serializer::new(&mut buf);
+    assert_matches!(
+        serializer.serialize_tag_num(&0),
+        Err(SerializeError::InvalidValue)
+    );
+    assert_matches!(
+        serializer.serialize_num_in_group(&0),
+        Err(SerializeError::InvalidValue)
+    );
+}
+
 #[test]
 fn utc_time_only_is_written_with_the_precision_it_carries() {
     let time = NaiveTime::from_hms_nano_opt(3, 4, 5, 123_456_789).unwrap();

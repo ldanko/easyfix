@@ -1171,7 +1171,11 @@ impl<'de> Deserializer<'de> {
                     // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
                     let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
                     self.buf = rest;
-                    // XXX: Accept `0` as EndSeqNum<16> uses `0` as infinite
+                    // Zero passes through: `EndSeqNo(16)` uses it for "no
+                    // upper bound" and other SeqNum-typed fields give it
+                    // meanings of their own. `Serializer::serialize_seq_num`
+                    // accepts it for the same reason - which zeros are legal
+                    // is the session layer's call, not the codec's.
                     return Ok(value);
                 }
                 _ => return Err(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing)),
