@@ -989,22 +989,24 @@ impl<'de> Deserializer<'de> {
     /// [`deserialize_msg_type`](Self::deserialize_msg_type) back into the
     /// bytes it names, borrowed from the message.
     ///
-    /// Only pass ranges this deserializer produced. The bytes are **not**
-    /// re-validated: a range naming anything other than an already-checked
-    /// value yields a `FixStr` that breaks its printable-ASCII invariant, and
-    /// reading it back - `as_utf8` skips UTF-8 validation on the strength of
-    /// that invariant - is then undefined behavior. A message body may hold
-    /// arbitrary bytes inside a `Data` field, so an in-bounds range is not
-    /// enough to make this safe.
+    /// Only pass ranges this deserializer produced. A range from anywhere else
+    /// names bytes this deserializer never checked - a message body may hold
+    /// arbitrary bytes inside a `Data` field - and is rejected rather than
+    /// trusted.
     ///
     /// # Panics
     ///
-    /// If `range` is out of the message body's bounds.
+    /// If `range` is out of the message body's bounds, or names bytes that are
+    /// not printable ASCII. Either means the range did not come from here.
     pub fn range_to_fixstr(&self, range: ops::Range<usize>) -> &FixStr {
-        // SAFETY: ranges handed out by this deserializer come from
-        // `deserialize_msg_type`, which validated the bytes as printable
-        // ASCII via `deserialize_str`.
-        unsafe { FixStr::from_ascii_unchecked(&self.raw_message.body[range]) }
+        // A range from `deserialize_msg_type` cannot fail this check:
+        // `deserialize_str` already rejected every byte outside 0x20..=0x7e.
+        // Validating anyway costs two comparisons for a 1-2 byte MsgType, and
+        // buys the difference between a panic and undefined behavior - the
+        // unchecked construction would hand out a `FixStr` breaking its
+        // printable-ASCII invariant, on which `as_utf8` skips UTF-8 validation.
+        FixStr::from_ascii(&self.raw_message.body[range])
+            .expect("range does not name a printable-ASCII value")
     }
 
     /// Read MsgType(35) and remember it for later rejects.
