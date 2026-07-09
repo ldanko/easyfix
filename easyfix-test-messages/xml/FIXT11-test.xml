@@ -85,6 +85,7 @@
    <value enum="A" description="LOGON" />
    <value enum="8" description="EXECUTION_REPORT" />
    <value enum="D" description="NEW_ORDER_SINGLE" />
+   <value enum="j" description="BUSINESS_MESSAGE_REJECT" />
   </field>
   <field number="36" name="NewSeqNo" type="SEQNUM" />
   <field number="43" name="PossDupFlag" type="BOOLEAN">
@@ -165,7 +166,6 @@
    <value enum="9" description="FIX50_SP2" />
    <value enum="10" description="FIX_LATEST" />
   </field>
-  <field number="1130" name="DefaultVerIndicator" type="BOOLEAN" />
   <field number="1137" name="DefaultApplVerID" type="STRING">
    <value enum="0" description="FIX27" />
    <value enum="1" description="FIX30" />
@@ -192,5 +192,6 @@
    <value enum="9" description="RECEIVED_MSG_SEQ_NUM_TOO_LOW" />
    <value enum="10" description="RECEIVED_NEXT_EXPECTED_MSG_SEQ_NUM_TOO_HIGH" />
   </field>
+  <field number="1410" name="DefaultVerIndicator" type="BOOLEAN" />
  </fields>
 </fix>

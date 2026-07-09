@@ -24,6 +24,18 @@
    <field name="Price" required="N" />
    <field name="TransactTime" required="N" />
   </message>
+  <message name="BusinessMessageReject" msgtype="j" msgcat="app">
+   <field name="RefSeqNum" required="N" />
+   <field name="RefMsgType" required="Y" />
+   <field name="RefApplVerID" required="N" />
+   <field name="RefApplExtID" required="N" />
+   <field name="RefCstmApplVerID" required="N" />
+   <field name="BusinessRejectRefID" required="N" />
+   <field name="BusinessRejectReason" required="Y" />
+   <field name="Text" required="N" />
+   <field name="EncodedTextLen" required="N" />
+   <field name="EncodedText" required="N" />
+  </message>
  </messages>
  <trailer />
  <components />
@@ -45,11 +57,13 @@
    <value enum="2" description="LIMIT" />
   </field>
   <field number="44" name="Price" type="PRICE" />
+  <field number="45" name="RefSeqNum" type="SEQNUM" />
   <field number="54" name="Side" type="CHAR">
    <value enum="1" description="BUY" />
    <value enum="2" description="SELL" />
   </field>
   <field number="55" name="Symbol" type="STRING" />
+  <field number="58" name="Text" type="STRING" />
   <field number="60" name="TransactTime" type="UTCTIMESTAMP" />
   <field number="150" name="ExecType" type="CHAR">
    <value enum="0" description="NEW" />
@@ -58,5 +72,38 @@
    <value enum="8" description="REJECTED" />
   </field>
   <field number="151" name="LeavesQty" type="QTY" />
+  <field number="354" name="EncodedTextLen" type="LENGTH" />
+  <field number="355" name="EncodedText" type="DATA" />
+  <field number="372" name="RefMsgType" type="STRING" />
+  <field number="379" name="BusinessRejectRefID" type="STRING" />
+  <field number="380" name="BusinessRejectReason" type="INT">
+   <value enum="0" description="OTHER" />
+   <value enum="1" description="UNKNOWN_ID" />
+   <value enum="2" description="UNKNOWN_SECURITY" />
+   <value enum="3" description="UNSUPPORTED_MESSAGE_TYPE" />
+   <value enum="4" description="APPLICATION_NOT_AVAILABLE" />
+   <value enum="5" description="CONDITIONALLY_REQUIRED_FIELD_MISSING" />
+   <value enum="6" description="NOT_AUTHORIZED" />
+   <value enum="7" description="DELIVER_TO_FIRM_NOT_AVAILABLE_AT_THIS_TIME" />
+   <value enum="8" description="THROTTLE_LIMIT_EXCEEDED" />
+   <value enum="9" description="THROTTLE_LIMIT_EXCEEDED_SESSION_DISCONNECTED" />
+   <value enum="10" description="THROTTLED_MESSAGES_REJECTED_ON_REQUEST" />
+   <value enum="18" description="INVALID_PRICE_INCREMENT" />
+  </field>
+  <field number="1130" name="RefApplVerID" type="STRING">
+   <value enum="0" description="FIX27" />
+   <value enum="1" description="FIX30" />
+   <value enum="2" description="FIX40" />
+   <value enum="3" description="FIX41" />
+   <value enum="4" description="FIX42" />
+   <value enum="5" description="FIX43" />
+   <value enum="6" description="FIX44" />
+   <value enum="7" description="FIX50" />
+   <value enum="8" description="FIX50_SP1" />
+   <value enum="9" description="FIX50_SP2" />
+   <value enum="10" description="FIX_LATEST" />
+  </field>
+  <field number="1131" name="RefCstmApplVerID" type="STRING" />
+  <field number="1406" name="RefApplExtID" type="INT" />
  </fields>
 </fix>

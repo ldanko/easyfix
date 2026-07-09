@@ -20,6 +20,8 @@ pub enum MsgType {
     ExecutionReport,
     ///Value "D"
     NewOrderSingle,
+    ///Value "j"
+    BusinessMessageReject,
 }
 impl MsgType {
     pub const fn from_bytes(input: &[u8]) -> Option<MsgType> {
@@ -33,6 +35,7 @@ impl MsgType {
             b"A" => Some(MsgType::Logon),
             b"8" => Some(MsgType::ExecutionReport),
             b"D" => Some(MsgType::NewOrderSingle),
+            b"j" => Some(MsgType::BusinessMessageReject),
             _ => None,
         }
     }
@@ -52,6 +55,7 @@ impl MsgType {
             MsgType::Logon => b"A",
             MsgType::ExecutionReport => b"8",
             MsgType::NewOrderSingle => b"D",
+            MsgType::BusinessMessageReject => b"j",
         }
     }
 
@@ -78,6 +82,7 @@ impl TryFrom<&FixStr> for MsgType {
             b"A" => Ok(MsgType::Logon),
             b"8" => Ok(MsgType::ExecutionReport),
             b"D" => Ok(MsgType::NewOrderSingle),
+            b"j" => Ok(MsgType::BusinessMessageReject),
             _ => Err(SessionRejectReasonBase::ValueIsIncorrect),
         }
     }
@@ -584,6 +589,127 @@ impl From<SessionRejectReason> for &'static [u8] {
 }
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BusinessRejectReason {
+    #[default]
+    ///Value "0"
+    Other,
+    ///Value "1"
+    UnknownId,
+    ///Value "2"
+    UnknownSecurity,
+    ///Value "3"
+    UnsupportedMessageType,
+    ///Value "4"
+    ApplicationNotAvailable,
+    ///Value "5"
+    ConditionallyRequiredFieldMissing,
+    ///Value "6"
+    NotAuthorized,
+    ///Value "7"
+    DeliverToFirmNotAvailableAtThisTime,
+    ///Value "8"
+    ThrottleLimitExceeded,
+    ///Value "9"
+    ThrottleLimitExceededSessionDisconnected,
+    ///Value "10"
+    ThrottledMessagesRejectedOnRequest,
+    ///Value "18"
+    InvalidPriceIncrement,
+}
+impl BusinessRejectReason {
+    pub const fn from_bytes(input: &[u8]) -> Option<BusinessRejectReason> {
+        match input {
+            b"0" => Some(BusinessRejectReason::Other),
+            b"1" => Some(BusinessRejectReason::UnknownId),
+            b"2" => Some(BusinessRejectReason::UnknownSecurity),
+            b"3" => Some(BusinessRejectReason::UnsupportedMessageType),
+            b"4" => Some(BusinessRejectReason::ApplicationNotAvailable),
+            b"5" => Some(BusinessRejectReason::ConditionallyRequiredFieldMissing),
+            b"6" => Some(BusinessRejectReason::NotAuthorized),
+            b"7" => Some(BusinessRejectReason::DeliverToFirmNotAvailableAtThisTime),
+            b"8" => Some(BusinessRejectReason::ThrottleLimitExceeded),
+            b"9" => Some(BusinessRejectReason::ThrottleLimitExceededSessionDisconnected),
+            b"10" => Some(BusinessRejectReason::ThrottledMessagesRejectedOnRequest),
+            b"18" => Some(BusinessRejectReason::InvalidPriceIncrement),
+            _ => None,
+        }
+    }
+
+    pub const fn from_fix_str(input: &FixStr) -> Option<BusinessRejectReason> {
+        BusinessRejectReason::from_bytes(input.as_bytes())
+    }
+
+    pub const fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            BusinessRejectReason::Other => b"0",
+            BusinessRejectReason::UnknownId => b"1",
+            BusinessRejectReason::UnknownSecurity => b"2",
+            BusinessRejectReason::UnsupportedMessageType => b"3",
+            BusinessRejectReason::ApplicationNotAvailable => b"4",
+            BusinessRejectReason::ConditionallyRequiredFieldMissing => b"5",
+            BusinessRejectReason::NotAuthorized => b"6",
+            BusinessRejectReason::DeliverToFirmNotAvailableAtThisTime => b"7",
+            BusinessRejectReason::ThrottleLimitExceeded => b"8",
+            BusinessRejectReason::ThrottleLimitExceededSessionDisconnected => b"9",
+            BusinessRejectReason::ThrottledMessagesRejectedOnRequest => b"10",
+            BusinessRejectReason::InvalidPriceIncrement => b"18",
+        }
+    }
+
+    pub const fn as_fix_str(&self) -> &'static FixStr {
+        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+    }
+
+    pub const fn as_int(&self) -> Int {
+        match self {
+            BusinessRejectReason::Other => 0i64,
+            BusinessRejectReason::UnknownId => 1i64,
+            BusinessRejectReason::UnknownSecurity => 2i64,
+            BusinessRejectReason::UnsupportedMessageType => 3i64,
+            BusinessRejectReason::ApplicationNotAvailable => 4i64,
+            BusinessRejectReason::ConditionallyRequiredFieldMissing => 5i64,
+            BusinessRejectReason::NotAuthorized => 6i64,
+            BusinessRejectReason::DeliverToFirmNotAvailableAtThisTime => 7i64,
+            BusinessRejectReason::ThrottleLimitExceeded => 8i64,
+            BusinessRejectReason::ThrottleLimitExceededSessionDisconnected => 9i64,
+            BusinessRejectReason::ThrottledMessagesRejectedOnRequest => 10i64,
+            BusinessRejectReason::InvalidPriceIncrement => 18i64,
+        }
+    }
+}
+impl ToFixString for BusinessRejectReason {
+    fn to_fix_string(&self) -> FixString {
+        self.as_fix_str().to_owned()
+    }
+}
+impl TryFrom<Int> for BusinessRejectReason {
+    type Error = SessionRejectReasonBase;
+
+    fn try_from(input: Int) -> Result<BusinessRejectReason, SessionRejectReasonBase> {
+        match input {
+            0i64 => Ok(BusinessRejectReason::Other),
+            1i64 => Ok(BusinessRejectReason::UnknownId),
+            2i64 => Ok(BusinessRejectReason::UnknownSecurity),
+            3i64 => Ok(BusinessRejectReason::UnsupportedMessageType),
+            4i64 => Ok(BusinessRejectReason::ApplicationNotAvailable),
+            5i64 => Ok(BusinessRejectReason::ConditionallyRequiredFieldMissing),
+            6i64 => Ok(BusinessRejectReason::NotAuthorized),
+            7i64 => Ok(BusinessRejectReason::DeliverToFirmNotAvailableAtThisTime),
+            8i64 => Ok(BusinessRejectReason::ThrottleLimitExceeded),
+            9i64 => Ok(BusinessRejectReason::ThrottleLimitExceededSessionDisconnected),
+            10i64 => Ok(BusinessRejectReason::ThrottledMessagesRejectedOnRequest),
+            18i64 => Ok(BusinessRejectReason::InvalidPriceIncrement),
+            _ => Err(SessionRejectReasonBase::ValueIsIncorrect),
+        }
+    }
+}
+impl From<BusinessRejectReason> for &'static [u8] {
+    fn from(input: BusinessRejectReason) -> &'static [u8] {
+        input.as_bytes()
+    }
+}
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MsgDirection {
     #[default]
     ///Value "S"
@@ -633,6 +759,105 @@ impl TryFrom<Char> for MsgDirection {
 }
 impl From<MsgDirection> for &'static [u8] {
     fn from(input: MsgDirection) -> &'static [u8] {
+        input.as_bytes()
+    }
+}
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RefApplVerId {
+    #[default]
+    ///Value "0"
+    Fix27,
+    ///Value "1"
+    Fix30,
+    ///Value "2"
+    Fix40,
+    ///Value "3"
+    Fix41,
+    ///Value "4"
+    Fix42,
+    ///Value "5"
+    Fix43,
+    ///Value "6"
+    Fix44,
+    ///Value "7"
+    Fix50,
+    ///Value "8"
+    Fix50Sp1,
+    ///Value "9"
+    Fix50Sp2,
+    ///Value "10"
+    FixLatest,
+}
+impl RefApplVerId {
+    pub const fn from_bytes(input: &[u8]) -> Option<RefApplVerId> {
+        match input {
+            b"0" => Some(RefApplVerId::Fix27),
+            b"1" => Some(RefApplVerId::Fix30),
+            b"2" => Some(RefApplVerId::Fix40),
+            b"3" => Some(RefApplVerId::Fix41),
+            b"4" => Some(RefApplVerId::Fix42),
+            b"5" => Some(RefApplVerId::Fix43),
+            b"6" => Some(RefApplVerId::Fix44),
+            b"7" => Some(RefApplVerId::Fix50),
+            b"8" => Some(RefApplVerId::Fix50Sp1),
+            b"9" => Some(RefApplVerId::Fix50Sp2),
+            b"10" => Some(RefApplVerId::FixLatest),
+            _ => None,
+        }
+    }
+
+    pub const fn from_fix_str(input: &FixStr) -> Option<RefApplVerId> {
+        RefApplVerId::from_bytes(input.as_bytes())
+    }
+
+    pub const fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            RefApplVerId::Fix27 => b"0",
+            RefApplVerId::Fix30 => b"1",
+            RefApplVerId::Fix40 => b"2",
+            RefApplVerId::Fix41 => b"3",
+            RefApplVerId::Fix42 => b"4",
+            RefApplVerId::Fix43 => b"5",
+            RefApplVerId::Fix44 => b"6",
+            RefApplVerId::Fix50 => b"7",
+            RefApplVerId::Fix50Sp1 => b"8",
+            RefApplVerId::Fix50Sp2 => b"9",
+            RefApplVerId::FixLatest => b"10",
+        }
+    }
+
+    pub const fn as_fix_str(&self) -> &'static FixStr {
+        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+    }
+}
+impl ToFixString for RefApplVerId {
+    fn to_fix_string(&self) -> FixString {
+        self.as_fix_str().to_owned()
+    }
+}
+impl TryFrom<&FixStr> for RefApplVerId {
+    type Error = SessionRejectReasonBase;
+
+    fn try_from(input: &FixStr) -> Result<RefApplVerId, SessionRejectReasonBase> {
+        match input.as_bytes() {
+            b"0" => Ok(RefApplVerId::Fix27),
+            b"1" => Ok(RefApplVerId::Fix30),
+            b"2" => Ok(RefApplVerId::Fix40),
+            b"3" => Ok(RefApplVerId::Fix41),
+            b"4" => Ok(RefApplVerId::Fix42),
+            b"5" => Ok(RefApplVerId::Fix43),
+            b"6" => Ok(RefApplVerId::Fix44),
+            b"7" => Ok(RefApplVerId::Fix50),
+            b"8" => Ok(RefApplVerId::Fix50Sp1),
+            b"9" => Ok(RefApplVerId::Fix50Sp2),
+            b"10" => Ok(RefApplVerId::FixLatest),
+            _ => Err(SessionRejectReasonBase::ValueIsIncorrect),
+        }
+    }
+}
+impl From<RefApplVerId> for &'static [u8] {
+    fn from(input: RefApplVerId) -> &'static [u8] {
         input.as_bytes()
     }
 }
@@ -844,6 +1069,16 @@ impl MsgTypeValue for MsgType {
                     }
                 }
             }
+            MsgType::BusinessMessageReject => {
+                const {
+                    match MsgTypeField::from_bytes(b"j") {
+                        Ok(field) => field,
+                        Err(_) => {
+                            panic!("MsgType value from XML does not fit MsgTypeField")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -924,7 +1159,7 @@ pub struct MsgTypeGrp {
     pub ref_msg_type: Option<FixString>,
     ///Tag 385.
     pub msg_direction: Option<MsgDirection>,
-    ///Tag 1130.
+    ///Tag 1410.
     pub default_ver_indicator: Option<Boolean>,
 }
 #[allow(dead_code)]
@@ -941,7 +1176,7 @@ impl MsgTypeGrp {
             serializer.put_soh()?;
         }
         if let Some(default_ver_indicator) = &self.default_ver_indicator {
-            serializer.put_slice(b"1130=")?;
+            serializer.put_slice(b"1410=")?;
             serializer.serialize_boolean(default_ver_indicator)?;
             serializer.put_soh()?;
         }
@@ -985,10 +1220,10 @@ impl MsgTypeGrp {
                     }
                     msg_direction = Some(deserializer.deserialize_char_enum()?);
                 }
-                1130u16 => {
+                1410u16 => {
                     if default_ver_indicator.is_some() {
                         return Err(deserializer.reject(
-                            Some(1130u16),
+                            Some(1410u16),
                             SessionRejectReasonBase::TagAppearsMoreThanOnce,
                         ));
                     }
@@ -1095,17 +1330,24 @@ pub enum FieldTag {
     ResetSeqNumFlag = 141u16,
     ExecType = 150u16,
     LeavesQty = 151u16,
+    EncodedTextLen = 354u16,
+    EncodedText = 355u16,
     RefTagId = 371u16,
     RefMsgType = 372u16,
     SessionRejectReason = 373u16,
+    BusinessRejectRefId = 379u16,
+    BusinessRejectReason = 380u16,
     MaxMessageSize = 383u16,
     NoMsgTypes = 384u16,
     MsgDirection = 385u16,
     NextExpectedMsgSeqNum = 789u16,
     ApplVerId = 1128u16,
-    DefaultVerIndicator = 1130u16,
+    RefApplVerId = 1130u16,
+    RefCstmApplVerId = 1131u16,
     DefaultApplVerId = 1137u16,
+    RefApplExtId = 1406u16,
     SessionStatus = 1409u16,
+    DefaultVerIndicator = 1410u16,
 }
 impl fmt::Display for FieldTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1155,17 +1397,24 @@ impl FieldTag {
             141u16 => Some(FieldTag::ResetSeqNumFlag),
             150u16 => Some(FieldTag::ExecType),
             151u16 => Some(FieldTag::LeavesQty),
+            354u16 => Some(FieldTag::EncodedTextLen),
+            355u16 => Some(FieldTag::EncodedText),
             371u16 => Some(FieldTag::RefTagId),
             372u16 => Some(FieldTag::RefMsgType),
             373u16 => Some(FieldTag::SessionRejectReason),
+            379u16 => Some(FieldTag::BusinessRejectRefId),
+            380u16 => Some(FieldTag::BusinessRejectReason),
             383u16 => Some(FieldTag::MaxMessageSize),
             384u16 => Some(FieldTag::NoMsgTypes),
             385u16 => Some(FieldTag::MsgDirection),
             789u16 => Some(FieldTag::NextExpectedMsgSeqNum),
             1128u16 => Some(FieldTag::ApplVerId),
-            1130u16 => Some(FieldTag::DefaultVerIndicator),
+            1130u16 => Some(FieldTag::RefApplVerId),
+            1131u16 => Some(FieldTag::RefCstmApplVerId),
             1137u16 => Some(FieldTag::DefaultApplVerId),
+            1406u16 => Some(FieldTag::RefApplExtId),
             1409u16 => Some(FieldTag::SessionStatus),
+            1410u16 => Some(FieldTag::DefaultVerIndicator),
             _ => None,
         }
     }
@@ -1211,17 +1460,24 @@ impl FieldTag {
             FieldTag::ResetSeqNumFlag => b"ResetSeqNumFlag",
             FieldTag::ExecType => b"ExecType",
             FieldTag::LeavesQty => b"LeavesQty",
+            FieldTag::EncodedTextLen => b"EncodedTextLen",
+            FieldTag::EncodedText => b"EncodedText",
             FieldTag::RefTagId => b"RefTagId",
             FieldTag::RefMsgType => b"RefMsgType",
             FieldTag::SessionRejectReason => b"SessionRejectReason",
+            FieldTag::BusinessRejectRefId => b"BusinessRejectRefId",
+            FieldTag::BusinessRejectReason => b"BusinessRejectReason",
             FieldTag::MaxMessageSize => b"MaxMessageSize",
             FieldTag::NoMsgTypes => b"NoMsgTypes",
             FieldTag::MsgDirection => b"MsgDirection",
             FieldTag::NextExpectedMsgSeqNum => b"NextExpectedMsgSeqNum",
             FieldTag::ApplVerId => b"ApplVerId",
-            FieldTag::DefaultVerIndicator => b"DefaultVerIndicator",
+            FieldTag::RefApplVerId => b"RefApplVerId",
+            FieldTag::RefCstmApplVerId => b"RefCstmApplVerId",
             FieldTag::DefaultApplVerId => b"DefaultApplVerId",
+            FieldTag::RefApplExtId => b"RefApplExtId",
             FieldTag::SessionStatus => b"SessionStatus",
+            FieldTag::DefaultVerIndicator => b"DefaultVerIndicator",
         }
     }
 
@@ -2379,7 +2635,7 @@ impl Logon {
                         ));
                     }
                     let num_in_group_tag = 384u16;
-                    let expected_tags = &[372u16, 385u16, 1130u16];
+                    let expected_tags = &[372u16, 385u16, 1410u16];
                     let mut msg_type_grp_local = Vec::with_capacity(len as usize);
                     let last_run = false;
                     for _ in 0..len - 1 {
@@ -2866,6 +3122,238 @@ impl ExecutionReport {
         MsgCat::App
     }
 }
+///MsgType "j".
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
+pub struct BusinessMessageReject {
+    ///Tag 45.
+    pub ref_seq_num: Option<SeqNum>,
+    ///Tag 372.
+    pub ref_msg_type: FixString,
+    ///Tag 1130.
+    pub ref_appl_ver_id: Option<RefApplVerId>,
+    ///Tag 1406.
+    pub ref_appl_ext_id: Option<Int>,
+    ///Tag 1131.
+    pub ref_cstm_appl_ver_id: Option<FixString>,
+    ///Tag 379.
+    pub business_reject_ref_id: Option<FixString>,
+    ///Tag 380.
+    pub business_reject_reason: BusinessRejectReason,
+    ///Tag 58.
+    pub text: Option<FixString>,
+    ///Tag 355.
+    pub encoded_text: Option<Data>,
+}
+#[allow(dead_code)]
+impl BusinessMessageReject {
+    pub(crate) fn serialize(&self, serializer: &mut Serializer) -> Result<(), SerializeError> {
+        if let Some(ref_seq_num) = &self.ref_seq_num {
+            serializer.put_slice(b"45=")?;
+            serializer.serialize_seq_num(ref_seq_num)?;
+            serializer.put_soh()?;
+        }
+        serializer.put_slice(b"372=")?;
+        serializer.serialize_string(&self.ref_msg_type)?;
+        serializer.put_soh()?;
+        if let Some(ref_appl_ver_id) = &self.ref_appl_ver_id {
+            serializer.put_slice(b"1130=")?;
+            serializer.serialize_enum(ref_appl_ver_id)?;
+            serializer.put_soh()?;
+        }
+        if let Some(ref_appl_ext_id) = &self.ref_appl_ext_id {
+            serializer.put_slice(b"1406=")?;
+            serializer.serialize_int(ref_appl_ext_id)?;
+            serializer.put_soh()?;
+        }
+        if let Some(ref_cstm_appl_ver_id) = &self.ref_cstm_appl_ver_id {
+            serializer.put_slice(b"1131=")?;
+            serializer.serialize_string(ref_cstm_appl_ver_id)?;
+            serializer.put_soh()?;
+        }
+        if let Some(business_reject_ref_id) = &self.business_reject_ref_id {
+            serializer.put_slice(b"379=")?;
+            serializer.serialize_string(business_reject_ref_id)?;
+            serializer.put_soh()?;
+        }
+        serializer.put_slice(b"380=")?;
+        serializer.serialize_enum(&self.business_reject_reason)?;
+        serializer.put_soh()?;
+        if let Some(text) = &self.text {
+            serializer.put_slice(b"58=")?;
+            serializer.serialize_string(text)?;
+            serializer.put_soh()?;
+        }
+        if let Some(encoded_text) = &self.encoded_text {
+            serializer.put_slice(b"354=")?;
+            serializer.serialize_length(&(encoded_text.len() as u16))?;
+            serializer.put_soh()?;
+            serializer.put_slice(b"355=")?;
+            serializer.serialize_data(encoded_text)?;
+            serializer.put_soh()?;
+        }
+        Ok(())
+    }
+
+    fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
+        let mut ref_seq_num: Option<SeqNum> = None;
+        let mut ref_msg_type: Option<FixString> = None;
+        let mut ref_appl_ver_id: Option<RefApplVerId> = None;
+        let mut ref_appl_ext_id: Option<Int> = None;
+        let mut ref_cstm_appl_ver_id: Option<FixString> = None;
+        let mut business_reject_ref_id: Option<FixString> = None;
+        let mut business_reject_reason: Option<BusinessRejectReason> = None;
+        let mut text: Option<FixString> = None;
+        let mut encoded_text_len: Option<Length> = None;
+        let mut encoded_text: Option<Data> = None;
+        while let Some(tag) = deserializer.deserialize_tag_num()? {
+            match tag {
+                45u16 => {
+                    if ref_seq_num.is_some() {
+                        return Err(deserializer
+                            .reject(Some(45u16), SessionRejectReasonBase::TagAppearsMoreThanOnce));
+                    }
+                    ref_seq_num = Some(deserializer.deserialize_seq_num()?);
+                }
+                372u16 => {
+                    if ref_msg_type.is_some() {
+                        return Err(deserializer.reject(
+                            Some(372u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    ref_msg_type = Some(deserializer.deserialize_string()?);
+                }
+                1130u16 => {
+                    if ref_appl_ver_id.is_some() {
+                        return Err(deserializer.reject(
+                            Some(1130u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    ref_appl_ver_id = Some(deserializer.deserialize_string_enum()?);
+                }
+                1406u16 => {
+                    if ref_appl_ext_id.is_some() {
+                        return Err(deserializer.reject(
+                            Some(1406u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    ref_appl_ext_id = Some(deserializer.deserialize_int()?);
+                }
+                1131u16 => {
+                    if ref_cstm_appl_ver_id.is_some() {
+                        return Err(deserializer.reject(
+                            Some(1131u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    ref_cstm_appl_ver_id = Some(deserializer.deserialize_string()?);
+                }
+                379u16 => {
+                    if business_reject_ref_id.is_some() {
+                        return Err(deserializer.reject(
+                            Some(379u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    business_reject_ref_id = Some(deserializer.deserialize_string()?);
+                }
+                380u16 => {
+                    if business_reject_reason.is_some() {
+                        return Err(deserializer.reject(
+                            Some(380u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    business_reject_reason = Some(deserializer.deserialize_int_enum()?);
+                }
+                58u16 => {
+                    if text.is_some() {
+                        return Err(deserializer
+                            .reject(Some(58u16), SessionRejectReasonBase::TagAppearsMoreThanOnce));
+                    }
+                    text = Some(deserializer.deserialize_string()?);
+                }
+                354u16 => {
+                    if encoded_text_len.is_some() {
+                        return Err(deserializer.reject(
+                            Some(354u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    let len = deserializer.deserialize_length()?;
+                    encoded_text_len = Some(len);
+                    if deserializer.deserialize_tag_num()?.ok_or_else(|| {
+                        deserializer
+                            .reject(Some(355u16), SessionRejectReasonBase::RequiredTagMissing)
+                    })? != 355u16
+                    {
+                        return Err(deserializer.reject(
+                            Some(354u16),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    }
+                    if encoded_text.is_some() {
+                        return Err(deserializer.reject(
+                            Some(354u16),
+                            SessionRejectReasonBase::TagAppearsMoreThanOnce,
+                        ));
+                    }
+                    encoded_text = Some(deserializer.deserialize_data(len as usize)?);
+                }
+                355u16 => {
+                    return Err(deserializer.reject(
+                        Some(tag),
+                        SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                    ));
+                }
+                tag => {
+                    if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder,
+                        ));
+                    } else if FieldTag::from_tag_num(tag).is_some() {
+                        return Err(deserializer.reject(
+                            Some(tag),
+                            SessionRejectReasonBase::TagNotDefinedForThisMessageType,
+                        ));
+                    } else {
+                        return Err(deserializer
+                            .reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
+                    }
+                }
+            }
+        }
+        Ok(Box::new(Body::BusinessMessageReject(
+            BusinessMessageReject {
+                ref_seq_num,
+                ref_msg_type: ref_msg_type.ok_or_else(|| {
+                    deserializer.reject(Some(372u16), SessionRejectReasonBase::RequiredTagMissing)
+                })?,
+                ref_appl_ver_id,
+                ref_appl_ext_id,
+                ref_cstm_appl_ver_id,
+                business_reject_ref_id,
+                business_reject_reason: business_reject_reason.ok_or_else(|| {
+                    deserializer.reject(Some(380u16), SessionRejectReasonBase::RequiredTagMissing)
+                })?,
+                text,
+                encoded_text,
+            },
+        )))
+    }
+
+    pub const fn msg_type(&self) -> MsgType {
+        MsgType::BusinessMessageReject
+    }
+
+    pub const fn msg_cat(&self) -> MsgCat {
+        MsgCat::App
+    }
+}
 impl<'a> From<&'a Heartbeat> for HeartbeatBase<'a> {
     fn from(msg: &'a Heartbeat) -> Self {
         HeartbeatBase {
@@ -3030,6 +3518,7 @@ pub enum Body {
     Logon(Logon),
     NewOrderSingle(NewOrderSingle),
     ExecutionReport(ExecutionReport),
+    BusinessMessageReject(BusinessMessageReject),
 }
 #[allow(dead_code)]
 impl Body {
@@ -3044,6 +3533,7 @@ impl Body {
             Body::Logon(msg) => msg.serialize(serializer),
             Body::NewOrderSingle(msg) => msg.serialize(serializer),
             Body::ExecutionReport(msg) => msg.serialize(serializer),
+            Body::BusinessMessageReject(msg) => msg.serialize(serializer),
         }
     }
 
@@ -3061,6 +3551,7 @@ impl Body {
             MsgType::Logon => Ok(Logon::deserialize(deserializer)?),
             MsgType::NewOrderSingle => Ok(NewOrderSingle::deserialize(deserializer)?),
             MsgType::ExecutionReport => Ok(ExecutionReport::deserialize(deserializer)?),
+            MsgType::BusinessMessageReject => Ok(BusinessMessageReject::deserialize(deserializer)?),
         }
     }
 
@@ -3075,6 +3566,7 @@ impl Body {
             Body::Logon(_) => MsgType::Logon,
             Body::NewOrderSingle(_) => MsgType::NewOrderSingle,
             Body::ExecutionReport(_) => MsgType::ExecutionReport,
+            Body::BusinessMessageReject(_) => MsgType::BusinessMessageReject,
         }
     }
 
@@ -3089,6 +3581,7 @@ impl Body {
             Body::Logon(msg) => msg.msg_cat(),
             Body::NewOrderSingle(msg) => msg.msg_cat(),
             Body::ExecutionReport(msg) => msg.msg_cat(),
+            Body::BusinessMessageReject(msg) => msg.msg_cat(),
         }
     }
 
@@ -3103,6 +3596,7 @@ impl Body {
             Body::Logon(_) => "Logon",
             Body::NewOrderSingle(_) => "NewOrderSingle",
             Body::ExecutionReport(_) => "ExecutionReport",
+            Body::BusinessMessageReject(_) => "BusinessMessageReject",
         }
     }
 
@@ -3162,6 +3656,11 @@ impl From<NewOrderSingle> for Body {
 impl From<ExecutionReport> for Body {
     fn from(msg: ExecutionReport) -> Body {
         Body::ExecutionReport(msg)
+    }
+}
+impl From<BusinessMessageReject> for Body {
+    fn from(msg: BusinessMessageReject) -> Body {
+        Body::BusinessMessageReject(msg)
     }
 }
 #[allow(dead_code)]
