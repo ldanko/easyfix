@@ -57,7 +57,7 @@ pub enum SerializeError {
     #[error("empty value")]
     EmptyValue,
     /// A value outside the range its FIX datatype allows: a zero `TagNum`,
-    /// `SeqNum`, `NumInGroup` or `Length`, a `Char` outside printable ASCII
+    /// `NumInGroup` or `Length`, a `Char` outside printable ASCII
     /// (`0x20..=0x7e`), or a timestamp the wire grammar cannot render (year
     /// outside `0000-9999`, sub-minute UTC offset, leap second in a zoned
     /// type).
