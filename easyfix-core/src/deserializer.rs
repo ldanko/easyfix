@@ -1505,8 +1505,10 @@ impl<'de> Deserializer<'de> {
                 // Latin-1 controll characters ranges
                 // [0x00..=0x1f] | [0x80..=0x9f] | [0x00..=0x1f, _] | [0x80..=0x9f, _] => {
 
-                // ASCII controll character range + unused range
-                [0x00..=0x1f] | [0x7f..=0xff] => {
+                // ASCII controll character range + unused range. The two-byte
+                // arms are what every character but the last one hits - a
+                // chunk is only one byte long when `data` has an odd length.
+                [0x00..=0x1f] | [0x7f..=0xff] | [0x00..=0x1f, _] | [0x7f..=0xff, _] => {
                     return Err(
                         self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
                     );

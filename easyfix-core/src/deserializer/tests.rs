@@ -1201,6 +1201,28 @@ fn deserialize_multiple_char_value_high_byte() {
     );
 }
 
+// Values are read two bytes at a time, so a rejected byte anywhere but at the
+// end arrives paired with its trailing space.
+#[test]
+fn deserialize_multiple_char_value_control_char_not_last() {
+    let input = b"\x05 A\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeErrorKind::Reject { .. })
+    );
+}
+
+#[test]
+fn deserialize_multiple_char_value_high_byte_not_last() {
+    let input = b"\x80 A\x01\x00";
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_multiple_char_value(),
+        Err(DeserializeErrorKind::Reject { .. })
+    );
+}
+
 #[test]
 fn deserialize_multiple_char_value_two_chars_no_space() {
     let input = b"AB\x01\x00";
