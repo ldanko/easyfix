@@ -70,20 +70,46 @@ fn deserialize_checksum_incomplete() {
     );
 }
 
+/// A malformed `CheckSum(10)` field has no known end, so it is `Garbled`
+/// (resynchronize), never `InvalidChecksum` (skip a known frame).
 #[test]
 fn deserialize_checksum_garbled() {
     assert_matches!(
         deserialize_checksum(b"A23\x01"),
-        Err(RawMessageError::InvalidChecksum)
+        Err(RawMessageError::Garbled)
     );
 
-    assert_matches!(
-        deserialize_checksum(b"1234"),
-        Err(RawMessageError::InvalidChecksum)
-    );
+    assert_matches!(deserialize_checksum(b"1234"), Err(RawMessageError::Garbled));
     assert_matches!(
         deserialize_checksum(b"1234\x01"),
-        Err(RawMessageError::InvalidChecksum)
+        Err(RawMessageError::Garbled)
+    );
+}
+
+/// A well-shaped value above 255 can never match; it is left to
+/// `raw_message` to report as `InvalidChecksum`.
+#[test]
+fn deserialize_checksum_accepts_three_digits_above_u8() {
+    assert_matches!(deserialize_checksum(b"999\x01"), Ok((b"", 999)));
+}
+
+/// A complete frame with a wrong `CheckSum(10)` reports its own length, so
+/// a caller can skip exactly the rejected frame instead of scanning inside
+/// it for the next message start.
+#[test]
+fn raw_message_invalid_checksum_reports_frame_len() {
+    let frame = b"8=MSG_BODY\x019=19\x01<lots of tags here>10=144\x01";
+    let mut input = frame.to_vec();
+    input.extend_from_slice(b"leftover");
+    assert_matches!(
+        raw_message(&input),
+        Err(RawMessageError::InvalidChecksum { frame_len }) => {
+            assert_eq!(frame_len, frame.len());
+        }
+    );
+    assert_matches!(
+        raw_message(b"8=MSG_BODY\x019=19\x01<lots of tags here>10=999\x01"),
+        Err(RawMessageError::InvalidChecksum { frame_len: 42 })
     );
 }
 

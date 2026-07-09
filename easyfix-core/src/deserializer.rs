@@ -140,7 +140,7 @@ impl From<RawMessageError> for DeserializeErrorKind {
             RawMessageError::Garbled => {
                 DeserializeErrorKind::Garbled(GarbledReason::MessageNotWellFormed)
             }
-            RawMessageError::InvalidChecksum => {
+            RawMessageError::InvalidChecksum { .. } => {
                 DeserializeErrorKind::Garbled(GarbledReason::InvalidChecksum)
             }
         }
@@ -168,26 +168,31 @@ fn deserialize_tag<'a>(bytes: &'a [u8], tag: &'a [u8]) -> Result<&'a [u8], RawMe
     }
 }
 
-fn deserialize_checksum(bytes: &[u8]) -> Result<(&[u8], u8), RawMessageError> {
+/// Parse the `CheckSum(10)` value: exactly three digits and SOH. The value
+/// is returned as declared - `u16` because three digits reach 999, and
+/// whether it matches is for the caller to decide.
+//
+// Only the field's shape is judged here. A malformed field (`A23`, a
+// missing SOH) is `Garbled`: without the fixed three-digit-plus-SOH shape
+// the frame has no known end, so the caller must resynchronize rather than
+// skip it. `InvalidChecksum` is reserved for a well-shaped field whose value
+// disagrees, where the frame extent is certain - `raw_message` decides that,
+// as it alone knows the frame length to report.
+fn deserialize_checksum(bytes: &[u8]) -> Result<(&[u8], u16), RawMessageError> {
     if bytes.len() < 4 {
         return Err(RawMessageError::Incomplete);
     }
 
-    let mut value: u8 = 0;
+    let mut value: u16 = 0;
     for b in &bytes[0..3] {
         match b {
-            n @ b'0'..=b'9' => {
-                value = value
-                    .checked_mul(10)
-                    .and_then(|v| v.checked_add(n - b'0'))
-                    .ok_or(RawMessageError::InvalidChecksum)?;
-            }
-            _ => return Err(RawMessageError::InvalidChecksum),
+            n @ b'0'..=b'9' => value = value * 10 + u16::from(n - b'0'),
+            _ => return Err(RawMessageError::Garbled),
         }
     }
 
     if bytes[3] != b'\x01' {
-        return Err(RawMessageError::InvalidChecksum);
+        return Err(RawMessageError::Garbled);
     }
 
     Ok((&bytes[4..], value))
@@ -703,8 +708,15 @@ pub enum RawMessageError {
     #[error("Garbled")]
     Garbled,
     /// Framing held, but CheckSum(10) disagrees with the bytes it covers.
+    /// The frame is complete and its extent is known: skip `frame_len`
+    /// bytes and resume parsing right behind it - no need to scan for the
+    /// next message start.
     #[error("Invalid checksum")]
-    InvalidChecksum,
+    InvalidChecksum {
+        /// Length of the whole rejected frame, `BeginString(8)` through the
+        /// SOH after `CheckSum(10)`.
+        frame_len: usize,
+    },
 }
 
 impl From<DeserializeErrorKindInternal> for RawMessageError {
@@ -723,8 +735,10 @@ impl From<DeserializeErrorKindInternal> for RawMessageError {
 /// distinction is load-bearing for anything reading from a socket:
 ///
 /// - [`Incomplete`] - a well-formed prefix, keep the bytes and read more.
-/// - [`Garbled`] / [`InvalidChecksum`] - the bytes are not a message and
-///   never will be; drop them and resynchronize.
+/// - [`Garbled`] - the bytes are not a message and never will be; drop
+///   them and resynchronize.
+/// - [`InvalidChecksum`] - a complete frame whose `CheckSum(10)` does not
+///   match; its length is known, so skip exactly that many bytes.
 ///
 /// That split is what bounds the caller's buffer. `BodyLength<9>` is parsed
 /// into a [`Length`], so a value above 65535 is *out of range* rather than
@@ -765,15 +779,17 @@ pub fn raw_message(bytes: &[u8]) -> Result<(&[u8], RawMessage<'_>), RawMessageEr
 
     let bytes = deserialize_tag(bytes, b"10=")?;
     let (bytes, checksum) = deserialize_checksum(bytes)?;
-    if calculated_checksum != checksum {
-        return Err(RawMessageError::InvalidChecksum);
+    if u16::from(calculated_checksum) != checksum {
+        return Err(RawMessageError::InvalidChecksum {
+            frame_len: orig_bytes.len() - bytes.len(),
+        });
     }
     Ok((
         bytes,
         RawMessage {
             begin_string,
             body,
-            checksum,
+            checksum: calculated_checksum,
         },
     ))
 }
