@@ -38,7 +38,7 @@ impl Messages {
 }
 
 #[derive(Debug)]
-pub(crate) struct State<S> {
+pub struct State<S> {
     enabled: bool,
     received_logon: bool,
     logon_sent: bool,
@@ -88,6 +88,10 @@ impl<S: MessagesStorage> State<S> {
     }
 
     ////
+
+    pub fn messages_storage(&self) -> &S {
+        &self.messages_storage
+    }
 
     pub fn enabled(&self) -> bool {
         self.enabled
