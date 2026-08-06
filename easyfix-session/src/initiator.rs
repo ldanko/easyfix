@@ -73,6 +73,7 @@ impl<S: MessagesStorage + 'static> Initiator<S> {
                     active_sessions,
                     emitter.clone(),
                     pending_logout.clone(),
+                    addr,
                 ),
                 pending_logout,
                 &emitter,

@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    net::SocketAddr,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -158,6 +159,8 @@ pub(crate) struct Session<S> {
     // Not in SessionState as I/O layer asks for this value often
     heartbeat_interval: Cell<u64>,
     disconnect_notify: RefCell<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Address of the peer this session was established with
+    peer_addr: SocketAddr,
 }
 
 impl<S: MessagesStorage> Session<S> {
@@ -168,6 +171,7 @@ impl<S: MessagesStorage> Session<S> {
         sender: Sender,
         emitter: Emitter,
         disconnect_notify_tx: tokio::sync::oneshot::Sender<()>,
+        peer_addr: SocketAddr,
     ) -> Session<S> {
         let heartbeat_interval = settings
             .heartbeat_interval
@@ -180,7 +184,12 @@ impl<S: MessagesStorage> Session<S> {
             emitter,
             heartbeat_interval: Cell::new(heartbeat_interval),
             disconnect_notify: RefCell::new(Some(disconnect_notify_tx)),
+            peer_addr,
         }
+    }
+
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
     }
 
     pub fn session_id(&self) -> &SessionId {

@@ -181,6 +181,7 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
                     self.emitter.clone(),
                     self.enabled,
                     pending_logout.clone(),
+                    peer_addr,
                 ),
                 pending_logout,
                 &self.emitter,
@@ -287,6 +288,19 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         } else {
             Err(AcceptorError::UnknownSession)
         }
+    }
+
+    /// Address of the peer of an active session.
+    ///
+    /// Returns `None` when the session has no connection at the moment. The
+    /// session is registered before its first message is dispatched to the
+    /// application, so this is `Some` for the whole lifetime of a connection,
+    /// including while its Logon<A> is being handled.
+    pub fn peer_addr(&self, session_id: &SessionId) -> Option<SocketAddr> {
+        self.active_sessions
+            .borrow()
+            .get(session_id)
+            .map(|session| session.peer_addr())
     }
 
     pub fn logout(

@@ -3,6 +3,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, hash_map::Entry},
     future::Future,
+    net::SocketAddr,
     panic::AssertUnwindSafe,
     rc::Rc,
     sync::Mutex,
@@ -230,6 +231,7 @@ pub(crate) async fn acceptor_connection<S>(
     emitter: Emitter,
     enabled: Rc<Cell<bool>>,
     pending_logout: PendingLogout,
+    peer_addr: SocketAddr,
 ) where
     S: MessagesStorage,
 {
@@ -287,6 +289,7 @@ pub(crate) async fn acceptor_connection<S>(
         sender,
         emitter.clone(),
         disconnect_tx,
+        peer_addr,
     ));
 
     active_sessions
@@ -342,6 +345,7 @@ pub(crate) async fn acceptor_connection<S>(
     });
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn initiator_connection<S>(
     tcp_stream: TcpStream,
     settings: Settings,
@@ -350,6 +354,7 @@ pub(crate) async fn initiator_connection<S>(
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     emitter: Emitter,
     pending_logout: PendingLogout,
+    peer_addr: SocketAddr,
 ) where
     S: MessagesStorage,
 {
@@ -379,6 +384,7 @@ pub(crate) async fn initiator_connection<S>(
         sender,
         emitter.clone(),
         disconnect_tx,
+        peer_addr,
     ));
     active_sessions
         .borrow_mut()
