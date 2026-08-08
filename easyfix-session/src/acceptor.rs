@@ -21,7 +21,9 @@ use tracing::{Instrument, error, info, info_span, instrument, warn};
 
 use crate::{
     DisconnectReason, Settings,
-    application::{AsEvent, Emitter, EventStream, events_channel},
+    application::{
+        AsEvent, ConnectionDropReason, Emitter, EventStream, FixEventInternal, events_channel,
+    },
     io::{PendingLogout, acceptor_connection, supervise_connection},
     messages_storage::MessagesStorage,
     session::Session,
@@ -189,7 +191,16 @@ impl<S: MessagesStorage + 'static> SessionTask<S> {
             .instrument(span.clone())
             .await;
         } else {
-            span.in_scope(|| warn!("Acceptor is disabled"))
+            span.in_scope(|| warn!("Acceptor is disabled"));
+            // No Logon has been read, so the peer's identity is unknown here -
+            // unlike the same check inside `acceptor_connection`.
+            self.emitter
+                .send(FixEventInternal::ConnectionDropped(
+                    peer_addr,
+                    ConnectionDropReason::AcceptorDisabled(None),
+                ))
+                .instrument(span.clone())
+                .await;
         }
 
         span.in_scope(|| {

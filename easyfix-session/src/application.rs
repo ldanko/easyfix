@@ -1,6 +1,7 @@
 use std::{
     fmt,
     marker::PhantomData,
+    net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -181,6 +182,40 @@ impl Responder {
     }
 }
 
+/// Why an inbound connection ended before it became a FIX session.
+///
+/// Reported through [`FixEvent::ConnectionDropped`]. Distinct from
+/// [`DisconnectReason`], which describes the end of an *established* session:
+/// here no session was ever registered and nothing was sent on the wire.
+///
+/// The variants carrying a [`SessionId`] are those where the peer's identity
+/// was already derived from its `Logon<A>`; `LogonNotReceived` occurs before
+/// any identity is known.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum ConnectionDropReason {
+    /// No usable `Logon<A>` arrived - the peer stayed silent until the logon
+    /// timeout, closed the connection, sent something undecodable, or the
+    /// transport failed. These causes are not distinguished.
+    LogonNotReceived,
+    /// The `Logon<A>` resolved to a [`SessionId`] that is not configured.
+    /// Dropped without a reply so as not to reveal which identities are valid
+    /// (FIX Session Layer 4.6.4).
+    ///
+    /// A burst of *distinct* unknown ids from one address is the signature of
+    /// CompID enumeration; a single id repeating is more often a misconfigured
+    /// counterparty.
+    UnknownSession(SessionId),
+    /// A session is already running for this [`SessionId`]. Dropped without a
+    /// reply, since a `Logout<5>` would consume a `MsgSeqNum(34)` and disturb
+    /// the live session (FIX Session Layer 4.6.4).
+    SessionAlreadyActive(SessionId),
+    /// The acceptor is disabled (see `Acceptor::disable`), so inbound
+    /// connections are refused until it is enabled again. Carries the peer's
+    /// identity when the `Logon<A>` had already been read.
+    AcceptorDisabled(Option<SessionId>),
+}
+
 #[derive(Debug)]
 pub(crate) enum FixEventInternal {
     Created(SessionId),
@@ -197,6 +232,7 @@ pub(crate) enum FixEventInternal {
     AppMsgOut(Option<Box<FixtMessage>>, Responder),
     AdmMsgOut(Option<Box<FixtMessage>>, Responder),
     DeserializeError(SessionId, DeserializeError),
+    ConnectionDropped(SocketAddr, ConnectionDropReason),
 }
 
 impl Drop for FixEventInternal {
@@ -261,6 +297,18 @@ pub enum FixEvent<'a> {
 
     /// Failed to deserialize input message.
     DeserializeError(&'a SessionId, &'a DeserializeError),
+
+    /// An inbound connection ended before it became a session, so no
+    /// [`Created`](FixEvent::Created) / [`Logon`](FixEvent::Logon) will
+    /// follow for it.
+    ///
+    /// Reported for every connection the acceptor handles, whether it arrived
+    /// through a `Connection` listener or `Acceptor::run_session_task`. The
+    /// library reports and does not classify: an address worth refusing is
+    /// refused in your `Connection` implementation, which drops it before any
+    /// reply - as the spec requires for an unrecognized identity
+    /// (FIX Session Layer 4.6.4).
+    ConnectionDropped(SocketAddr, &'a ConnectionDropReason),
 }
 
 #[derive(Debug)]
@@ -331,6 +379,9 @@ impl AsEvent for FixEventInternal {
             FixEventInternal::AdmMsgOut(msg, _) => FixEvent::AdmMsgOut(msg.as_mut().unwrap()),
             FixEventInternal::DeserializeError(session_id, deserialize_error) => {
                 FixEvent::DeserializeError(session_id, deserialize_error)
+            }
+            FixEventInternal::ConnectionDropped(peer_addr, reason) => {
+                FixEvent::ConnectionDropped(*peer_addr, reason)
             }
         }
     }

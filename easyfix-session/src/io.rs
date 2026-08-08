@@ -28,7 +28,7 @@ use crate::{
     DisconnectReason, Error, NO_INBOUND_TIMEOUT_PADDING, Sender, SessionError,
     TEST_REQUEST_THRESHOLD,
     acceptor::{ActiveSessionsMap, SessionsMap},
-    application::{Emitter, FixEventInternal},
+    application::{ConnectionDropReason, Emitter, FixEventInternal},
     messages_storage::MessagesStorage,
     session::Session,
     session_id::SessionId,
@@ -243,6 +243,12 @@ pub(crate) async fn acceptor_connection<S>(
         Ok(msg) => msg,
         Err(err) => {
             error!(%err, "failed to establish new session");
+            emitter
+                .send(FixEventInternal::ConnectionDropped(
+                    peer_addr,
+                    ConnectionDropReason::LogonNotReceived,
+                ))
+                .await;
             return;
         }
     };
@@ -251,26 +257,55 @@ pub(crate) async fn acceptor_connection<S>(
     debug!(first_msg = ?msg);
 
     // XXX: there should be no await point between active_sessions.insert below
-    if !enabled.get() {
-        warn!("Acceptor is disabled, drop connection");
-        return;
-    }
+    //
+    // Reporting a drop is an await (the events channel is bounded), so the
+    // checks below only produce a verdict; the event is emitted after this
+    // block, on the path that returns anyway. The success path stays free of
+    // await points, as the invariant above requires.
+    let established = 'establish: {
+        if !enabled.get() {
+            break 'establish Err(ConnectionDropReason::AcceptorDisabled(Some(
+                session_id.clone(),
+            )));
+        }
 
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let sender = Sender::new(sender);
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let sender = Sender::new(sender);
 
-    let Some((session_settings, session_state)) = sessions.borrow().get_session(&session_id) else {
-        error!(%session_id, "failed to establish new session: unknown session id");
-        return;
+        let Some((session_settings, session_state)) = sessions.borrow().get_session(&session_id)
+        else {
+            break 'establish Err(ConnectionDropReason::UnknownSession(session_id.clone()));
+        };
+        if !session_state.borrow_mut().disconnected()
+            || active_sessions.borrow().contains_key(&session_id)
+        {
+            break 'establish Err(ConnectionDropReason::SessionAlreadyActive(
+                session_id.clone(),
+            ));
+        }
+        session_state.borrow_mut().set_disconnected(false);
+        register_sender(session_id.clone(), sender.clone());
+        Ok((sender, receiver, session_settings, session_state))
     };
-    if !session_state.borrow_mut().disconnected()
-        || active_sessions.borrow().contains_key(&session_id)
-    {
-        error!(%session_id, "Session already active");
-        return;
-    }
-    session_state.borrow_mut().set_disconnected(false);
-    register_sender(session_id.clone(), sender.clone());
+
+    let (sender, receiver, session_settings, session_state) = match established {
+        Ok(established) => established,
+        Err(reason) => {
+            match &reason {
+                ConnectionDropReason::AcceptorDisabled(_) => {
+                    warn!("Acceptor is disabled, drop connection");
+                }
+                ConnectionDropReason::UnknownSession(_) => {
+                    error!(%session_id, "failed to establish new session: unknown session id");
+                }
+                _ => error!(%session_id, "Session already active"),
+            }
+            emitter
+                .send(FixEventInternal::ConnectionDropped(peer_addr, reason))
+                .await;
+            return;
+        }
+    };
 
     let _cleanup_guard = SessionCleanupGuard {
         session_id: session_id.clone(),
