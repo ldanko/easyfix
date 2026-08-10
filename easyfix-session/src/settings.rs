@@ -258,6 +258,17 @@ pub struct SessionSettings {
     /// on Logon).
     pub enable_next_expected_msg_seq_num: bool,
 
+    /// Preserve the incoming sequence number when the application refuses an
+    /// acceptor's initial Logon with [`InputAction::Disconnect`] or
+    /// [`InputAction::Logout`] with `disconnect: true`. Defaults to `false`.
+    /// Outgoing Logout messages still consume their own sequence numbers.
+    /// Does not affect protocol validation failures, Reject responses,
+    /// Logout responses that wait for acknowledgement, or established sessions.
+    ///
+    /// [`InputAction::Disconnect`]: crate::InputAction::Disconnect
+    /// [`InputAction::Logout`]: crate::InputAction::Logout
+    pub preserve_seq_num_on_logon_refusal: bool,
+
     /// If `true`, run full header verification on incoming `Logout<5>`
     /// messages (CompID, SendingTime, sequence number). If `false`, accept
     /// `Logout<5>` without verification, except while a local reset awaits
@@ -389,6 +400,7 @@ impl Default for SessionSettings {
             time_precision: TimePrecision::Millis,
             sender_default_appl_ver_id: ApplVerId::Fix50Sp2,
             enable_next_expected_msg_seq_num: false,
+            preserve_seq_num_on_logon_refusal: false,
             verify_logout: true,
             verify_test_request_id: true,
             manages_admin_output: false,

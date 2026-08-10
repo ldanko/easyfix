@@ -317,8 +317,8 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// supplies an `on_accept` closure that owns the per-flow Accept
     /// logic (admin: dispatch_process + apply_result; app: increment
     /// target seq num). Other actions consume the message's seq num via
-    /// [`Self::consume_seq_num`], except a silent refusal of the acceptor's
-    /// initial Logon request.
+    /// [`Self::consume_seq_num`]. Immediate refusals of the acceptor's initial
+    /// Logon follow `preserve_seq_num_on_logon_refusal`.
     ///
     /// For `Reject`: emit a session-level Reject<3> referencing the
     /// original message - consistent with the [`Self::validate_impl`]
@@ -330,9 +330,6 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// sequence consumption and the disconnect decision still apply.
     ///
     /// For `Disconnect`: set the disconnect flag without any outbound message.
-    //
-    // A Logout response arrives one past the refused message. Consuming its
-    // number avoids requesting a resend from a peer already closing down.
     fn handle_input_action<S, F>(
         &mut self,
         action: InputAction,
@@ -346,6 +343,13 @@ impl<M: SessionMessage> SessionEngine<M> {
         F: FnOnce(&mut Self, &mut S) -> Result<InputResult<M>, FatalError>,
     {
         self.ensure_healthy()?;
+
+        // Preserving the counter keeps unauthenticated attempts from locking
+        // out the real peer. A waiting Logout must still consume the number
+        // so the peer's acknowledgement is in sequence.
+        let preserve_logon_seq_num = self.session_settings.preserve_seq_num_on_logon_refusal
+            && ref_msg_type == MsgTypeBase::Logon
+            && matches!(self.state.logon_state, LogonState::Idle);
 
         Ok(match action {
             InputAction::Accept => on_accept(self, storage)?,
@@ -365,7 +369,9 @@ impl<M: SessionMessage> SessionEngine<M> {
                 text,
                 disconnect,
             } => {
-                self.consume_seq_num(ref_msg_type, ref_seq_num, storage)?;
+                if !disconnect || !preserve_logon_seq_num {
+                    self.consume_seq_num(ref_msg_type, ref_seq_num, storage)?;
+                }
                 if disconnect {
                     self.push_logout(session_status, text);
                     self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
@@ -375,11 +381,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 InputResult::Handled
             }
             InputAction::Disconnect => {
-                // An unauthenticated Logon must not advance the persisted
-                // counter: repeated attempts could lock out the real peer.
-                let refused_logon = ref_msg_type == MsgTypeBase::Logon
-                    && matches!(self.state.logon_state, LogonState::Idle);
-                if !refused_logon {
+                if !preserve_logon_seq_num {
                     self.consume_seq_num(ref_msg_type, ref_seq_num, storage)?;
                 }
                 self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);

@@ -499,8 +499,8 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Consume the seq num of an in-sequence message whose protocol handler
     /// does not run - because the session rejects it or the application
     /// refuses it. SequenceReset does not consume its own number (Session
-    /// Layer 4.8.8; Test Cases 11(c)). The caller must skip this for a
-    /// silently refused initial Logon request.
+    /// Layer 4.8.8; Test Cases 11(c)). The caller must apply the configured
+    /// sequence consumption policy for an initial Logon refusal.
     fn consume_seq_num<S: MessagesStorage>(
         &mut self,
         msg_type: MsgTypeField,

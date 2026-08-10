@@ -87,6 +87,7 @@ pub fn build_session_settings(heartbeat_secs: u16) -> SessionSettings {
         time_precision: TimePrecision::Millis,
         sender_default_appl_ver_id: ApplVerId::Fix50Sp2,
         enable_next_expected_msg_seq_num: false,
+        preserve_seq_num_on_logon_refusal: false,
         verify_logout: true,
         verify_test_request_id: true,
         manages_admin_output: false,

@@ -717,19 +717,112 @@ fn app_rejected_logon_increments_next_num_in() {
 }
 
 #[tokio::test]
-async fn silently_refused_logons_preserve_storage_and_allow_reconnect() {
+async fn refused_logons_can_preserve_incoming_sequence_and_history() {
+    for send_logout in [false, true] {
+        for next_target in [1, 40] {
+            for (seq_num, reset) in [(next_target, false), (next_target + 3, false), (1, true)] {
+                let (mut engine, mut storage) = EngineBuilder::new().build();
+                let history = test_helpers::commit_heartbeat(&mut engine, &mut storage);
+                let _ = engine.take_pending();
+                storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
+                storage
+                    .set_next_target_msg_seq_num(nz_seq(next_target))
+                    .unwrap();
+
+                for attempt in 1..=3 {
+                    let (mut engine, _) =
+                        EngineBuilder::new().accept_reset_on_connect(true).build();
+                    engine.session_settings.preserve_seq_num_on_logon_refusal = true;
+                    let msg = test_helpers::logon_with_options(
+                        seq_num,
+                        fix_str!("TARGET"),
+                        fix_str!("SENDER"),
+                        30,
+                        Some(reset),
+                        None,
+                    );
+                    let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap()
+                    else {
+                        panic!("expected Logon callback");
+                    };
+                    let action = if send_logout {
+                        InputAction::Logout {
+                            session_status: None,
+                            text: Some(fix_str!("Logon refused").to_owned()),
+                            disconnect: true,
+                        }
+                    } else {
+                        InputAction::Disconnect
+                    };
+                    assert_matches!(
+                        engine
+                            .process_admin_input(msg, action, &mut storage)
+                            .unwrap(),
+                        InputResult::Handled
+                    );
+                    assert_eq!(
+                        engine.disconnect_reason(),
+                        Some(DisconnectReason::ApplicationForcedDisconnect)
+                    );
+                    assert!(!engine.is_logged_on());
+                    if send_logout {
+                        let mut logout = take_admin(&mut engine);
+                        assert_msg_type(&logout, MsgTypeBase::Logout);
+                        assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
+                        assert_eq!(logout.header.msg_seq_num, 20 + attempt - 1);
+                        engine.commit_send(logout, &mut storage).unwrap();
+                        assert!(engine.take_pending().is_some());
+                    }
+                    assert!(engine.take_admin_output().is_none());
+                    assert!(engine.take_pending().is_none());
+                    assert_eq!(storage.next_target_msg_seq_num().get(), next_target);
+                    assert_eq!(
+                        storage.next_sender_msg_seq_num().get(),
+                        if send_logout { 20 + attempt } else { 20 }
+                    );
+                    assert_eq!(
+                        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+                        history.as_slice()
+                    );
+                }
+
+                let (mut engine, _) = EngineBuilder::new().build();
+                accept_input(
+                    &mut engine,
+                    test_helpers::logon(next_target, fix_str!("TARGET"), fix_str!("SENDER")),
+                    &mut storage,
+                );
+                assert!(engine.is_logged_on());
+                assert!(!engine.should_disconnect());
+                assert_eq!(storage.next_target_msg_seq_num().get(), next_target + 1);
+                let mut logon = take_admin(&mut engine);
+                assert_msg_type(&logon, MsgTypeBase::Logon);
+                assert!(engine.fill_header(&mut logon, &mut storage).unwrap());
+                assert_eq!(logon.header.msg_seq_num, if send_logout { 23 } else { 20 });
+                engine.commit_send(logon, &mut storage).unwrap();
+                assert!(engine.take_admin_output().is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn logon_refusal_consumes_only_the_expected_incoming_sequence_by_default() {
     for next_target in [1, 40] {
         for (seq_num, reset) in [(next_target, false), (next_target + 3, false), (1, true)] {
-            let (mut engine, mut storage) = EngineBuilder::new().build();
-            let history = test_helpers::commit_heartbeat(&mut engine, &mut storage);
-            let _ = engine.take_pending();
-            storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
-            storage
-                .set_next_target_msg_seq_num(nz_seq(next_target))
-                .unwrap();
-
-            for _ in 0..3 {
-                let (mut engine, _) = EngineBuilder::new().accept_reset_on_connect(true).build();
+            for action in [
+                InputAction::Disconnect,
+                InputAction::Logout {
+                    session_status: None,
+                    text: None,
+                    disconnect: true,
+                },
+            ] {
+                let (mut engine, mut storage) =
+                    EngineBuilder::new().accept_reset_on_connect(true).build();
+                storage
+                    .set_next_target_msg_seq_num(nz_seq(next_target))
+                    .unwrap();
                 let msg = test_helpers::logon_with_options(
                     seq_num,
                     fix_str!("TARGET"),
@@ -741,37 +834,70 @@ async fn silently_refused_logons_preserve_storage_and_allow_reconnect() {
                 let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
                     panic!("expected Logon callback");
                 };
-                assert_matches!(
-                    engine
-                        .process_admin_input(msg, InputAction::Disconnect, &mut storage)
-                        .unwrap(),
-                    InputResult::Handled
+                engine
+                    .process_admin_input(msg, action, &mut storage)
+                    .unwrap();
+                assert_eq!(
+                    storage.next_target_msg_seq_num().get(),
+                    if seq_num == next_target {
+                        next_target + 1
+                    } else {
+                        next_target
+                    }
                 );
                 assert_eq!(
                     engine.disconnect_reason(),
                     Some(DisconnectReason::ApplicationForcedDisconnect)
                 );
                 assert!(!engine.is_logged_on());
-                assert!(engine.take_admin_output().is_none());
-                assert!(engine.take_pending().is_none());
-                assert_eq!(storage.next_target_msg_seq_num().get(), next_target);
-                assert_eq!(storage.next_sender_msg_seq_num().get(), 20);
+            }
+        }
+    }
+}
+
+#[test]
+fn nonterminal_logon_refusals_consume_sequence_regardless_of_policy() {
+    for preserve in [false, true] {
+        for action in [
+            InputAction::Reject {
+                reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
+                text: None,
+                tag: None,
+            },
+            InputAction::Logout {
+                session_status: None,
+                text: None,
+                disconnect: false,
+            },
+        ] {
+            let (mut engine, mut storage) = EngineBuilder::new().build();
+            engine.session_settings.preserve_seq_num_on_logon_refusal = preserve;
+            let msg = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+            let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
+                panic!("expected Logon callback");
+            };
+            let waiting_for_logout = matches!(action, InputAction::Logout { .. });
+            engine
+                .process_admin_input(msg, action, &mut storage)
+                .unwrap();
+            assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+            assert!(!engine.should_disconnect());
+            assert_msg_type(
+                &take_admin(&mut engine),
+                if waiting_for_logout {
+                    MsgTypeBase::Logout
+                } else {
+                    MsgTypeBase::Reject
+                },
+            );
+            if waiting_for_logout {
+                accept_input(&mut engine, test_helpers::logout(2), &mut storage);
+                assert_eq!(storage.next_target_msg_seq_num().get(), 3);
                 assert_eq!(
-                    storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-                    history.as_slice()
+                    engine.disconnect_reason(),
+                    Some(DisconnectReason::LocalRequestedLogout)
                 );
             }
-
-            let (mut engine, _) = EngineBuilder::new().build();
-            accept_input(
-                &mut engine,
-                test_helpers::logon(next_target, fix_str!("TARGET"), fix_str!("SENDER")),
-                &mut storage,
-            );
-            assert!(engine.is_logged_on());
-            assert!(!engine.should_disconnect());
-            assert_eq!(storage.next_target_msg_seq_num().get(), next_target + 1);
-            assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logon);
             assert!(engine.take_admin_output().is_none());
         }
     }

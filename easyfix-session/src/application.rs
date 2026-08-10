@@ -34,6 +34,10 @@ pub enum InputAction {
         tag: Option<TagNum>,
     },
     /// Send `Logout<5>` and optionally disconnect.
+    /// An immediate refusal of an acceptor's initial Logon follows
+    /// [`SessionSettings::preserve_seq_num_on_logon_refusal`].
+    ///
+    /// [`SessionSettings::preserve_seq_num_on_logon_refusal`]: crate::SessionSettings::preserve_seq_num_on_logon_refusal
     Logout {
         /// Sent as `SessionStatus(1409)`.
         session_status: Option<SessionStatusField>,
@@ -44,10 +48,12 @@ pub enum InputAction {
         disconnect: bool,
     },
     /// Force immediate disconnect without sending a response.
-    /// When an acceptor refuses the initial Logon request, preserve the
-    /// session's sequence numbers and message history, including when the
-    /// request carries `ResetSeqNumFlag(141)=Y`. Other in-sequence messages
-    /// consume their number, except SequenceReset.
+    /// An acceptor's initial Logon refusal follows
+    /// [`SessionSettings::preserve_seq_num_on_logon_refusal`]. A refused
+    /// request never applies its `ResetSeqNumFlag(141)=Y` reset.
+    /// Other in-sequence messages consume their number, except SequenceReset.
+    ///
+    /// [`SessionSettings::preserve_seq_num_on_logon_refusal`]: crate::SessionSettings::preserve_seq_num_on_logon_refusal
     Disconnect,
 }
 
