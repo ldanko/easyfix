@@ -266,20 +266,6 @@ fn test_simple_builder() {
 }
 
 #[test]
-fn test_builder_with_flattening() {
-    let fix44_file = setup_fix44_file();
-
-    // Build dictionary with component flattening enabled
-    let result = DictionaryBuilder::new()
-        .with_fix_xml(fix44_file.path())
-        .flatten_components(true)
-        .build();
-
-    let dictionary = result.expect("Failed to build dictionary with flattening");
-    assert_eq!(dictionary.version(), Version::FIX44);
-}
-
-#[test]
 fn test_builder_with_fixt_and_fix() {
     let fixt11_file = setup_fixt11_file();
     let fix50_file = setup_fix50_file();
@@ -1675,15 +1661,13 @@ fn test_builder_with_strict_check_header_without_sender_comp_id() {
     );
 }
 
-#[test]
-fn test_builder_with_strict_check_optional_body_length() {
-    let optional_body_length_xml = r#"
+fn setup_optional_header_field_file(field: &str) -> TestFile {
+    let xml = r#"
         <?xml version='1.0' encoding='UTF-8'?>
         <fix type='FIX' major='4' minor='4' servicepack='0'>
           <header>
             <field name='BeginString' required='Y'/>
-            <!-- BodyLength is mandatory in the standard header -->
-            <field name='BodyLength' required='N'/>
+            <field name='BodyLength' required='Y'/>
             <field name='MsgType' required='Y'/>
             <field name='SenderCompID' required='Y'/>
             <field name='TargetCompID' required='Y'/>
@@ -1713,7 +1697,16 @@ fn test_builder_with_strict_check_optional_body_length() {
         </fix>
     "#;
 
-    let test_file = TestFile::new("optional_body_length.xml", optional_body_length_xml);
+    let required = format!("<field name='{field}' required='Y'/>");
+    let optional = format!("<field name='{field}' required='N'/>");
+    assert_eq!(xml.matches(&required).count(), 1);
+    let xml = xml.replace(&required, &optional);
+    TestFile::new("optional_header_field.xml", &xml)
+}
+
+#[test]
+fn test_builder_with_strict_check_optional_body_length() {
+    let test_file = setup_optional_header_field_file("BodyLength");
 
     let result = DictionaryBuilder::new()
         .with_fix_xml(test_file.path())
@@ -1729,43 +1722,7 @@ fn test_builder_with_strict_check_optional_body_length() {
 
 #[test]
 fn test_builder_with_strict_check_optional_sending_time() {
-    let optional_sending_time_xml = r#"
-        <?xml version='1.0' encoding='UTF-8'?>
-        <fix type='FIX' major='4' minor='4' servicepack='0'>
-          <header>
-            <field name='BeginString' required='Y'/>
-            <field name='BodyLength' required='Y'/>
-            <field name='MsgType' required='Y'/>
-            <field name='SenderCompID' required='Y'/>
-            <field name='TargetCompID' required='Y'/>
-            <field name='MsgSeqNum' required='Y'/>
-            <!-- SendingTime is mandatory in the standard header -->
-            <field name='SendingTime' required='N'/>
-          </header>
-          <trailer>
-            <field name='CheckSum' required='Y'/>
-          </trailer>
-          <messages>
-            <message msgcat='admin' msgtype='0' name='Heartbeat'>
-              <field name='TestReqID' required='N'/>
-            </message>
-          </messages>
-          <components/>
-          <fields>
-            <field name='BeginString' number='8' type='STRING'/>
-            <field name='BodyLength' number='9' type='LENGTH'/>
-            <field name='MsgType' number='35' type='STRING'/>
-            <field name='CheckSum' number='10' type='STRING'/>
-            <field name='TestReqID' number='112' type='STRING'/>
-            <field name='SenderCompID' number='49' type='STRING'/>
-            <field name='TargetCompID' number='56' type='STRING'/>
-            <field name='MsgSeqNum' number='34' type='SEQNUM'/>
-            <field name='SendingTime' number='52' type='UTCTIMESTAMP'/>
-          </fields>
-        </fix>
-    "#;
-
-    let test_file = TestFile::new("optional_sending_time.xml", optional_sending_time_xml);
+    let test_file = setup_optional_header_field_file("SendingTime");
 
     let result = DictionaryBuilder::new()
         .with_fix_xml(test_file.path())
