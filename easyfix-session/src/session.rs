@@ -18,7 +18,7 @@ use easyfix_messages::{
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
-    DisconnectReason, Sender,
+    Abort, DisconnectReason, Sender,
     application::{DeserializeError, Emitter, FixEventInternal, InputResponderMsg, Responder},
     messages_storage::MessagesStorage,
     new_header, new_trailer,
@@ -176,6 +176,8 @@ impl<S: MessagesStorage> Session<S> {
         let heartbeat_interval = settings
             .heartbeat_interval
             .unwrap_or(settings.auto_disconnect_after_no_logout.as_secs());
+        state.borrow_mut().attach_abort(sender.abort.clone());
+        let emitter = emitter.with_abort(sender.abort.clone());
         Session {
             state,
             settings,
@@ -186,6 +188,22 @@ impl<S: MessagesStorage> Session<S> {
             disconnect_notify: RefCell::new(Some(disconnect_notify_tx)),
             peer_addr,
         }
+    }
+
+    pub(crate) fn abort_handle(&self) -> &Abort {
+        &self.sender.abort
+    }
+
+    pub(crate) fn sender(&self) -> &Sender {
+        &self.sender
+    }
+
+    pub(crate) fn abort(&self, reason: DisconnectReason) {
+        self.sender.abort.request(reason);
+    }
+
+    pub(crate) fn abort_reason(&self) -> Option<DisconnectReason> {
+        self.sender.abort.reason()
     }
 
     pub fn peer_addr(&self) -> SocketAddr {
@@ -381,16 +399,28 @@ impl<S: MessagesStorage> Session<S> {
             match msg.msg_cat() {
                 MsgCat::Admin => {
                     self.emitter
-                        .send(FixEventInternal::AdmMsgIn(Some(msg), Some(sender)))
+                        .send(FixEventInternal::AdmMsgIn(
+                            Some(msg),
+                            Some(sender),
+                            self.sender.abort.clone(),
+                        ))
                         .await
                 }
                 MsgCat::App => {
                     self.emitter
-                        .send(FixEventInternal::AppMsgIn(Some(msg), Some(sender)))
+                        .send(FixEventInternal::AppMsgIn(
+                            Some(msg),
+                            Some(sender),
+                            self.sender.abort.clone(),
+                        ))
                         .await
                 }
             }
-            if let Ok(input_responder_message) = receiver.await {
+            let response = receiver.await;
+            if self.abort_reason().is_some() {
+                return Err(VerifyError::ApplicationForcedDisconnect { reason: None });
+            }
+            if let Ok(input_responder_message) = response {
                 return Err(input_responder_message.into());
             }
 
@@ -592,11 +622,9 @@ impl<S: MessagesStorage> Session<S> {
     pub(crate) async fn emit_logout(&self, reason: DisconnectReason) {
         info!(?reason);
 
-        let mut state = self.state.borrow_mut();
+        let state = self.state.borrow();
 
         if state.logon_received() || state.logon_sent() {
-            state.set_logon_received(false);
-            state.set_logon_sent(false);
             drop(state);
 
             self.emitter
@@ -605,6 +633,11 @@ impl<S: MessagesStorage> Session<S> {
                     reason,
                 ))
                 .await;
+            if self.abort_reason().is_none() {
+                let mut state = self.state.borrow_mut();
+                state.set_logon_received(false);
+                state.set_logon_sent(false);
+            }
         } else {
             info!(
                 "FixEventInternal::Logout not emitted: session was never \
@@ -619,6 +652,9 @@ impl<S: MessagesStorage> Session<S> {
         ret
     )]
     pub(crate) fn disconnect(&self, state: &mut State<S>, reason: DisconnectReason) {
+        if self.abort_reason().is_some() {
+            return;
+        }
         if state.disconnected() {
             info!("already disconnected");
             return;
@@ -639,19 +675,34 @@ impl<S: MessagesStorage> Session<S> {
         }
     }
 
+    fn next_seq_num(&self, seq_num: SeqNum) -> Option<SeqNum> {
+        let next = seq_num.checked_add(1);
+        if next.is_none() {
+            self.abort(DisconnectReason::SequenceNumberExhausted);
+        }
+        next
+    }
+
     #[instrument(level = "trace", skip_all)]
     fn resend_range(&self, state: &mut State<S>, begin_seq_num: SeqNum, mut end_seq_num: SeqNum) {
         info!("resend range: ({begin_seq_num}, {end_seq_num})");
         let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
         if end_seq_num == 0 || end_seq_num >= next_sender_msg_seq_num {
-            end_seq_num = next_sender_msg_seq_num - 1;
+            let Some(last_sent) = next_sender_msg_seq_num.checked_sub(1) else {
+                self.abort(DisconnectReason::SequenceNumberExhausted);
+                return;
+            };
+            end_seq_num = last_sent;
             info!("adjust end_seq_num to {end_seq_num}");
         }
 
         // Just do a gap fill when messages aren't persisted
         if !self.session_settings.persist {
             let next_sender_msg_seq_num = state.next_sender_msg_seq_num();
-            end_seq_num += 1;
+            let Some(next) = self.next_seq_num(end_seq_num) else {
+                return;
+            };
+            end_seq_num = next;
             if end_seq_num > next_sender_msg_seq_num {
                 end_seq_num = next_sender_msg_seq_num;
             }
@@ -676,13 +727,21 @@ impl<S: MessagesStorage> Session<S> {
                     msg.msg_type(),
                     msg.header.msg_seq_num
                 );
-                gap_fill_range
-                    .get_or_insert((msg.header.msg_seq_num, msg.header.msg_seq_num - 1))
-                    .1 += 1;
+                if let Some((_, end)) = &mut gap_fill_range {
+                    let Some(next) = self.next_seq_num(*end) else {
+                        return;
+                    };
+                    *end = next;
+                } else {
+                    gap_fill_range = Some((msg.header.msg_seq_num, msg.header.msg_seq_num));
+                }
             } else {
                 if let Some((begin_seq_num, end_seq_num)) = gap_fill_range.take() {
                     trace!("Resending messages from {begin_seq_num} to {end_seq_num} as gap fill");
-                    self.send_sequence_reset(begin_seq_num, end_seq_num + 1);
+                    let Some(next) = self.next_seq_num(end_seq_num) else {
+                        return;
+                    };
+                    self.send_sequence_reset(begin_seq_num, next);
                 }
                 trace!(
                     "Resending message {:?}/{}",
@@ -699,7 +758,10 @@ impl<S: MessagesStorage> Session<S> {
         }
         if let Some((begin_seq_num, end_seq_num)) = gap_fill_range {
             info!("Resending messages from {begin_seq_num} to {end_seq_num} as gap fill");
-            self.send_sequence_reset(begin_seq_num, end_seq_num + 1);
+            let Some(next) = self.next_seq_num(end_seq_num) else {
+                return;
+            };
+            self.send_sequence_reset(begin_seq_num, next);
         }
     }
 
@@ -1009,7 +1071,10 @@ impl<S: MessagesStorage> Session<S> {
                 // we increment for the logon later (after Logon response sent) in this method if and only if in sequence
                 if is_logon_in_normal_sequence {
                     // logon was fine take account of it in 789
-                    next_expected_target_num += 1;
+                    let Some(next) = self.next_seq_num(next_expected_target_num) else {
+                        return Ok(Some(DisconnectReason::SequenceNumberExhausted));
+                    };
+                    next_expected_target_num = next;
                 }
 
                 info!("Responding to Logon request with tag 789={next_expected_target_num}");
@@ -1059,6 +1124,9 @@ impl<S: MessagesStorage> Session<S> {
             state.incr_next_target_msg_seq_num();
         }
 
+        if let Some(reason) = self.abort_reason() {
+            return Ok(Some(reason));
+        }
         if enable_next_expected_msg_seq_num
             && let Some(next_expected_msg_seq_num) = next_expected_msg_seq_num
         {
@@ -1068,7 +1136,10 @@ impl<S: MessagesStorage> Session<S> {
 
                 // TODO: self.resend_range() will handle this !!!
                 if !self.session_settings.persist {
-                    end_seq_no += 1;
+                    let Some(next) = self.next_seq_num(end_seq_no) else {
+                        return Ok(Some(DisconnectReason::SequenceNumberExhausted));
+                    };
+                    end_seq_no = next;
                     let next = state.next_sender_msg_seq_num();
                     if end_seq_no > next {
                         end_seq_no = next;
@@ -1140,6 +1211,9 @@ impl<S: MessagesStorage> Session<S> {
                 .map(|_| self.state.borrow_mut().incr_next_target_msg_seq_num()),
         };
 
+        if let Some(reason) = self.abort_reason() {
+            return Some(reason);
+        }
         match result {
             Ok(()) => return None,
             Err(VerifyError::Duplicate) => {
@@ -1267,6 +1341,9 @@ impl<S: MessagesStorage> Session<S> {
     }
 
     pub async fn on_message_in(&self, msg: Box<FixtMessage>) -> Option<DisconnectReason> {
+        if let Some(reason) = self.abort_reason() {
+            return Some(reason);
+        }
         if !self.session_settings.verify_test_request_id {
             self.state.borrow_mut().reset_grace_period();
         }
@@ -1275,6 +1352,9 @@ impl<S: MessagesStorage> Session<S> {
             return Some(disconnect_reason);
         }
         loop {
+            if let Some(reason) = self.abort_reason() {
+                return Some(reason);
+            }
             let Some(msg) = self.state.borrow_mut().retrieve_msg() else {
                 break;
             };
@@ -1304,7 +1384,7 @@ impl<S: MessagesStorage> Session<S> {
                     ))
                     .await;
                 // TODO: maybe change unwrap() to None ?
-                Some(receiver.await.unwrap())
+                receiver.await.ok()
             }
             MsgCat::App => {
                 self.emitter

@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
-use crate::{DisconnectReason, Sender, session_id::SessionId};
+use crate::{Abort, DisconnectReason, Sender, session_id::SessionId};
 
 //
 #[derive(Debug)]
@@ -102,19 +102,24 @@ pub(crate) enum InputResponderMsg {
 #[derive(Debug)]
 pub struct InputResponder<'a> {
     sender: oneshot::Sender<InputResponderMsg>,
+    abort: Abort,
     phantom_ref: PhantomData<&'a ()>,
 }
 
 impl<'a> InputResponder<'a> {
-    pub(crate) fn new(sender: oneshot::Sender<InputResponderMsg>) -> InputResponder<'a> {
+    pub(crate) fn new(
+        sender: oneshot::Sender<InputResponderMsg>,
+        abort: Abort,
+    ) -> InputResponder<'a> {
         InputResponder {
             sender,
+            abort,
             phantom_ref: PhantomData,
         }
     }
 
     pub fn ignore(self) {
-        self.sender.send(InputResponderMsg::Ignore).unwrap();
+        let _ = self.sender.send(InputResponderMsg::Ignore);
     }
 
     pub fn reject(
@@ -125,15 +130,13 @@ impl<'a> InputResponder<'a> {
         text: FixString,
         ref_tag_id: Option<i64>,
     ) {
-        self.sender
-            .send(InputResponderMsg::Reject {
-                ref_msg_type,
-                ref_seq_num,
-                reason,
-                text,
-                ref_tag_id,
-            })
-            .unwrap();
+        let _ = self.sender.send(InputResponderMsg::Reject {
+            ref_msg_type,
+            ref_seq_num,
+            reason,
+            text,
+            ref_tag_id,
+        });
     }
 
     pub fn logout(
@@ -142,19 +145,26 @@ impl<'a> InputResponder<'a> {
         text: Option<FixString>,
         disconnect: bool,
     ) {
-        self.sender
-            .send(InputResponderMsg::Logout {
-                session_status,
-                text,
-                disconnect,
-            })
-            .unwrap();
+        let _ = self.sender.send(InputResponderMsg::Logout {
+            session_status,
+            text,
+            disconnect,
+        });
     }
 
+    /// Stop this connection immediately, without Logout or draining queues.
+    /// Already written bytes and reserved sequence numbers cannot be undone.
+    /// Unlike ordinary disconnect, this preserves counters even with reset_on_disconnect.
+    pub fn abort(self) {
+        self.abort
+            .request(DisconnectReason::ApplicationForcedDisconnect);
+    }
+
+    /// Disconnect after draining queued output. Use `abort` for an emergency stop.
     pub fn disconnect(self) {
-        self.sender
-            .send(InputResponderMsg::Disconnect { reason: None })
-            .unwrap();
+        let _ = self
+            .sender
+            .send(InputResponderMsg::Disconnect { reason: None });
     }
 }
 
@@ -224,10 +234,12 @@ pub(crate) enum FixEventInternal {
     AppMsgIn(
         Option<Box<FixtMessage>>,
         Option<oneshot::Sender<InputResponderMsg>>,
+        Abort,
     ),
     AdmMsgIn(
         Option<Box<FixtMessage>>,
         Option<oneshot::Sender<InputResponderMsg>>,
+        Abort,
     ),
     AppMsgOut(Option<Box<FixtMessage>>, Responder),
     AdmMsgOut(Option<Box<FixtMessage>>, Responder),
@@ -241,11 +253,10 @@ impl Drop for FixEventInternal {
         | &mut FixEventInternal::AdmMsgOut(ref mut msg, ref mut responder) = self
             && let Some(sender) = responder.sender.take()
         {
-            if responder.change_to_gap_fill {
-                // TODO: GapFill HERE!
-                sender.send(msg.take().unwrap()).unwrap();
-            } else {
-                sender.send(msg.take().unwrap()).unwrap();
+            // TODO: implement change_to_gap_fill. A cancelled connection no
+            // longer owns the receiver; dropping a stale event is harmless.
+            if let Some(msg) = msg.take() {
+                let _ = sender.send(msg);
             }
         }
     }
@@ -319,20 +330,37 @@ pub struct EventStream {
 #[derive(Debug)]
 pub struct Emitter {
     inner: mpsc::Sender<FixEventInternal>,
+    abort: Option<Abort>,
 }
 
 impl Clone for Emitter {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            abort: self.abort.clone(),
         }
     }
 }
 
 impl Emitter {
+    pub(crate) fn with_abort(mut self, abort: Abort) -> Self {
+        self.abort = Some(abort);
+        self
+    }
+
     pub(crate) async fn send(&self, event: FixEventInternal) {
-        if let Err(_e) = self.inner.send(event).await {
-            error!("Failed to send msg")
+        let send = self.inner.send(event);
+        let result = if let Some(abort) = &self.abort {
+            tokio::select! {
+                biased;
+                _ = abort.cancelled() => return,
+                result = send => result,
+            }
+        } else {
+            send.await
+        };
+        if result.is_err() {
+            error!("Failed to send msg");
         }
     }
 }
@@ -341,7 +369,10 @@ pub(crate) fn events_channel() -> (Emitter, EventStream) {
     let (sender, receiver) = mpsc::channel(16);
 
     (
-        Emitter { inner: sender },
+        Emitter {
+            inner: sender,
+            abort: None,
+        },
         EventStream {
             receiver: receiver.into(),
         },
@@ -365,13 +396,13 @@ impl AsEvent for FixEventInternal {
             FixEventInternal::Created(id) => FixEvent::Created(id),
             FixEventInternal::Logon(id, sender) => FixEvent::Logon(id, sender.take().unwrap()),
             FixEventInternal::Logout(id, reason) => FixEvent::Logout(id, *reason),
-            FixEventInternal::AppMsgIn(msg, sender) => FixEvent::AppMsgIn(
+            FixEventInternal::AppMsgIn(msg, sender, abort) => FixEvent::AppMsgIn(
                 msg.take().unwrap(),
-                InputResponder::new(sender.take().unwrap()),
+                InputResponder::new(sender.take().unwrap(), abort.clone()),
             ),
-            FixEventInternal::AdmMsgIn(msg, sender) => FixEvent::AdmMsgIn(
+            FixEventInternal::AdmMsgIn(msg, sender, abort) => FixEvent::AdmMsgIn(
                 msg.take().unwrap(),
-                InputResponder::new(sender.take().unwrap()),
+                InputResponder::new(sender.take().unwrap(), abort.clone()),
             ),
             FixEventInternal::AppMsgOut(msg, resp) => {
                 FixEvent::AppMsgOut(msg.as_mut().unwrap(), resp)

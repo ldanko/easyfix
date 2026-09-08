@@ -5,15 +5,27 @@
 //! release the session so the peer can reconnect and the acceptor API remains
 //! safe to call.
 
-use std::{cell::Cell, io, net::SocketAddr, ops::RangeInclusive, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    future::pending,
+    io,
+    iter::empty,
+    net::SocketAddr,
+    ops::RangeInclusive,
+    pin::Pin,
+    rc::Rc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use chrono::NaiveTime;
 use easyfix_macros::fix_str;
 use easyfix_messages::{
     fields::{DefaultApplVerId, EncryptMethod, FixStr, SeqNum, SessionStatus, Utc, UtcTimestamp},
-    messages::{FixtMessage, Header, Logon, Message, TestRequest, Trailer},
+    messages::{FixtMessage, Header, Logon, Message, SequenceReset, TestRequest, Trailer},
 };
 use easyfix_session::{
+    DisconnectReason, Sender,
     acceptor::{Acceptor, Connection},
     application::{AsEvent, FixEvent},
     messages_storage::{InMemoryStorage, MessagesStorage},
@@ -21,9 +33,9 @@ use easyfix_session::{
     settings::{SessionSettings, Settings},
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, WriteHalf},
     runtime::Builder,
-    sync::mpsc,
+    sync::{Notify, mpsc},
     task::LocalSet,
     time::{sleep, timeout},
 };
@@ -97,7 +109,7 @@ impl Connection for TestConnection {
                 let (reader, writer) = tokio::io::split(stream);
                 Ok((reader, writer, "127.0.0.1:1".parse().unwrap()))
             }
-            None => std::future::pending().await,
+            None => pending().await,
         }
     }
 }
@@ -403,5 +415,462 @@ fn panicked_connection_task_releases_session() {
 
         let mut buf = Vec::new();
         read_until_pumping(&mut acceptor, &mut client2_rx, &mut buf, b"\x0135=5\x01", 1).await;
+    });
+}
+
+// A third-party storage implementation with the unchanged, infallible API.
+// Counters are observable by tests but only the session mutates them.
+struct Counters {
+    sender: Cell<SeqNum>,
+    target: Cell<SeqNum>,
+    stores: Cell<usize>,
+    target_changed: Notify,
+}
+
+struct TrackingStorage(Rc<Counters>);
+
+impl MessagesStorage for TrackingStorage {
+    fn fetch_range(&mut self, _: RangeInclusive<SeqNum>) -> impl Iterator<Item = &[u8]> {
+        empty()
+    }
+
+    fn store(&mut self, _: SeqNum, _: &[u8]) {
+        self.0.stores.set(self.0.stores.get() + 1);
+    }
+
+    fn next_sender_msg_seq_num(&self) -> SeqNum {
+        self.0.sender.get()
+    }
+
+    fn next_target_msg_seq_num(&self) -> SeqNum {
+        self.0.target.get()
+    }
+
+    fn set_next_sender_msg_seq_num(&mut self, value: SeqNum) {
+        self.0.sender.set(value);
+    }
+
+    fn set_next_target_msg_seq_num(&mut self, value: SeqNum) {
+        self.0.target.set(value);
+    }
+
+    fn incr_next_sender_msg_seq_num(&mut self) {
+        self.0.sender.set(self.0.sender.get() + 1);
+    }
+
+    fn incr_next_target_msg_seq_num(&mut self) {
+        self.0.target.set(self.0.target.get() + 1);
+        self.0.target_changed.notify_one();
+    }
+
+    fn reset(&mut self) {
+        self.0.sender.set(1);
+        self.0.target.set(1);
+    }
+}
+
+fn tracked_acceptor(sender: SeqNum, target: SeqNum) -> (Acceptor<TrackingStorage>, Rc<Counters>) {
+    let counters = Rc::new(Counters {
+        sender: Cell::new(sender),
+        target: Cell::new(target),
+        stores: Cell::new(0),
+        target_changed: Notify::new(),
+    });
+    let storage_counters = counters.clone();
+    let mut acceptor = Acceptor::new(
+        settings(),
+        Box::new(move |_| TrackingStorage(storage_counters.clone())),
+    );
+    acceptor.register_session(session_id(), session_settings());
+    (acceptor, counters)
+}
+
+async fn connected(acceptor: &mut Acceptor<TrackingStorage>) -> (DuplexStream, Sender) {
+    let (client, server) = tokio::io::duplex(65536);
+    let (tx, incoming) = mpsc::unbounded_channel();
+    acceptor.start(TestConnection { incoming });
+    tx.send(server).unwrap();
+    let mut client = client;
+    client
+        .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+        .await
+        .unwrap();
+    let sender = loop {
+        let mut entry = acceptor.next().await.unwrap();
+        if let FixEvent::Logon(_, sender) = entry.as_event() {
+            break sender;
+        }
+    };
+    let mut bytes = Vec::new();
+    read_until_pumping(acceptor, &mut client, &mut bytes, b"\x0135=A\x01", 1).await;
+    (client, sender)
+}
+
+fn sequence_reset(new_seq_no: SeqNum, gap_fill: bool) -> Message {
+    Message::SequenceReset(SequenceReset {
+        new_seq_no,
+        gap_fill_flag: Some(gap_fill),
+    })
+}
+
+#[test]
+fn responder_abort_vetoes_reset_and_discards_queued_input() {
+    run_local_test(async {
+        const LIMIT: SeqNum = (1 << 28) - 1;
+        for gap_fill in [false, true] {
+            let (mut acceptor, counters) = tracked_acceptor(1, 1);
+            let (mut client, sender) = connected(&mut acceptor).await;
+            // Both messages are deferred until the missing sequence 2 arrives.
+            // GapFill is then checked by the existing responder, before NewSeqNo is applied.
+            let reset_seq = if gap_fill { 3 } else { 2 };
+            let mut batch = serialize_msg(
+                sequence_reset(LIMIT + 1, gap_fill),
+                reset_seq,
+                UtcTimestamp::now(),
+            );
+            batch.extend(serialize_msg(
+                test_request(fix_str!("must-not-run")),
+                reset_seq + 1,
+                UtcTimestamp::now(),
+            ));
+            if gap_fill {
+                batch.extend(serialize_msg(
+                    test_request(fix_str!("fill-gap")),
+                    2,
+                    UtcTimestamp::now(),
+                ));
+            }
+            client.write_all(&batch).await.unwrap();
+            loop {
+                let mut entry = acceptor.next().await.unwrap();
+                if let FixEvent::AdmMsgIn(msg, responder) = entry.as_event()
+                    && matches!(*msg.body, Message::SequenceReset(_))
+                {
+                    responder.abort();
+                    break;
+                }
+            }
+            let stores = counters.stores.get();
+            let outgoing = counters.sender.get();
+            let mut remaining = Vec::new();
+            client.read_to_end(&mut remaining).await.unwrap();
+            assert_eq!(count_occurrences(&remaining, b"\x0135=5\x01"), 0);
+            assert_eq!(counters.target.get(), reset_seq);
+            assert_eq!(counters.sender.get(), outgoing);
+            assert_eq!(counters.stores.get(), stores);
+            assert!(
+                sender
+                    .send(Box::new(test_request(fix_str!("late"))))
+                    .is_err()
+            );
+            assert!(!acceptor.is_session_active(&session_id()).unwrap());
+        }
+    });
+}
+
+#[test]
+fn abort_closes_transport_with_output_responder_held() {
+    run_local_test(async {
+        let (mut acceptor, counters) = tracked_acceptor(1, 1);
+        let (mut client, sender) = connected(&mut acceptor).await;
+        for _ in 0..32 {
+            sender
+                .send(Box::new(test_request(fix_str!("backlog"))))
+                .unwrap();
+        }
+        let mut held = acceptor.next().await.unwrap();
+        assert!(matches!(held.as_event(), FixEvent::AdmMsgOut(_)));
+        let next = counters.sender.get();
+        let stores = counters.stores.get();
+        acceptor.abort(&session_id()).unwrap();
+        acceptor.abort(&session_id()).unwrap();
+        // Do not drop the output event or consume Logout until the transport is closed.
+        let mut remaining = Vec::new();
+        client.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(counters.sender.get(), next);
+        assert_eq!(counters.stores.get(), stores);
+        assert!(!acceptor.is_session_active(&session_id()).unwrap());
+        drop(held); // A late output response must not panic.
+        let mut logout = acceptor.next().await.unwrap();
+        assert!(matches!(
+            logout.as_event(),
+            FixEvent::Logout(_, DisconnectReason::ApplicationForcedDisconnect)
+        ));
+    });
+}
+
+#[test]
+fn abort_interrupts_first_logon_and_stale_responder_cannot_abort_reconnect() {
+    run_local_test(async {
+        let (mut acceptor, _) = tracked_acceptor(1, 1);
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (tx, incoming) = mpsc::unbounded_channel();
+        acceptor.start(TestConnection { incoming });
+        tx.send(server).unwrap();
+        client
+            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .await
+            .unwrap();
+        let mut held = acceptor.next().await.unwrap();
+        let FixEvent::AdmMsgIn(_, old_responder) = held.as_event() else {
+            panic!("expected Logon input");
+        };
+        acceptor.abort(&session_id()).unwrap();
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.is_empty());
+        assert!(!acceptor.is_session_active(&session_id()).unwrap());
+        let (mut new_client, sender) = connected(&mut acceptor).await;
+        old_responder.abort();
+        sender
+            .send(Box::new(test_request(fix_str!("still-alive"))))
+            .unwrap();
+        read_until_pumping(
+            &mut acceptor,
+            &mut new_client,
+            &mut bytes,
+            b"still-alive",
+            1,
+        )
+        .await;
+        acceptor.abort(&session_id()).unwrap();
+    });
+}
+
+#[test]
+fn numbering_exhaustion_aborts_and_requires_explicit_inactive_reset() {
+    run_local_test(async {
+        for sender_exhausted in [false, true] {
+            let (mut acceptor, counters) = tracked_acceptor(1, 1);
+            let (mut client, sender) = connected(&mut acceptor).await;
+            if sender_exhausted {
+                acceptor
+                    .set_next_sender_msg_seq_num(&session_id(), SeqNum::MAX - 1)
+                    .unwrap();
+                sender
+                    .send(Box::new(test_request(fix_str!("exhaust"))))
+                    .unwrap();
+            } else {
+                client
+                    .write_all(&serialize_msg(
+                        sequence_reset(SeqNum::MAX, false),
+                        2,
+                        UtcTimestamp::now(),
+                    ))
+                    .await
+                    .unwrap();
+                let mut entry = acceptor.next().await.unwrap();
+                assert!(matches!(entry.as_event(), FixEvent::AdmMsgIn(..)));
+                drop(entry);
+            }
+            let mut remaining = Vec::new();
+            client.read_to_end(&mut remaining).await.unwrap();
+            assert!(remaining.is_empty());
+            assert_eq!(
+                if sender_exhausted {
+                    counters.sender.get()
+                } else {
+                    counters.target.get()
+                },
+                SeqNum::MAX
+            );
+            assert!(!acceptor.is_session_active(&session_id()).unwrap());
+            let mut logout = acceptor.next().await.unwrap();
+            assert!(matches!(
+                logout.as_event(),
+                FixEvent::Logout(_, DisconnectReason::SequenceNumberExhausted)
+            ));
+            drop(logout);
+            acceptor.reset(&session_id()).unwrap();
+            assert_eq!(counters.sender.get(), 1);
+            assert_eq!(counters.target.get(), 1);
+            let (_client, _) = connected(&mut acceptor).await;
+            acceptor.abort(&session_id()).unwrap();
+        }
+    });
+}
+
+#[test]
+fn stored_maximum_aborts_before_first_logon_callback() {
+    run_local_test(async {
+        for (sender, target) in [(SeqNum::MAX, 1), (1, SeqNum::MAX)] {
+            let (acceptor, counters) = tracked_acceptor(sender, target);
+            let (mut client, server) = tokio::io::duplex(65536);
+            let (tx, incoming) = mpsc::unbounded_channel();
+            acceptor.start(TestConnection { incoming });
+            tx.send(server).unwrap();
+            client
+                .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+                .await
+                .unwrap();
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).await.unwrap();
+            assert!(bytes.is_empty());
+            assert_eq!(counters.sender.get(), sender);
+            assert_eq!(counters.target.get(), target);
+            assert_eq!(counters.stores.get(), 0);
+            assert!(!acceptor.is_session_active(&session_id()).unwrap());
+        }
+    });
+}
+
+struct WriteProbe {
+    blocked: Cell<bool>,
+    calls: Cell<usize>,
+    dropped: Cell<bool>,
+    pending: Notify,
+}
+
+struct BlockedWriter {
+    inner: WriteHalf<DuplexStream>,
+    probe: Rc<WriteProbe>,
+}
+
+impl Drop for BlockedWriter {
+    fn drop(&mut self) {
+        self.probe.dropped.set(true);
+    }
+}
+
+impl AsyncWrite for BlockedWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.probe.calls.set(self.probe.calls.get() + 1);
+        if self.probe.blocked.get() {
+            self.probe.pending.notify_one();
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+struct BlockedConnection {
+    stream: Option<DuplexStream>,
+    probe: Rc<WriteProbe>,
+}
+
+impl Connection for BlockedConnection {
+    async fn accept(
+        &mut self,
+    ) -> Result<
+        (
+            impl AsyncRead + Unpin + 'static,
+            impl AsyncWrite + Unpin + 'static,
+            SocketAddr,
+        ),
+        io::Error,
+    > {
+        let Some(stream) = self.stream.take() else {
+            return pending().await;
+        };
+        let (reader, writer) = tokio::io::split(stream);
+        Ok((
+            reader,
+            BlockedWriter {
+                inner: writer,
+                probe: self.probe.clone(),
+            },
+            "127.0.0.1:1".parse().unwrap(),
+        ))
+    }
+}
+
+#[test]
+fn abort_cancels_a_pending_write_without_polling_it_again() {
+    run_local_test(async {
+        let (mut acceptor, counters) = tracked_acceptor(1, 1);
+        let (mut client, server) = tokio::io::duplex(65536);
+        let probe = Rc::new(WriteProbe {
+            blocked: Cell::new(false),
+            calls: Cell::new(0),
+            dropped: Cell::new(false),
+            pending: Notify::new(),
+        });
+        acceptor.start(BlockedConnection {
+            stream: Some(server),
+            probe: probe.clone(),
+        });
+        client
+            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .await
+            .unwrap();
+        let sender = loop {
+            let mut entry = acceptor.next().await.unwrap();
+            if let FixEvent::Logon(_, sender) = entry.as_event() {
+                break sender;
+            }
+        };
+        let mut bytes = Vec::new();
+        read_until_pumping(&mut acceptor, &mut client, &mut bytes, b"\x0135=A\x01", 1).await;
+        probe.blocked.set(true);
+        sender
+            .send(Box::new(test_request(fix_str!("pending-write"))))
+            .unwrap();
+        let mut entry = acceptor.next().await.unwrap();
+        assert!(matches!(entry.as_event(), FixEvent::AdmMsgOut(_)));
+        drop(entry);
+        probe.pending.notified().await;
+        let calls = probe.calls.get();
+        let stores = counters.stores.get();
+        acceptor.abort(&session_id()).unwrap();
+        probe.blocked.set(false); // A further poll_write would now succeed.
+        let mut remaining = Vec::new();
+        client.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(probe.calls.get(), calls);
+        assert!(probe.dropped.get());
+        assert_eq!(counters.stores.get(), stores);
+    });
+}
+
+#[test]
+fn abort_closes_transport_even_when_event_channel_is_full() {
+    run_local_test(async {
+        let (mut acceptor, counters) = tracked_acceptor(1, 1);
+        let (mut client, _) = connected(&mut acceptor).await;
+        let stale = UtcTimestamp::with_millis(Utc::now() - chrono::Duration::seconds(600));
+        let mut batch = Vec::new();
+        for seq in 2..66 {
+            batch.extend(serialize_msg(
+                test_request(fix_str!("full-events")),
+                seq,
+                stale,
+            ));
+        }
+        client.write_all(&batch).await.unwrap();
+        // Each rejected input advances target before attempting to emit an
+        // event. At least 16 attempts fill the bounded channel; do not drain it.
+        while counters.target.get() < 18 {
+            counters.target_changed.notified().await;
+        }
+        acceptor.abort(&session_id()).unwrap();
+        let target = counters.target.get();
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(counters.target.get(), target);
+        assert!(!acceptor.is_session_active(&session_id()).unwrap());
+        loop {
+            let mut entry = acceptor.next().await.unwrap();
+            if let FixEvent::Logout(_, reason) = entry.as_event() {
+                assert!(matches!(
+                    reason,
+                    DisconnectReason::ApplicationForcedDisconnect
+                ));
+                break;
+            }
+        }
     });
 }

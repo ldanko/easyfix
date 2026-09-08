@@ -255,7 +255,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     pub fn disable(&self) {
         info!("acceptor disabled");
         self.enabled.set(false);
-        for (_, session) in self.active_sessions.borrow_mut().drain() {
+        for session in self.active_sessions.borrow().values() {
             session.disconnect(
                 &mut session.state().borrow_mut(),
                 DisconnectReason::ApplicationForcedDisconnect,
@@ -270,7 +270,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
     ) {
         info!("acceptor disabled with logout");
         self.enabled.set(false);
-        for (_, session) in self.active_sessions.borrow_mut().drain() {
+        for session in self.active_sessions.borrow().values() {
             let mut state = session.state().borrow_mut();
             session.send_logout(&mut state, session_status, reason.clone());
             session.disconnect(&mut state, DisconnectReason::ApplicationForcedDisconnect);
@@ -331,8 +331,26 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         }
     }
 
+    /// Abort the active connection without Logout, flushing or draining queues.
+    ///
+    /// This synchronously blocks further work and wakes the connection task to
+    /// drop its transport. Already written bytes cannot be recalled. Counters
+    /// are preserved even when `reset_on_disconnect` is enabled. Wait for the
+    /// session to become inactive before resetting it or expecting a reconnect.
+    pub fn abort(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
+            session.abort(DisconnectReason::ApplicationForcedDisconnect);
+            Ok(())
+        } else if self.sessions.borrow().contains(session_id) {
+            Ok(())
+        } else {
+            Err(AcceptorError::UnknownSession)
+        }
+    }
+
+    /// Disconnect after draining output. Use `abort` for an emergency stop.
     pub fn disconnect(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
-        if let Some(session) = self.active_sessions.borrow_mut().remove(session_id) {
+        if let Some(session) = self.active_sessions.borrow().get(session_id) {
             session.disconnect(
                 &mut session.state().borrow_mut(),
                 DisconnectReason::ApplicationForcedDisconnect,
@@ -380,7 +398,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
         if self.active_sessions.borrow().contains_key(session_id) {
             Err(AcceptorError::SessionActive)
         } else if let Some((_, session_state)) = self.sessions.borrow().get_session(session_id) {
-            session_state.borrow_mut().reset();
+            session_state.borrow_mut().reset_numbering();
             Ok(())
         } else {
             Err(AcceptorError::UnknownSession)
@@ -394,7 +412,7 @@ impl<S: MessagesStorage + 'static> Acceptor<S> {
             session.state().borrow_mut().reset();
             Ok(())
         } else if let Some((_, session_state)) = self.sessions.borrow().get_session(session_id) {
-            session_state.borrow_mut().reset();
+            session_state.borrow_mut().reset_numbering();
             Ok(())
         } else {
             Err(AcceptorError::UnknownSession)

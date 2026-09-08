@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{collections::HashMap, mem::swap, net::SocketAddr, time::Duration};
 
 use chrono::NaiveTime;
 use easyfix_macros::fix_str;
@@ -21,7 +21,8 @@ async fn acceptor() {
     let settings = Settings {
         sender_comp_id: "n8_fix_test_server".try_into().unwrap(), //: "easyfix-acceptor".try_into().unwrap(),
         sender_sub_id: None,
-        heartbeat_interval: Duration::from_secs(10),
+        heartbeat_interval: Some(10),
+        auto_disconnect_after_no_logout: Duration::from_secs(5),
         auto_disconnect_after_no_logon_received: Duration::from_secs(3),
         auto_disconnect_after_no_heartbeat: 3,
     };
@@ -52,8 +53,7 @@ async fn acceptor() {
 
                 send_redundant_resend_requests: false,
                 check_comp_id: true,
-                check_latency: true,
-                max_latency: Duration::from_secs(120),
+                max_latency: Some(Duration::from_secs(120)),
 
                 reset_on_logon: false,
                 reset_on_logout: false,
@@ -103,6 +103,9 @@ async fn acceptor() {
                 _responder.do_not_send();
             }
             FixEvent::AdmMsgOut(msg) => info!("Adm output msg: {:?}", msg.msg_type()),
+            FixEvent::ConnectionDropped(peer, reason) => {
+                info!(?peer, ?reason, "Connection dropped");
+            }
             FixEvent::DeserializeError(session_id, error) => {
                 error!("{session_id}: {error}");
             }
@@ -115,8 +118,8 @@ async fn acceptor() {
 }
 
 fn reverse_route(header: &mut Header) {
-    std::mem::swap(&mut header.sender_comp_id, &mut header.target_comp_id);
-    std::mem::swap(&mut header.sender_sub_id, &mut header.target_sub_id);
+    swap(&mut header.sender_comp_id, &mut header.target_comp_id);
+    swap(&mut header.sender_sub_id, &mut header.target_sub_id);
 }
 
 fn main() {

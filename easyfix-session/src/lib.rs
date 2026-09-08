@@ -10,14 +10,14 @@ pub mod session_id;
 mod session_state;
 pub mod settings;
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use easyfix_messages::{
     fields::{FixString, MsgType, UtcTimestamp},
     messages::{FixtMessage, Header, Message, Trailer},
 };
 use settings::Settings;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 const NO_INBOUND_TIMEOUT_PADDING: Duration = Duration::from_millis(250);
 const TEST_REQUEST_THRESHOLD: f32 = 1.2;
@@ -49,6 +49,8 @@ pub enum DisconnectReason {
     RemoteRequestedLogout,
     /// Disconnect forced by Application code
     ApplicationForcedDisconnect,
+    /// Sequence numbering has reached the limit of its representation.
+    SequenceNumberExhausted,
     /// Received message without MsgSeqNum
     MsgSeqNumNotFound,
     /// Received message with MsgSeqNum too low
@@ -73,15 +75,60 @@ pub(crate) enum SenderMsg {
     Disconnect(DisconnectReason),
 }
 
+/// Connection-local terminal signal, independent of the message queues.
+#[derive(Clone, Debug)]
+pub(crate) struct Abort {
+    reason: watch::Sender<Option<DisconnectReason>>,
+}
+
+impl Abort {
+    fn new() -> Self {
+        Self {
+            reason: watch::channel(None).0,
+        }
+    }
+
+    pub(crate) fn request(&self, reason: DisconnectReason) {
+        self.reason.send_if_modified(|current| {
+            if current.is_some() {
+                return false;
+            }
+            *current = Some(reason);
+            true
+        });
+    }
+
+    pub(crate) fn reason(&self) -> Option<DisconnectReason> {
+        *self.reason.borrow()
+    }
+
+    pub(crate) async fn run(&self, work: impl Future<Output = ()>) {
+        tokio::select! {
+            biased;
+            _ = self.cancelled() => {},
+            _ = work => {},
+        }
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        let mut receiver = self.reason.subscribe();
+        let _ = receiver.wait_for(Option::is_some).await;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Sender {
     inner: mpsc::UnboundedSender<SenderMsg>,
+    pub(crate) abort: Abort,
 }
 
 impl Sender {
     /// Create new `Sender` instance.
     pub(crate) fn new(writer: mpsc::UnboundedSender<SenderMsg>) -> Sender {
-        Sender { inner: writer }
+        Sender {
+            inner: writer,
+            abort: Abort::new(),
+        }
     }
 
     /// Send FIXT message.
@@ -100,6 +147,9 @@ impl Sender {
     /// The checksum(10) field value is always ignored - it is computed and set
     /// after serialziation.
     pub fn send_raw(&self, msg: Box<FixtMessage>) -> Result<(), Box<FixtMessage>> {
+        if self.abort.reason().is_some() {
+            return Err(msg);
+        }
         if let Err(msg) = self.inner.send(SenderMsg::Msg(msg)) {
             match msg.0 {
                 SenderMsg::Msg(msg) => {
@@ -133,6 +183,10 @@ impl Sender {
         self.send_raw(msg)
     }
 
+    pub(crate) fn same_connection(&self, other: &Self) -> bool {
+        self.inner.same_channel(&other.inner)
+    }
+
     /// Send disconnect message.
     ///
     /// Output stream will close output queue so no more message can be send
@@ -157,4 +211,47 @@ pub fn new_header(msg_type: MsgType) -> Header {
 pub fn new_trailer() -> Trailer {
     // XXX: all required fields overwritten before serialization
     Trailer::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::Cell, future::poll_fn, task::Poll};
+
+    use futures_util::{pin_mut, poll};
+    use tokio::runtime::Builder;
+
+    use super::{Abort, DisconnectReason};
+
+    #[test]
+    fn abort_in_one_join_branch_prevents_repolling_the_other() {
+        Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let abort = Abort::new();
+                let trigger = Cell::new(false);
+                let writes = Cell::new(0);
+                let input = poll_fn(|_| {
+                    if trigger.get() {
+                        abort.request(DisconnectReason::SequenceNumberExhausted);
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                });
+                let output = poll_fn(|_| {
+                    writes.set(writes.get() + 1);
+                    Poll::<()>::Pending
+                });
+                let connection = async {
+                    tokio::join!(biased; abort.run(input), abort.run(output));
+                };
+                pin_mut!(connection);
+                assert!(poll!(&mut connection).is_pending());
+                assert_eq!(writes.get(), 1);
+                trigger.set(true);
+                assert!(poll!(&mut connection).is_ready());
+                assert_eq!(writes.get(), 1);
+            });
+    }
 }

@@ -10,6 +10,7 @@ use easyfix_messages::{
     messages::{FixtMessage, Header, Logon, Message, Trailer},
 };
 use easyfix_session::{
+    DisconnectReason,
     acceptor::{Acceptor, Connection},
     application::{AsEvent, FixEvent},
     messages_storage::{InMemoryStorage, MessagesStorage},
@@ -17,10 +18,11 @@ use easyfix_session::{
     settings::{SessionSettings, Settings},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, DuplexStream},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream},
+    net::{TcpListener, TcpStream},
     runtime::Builder,
     sync::mpsc,
-    task::LocalSet,
+    task::{LocalSet, spawn_local},
     time::timeout,
 };
 use tokio_stream::StreamExt;
@@ -136,6 +138,7 @@ async fn pump_until_logon<S: MessagesStorage + 'static>(acceptor: &mut Acceptor<
 
 fn run_local_test(test: impl Future<Output = ()>) {
     let runtime = Builder::new_current_thread()
+        .enable_io()
         .enable_time()
         .build()
         .expect("runtime");
@@ -176,5 +179,69 @@ fn peer_addr_of_active_session_is_exposed() {
         pump_until_logon(&mut acceptor).await;
 
         assert_eq!(acceptor.peer_addr(&session_id()), Some(peer_addr));
+    });
+}
+
+#[test]
+fn abort_closes_tcp_without_sending_logout() {
+    run_local_test(async {
+        let mut acceptor = Acceptor::new(settings(), Box::new(|_| InMemoryStorage::new()));
+        acceptor.register_session(session_id(), session_settings());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, peer_addr) = listener.accept().await.unwrap();
+        let (reader, writer) = server.into_split();
+        let connection = spawn_local(acceptor.session_task().run(peer_addr, reader, writer));
+
+        client
+            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .await
+            .unwrap();
+        pump_until_logon(&mut acceptor).await;
+        loop {
+            let mut entry = acceptor.next().await.unwrap();
+            if matches!(entry.as_event(), FixEvent::AdmMsgOut(msg) if matches!(*msg.body, Message::Logon(_)))
+            {
+                break;
+            }
+        }
+
+        // Consume the complete Logon response before abort, so every remaining
+        // byte would have been sent by the shutdown path.
+        let mut response = Vec::new();
+        while !response.ends_with(b"\x0110=") {
+            response.push(client.read_u8().await.unwrap());
+        }
+        let mut checksum = [0; 4];
+        client.read_exact(&mut checksum).await.unwrap();
+        response.extend_from_slice(&checksum);
+        let response = FixtMessage::from_bytes(&response).unwrap();
+        assert!(matches!(*response.body, Message::Logon(_)));
+
+        let next_sender = acceptor.next_sender_msg_seq_num(&session_id()).unwrap();
+        acceptor.abort(&session_id()).unwrap();
+        acceptor.abort(&session_id()).unwrap();
+
+        let mut trailing_bytes = Vec::new();
+        client.read_to_end(&mut trailing_bytes).await.unwrap();
+        assert!(
+            trailing_bytes.is_empty(),
+            "abort sent bytes: {trailing_bytes:?}"
+        );
+        connection.await.unwrap();
+        assert_eq!(acceptor.peer_addr(&session_id()), None);
+        assert_eq!(
+            acceptor.next_sender_msg_seq_num(&session_id()).unwrap(),
+            next_sender
+        );
+
+        let mut entry = acceptor.next().await.unwrap();
+        assert!(matches!(
+            entry.as_event(),
+            FixEvent::Logout(_, DisconnectReason::ApplicationForcedDisconnect)
+        ));
     });
 }

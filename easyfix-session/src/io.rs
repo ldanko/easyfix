@@ -152,12 +152,12 @@ pub(crate) async fn supervise_connection(
             "connection task panicked: {}",
             panic_message(panic.as_ref())
         );
-        let parked_logout = pending_logout.borrow_mut().take();
-        if let Some((session_id, reason)) = parked_logout {
-            emitter
-                .send(FixEventInternal::Logout(session_id, reason))
-                .await;
-        }
+    }
+    let parked_logout = pending_logout.borrow_mut().take();
+    if let Some((session_id, reason)) = parked_logout {
+        emitter
+            .send(FixEventInternal::Logout(session_id, reason))
+            .await;
     }
 }
 
@@ -172,15 +172,29 @@ struct SessionCleanupGuard<S: MessagesStorage> {
     active_sessions: Rc<RefCell<ActiveSessionsMap<S>>>,
     pending_logout: PendingLogout,
     reset_on_disconnect: bool,
+    sender: Sender,
 }
 
 impl<S: MessagesStorage> Drop for SessionCleanupGuard<S> {
     fn drop(&mut self) {
-        unregister_sender(&self.session_id);
+        // A late cleanup must never remove a newer connection's registration.
+        if let Ok(mut senders) = SENDERS.lock()
+            && let Some(senders) = senders.as_mut()
+            && senders
+                .get(&self.session_id)
+                .is_some_and(|sender| sender.same_connection(&self.sender))
+        {
+            senders.remove(&self.session_id);
+        }
 
         // try_borrow_mut: this can run during unwind, never panic here
         match self.active_sessions.try_borrow_mut() {
             Ok(mut active_sessions) => {
+                if let Some(session) = active_sessions.get(&self.session_id)
+                    && !session.sender().same_connection(&self.sender)
+                {
+                    return;
+                }
                 active_sessions.remove(&self.session_id);
             }
             Err(_) => error!(
@@ -204,13 +218,20 @@ impl<S: MessagesStorage> Drop for SessionCleanupGuard<S> {
                         session_id = %self.session_id,
                         "connection task finished without disconnecting, forcing disconnected state"
                     );
-                    state.disconnect(self.reset_on_disconnect);
+                    state.disconnect(
+                        self.reset_on_disconnect && self.sender.abort.reason().is_none(),
+                    );
                 }
                 if logout_not_emitted {
                     // Can't await in Drop - park the event for
                     // `supervise_connection` to deliver.
-                    *self.pending_logout.borrow_mut() =
-                        Some((self.session_id.clone(), DisconnectReason::Disconnected));
+                    *self.pending_logout.borrow_mut() = Some((
+                        self.session_id.clone(),
+                        self.sender
+                            .abort
+                            .reason()
+                            .unwrap_or(DisconnectReason::Disconnected),
+                    ));
                 }
             }
             Err(_) => error!(
@@ -235,10 +256,9 @@ pub(crate) async fn acceptor_connection<S>(
 ) where
     S: MessagesStorage,
 {
-    let stream = input_stream(reader);
+    let mut stream = Box::pin(input_stream(reader));
     let logon_timeout =
         settings.auto_disconnect_after_no_logon_received + NO_INBOUND_TIMEOUT_PADDING;
-    pin_mut!(stream);
     let msg = match first_msg(&mut stream, logon_timeout).await {
         Ok(msg) => msg,
         Err(err) => {
@@ -313,6 +333,7 @@ pub(crate) async fn acceptor_connection<S>(
         active_sessions: active_sessions.clone(),
         pending_logout,
         reset_on_disconnect: session_settings.reset_on_disconnect,
+        sender: sender.clone(),
     };
 
     let (disconnect_tx, disconnect_rx) = oneshot::channel();
@@ -341,40 +362,53 @@ pub(crate) async fn acceptor_connection<S>(
     let input_loop_span = info_span!(parent: &session_span, "in");
     let output_loop_span = info_span!(parent: &session_span, "out");
 
-    let force_disconnection_with_reason = session
-        .on_message_in(msg)
-        .instrument(input_loop_span.clone())
-        .await;
+    let abort = session.abort_handle().clone();
+    let work = async move {
+        let force_disconnection_with_reason = session
+            .on_message_in(msg)
+            .instrument(input_loop_span.clone())
+            .await;
 
-    // TODO: Not here!, send this event when SessionState is created!
-    emitter
-        .send(FixEventInternal::Created(session_id.clone()))
-        .await;
+        // TODO: Not here!, send this event when SessionState is created!
+        emitter
+            .send(FixEventInternal::Created(session_id.clone()))
+            .await;
 
-    let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
-    let input_stream = timeout_stream(input_timeout_duration, stream)
-        .map(|res| res.unwrap_or(InputEvent::Timeout));
-    pin_mut!(input_stream);
+        let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
+        let input_stream = timeout_stream(input_timeout_duration, stream)
+            .map(|res| res.unwrap_or(InputEvent::Timeout));
+        pin_mut!(input_stream);
 
-    let output_stream = output_stream(session.clone(), session.heartbeat_interval(), receiver);
-    pin_mut!(output_stream);
+        let output_stream = output_stream(session.clone(), session.heartbeat_interval(), receiver);
+        pin_mut!(output_stream);
 
-    let connection = Connection::new(session);
-    let (input_closed_tx, input_closed_rx) = oneshot::channel();
+        let loop_abort = session.abort_handle().clone();
+        let connection = Connection::new(session);
+        let (input_closed_tx, input_closed_rx) = oneshot::channel();
 
-    tokio::join!(
-        connection
-            .input_loop(
-                input_stream,
-                input_closed_tx,
-                force_disconnection_with_reason,
-                disconnect_rx,
-            )
-            .instrument(input_loop_span),
-        connection
-            .output_loop(writer, output_stream, input_closed_rx)
-            .instrument(output_loop_span),
-    );
+        tokio::join!(
+            loop_abort.run(
+                connection
+                    .input_loop(
+                        input_stream,
+                        input_closed_tx,
+                        force_disconnection_with_reason,
+                        disconnect_rx,
+                    )
+                    .instrument(input_loop_span)
+            ),
+            loop_abort.run(
+                connection
+                    .output_loop(writer, output_stream, input_closed_rx)
+                    .instrument(output_loop_span)
+            ),
+        );
+    };
+    tokio::select! {
+        biased;
+        _ = abort.cancelled() => {},
+        _ = work => {},
+    }
     session_span.in_scope(|| {
         info!("connection closed");
     });
@@ -410,6 +444,7 @@ pub(crate) async fn initiator_connection<S>(
         active_sessions: active_sessions.clone(),
         pending_logout,
         reset_on_disconnect: session_settings.reset_on_disconnect,
+        sender: sender.clone(),
     };
 
     let session = Rc::new(Session::new(
@@ -433,34 +468,47 @@ pub(crate) async fn initiator_connection<S>(
     let input_loop_span = info_span!(parent: &session_span, "in");
     let output_loop_span = info_span!(parent: &session_span, "out");
 
-    // TODO: Not here!, send this event when SessionState is created!
-    emitter
-        .send(FixEventInternal::Created(session_id.clone()))
-        .await;
+    let abort = session.abort_handle().clone();
+    let work = async move {
+        // TODO: Not here!, send this event when SessionState is created!
+        emitter
+            .send(FixEventInternal::Created(session_id.clone()))
+            .await;
 
-    let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
-    let input_stream = timeout_stream(input_timeout_duration, input_stream(source))
-        .map(|res| res.unwrap_or(InputEvent::Timeout));
-    pin_mut!(input_stream);
+        let input_timeout_duration = session.heartbeat_interval().mul_f32(TEST_REQUEST_THRESHOLD);
+        let input_stream = timeout_stream(input_timeout_duration, input_stream(source))
+            .map(|res| res.unwrap_or(InputEvent::Timeout));
+        pin_mut!(input_stream);
 
-    let output_stream = output_stream(session.clone(), session.heartbeat_interval(), receiver);
-    pin_mut!(output_stream);
+        let output_stream = output_stream(session.clone(), session.heartbeat_interval(), receiver);
+        pin_mut!(output_stream);
 
-    // TODO: It's not so simple, add check if session time is within range,
-    //       if not schedule timer to send logon at proper time
-    session.send_logon_request(&mut session.state().borrow_mut());
+        // TODO: It's not so simple, add check if session time is within range,
+        //       if not schedule timer to send logon at proper time
+        session.send_logon_request(&mut session.state().borrow_mut());
 
-    let connection = Connection::new(session);
-    let (input_closed_tx, input_closed_rx) = oneshot::channel();
+        let loop_abort = session.abort_handle().clone();
+        let connection = Connection::new(session);
+        let (input_closed_tx, input_closed_rx) = oneshot::channel();
 
-    tokio::join!(
-        connection
-            .input_loop(input_stream, input_closed_tx, None, disconnect_rx)
-            .instrument(input_loop_span),
-        connection
-            .output_loop(sink, output_stream, input_closed_rx)
-            .instrument(output_loop_span),
-    );
+        tokio::join!(
+            loop_abort.run(
+                connection
+                    .input_loop(input_stream, input_closed_tx, None, disconnect_rx)
+                    .instrument(input_loop_span)
+            ),
+            loop_abort.run(
+                connection
+                    .output_loop(sink, output_stream, input_closed_rx)
+                    .instrument(output_loop_span)
+            ),
+        );
+    };
+    tokio::select! {
+        biased;
+        _ = abort.cancelled() => {},
+        _ = work => {},
+    }
     info!("connection closed");
 }
 
@@ -483,9 +531,7 @@ impl<S: MessagesStorage> Connection<S> {
             // Notify output loop that all input is processed so output queue can
             // be safely closed.
             // See `fn send()` and `fn send_raw()` from session.rs.
-            input_closed_tx
-                .send(())
-                .expect("Failed to notify about closed inpuot");
+            let _ = input_closed_tx.send(());
 
             return;
         }
@@ -507,6 +553,9 @@ impl<S: MessagesStorage> Connection<S> {
         };
 
         loop {
+            if self.session.abort_reason().is_some() {
+                return;
+            }
             let event = tokio::select! {
                 // Wait for network input
                 event = next_item() => {
@@ -526,15 +575,16 @@ impl<S: MessagesStorage> Connection<S> {
                 }
             };
 
+            if self.session.abort_reason().is_some() {
+                return;
+            }
             // Don't accept new messages if session is disconnected.
             if self.session.state().borrow().disconnected() {
                 info!("session disconnected, exit input processing");
                 // Notify output loop that all input is processed so output queue can
                 // be safely closed.
                 // See `fn send()` and `fn send_raw()` from session.rs.
-                input_closed_tx
-                    .send(())
-                    .expect("Failed to notify about closed input");
+                let _ = input_closed_tx.send(());
                 return;
             }
 
@@ -583,9 +633,7 @@ impl<S: MessagesStorage> Connection<S> {
         // Notify output loop that all input is processed so output queue can
         // be safely closed.
         // See `fn send()` and `fn send_raw()` from session.rs.
-        input_closed_tx
-            .send(())
-            .expect("Failed to notify about closed inpout");
+        let _ = input_closed_tx.send(());
     }
 
     async fn output_loop(
@@ -597,6 +645,9 @@ impl<S: MessagesStorage> Connection<S> {
         let mut sink_closed = false;
         let mut disconnect_reason = DisconnectReason::Disconnected;
         while let Some(event) = output_stream.next().await {
+            if self.session.abort_reason().is_some() {
+                return;
+            }
             match event {
                 OutputEvent::Message(msg) => {
                     if sink_closed {
@@ -637,7 +688,13 @@ impl<S: MessagesStorage> Connection<S> {
         // XXX: Emit logout here instead of Session::disconnect, so `Logout`
         //      event will be delivered after Logout message instead of
         //      randomly before or after.
+        if self.session.abort_reason().is_some() {
+            return;
+        }
         self.session.emit_logout(disconnect_reason).await;
+        if self.session.abort_reason().is_some() {
+            return;
+        }
 
         // Don't wait for any specific value it's just notification that
         // input_loop finished, so no more messages can be added to output

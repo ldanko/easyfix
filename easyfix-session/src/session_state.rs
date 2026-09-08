@@ -10,7 +10,7 @@ use easyfix_messages::{
 };
 use tracing::{instrument, trace};
 
-use crate::messages_storage::MessagesStorage;
+use crate::{Abort, DisconnectReason, messages_storage::MessagesStorage};
 
 #[derive(Debug)]
 struct Messages(BTreeMap<SeqNum, Box<FixtMessage>>);
@@ -51,6 +51,8 @@ pub(crate) struct State<S> {
     last_received_time: Instant,
 
     disconnected: bool,
+    seq_num_numbering_closed: bool,
+    abort: Option<Abort>,
 
     /// If this is anything other than zero it's the value of
     /// the 789/NextExpectedMsgSeqNum tag in the last Logon message sent.
@@ -68,6 +70,8 @@ pub(crate) struct State<S> {
 
 impl<S: MessagesStorage> State<S> {
     pub(crate) fn new(messages_storage: S) -> State<S> {
+        let seq_num_numbering_closed = messages_storage.next_sender_msg_seq_num() == SeqNum::MAX
+            || messages_storage.next_target_msg_seq_num() == SeqNum::MAX;
         State {
             enabled: true,
             received_logon: false,
@@ -80,6 +84,8 @@ impl<S: MessagesStorage> State<S> {
             last_sent_time: Instant::now(),
             last_received_time: Instant::now(),
             disconnected: true,
+            seq_num_numbering_closed,
+            abort: None,
             next_expected_msg_seq_num: 0,
             queue: Messages::new(),
             messages_storage,
@@ -190,7 +196,9 @@ impl<S: MessagesStorage> State<S> {
     #[instrument(skip_all)]
     pub fn enqueue_msg(&mut self, msg: Box<FixtMessage>) {
         trace!(msg_seq_num = msg.header.msg_seq_num, msg_type = ?msg.msg_type());
-        self.queue.enqueue(msg.header.msg_seq_num, msg);
+        if !self.aborted() {
+            self.queue.enqueue(msg.header.msg_seq_num, msg);
+        }
     }
 
     pub fn lowest_queued_seq_num(&self) -> Option<SeqNum> {
@@ -198,6 +206,9 @@ impl<S: MessagesStorage> State<S> {
     }
 
     pub fn retrieve_msg(&mut self) -> Option<Box<FixtMessage>> {
+        if self.aborted() {
+            return None;
+        }
         self.queue.retrieve(self.next_target_msg_seq_num())
     }
 
@@ -210,7 +221,9 @@ impl<S: MessagesStorage> State<S> {
     }
 
     pub fn store(&mut self, seq_num: SeqNum, data: &[u8]) {
-        self.messages_storage.store(seq_num, data);
+        if !self.aborted() {
+            self.messages_storage.store(seq_num, data);
+        }
     }
 
     pub fn next_sender_msg_seq_num(&self) -> SeqNum {
@@ -221,24 +234,75 @@ impl<S: MessagesStorage> State<S> {
         self.messages_storage.next_target_msg_seq_num()
     }
 
+    pub(crate) fn attach_abort(&mut self, abort: Abort) {
+        self.abort = Some(abort);
+        self.check_numbering();
+    }
+
+    fn aborted(&self) -> bool {
+        self.abort
+            .as_ref()
+            .is_some_and(|abort| abort.reason().is_some())
+    }
+
+    fn check_numbering(&mut self) {
+        self.seq_num_numbering_closed |= self.next_sender_msg_seq_num() == SeqNum::MAX
+            || self.next_target_msg_seq_num() == SeqNum::MAX;
+        if self.seq_num_numbering_closed
+            && let Some(abort) = &self.abort
+        {
+            abort.request(DisconnectReason::SequenceNumberExhausted);
+        }
+    }
+
     pub fn set_next_sender_msg_seq_num(&mut self, seq_num: SeqNum) {
-        self.messages_storage.set_next_sender_msg_seq_num(seq_num)
+        if self.aborted() && !self.disconnected {
+            return;
+        }
+        self.messages_storage.set_next_sender_msg_seq_num(seq_num);
+        self.check_numbering();
     }
 
     pub fn set_next_target_msg_seq_num(&mut self, seq_num: SeqNum) {
-        self.messages_storage.set_next_target_msg_seq_num(seq_num)
+        if self.aborted() {
+            return;
+        }
+        self.messages_storage.set_next_target_msg_seq_num(seq_num);
+        self.check_numbering();
     }
 
     pub fn incr_next_sender_msg_seq_num(&mut self) {
+        self.check_numbering();
+        if self.seq_num_numbering_closed || self.aborted() {
+            return;
+        }
         self.messages_storage.incr_next_sender_msg_seq_num();
+        self.check_numbering();
     }
 
     pub fn incr_next_target_msg_seq_num(&mut self) {
+        self.check_numbering();
+        if self.seq_num_numbering_closed || self.aborted() {
+            return;
+        }
         self.messages_storage.incr_next_target_msg_seq_num();
+        self.check_numbering();
     }
 
     pub fn reset(&mut self) {
+        if self.aborted() || self.seq_num_numbering_closed {
+            return;
+        }
         self.messages_storage.reset();
+        self.check_numbering();
+    }
+
+    /// Only the acceptor's explicit reset of an inactive session may reopen numbering.
+    pub(crate) fn reset_numbering(&mut self) {
+        self.messages_storage.reset();
+        self.seq_num_numbering_closed = false;
+        self.abort = None;
+        self.check_numbering();
     }
 
     pub fn disconnect(&mut self, reset: bool) {
@@ -248,7 +312,7 @@ impl<S: MessagesStorage> State<S> {
         self.set_reset_received(false);
         self.set_reset_sent(false);
         self.set_last_expected_logon_next_seq_num(0);
-        if reset {
+        if reset && !self.aborted() {
             self.reset();
         }
 
@@ -280,5 +344,83 @@ impl<S: MessagesStorage> State<S> {
 
     pub fn reset_grace_period(&mut self) {
         self.grace_period_test_req_ids.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use easyfix_messages::fields::SeqNum;
+    use tokio::sync::mpsc;
+
+    use super::State;
+    use crate::{DisconnectReason, Sender, messages_storage::InMemoryStorage};
+
+    #[test]
+    fn exhausted_counter_latches_until_explicit_reset() {
+        for outgoing in [false, true] {
+            let mut state = State::new(InMemoryStorage::new());
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let sender = Sender::new(tx);
+            state.attach_abort(sender.abort.clone());
+            state.set_disconnected(false);
+            if outgoing {
+                state.set_next_sender_msg_seq_num(SeqNum::MAX - 1);
+                state.incr_next_sender_msg_seq_num();
+            } else {
+                state.set_next_target_msg_seq_num(SeqNum::MAX - 1);
+                state.incr_next_target_msg_seq_num();
+            }
+            assert!(state.seq_num_numbering_closed);
+            assert!(matches!(
+                sender.abort.reason(),
+                Some(DisconnectReason::SequenceNumberExhausted)
+            ));
+            let counters = (
+                state.next_sender_msg_seq_num(),
+                state.next_target_msg_seq_num(),
+            );
+            state.incr_next_sender_msg_seq_num();
+            state.incr_next_target_msg_seq_num();
+            state.reset();
+            state.disconnect(true);
+            state.reset();
+            assert_eq!(
+                (
+                    state.next_sender_msg_seq_num(),
+                    state.next_target_msg_seq_num()
+                ),
+                counters
+            );
+            assert!(state.seq_num_numbering_closed);
+            state.reset_numbering();
+            assert!(!state.seq_num_numbering_closed);
+            assert_eq!(
+                (
+                    state.next_sender_msg_seq_num(),
+                    state.next_target_msg_seq_num()
+                ),
+                (1, 1)
+            );
+            // Reset does not revive an old connection's terminal handle.
+            assert!(sender.abort.reason().is_some());
+        }
+    }
+
+    #[test]
+    fn ordinary_disconnect_reset_keeps_live_abort_handle() {
+        let mut state = State::new(InMemoryStorage::new());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sender = Sender::new(tx);
+        state.attach_abort(sender.abort.clone());
+        state.set_disconnected(false);
+        state.disconnect(true);
+        // Output can still be draining after an ordinary disconnect.
+        state.set_next_sender_msg_seq_num(SeqNum::MAX);
+        assert!(matches!(
+            sender.abort.reason(),
+            Some(DisconnectReason::SequenceNumberExhausted)
+        ));
+        state.reset();
+        assert!(state.seq_num_numbering_closed);
     }
 }

@@ -83,10 +83,13 @@ pub(crate) fn output_stream<S: MessagesStorage>(
 ) -> impl Stream<Item = OutputEvent> {
     let stream = stream! {
         while let Some(sender_msg) = receiver.recv().await {
+            if session.abort_reason().is_some() { break; }
             match sender_msg {
                 SenderMsg::Msg(mut msg) => {
                     fill_header(&mut msg, &session);
+                    if session.abort_reason().is_some() { break; }
                     if let Some(msg) = session.on_message_out(msg).await {
+                        if session.abort_reason().is_some() { break; }
                         yield OutputEvent::Message(output_handler(&msg, &session));
                     }
                 }
