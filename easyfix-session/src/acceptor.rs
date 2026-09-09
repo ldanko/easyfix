@@ -110,7 +110,7 @@ impl<S: MessagesStorage> SessionsMap<S> {
         );
     }
 
-    pub(crate) fn get_session(
+    pub fn get_session(
         &self,
         session_id: &SessionId,
     ) -> Option<(SessionSettings, Rc<RefCell<SessionState<S>>>)> {
