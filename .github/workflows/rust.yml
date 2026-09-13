@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Install nightly
       uses: dtolnay/rust-toolchain@nightly
       with:
@@ -29,6 +29,5 @@ jobs:
       run: |
         cargo clippy -- -D warnings
 
-    # Skip for now, because tests are always failing
-    # - name: Run tests
-    #   run: cargo test --verbose
+    - name: Run tests
+      run: cargo test --workspace --verbose

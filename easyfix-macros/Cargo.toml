@@ -5,7 +5,6 @@ authors = ["Łukasz Dańko <lukasz.danko@gmail.com>"]
 license = "MIT"
 description = "Easy FIX (Financial Information Exchange) toolset - macros."
 repository = "https://github.com/ldanko/easyfix"
-readme = "README.md"
 edition = "2024"
 
 [lints]
