@@ -1819,23 +1819,46 @@ impl SessionStatusField {
 /// `SessionRejectReason` enum (in easyfix-messages).
 pub trait SessionRejectReasonValue {
     fn raw_value(&self) -> Int;
+
+    /// A description of this value for error messages, using the Rust variant
+    /// name for enum values.
+    fn description(&self) -> &'static str;
 }
 
-/// Newtype wrapping a validated SessionRejectReason raw value.
+/// A SessionRejectReason value with its description for error messages.
 /// Can only be constructed from types implementing `SessionRejectReasonValue`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SessionRejectReasonField(Int);
+/// Equality compares the raw value, regardless of its description.
+#[derive(Clone, Copy, Debug, Eq)]
+pub struct SessionRejectReasonField {
+    value: Int,
+    description: &'static str,
+}
 
 impl<T: SessionRejectReasonValue> From<T> for SessionRejectReasonField {
     fn from(v: T) -> Self {
-        Self(v.raw_value())
+        Self {
+            value: v.raw_value(),
+            description: v.description(),
+        }
     }
 }
 
 impl SessionRejectReasonField {
     /// The raw tag 373 value.
     pub fn into_inner(self) -> Int {
-        self.0
+        self.value
+    }
+}
+
+impl PartialEq for SessionRejectReasonField {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl fmt::Display for SessionRejectReasonField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.description)
     }
 }
 

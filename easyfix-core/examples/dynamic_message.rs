@@ -93,6 +93,16 @@ impl SessionRejectReasonValue for RawRejectReason {
     fn raw_value(&self) -> Int {
         self.0
     }
+
+    fn description(&self) -> &'static str {
+        match self.0 {
+            0 => SessionRejectReasonBase::InvalidTagNumber.description(),
+            1 => SessionRejectReasonBase::RequiredTagMissing.description(),
+            5 => SessionRejectReasonBase::ValueIsIncorrect.description(),
+            6 => SessionRejectReasonBase::IncorrectDataFormatForValue.description(),
+            _ => "unknown reject reason",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -258,10 +258,10 @@ async fn undecodable_reset_response_is_terminal_with_or_without_a_header() {
                         let initial_sender = if logout_sent { 3 } else { 2 };
                         let expected_text = match msg_type {
                             Some(mt) if mt == "A" => {
-                                fix_str!("SessionRejectReasonField(6) (tag=108)")
+                                fix_str!("IncorrectDataFormatForValue (tag=108)")
                             }
-                            Some(_) => fix_str!("SessionRejectReasonField(6) (tag=1409)"),
-                            None => fix_str!("SessionRejectReasonField(11)"),
+                            Some(_) => fix_str!("IncorrectDataFormatForValue (tag=1409)"),
+                            None => fix_str!("InvalidMsgType"),
                         };
                         engine
                             .on_deserialize_error(

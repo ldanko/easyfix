@@ -487,6 +487,8 @@ pub enum SessionRejectReason {
     FieldDelimiterInFieldValue,
     ///Value "18"
     InvalidUnsupportedAppVersion,
+    ///Value "100"
+    CustomValidationFailed,
 }
 impl SessionRejectReason {
     pub const fn from_bytes(input: &[u8]) -> Option<SessionRejectReason> {
@@ -510,6 +512,7 @@ impl SessionRejectReason {
             b"16" => Some(SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup),
             b"17" => Some(SessionRejectReason::FieldDelimiterInFieldValue),
             b"18" => Some(SessionRejectReason::InvalidUnsupportedAppVersion),
+            b"100" => Some(SessionRejectReason::CustomValidationFailed),
             _ => None,
         }
     }
@@ -545,6 +548,7 @@ impl SessionRejectReason {
             }
             SessionRejectReason::FieldDelimiterInFieldValue => fix_str!("17"),
             SessionRejectReason::InvalidUnsupportedAppVersion => fix_str!("18"),
+            SessionRejectReason::CustomValidationFailed => fix_str!("100"),
         }
     }
 
@@ -569,6 +573,7 @@ impl SessionRejectReason {
             SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup => 16i64,
             SessionRejectReason::FieldDelimiterInFieldValue => 17i64,
             SessionRejectReason::InvalidUnsupportedAppVersion => 18i64,
+            SessionRejectReason::CustomValidationFailed => 100i64,
         }
     }
 }
@@ -601,6 +606,7 @@ impl TryFrom<Int> for SessionRejectReason {
             16i64 => Ok(SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup),
             17i64 => Ok(SessionRejectReason::FieldDelimiterInFieldValue),
             18i64 => Ok(SessionRejectReason::InvalidUnsupportedAppVersion),
+            100i64 => Ok(SessionRejectReason::CustomValidationFailed),
             _ => Err(SessionRejectReasonBase::ValueIsIncorrect),
         }
     }
@@ -1158,6 +1164,54 @@ impl SessionRejectReasonValue for SessionRejectReason {
             SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup => 16i64,
             SessionRejectReason::FieldDelimiterInFieldValue => 17i64,
             SessionRejectReason::InvalidUnsupportedAppVersion => 18i64,
+            SessionRejectReason::CustomValidationFailed => 100i64,
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            SessionRejectReason::InvalidTagNumber => stringify!(InvalidTagNumber),
+            SessionRejectReason::RequiredTagMissing => stringify!(RequiredTagMissing),
+            SessionRejectReason::TagNotDefinedForThisMessageType => {
+                stringify!(TagNotDefinedForThisMessageType)
+            }
+            SessionRejectReason::UndefinedTag => stringify!(UndefinedTag),
+            SessionRejectReason::TagSpecifiedWithoutAValue => {
+                stringify!(TagSpecifiedWithoutAValue)
+            }
+            SessionRejectReason::ValueIsIncorrect => stringify!(ValueIsIncorrect),
+            SessionRejectReason::IncorrectDataFormatForValue => {
+                stringify!(IncorrectDataFormatForValue)
+            }
+            SessionRejectReason::DecryptionProblem => stringify!(DecryptionProblem),
+            SessionRejectReason::SignatureProblem => stringify!(SignatureProblem),
+            SessionRejectReason::CompIdProblem => stringify!(CompIdProblem),
+            SessionRejectReason::SendingTimeAccuracyProblem => {
+                stringify!(SendingTimeAccuracyProblem)
+            }
+            SessionRejectReason::InvalidMsgType => stringify!(InvalidMsgType),
+            SessionRejectReason::XmlValidationError => stringify!(XmlValidationError),
+            SessionRejectReason::TagAppearsMoreThanOnce => {
+                stringify!(TagAppearsMoreThanOnce)
+            }
+            SessionRejectReason::TagSpecifiedOutOfRequiredOrder => {
+                stringify!(TagSpecifiedOutOfRequiredOrder)
+            }
+            SessionRejectReason::RepeatingGroupFieldsOutOfOrder => {
+                stringify!(RepeatingGroupFieldsOutOfOrder)
+            }
+            SessionRejectReason::IncorrectNumInGroupCountForRepeatingGroup => {
+                stringify!(IncorrectNumInGroupCountForRepeatingGroup)
+            }
+            SessionRejectReason::FieldDelimiterInFieldValue => {
+                stringify!(FieldDelimiterInFieldValue)
+            }
+            SessionRejectReason::InvalidUnsupportedAppVersion => {
+                stringify!(InvalidUnsupportedAppVersion)
+            }
+            SessionRejectReason::CustomValidationFailed => {
+                stringify!(CustomValidationFailed)
+            }
         }
     }
 }

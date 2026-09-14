@@ -122,10 +122,10 @@ impl fmt::Display for DeserializeErrorKind {
                 tag: Some(tag),
                 reason,
                 ..
-            } => write!(f, "{reason:?} (tag={tag})"),
+            } => write!(f, "{reason} (tag={tag})"),
             DeserializeErrorKind::Reject {
                 tag: None, reason, ..
-            } => write!(f, "{reason:?}"),
+            } => write!(f, "{reason}"),
         }
     }
 }

@@ -176,6 +176,22 @@ impl EnumCodeGen {
             quote! { #generated_name::#variant_ident => #int_lit, }
         });
 
+        let description_method = if self.tag == 373 {
+            let description_arms = self.variants.iter().map(|v| {
+                let variant_ident = v.name().to_pascal_ident();
+                quote! { #generated_name::#variant_ident => stringify!(#variant_ident), }
+            });
+            quote! {
+                fn description(&self) -> &'static str {
+                    match self {
+                        #(#description_arms)*
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+
         quote! {
             impl #trait_name for #generated_name {
                 fn raw_value(&self) -> Int {
@@ -183,6 +199,8 @@ impl EnumCodeGen {
                         #(#trait_match_arms)*
                     }
                 }
+
+                #description_method
             }
 
             impl From<#field_type_name> for #generated_name {

@@ -175,6 +175,27 @@ impl SessionRejectReasonValue for SessionRejectReasonBase {
     fn raw_value(&self) -> Int {
         *self as Int
     }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Self::InvalidTagNumber => stringify!(InvalidTagNumber),
+            Self::RequiredTagMissing => stringify!(RequiredTagMissing),
+            Self::TagNotDefinedForThisMessageType => stringify!(TagNotDefinedForThisMessageType),
+            Self::UndefinedTag => stringify!(UndefinedTag),
+            Self::TagSpecifiedWithoutAValue => stringify!(TagSpecifiedWithoutAValue),
+            Self::ValueIsIncorrect => stringify!(ValueIsIncorrect),
+            Self::IncorrectDataFormatForValue => stringify!(IncorrectDataFormatForValue),
+            Self::CompIdProblem => stringify!(CompIdProblem),
+            Self::SendingTimeAccuracyProblem => stringify!(SendingTimeAccuracyProblem),
+            Self::InvalidMsgType => stringify!(InvalidMsgType),
+            Self::TagAppearsMoreThanOnce => stringify!(TagAppearsMoreThanOnce),
+            Self::TagSpecifiedOutOfRequiredOrder => stringify!(TagSpecifiedOutOfRequiredOrder),
+            Self::RepeatingGroupFieldsOutOfOrder => stringify!(RepeatingGroupFieldsOutOfOrder),
+            Self::IncorrectNumInGroupCountForRepeatingGroup => {
+                stringify!(IncorrectNumInGroupCountForRepeatingGroup)
+            }
+        }
+    }
 }
 
 impl PartialEq<SessionRejectReasonBase> for SessionRejectReasonField {

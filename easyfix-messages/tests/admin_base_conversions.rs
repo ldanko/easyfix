@@ -12,6 +12,8 @@ use easyfix_core::{
         ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, SessionStatusBase,
         TestRequestBase,
     },
+    basic_types::SessionRejectReasonField,
+    deserializer::DeserializeErrorKind,
     fix_str,
 };
 use easyfix_test_messages as messages;
@@ -235,6 +237,18 @@ fn logout_round_trip() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn reject_reason_descriptions_match_debug_variant_names() {
+    for &reason in SessionRejectReasonBase::ALL {
+        let field = SessionRejectReasonField::from(reason);
+        assert_eq!(field.to_string(), format!("{reason:?}"));
+
+        let generated = messages::SessionRejectReason::from(field);
+        let generated_field = SessionRejectReasonField::from(generated);
+        assert_eq!(generated_field.to_string(), format!("{generated:?}"));
+    }
+}
+
+#[test]
 fn reject_incoming_full() {
     use messages::SessionRejectReason;
 
@@ -251,7 +265,46 @@ fn reject_incoming_full() {
     assert_eq!(base.ref_msg_type.as_deref(), Some(fix_str!("D")));
     // Incoming: newtype field has the validated Int value
     assert_eq!(base.session_reject_reason.map(|f| f.into_inner()), Some(1),);
+    let reason = base.session_reject_reason.unwrap();
+    assert_eq!(reason.to_string(), "RequiredTagMissing");
+    let core_reason = SessionRejectReasonField::from(SessionRejectReasonBase::RequiredTagMissing);
+    assert_eq!(core_reason.to_string(), "RequiredTagMissing");
+    assert_eq!(reason, core_reason);
+    assert_ne!(
+        reason,
+        SessionRejectReasonField::from(SessionRejectReasonBase::InvalidTagNumber)
+    );
     assert_eq!(base.text.as_deref(), Some(fix_str!("Missing required tag")));
+}
+
+#[test]
+fn custom_reject_reason_description_survives_base_conversion() {
+    let msg = Reject {
+        ref_seq_num: 7,
+        session_reject_reason: Some(messages::SessionRejectReason::CustomValidationFailed),
+        ..Default::default()
+    };
+    let base = RejectBase::from(&msg);
+    let reason = base.session_reject_reason.unwrap();
+    assert_eq!(reason.into_inner(), 100);
+    assert_eq!(reason.to_string(), "CustomValidationFailed");
+    for (tag, expected) in [
+        (Some(55), "CustomValidationFailed (tag=55)"),
+        (None, "CustomValidationFailed"),
+    ] {
+        let error = DeserializeErrorKind::Reject {
+            msg_type: None,
+            seq_num: 7,
+            tag,
+            reason,
+        };
+        assert_eq!(error.to_string(), expected);
+    }
+    let reconstructed = Reject::from(base);
+    assert_eq!(
+        reconstructed.session_reject_reason,
+        msg.session_reject_reason
+    );
 }
 
 #[test]
