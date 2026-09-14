@@ -310,6 +310,121 @@ fn deserializer_without_seq_num(body: &[u8]) -> Deserializer<'_> {
 }
 
 #[test]
+fn field_cursor_preserves_parser_and_lookahead() {
+    let mut parser = deserializer(b"112=ABC\x0195=3\x0196=XYZ\x01");
+    let mut from_start = parser.field_cursor();
+    assert_eq!(from_start.next_tag(), Some(112));
+    assert_eq!(parser.deserialize_tag_num().unwrap(), Some(112));
+    parser.put_tag(112);
+    let remaining = parser.buf;
+
+    let mut cursor = parser.field_cursor();
+    assert_eq!(cursor.next_tag(), Some(112));
+    assert_eq!(cursor.read_delimited(), Some(b"ABC".as_slice()));
+    assert_eq!(cursor.next_tag(), Some(95));
+    let mut length_cursor = cursor;
+    assert_eq!(cursor.read_delimited(), Some(b"3".as_slice()));
+    assert_eq!(cursor.next_tag(), Some(96));
+    assert_eq!(length_cursor.read_length(), Some(3));
+    assert_eq!(length_cursor.next_tag(), Some(96));
+    assert_eq!(cursor.read_data(3), Some(b"XYZ".as_slice()));
+    assert_eq!(cursor.next_tag(), None);
+
+    assert_eq!(parser.buf, remaining);
+    assert_eq!(parser.tmp_tag, Some(112));
+    assert_eq!(parser.current_tag, Some(112));
+    assert_eq!(parser.seq_num, Some(1));
+    assert_eq!(parser.deserialize_tag_num().unwrap(), Some(112));
+    assert_eq!(parser.deserialize_str().unwrap(), fix_str!("ABC"));
+    assert_eq!(from_start.read_delimited(), Some(b"ABC".as_slice()));
+}
+
+#[test]
+fn field_cursor_reads_delimited_bytes_without_validation() {
+    let mut cursor = deserializer(b"\x01\xff\x00=\x01unfinished").field_cursor();
+    assert_eq!(cursor.read_delimited(), Some(b"".as_slice()));
+    assert_eq!(cursor.read_delimited(), Some(b"\xff\x00=".as_slice()));
+    assert_eq!(cursor.read_delimited(), None);
+}
+
+#[test]
+fn field_cursor_reads_lengths_and_bounds_binary_values() {
+    let mut cursor = deserializer(b"0005\x01\x01\xff=\x001\x0152=X\x01").field_cursor();
+    assert_eq!(cursor.read_length(), Some(5));
+    assert_eq!(cursor.read_data(5), Some(b"\x01\xff=\x001".as_slice()));
+    assert_eq!(cursor.next_tag(), Some(52));
+    assert_eq!(cursor.read_delimited(), Some(b"X".as_slice()));
+    assert_eq!(cursor.next_tag(), None);
+
+    for input in [
+        b"".as_slice(),
+        b"\x01",
+        b"0\x01",
+        b"65536\x01",
+        b"3X\x01",
+        b"3",
+    ] {
+        assert_eq!(
+            deserializer(input).field_cursor().read_length(),
+            None,
+            "{input:?}"
+        );
+    }
+    assert_eq!(
+        deserializer(b"65535\x01").field_cursor().read_length(),
+        Some(65535)
+    );
+
+    for input in [b"".as_slice(), b"XY", b"XYZ", b"XYZX\x01"] {
+        assert_eq!(
+            deserializer(input).field_cursor().read_data(3),
+            None,
+            "{input:?}"
+        );
+    }
+    assert_eq!(
+        deserializer(b"\x01").field_cursor().read_data(0),
+        Some(b"".as_slice())
+    );
+}
+
+#[test]
+fn deserialize_tag_num_validates_tag_syntax() {
+    for (bytes, expected_tag) in [("1=X\x01", 1), ("65535=X\x01", 65535)] {
+        let mut parser = deserializer(bytes.as_bytes());
+        assert_eq!(parser.field_cursor().next_tag(), Some(expected_tag));
+        assert_eq!(parser.deserialize_tag_num().unwrap(), Some(expected_tag));
+        assert_eq!(parser.deserialize_str().unwrap(), fix_str!("X"));
+        assert_eq!(parser.deserialize_tag_num().unwrap(), None);
+    }
+    for bytes in [
+        "0=X\x01",
+        "01=X\x01",
+        "=X\x01",
+        "65536=X\x01",
+        "-1=X\x01",
+        "1X=X\x01",
+    ] {
+        assert_eq!(
+            deserializer(bytes.as_bytes()).field_cursor().next_tag(),
+            None
+        );
+        assert_matches!(
+            deserializer(bytes.as_bytes()).deserialize_tag_num(),
+            Err(DeserializeErrorKind::Reject { tag: None, reason, .. })
+                if reason == SessionRejectReasonBase::InvalidTagNumber
+        );
+    }
+    assert_eq!(deserializer(b"52").field_cursor().next_tag(), None);
+    assert_matches!(
+        deserializer(b"52").deserialize_tag_num(),
+        Err(DeserializeErrorKind::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
+    );
+}
+
+#[test]
 fn deserialize_str_ok() {
     let input = b"lorem ipsum\x01\x00";
     let mut deserializer = deserializer(input);

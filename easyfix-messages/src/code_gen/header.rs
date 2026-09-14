@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use easyfix_dictionary::{BasicType, Version};
-use proc_macro2::{Literal, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::{member::Member, serde_derives};
@@ -38,10 +38,6 @@ impl Header {
             .filter(|m| !matches!(m.tag_num(), 8 | 9 | 35))
             .map(|member| member.gen_serialize());
         let deserialize = self.generate_deserialize();
-        let header_field_tags = self
-            .members
-            .iter()
-            .map(|member| Literal::u16_suffixed(member.tag_num()));
         let header_base_conversions = self.generate_header_base_conversions(version);
         let header_self_access_impl = self.generate_header_access_for_header_impl(version);
         // TODO: move this to Message section
@@ -65,10 +61,6 @@ impl Header {
                 }
 
                 #deserialize
-
-                pub(crate) fn is_header_field(tag: TagNum) -> bool {
-                    matches!(tag, #(#header_field_tags)|*)
-                }
             }
 
             #header_base_conversions
@@ -94,11 +86,12 @@ impl Header {
             .filter(|m| m.tag_num() != 8)
             .flat_map(|member| member.gen_deserialize_match_entries());
         // Tag 8 (BeginString) and tag 35 (MsgType) are not fields of Header.
+        let section = quote! { MessageSection::Header };
         let de_header_entries = self
             .members
             .iter()
             .filter(|m| !matches!(m.tag_num(), 8 | 35))
-            .map(|member| member.gen_deserialize_struct_entries());
+            .map(|member| member.gen_deserialize_struct_entries(Some(&section)));
         quote! {
             fn deserialize(
                 deserializer: &mut Deserializer,

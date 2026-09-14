@@ -7,6 +7,7 @@ use quote::quote;
 
 mod admin;
 mod enumeration;
+mod field_layout;
 mod group;
 mod header;
 mod ident;
@@ -81,6 +82,7 @@ pub struct Generator {
     enums: Vec<EnumCodeGen>,
     fields_names: Vec<Ident>,
     fields_numbers: Vec<u16>,
+    field_layout: TokenStream,
 }
 
 fn convert_members(members: &[dict::Member]) -> Vec<Member> {
@@ -214,6 +216,7 @@ impl Generator {
             .iter()
             .map(|f| (f.name().to_pascal_ident(), f.number()))
             .unzip();
+        let field_layout = field_layout::generate(&dictionary, app_dictionary, &fields);
 
         let version = dictionary.version();
 
@@ -226,6 +229,7 @@ impl Generator {
             enums,
             fields_names,
             fields_numbers,
+            field_layout,
         }
     }
 
@@ -292,6 +296,7 @@ impl Generator {
         let field_tag_def = message_enum::generate_field_tag(
             &self.fields_names,
             &self.fields_numbers,
+            &self.field_layout,
             serde_serialize,
             serde_deserialize,
         );
@@ -299,6 +304,7 @@ impl Generator {
             message_enum::generate_message_enum(&msg_names, serde_serialize, serde_deserialize);
         let fixt_message_def =
             message_enum::generate_fixt_message(serde_serialize, serde_deserialize);
+        let section_diagnostics = field_layout::generate_diagnostics();
 
         quote! {
             use std::{borrow::Cow, fmt};
@@ -322,7 +328,7 @@ impl Generator {
                     SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
                     ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
                 },
-                deserializer::{DeserializeErrorKind, Deserializer, GarbledReason, LogoutReason, RawMessage},
+                deserializer::{DeserializeErrorKind, Deserializer, FieldCursor, GarbledReason, LogoutReason, RawMessage},
                 fix_str,
                 message::{DeserializeError, HeaderAccess, SessionMessage},
                 serializer::{SerializeError, Serializer},
@@ -332,6 +338,8 @@ impl Generator {
             pub const VERSION: Version = Version::#version_ident;
 
             #field_tag_def
+
+            #section_diagnostics
 
             #header_def
 

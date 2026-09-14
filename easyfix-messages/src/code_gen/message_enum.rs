@@ -3,10 +3,11 @@ use quote::quote;
 
 use super::{admin, serde_derives};
 
-/// Generate the `FieldTag` enum and its impls.
+/// Generate `FieldTag`, its impls, and its metadata types.
 pub fn generate_field_tag(
     fields_names: &[Ident],
     fields_numbers: &[u16],
+    field_layout: &TokenStream,
     serde_serialize: bool,
     serde_deserialize: bool,
 ) -> TokenStream {
@@ -24,6 +25,24 @@ pub fn generate_field_tag(
             #(#fields_names = #fields_numbers,)*
         }
 
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum MessageSection {
+            Header,
+            Body,
+            Trailer,
+        }
+
+        #[allow(dead_code, reason = "the dictionary may contain no data fields")]
+        enum FieldEncoding {
+            Delimited,
+            Data { length_tag: TagNum },
+        }
+
+        struct FieldLayout {
+            section: MessageSection,
+            encoding: FieldEncoding,
+        }
+
         impl fmt::Display for FieldTag {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(self.as_fix_str().as_utf8())
@@ -32,6 +51,8 @@ pub fn generate_field_tag(
 
         #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         impl FieldTag {
+            #field_layout
+
             pub const fn from_tag_num(tag_num: TagNum) -> Option<FieldTag> {
                 match tag_num {
                     #(#fields_numbers_literals => Some(FieldTag::#fields_names),)*
@@ -176,18 +197,7 @@ pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> 
                     return Err(deserializer.reject(Some(35), SessionRejectReasonBase::InvalidMsgType).into());
                 };
 
-                let header = Header::deserialize(&mut deserializer, body_length)
-                    .map_err(|err| {
-                        if let DeserializeErrorKind::Reject { reason, .. } = err
-                            && reason == SessionRejectReasonBase::RequiredTagMissing
-                            && let Ok(Some(tag)) = deserializer.deserialize_tag_num()
-                        {
-                            deserializer
-                                .reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder)
-                        } else {
-                            err
-                        }
-                    })?;
+                let header = Header::deserialize(&mut deserializer, body_length)?;
 
                 // From here on the header is fully parsed - attach it to any
                 // failure so the session can run header verdicts (sequence

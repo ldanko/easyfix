@@ -44,10 +44,11 @@ impl MessageCodeGen {
         let mut variables_definitions = Vec::with_capacity(self.body_members.len());
         let mut de_struct_entries = Vec::with_capacity(self.body_members.len());
         let mut de_match_entries = Vec::with_capacity(self.body_members.len());
+        let section = quote! { MessageSection::Body };
         for member in &self.body_members {
             variables_definitions.push(member.gen_opt_variables());
             de_match_entries.extend(member.gen_deserialize_match_entries());
-            de_struct_entries.push(member.gen_deserialize_struct_entries());
+            de_struct_entries.push(member.gen_deserialize_struct_entries(Some(&section)));
         }
         quote! {
             fn deserialize(deserializer: &mut Deserializer) -> Result<Box<Body>, DeserializeErrorKind> {
@@ -57,12 +58,20 @@ impl MessageCodeGen {
                     match tag {
                         #(#de_match_entries,)*
                         tag => {
-                            if Header::is_header_field(tag) || Trailer::is_trailer_field(tag) {
-                                return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
-                            } else if FieldTag::from_tag_num(tag).is_some() {
-                                return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagNotDefinedForThisMessageType));
-                            } else {
-                                return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
+                            match FieldTag::section(tag) {
+                                Some(MessageSection::Trailer) => {
+                                    deserializer.put_tag(tag);
+                                    break;
+                                }
+                                Some(MessageSection::Header) => {
+                                    return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
+                                }
+                                Some(MessageSection::Body) => {
+                                    return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagNotDefinedForThisMessageType));
+                                }
+                                None => {
+                                    return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
+                                }
                             }
                         },
                     }

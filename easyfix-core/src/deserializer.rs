@@ -643,6 +643,35 @@ fn deserialize_str(bytes: &[u8]) -> Result<(&[u8], &FixStr), DeserializeErrorKin
     Err(DeserializeErrorKindInternal::Incomplete)
 }
 
+fn deserialize_tag_num(bytes: &[u8]) -> Result<(&[u8], TagNum), DeserializeErrorKindInternal> {
+    if matches!(bytes, [b'0' | b'=', ..]) {
+        return Err(DeserializeErrorKindInternal::Error(
+            SessionRejectReasonBase::InvalidTagNumber,
+        ));
+    }
+
+    let mut value: TagNum = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        match byte {
+            n @ b'0'..=b'9' => {
+                value = value
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add(TagNum::from(n - b'0')))
+                    .ok_or(DeserializeErrorKindInternal::Error(
+                        SessionRejectReasonBase::InvalidTagNumber,
+                    ))?;
+            }
+            b'=' => return Ok((&bytes[i + 1..], value)),
+            _ => {
+                return Err(DeserializeErrorKindInternal::Error(
+                    SessionRejectReasonBase::InvalidTagNumber,
+                ));
+            }
+        }
+    }
+    Err(DeserializeErrorKindInternal::Incomplete)
+}
+
 fn deserialize_length(bytes: &[u8]) -> Result<(&[u8], Length), DeserializeErrorKindInternal> {
     let mut value: Length = 0;
     for (i, b) in bytes.iter().enumerate() {
@@ -837,6 +866,63 @@ pub fn frame_len(bytes: &[u8]) -> Result<usize, RawMessageError> {
     Ok(bytes.len() - rest.len() + body_length + TRAILER_LEN)
 }
 
+/// An independent, borrowed cursor over field tags and values.
+///
+/// At a field boundary, read a tag with [`next_tag`](Self::next_tag), then
+/// consume its value with the appropriate read method. Value reads require
+/// the cursor to be at the start of a value. The caller determines each
+/// field's encoding; the cursor does not detect calls from mid-value.
+/// Copies advance independently and never consume the original deserializer.
+/// A read returns `None` when input is exhausted, malformed, or truncated;
+/// stop scanning when that happens.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldCursor<'de> {
+    buf: &'de [u8],
+    tmp_tag: Option<TagNum>,
+}
+
+impl<'de> FieldCursor<'de> {
+    /// Read the next tag, including any tag pushed back before this cursor
+    /// was created. Call only at a field boundary, after consuming the
+    /// preceding value. Returns `None` at EOF or for malformed tag syntax.
+    pub fn next_tag(&mut self) -> Option<TagNum> {
+        if let Some(tag) = self.tmp_tag.take() {
+            return Some(tag);
+        }
+        let (rest, tag) = deserialize_tag_num(self.buf).ok()?;
+        self.buf = rest;
+        Some(tag)
+    }
+
+    /// Read bytes up to SOH without validating their contents. Returns `None`
+    /// if the delimiter is absent; an empty delimited value is valid here.
+    pub fn read_delimited(&mut self) -> Option<&'de [u8]> {
+        let end = memchr(b'\x01', self.buf)?;
+        let value = &self.buf[..end];
+        self.buf = &self.buf[end + 1..];
+        Some(value)
+    }
+
+    /// Read a positive `Length` and its SOH delimiter. Returns `None` for
+    /// zero, overflow, malformed contents, or a missing delimiter.
+    pub fn read_length(&mut self) -> Option<Length> {
+        let (rest, length) = deserialize_length(self.buf).ok()?;
+        self.buf = rest;
+        Some(length)
+    }
+
+    /// Read exactly `len` bytes and their following SOH without interpreting
+    /// the data. Returns `None` if the data or delimiter is missing or the
+    /// byte after the data is not SOH.
+    pub fn read_data(&mut self, len: Length) -> Option<&'de [u8]> {
+        let len = usize::from(len);
+        let rest = self.buf.get(len..)?.strip_prefix(b"\x01")?;
+        let value = &self.buf[..len];
+        self.buf = rest;
+        Some(value)
+    }
+}
+
 /// Reads typed FIX values out of a framed [`RawMessage`], field by field.
 ///
 /// A cursor walks the body: [`deserialize_tag_num`](Self::deserialize_tag_num)
@@ -916,9 +1002,14 @@ impl<'de> Deserializer<'de> {
         let start_index = FINDER
             .find(self.buf)
             .ok_or(DeserializeErrorKind::Logout(LogoutReason::MsgSeqNumMissing))?;
+        let saved_buf = self.buf;
         self.buf = &self.buf[start_index + FINDER.needle().len()..];
 
-        self.deserialize_seq_num()
+        // Error diagnostics may still need to inspect the original input,
+        // including a pushed-back tag whose value starts at saved_buf.
+        let result = self.deserialize_seq_num();
+        self.buf = saved_buf;
+        result
     }
 
     /// Build a [`DeserializeErrorKind::Reject`] blaming `tag` for `reason`,
@@ -1000,6 +1091,17 @@ impl<'de> Deserializer<'de> {
     /// the first.
     pub fn put_tag(&mut self, tag: TagNum) {
         self.tmp_tag = Some(tag);
+    }
+
+    /// Copy the current read position, including any pushed-back tag, into
+    /// an independent cursor. Creating or advancing it leaves this
+    /// deserializer unchanged. If a tag was already consumed without being
+    /// pushed back, the cursor starts at that tag's value.
+    pub fn field_cursor(&self) -> FieldCursor<'de> {
+        FieldCursor {
+            buf: self.buf,
+            tmp_tag: self.tmp_tag,
+        }
     }
 
     // Build a Reject for a malformed field value, skipping the remainder of
@@ -1102,49 +1204,21 @@ impl<'de> Deserializer<'de> {
             return Ok(self.tmp_tag.take());
         }
 
-        match self.buf {
-            // End of stream
-            [] => return Ok(None),
-            // Leading zero
-            [b'0' | b'=', ..] => {
-                return Err(self.reject(None, SessionRejectReasonBase::InvalidTagNumber));
-            }
-            _ => {}
+        if self.buf.is_empty() {
+            return Ok(None);
         }
 
-        let mut value: TagNum = 0;
-        for (i, &byte) in self.buf.iter().enumerate() {
-            match byte {
-                n @ b'0'..=b'9' => {
-                    value = value
-                        .checked_mul(10)
-                        .and_then(|v| v.checked_add((n - b'0') as TagNum))
-                        // Integer overflow
-                        .ok_or_else(|| {
-                            self.reject(None, SessionRejectReasonBase::InvalidTagNumber)
-                        })?;
-                }
-                b'=' => {
-                    if value == 0 {
-                        return Err(self
-                            .reject(self.current_tag, SessionRejectReasonBase::InvalidTagNumber));
-                    } else {
-                        self.current_tag = Some(value);
-                        // SAFETY: i is from iterating self.buf, so i + 1 <= self.buf.len()
-                        let (_, rest) = unsafe { self.buf.split_at_unchecked(i + 1) };
-                        self.buf = rest;
-                        return Ok(Some(value));
-                    }
-                }
-                // Unexpected value
-                _ => return Err(self.reject(None, SessionRejectReasonBase::InvalidTagNumber)),
+        match deserialize_tag_num(self.buf) {
+            Ok((rest, tag)) => {
+                self.buf = rest;
+                self.current_tag = Some(tag);
+                Ok(Some(tag))
             }
+            Err(DeserializeErrorKindInternal::Incomplete) => Err(DeserializeErrorKind::Garbled(
+                GarbledReason::IncompleteMessageData,
+            )),
+            Err(DeserializeErrorKindInternal::Error(reason)) => Err(self.reject(None, reason)),
         }
-
-        // End of stream
-        Err(DeserializeErrorKind::Garbled(
-            GarbledReason::IncompleteMessageData,
-        ))
     }
 
     /// Deserialize sequence of character digits without commas or decimals

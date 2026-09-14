@@ -41,13 +41,13 @@ impl GroupCodeGen {
         let variables_definitions = members.iter().map(|member| member.gen_opt_variables());
         for member in members {
             de_match_entries.extend(member.gen_deserialize_match_entries());
-            de_struct_entries.push(member.gen_deserialize_struct_entries());
+            de_struct_entries.push(member.gen_deserialize_struct_entries(None));
         }
 
         let first_member_tag = first_member.tag_num();
         let first_member_deserialize_value = first_member.gen_deserialize_value();
         let first_member_def = first_member.gen_opt_variables();
-        let first_member_struct_entry = first_member.gen_deserialize_struct_entries();
+        let first_member_struct_entry = first_member.gen_deserialize_struct_entries(None);
 
         let deserialize_loop = if members.is_empty() {
             // No members - no loop

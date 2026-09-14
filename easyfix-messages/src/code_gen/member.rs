@@ -524,14 +524,19 @@ impl Field {
     ///     ...
     /// }
     /// ```
-    fn gen_deserialize_struct_entries(&self, required: bool) -> TokenStream {
+    fn gen_deserialize_struct_entries(
+        &self,
+        required: bool,
+        section: Option<&TokenStream>,
+    ) -> TokenStream {
         let name = &self.name;
         let num = self.number;
         let skips_required =
             SpecialTag::from_tag(self.number).is_some_and(|s| s.skips_required_check());
         if required && !skips_required {
+            let missing = gen_missing_field_error(num, section);
             quote! {
-                #name: #name.ok_or_else(|| deserializer.reject(Some(#num), SessionRejectReasonBase::RequiredTagMissing))?
+                #name: #name.ok_or_else(|| #missing)?
             }
         } else {
             quote! {
@@ -705,12 +710,17 @@ impl RawData {
     }
 
     /// Generate code used to initialize structure.
-    fn gen_deserialize_struct_entries(&self, required: bool) -> TokenStream {
+    fn gen_deserialize_struct_entries(
+        &self,
+        required: bool,
+        section: Option<&TokenStream>,
+    ) -> TokenStream {
         let data_name = &self.data_name;
         let data_num = self.data_number;
         if required {
+            let missing = gen_missing_field_error(data_num, section);
             quote! {
-                #data_name: #data_name.ok_or_else(|| deserializer.reject(Some(#data_num), SessionRejectReasonBase::RequiredTagMissing))?
+                #data_name: #data_name.ok_or_else(|| #missing)?
             }
         } else {
             quote! {
@@ -868,12 +878,16 @@ impl Group {
     }
 
     /// Generate code used to initialize structure.
-    fn gen_deserialize_struct_entries(&self, required: bool) -> TokenStream {
+    fn gen_deserialize_struct_entries(
+        &self,
+        required: bool,
+        section: Option<&TokenStream>,
+    ) -> TokenStream {
         let name = &self.name;
-        let num = &self.num_in_group_number;
         if required {
+            let missing = gen_missing_field_error(self.num_in_group_number, section);
             quote! {
-                #name: #name.ok_or_else(|| deserializer.reject(Some(#num), SessionRejectReasonBase::RequiredTagMissing))?
+                #name: #name.ok_or_else(|| #missing)?
             }
         } else {
             quote! {
@@ -980,13 +994,21 @@ impl MemberDefinition {
     }
 
     /// Generate code used to initialize structure.
-    fn gen_deserialize_struct_entries(&self, required: bool) -> TokenStream {
+    fn gen_deserialize_struct_entries(
+        &self,
+        required: bool,
+        section: Option<&TokenStream>,
+    ) -> TokenStream {
         match self {
-            MemberDefinition::Field(field) => field.gen_deserialize_struct_entries(required),
-            MemberDefinition::RawData(raw_data) => {
-                raw_data.gen_deserialize_struct_entries(required)
+            MemberDefinition::Field(field) => {
+                field.gen_deserialize_struct_entries(required, section)
             }
-            MemberDefinition::Group(group) => group.gen_deserialize_struct_entries(required),
+            MemberDefinition::RawData(raw_data) => {
+                raw_data.gen_deserialize_struct_entries(required, section)
+            }
+            MemberDefinition::Group(group) => {
+                group.gen_deserialize_struct_entries(required, section)
+            }
         }
     }
 }
@@ -1064,9 +1086,22 @@ impl Member {
         self.definition.gen_deserialize_match_entries()
     }
 
-    /// Generate code used to initialize structure.
-    pub fn gen_deserialize_struct_entries(&self) -> TokenStream {
+    /// Generate a struct entry, diagnosing section order for missing required
+    /// fields only when `section` is supplied. Pass `None` inside repeating
+    /// groups and for the trailer.
+    pub fn gen_deserialize_struct_entries(&self, section: Option<&TokenStream>) -> TokenStream {
         self.definition
-            .gen_deserialize_struct_entries(self.required)
+            .gen_deserialize_struct_entries(self.required, section)
+    }
+}
+
+fn gen_missing_field_error(tag: u16, section: Option<&TokenStream>) -> TokenStream {
+    match section {
+        Some(section) => quote! {
+            missing_required_field(deserializer, #section, #tag)
+        },
+        None => quote! {
+            deserializer.reject(Some(#tag), SessionRejectReasonBase::RequiredTagMissing)
+        },
     }
 }
