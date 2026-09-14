@@ -220,13 +220,13 @@ impl TestFile {
 impl Drop for TestFile {
     fn drop(&mut self) {
         if self.test_dir.exists() {
-            if self.path.exists() {
-                if let Err(err) = fs::remove_file(&self.path) {
-                    eprintln!(
-                        "Warning: Failed to clean up temporary file {}: {err}",
-                        self.path.display(),
-                    );
-                }
+            if self.path.exists()
+                && let Err(err) = fs::remove_file(&self.path)
+            {
+                eprintln!(
+                    "Warning: Failed to clean up temporary file {}: {err}",
+                    self.path.display(),
+                );
             }
             if let Err(err) = fs::remove_dir(&self.test_dir) {
                 eprintln!(
@@ -1037,24 +1037,24 @@ fn test_nested_required_flag_propagation() {
 
     // Also check nested fields in groups to ensure required flags are propagated correctly
     for member in flattened_msg.members() {
-        if let MemberDefinition::Group(group) = member.definition() {
-            if group.name() == "OrderListGroup" {
-                for group_member in group.members() {
-                    if let MemberDefinition::Field(field) = group_member.definition() {
-                        match field.name.as_utf8() {
-                            "OrderListGroupField" => assert!(
-                                group_member.required(),
-                                "OrderListGroupField should be required"
-                            ),
-                            "NestedField1" => {
-                                assert!(group_member.required(), "NestedField1 should be required")
-                            }
-                            "NestedField2" => assert!(
-                                !group_member.required(),
-                                "NestedField2 should not be required"
-                            ),
-                            _ => {}
+        if let MemberDefinition::Group(group) = member.definition()
+            && group.name() == "OrderListGroup"
+        {
+            for group_member in group.members() {
+                if let MemberDefinition::Field(field) = group_member.definition() {
+                    match field.name.as_utf8() {
+                        "OrderListGroupField" => assert!(
+                            group_member.required(),
+                            "OrderListGroupField should be required"
+                        ),
+                        "NestedField1" => {
+                            assert!(group_member.required(), "NestedField1 should be required")
                         }
+                        "NestedField2" => assert!(
+                            !group_member.required(),
+                            "NestedField2 should not be required"
+                        ),
+                        _ => {}
                     }
                 }
             }
