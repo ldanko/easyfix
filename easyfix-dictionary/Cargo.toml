@@ -16,7 +16,6 @@ easyfix-core = { workspace = true, features = ["serde-serialize", "serde-deseria
 quick-xml = { version = "0.37.2", features = ["serialize"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-xmltree = "0.10"
 
 [dev-dependencies]
 uuid = { version = "1.8.0", features = ["v4"] }
