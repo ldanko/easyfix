@@ -114,9 +114,6 @@ impl Header {
                                 deserializer.put_tag(tag);
                                 break;
                             } else {
-                                // A tag defined in no dictionary:
-                                // InvalidTagNumber, not UndefinedTag).
-                                // See Scenario 14a
                                 return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                             }
                         },

@@ -32,9 +32,6 @@ impl Trailer {
                             if FieldTag::from_tag_num(tag).is_some() {
                                 return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
                             } else {
-                                // A tag defined in no dictionary:
-                                // InvalidTagNumber, not UndefinedTag).
-                                // See Scenario 14a
                                 return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                             }
                         },
@@ -47,9 +44,6 @@ impl Trailer {
                     if FieldTag::from_tag_num(tag).is_some() {
                         return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder));
                     } else {
-                        // A tag defined in no dictionary -> Invalid tag
-                        // number (0), per Scenario 14a - not Undefined
-                        // Tag (3). (P-064)
                         return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                     }
                 }

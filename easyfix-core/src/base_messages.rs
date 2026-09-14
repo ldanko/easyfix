@@ -126,6 +126,16 @@ impl SessionStatusValue for SessionStatusBase {
 // SessionRejectReason (tag 373)
 // ---------------------------------------------------------------------------
 
+// FIX Session Layer (June 2020), Section 11.11, lists InvalidTagNumber (0)
+// and UndefinedTag (3) without explaining their distinction. FIX Session
+// Layer Test Cases (June 2020), Section 4.5.13, Scenario 14(a), requires
+// reason 0 for a tag not defined in the applicable specification unless
+// agreed as user-defined, even when the number is syntactically valid.
+// Scenario 14 assigns no separate validation case to code 3. Follow the
+// explicit test case rather than infer behavior from the variant names.
+// Neither document identifies code 3 as deprecated or replaced by code 0.
+// https://www.fixtrading.org/wp-content/uploads/download-manager-files/FIX_Session_Layer_June_2020.pdf
+// https://www.fixtrading.org/wp-content/uploads/download-manager-files/FIX_Session_Testcases_June_2020.pdf
 /// SessionRejectReason (tag 373), carried on Reject.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionRejectReasonBase {

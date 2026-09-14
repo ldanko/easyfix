@@ -62,9 +62,6 @@ impl MessageCodeGen {
                             } else if FieldTag::from_tag_num(tag).is_some() {
                                 return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::TagNotDefinedForThisMessageType));
                             } else {
-                                // A tag defined in no dictionary:
-                                // InvalidTagNumber, not UndefinedTag).
-                                // See Scenario 14a
                                 return Err(deserializer.reject(Some(tag), SessionRejectReasonBase::InvalidTagNumber));
                             }
                         },
