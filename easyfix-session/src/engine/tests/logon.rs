@@ -420,8 +420,7 @@ fn on_logon_acceptor_negative_heart_bt_int_rejected() {
 
     let msg =
         test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), -1, None, None);
-    let result = accept_input(&mut engine, msg, &mut storage);
-    assert_matches!(result, InputResult::Handled);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::InvalidLogonState)
@@ -580,8 +579,7 @@ fn on_logon_initiator_refuses_an_ack_that_does_not_echo_its_heart_bt_int() {
 
     let msg =
         test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 5, None, None);
-    let result = accept_input(&mut engine, msg, &mut storage);
-    assert_matches!(result, InputResult::Handled);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
     assert!(!engine.is_logged_on());
     assert_eq!(
         engine.disconnect_reason(),
@@ -946,10 +944,7 @@ async fn on_logon_invalid_heart_bt_int_preserves_history_and_consumes_sequence()
         None,
         None,
     );
-    assert_matches!(
-        accept_input(&mut engine, msg, &mut storage),
-        InputResult::Handled
-    );
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::InvalidLogonState)
@@ -1013,8 +1008,7 @@ fn on_logon_tag_789_too_high_logs_out_and_disconnects() {
         None,
         Some(5),
     );
-    let result = accept_input(&mut engine, msg, &mut storage);
-    assert_matches!(result, InputResult::Handled);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::InvalidLogonState)
@@ -1050,8 +1044,7 @@ fn on_logon_tag_789_zero_logs_out_and_disconnects() {
         None,
         Some(0),
     );
-    let result = accept_input(&mut engine, msg, &mut storage);
-    assert_matches!(result, InputResult::Handled);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::InvalidLogonState)

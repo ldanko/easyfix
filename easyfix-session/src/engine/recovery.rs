@@ -3,22 +3,14 @@
 use std::{borrow::Cow, mem, ops::RangeInclusive};
 
 use easyfix_core::{
-    base_messages::{
-        AdminBase, HeaderBase, MsgTypeBase, ResendRequestBase, SequenceResetBase,
-        SessionRejectReasonBase,
-    },
-    basic_types::{
-        FixString, Int, MsgTypeField, NonZeroSeqNum, SeqNum, TagNum, TimePrecision, UtcTimestamp,
-    },
+    base_messages::{AdminBase, HeaderBase, MsgTypeBase, ResendRequestBase, SequenceResetBase},
+    basic_types::{NonZeroSeqNum, SeqNum, TimePrecision, UtcTimestamp},
     message::{MsgCat, SessionMessage},
 };
 use tracing::{debug, error, info, warn};
 
 use super::{FatalError, HandlerResult, InputResult, PendingOutput, SessionEngine};
 use crate::{messages_storage::MessagesStorage, session_id::SessionId};
-
-const TAG_BEGIN_SEQ_NO: TagNum = 7;
-const TAG_NEW_SEQ_NO: TagNum = 36;
 
 /// Build the `SequenceReset`-GapFill message serialized by both the
 /// runtime scratch path and the registration-time size probe
@@ -299,13 +291,13 @@ impl<M: SessionMessage> SessionEngine<M> {
     pub(super) fn on_resend_request<S: MessagesStorage>(
         &mut self,
         header: &HeaderBase<'_>,
-        _resend_request: ResendRequestBase,
+        resend_request: ResendRequestBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
         self.ensure_healthy()?;
 
         Ok(self
-            .validate_resend_request(header, storage)?
+            .validate_resend_request(header, resend_request, storage)?
             .unwrap_or(HandlerResult::AdminMsg))
     }
 
@@ -321,60 +313,30 @@ impl<M: SessionMessage> SessionEngine<M> {
         let begin_seq_no = resend_request.begin_seq_no;
         let end_seq_no = resend_request.end_seq_no;
 
-        // BeginSeqNo(7) names a MsgSeqNum, which starts at 1 (Session Layer
-        // §4.1); EndSeqNo(16)=0 is the only sanctioned zero, meaning infinity
-        // (§4.8.2). Neither a zero begin nor an inverted range names a
-        // message: Reject 373=5 (Testcases §4.5.13 Scenario 14(e)). Queueing
-        // one would also put a gap-fill stamped MsgSeqNum(34)=0 on the wire.
-        //
-        // This fires before the too-high check below on purpose, so a
-        // ResendRequest above the gap is Rejected rather than held back.
-        // §4.8.8 exempts ResendRequest from ordered processing, and a queued
-        // one is never re-processed (`next_queued_message` advances past it
-        // on MsgType alone), so holding the Reject back would drop it for
-        // good. `reject_error_with_header` withholds its Reject in the same
-        // situation because there the message is redelivered and rejected in
-        // sequence - that option does not exist here.
-        if begin_seq_no == 0 || (end_seq_no != 0 && begin_seq_no > end_seq_no) {
-            let msg_type = MsgTypeField::from(MsgTypeBase::ResendRequest);
-            let reason = SessionRejectReasonBase::ValueIsIncorrect;
-            let tag = Int::from(TAG_BEGIN_SEQ_NO);
-            let text = format!(
-                "{reason:?} (tag={tag}) - invalid resend range {begin_seq_no}..{end_seq_no}"
-            );
-            self.send_reject(
-                Some(msg_type.as_fix_str().to_owned()),
-                msg_seq_num,
-                reason.into(),
-                Some(TAG_BEGIN_SEQ_NO),
-                Some(FixString::from_ascii_lossy(text.into_bytes())),
-            );
+        // Normalize end_seq_no: 0 means "everything after begin"; an end
+        // at or beyond our next sender seq num is clamped. Both become
+        // next_sender-1.
+        let next_sender = storage.next_sender_msg_seq_num().get();
+        let adjusted_end = if end_seq_no == 0 || end_seq_no >= next_sender {
+            next_sender - 1
         } else {
-            // Normalize end_seq_no: 0 means "everything after begin"; an end
-            // at or beyond our next sender seq num is clamped. Both become
-            // next_sender-1.
-            let next_sender = storage.next_sender_msg_seq_num().get();
-            let adjusted_end = if end_seq_no == 0 || end_seq_no >= next_sender {
-                next_sender - 1
-            } else {
-                end_seq_no
-            };
+            end_seq_no
+        };
 
-            // A begin at or above our sender counter asks for messages we never
-            // sent. The value is well-formed, and a peer that outlived our
-            // storage produces it legitimately, so it is not a Reject - but
-            // the resulting range is empty and the peer gets nothing back.
-            // Say so, or the condition passes unrecorded on both sides.
-            if begin_seq_no >= next_sender {
-                warn!(
-                    "ResendRequest BeginSeqNo<7> {begin_seq_no} at or above next sender \
-                     seq num {next_sender} - nothing to retransmit"
-                );
-            }
-
-            info!("Received ResendRequest FROM: {begin_seq_no} TO: {adjusted_end}");
-            self.pending_resends.push_back(begin_seq_no..=adjusted_end);
+        // A begin at or above our sender counter asks for messages we never
+        // sent. The value is well-formed, and a peer that outlived our
+        // storage produces it legitimately, so it is not a Reject - but
+        // the resulting range is empty and the peer gets nothing back.
+        // Say so, or the condition passes unrecorded on both sides.
+        if begin_seq_no >= next_sender {
+            warn!(
+                "ResendRequest BeginSeqNo<7> {begin_seq_no} at or above next sender \
+                 seq num {next_sender} - nothing to retransmit"
+            );
         }
+
+        info!("Received ResendRequest FROM: {begin_seq_no} TO: {adjusted_end}");
+        self.pending_resends.push_back(begin_seq_no..=adjusted_end);
 
         // Manual too-high check - `validate_resend_request` skipped it during
         // the validation phase. `apply_result` handles enqueue + ResendRequest
@@ -399,41 +361,22 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) -> Result<HandlerResult, FatalError> {
         self.ensure_healthy()?;
 
-        let gap_fill_flag = sequence_reset.gap_fill_flag.unwrap_or(false);
         Ok(self
-            .validate_sequence_reset(header, storage, gap_fill_flag)?
+            .validate_sequence_reset(header, sequence_reset, storage)?
             .unwrap_or(HandlerResult::AdminMsg))
     }
 
     pub(super) fn process_sequence_reset<S: MessagesStorage>(
         &mut self,
-        header: &HeaderBase<'_>,
+        _header: &HeaderBase<'_>,
         sequence_reset: SequenceResetBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
         self.ensure_healthy()?;
 
-        let msg_type = MsgTypeField::from(MsgTypeBase::SequenceReset);
-        let msg_seq_num = header.msg_seq_num;
         let new_seq_no = sequence_reset.new_seq_no;
-        let gap_fill_flag = sequence_reset.gap_fill_flag.unwrap_or(false);
         let next_target = storage.next_target_msg_seq_num().get();
 
-        // A GapFill (123=Y) reaches this point only in sequence
-        // (MsgSeqNum == NextNumIn, enforced by `validate_sequence_reset`), so
-        // `NewSeqNo <= NextNumIn` means `NewSeqNo <= MsgSeqNum` - an "attempt to
-        // lower sequence number" that must be Rejected, *including* the degenerate
-        // `NewSeqNo == NextNumIn` case (Scenario 10e).
-        //
-        // A Reset (123=N) ignores MsgSeqNum: `NewSeqNo > NextNumIn` advances,
-        // `NewSeqNo == NextNumIn` is accepted with a warning (Scenario "Reset" b),
-        // and only `NewSeqNo < NextNumIn` is Rejected (Scenario "Reset" c). The
-        // GapFillFlag is therefore the discriminator for the `==` case - comparing
-        // without it would silently accept the invalid GapFill.
-        //
-        // `NewSeqNo(36)` comes off the wire, so it may be zero. It needs no
-        // arm of its own: zero is below any counter, so it falls into the
-        // reject branch where an attempt to lower the sequence belongs.
         if let Some(raised_target) =
             NonZeroSeqNum::new(new_seq_no).filter(|n| n.get() > next_target)
         {
@@ -445,17 +388,6 @@ impl<M: SessionMessage> SessionEngine<M> {
                     self.fail_storage("set_next_target_msg_seq_num", &error)
                 })?;
             self.discard_queued_below(raised_target.get());
-        } else if new_seq_no < next_target || gap_fill_flag {
-            let reason = SessionRejectReasonBase::ValueIsIncorrect;
-            let tag = Int::from(TAG_NEW_SEQ_NO);
-            let text = format!("{reason:?} (tag={tag}) - attempt to lower sequence number");
-            self.send_reject(
-                Some(msg_type.as_fix_str().to_owned()),
-                msg_seq_num,
-                reason.into(),
-                Some(TAG_NEW_SEQ_NO),
-                Some(FixString::from_ascii_lossy(text.into_bytes())),
-            );
         } else {
             // Reset (123=N) with NewSeqNo == NextNumIn: accept, warning only.
             warn!("SequenceReset-Reset with NewSeqNo({new_seq_no}) == NextNumIn; accepting");

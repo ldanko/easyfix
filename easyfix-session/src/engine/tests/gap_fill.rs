@@ -10,7 +10,7 @@ use easyfix_core::{
 };
 use easyfix_test_messages::Message;
 
-use super::support::assert_msg_type;
+use super::{resend_support::assert_resend_request, support::assert_msg_type};
 use crate::{
     application::DisconnectReason,
     engine::InputResult,
@@ -46,8 +46,7 @@ fn on_sequence_reset_too_low_rejects() {
     storage.set_next_target_msg_seq_num(nz_seq(10)).unwrap();
     // new_seq=5 < next_target=10 -> Reject
     let msg = test_helpers::sequence_reset(10, 5, false);
-    let result = accept_input(&mut engine, msg, &mut storage);
-    assert_matches!(result, InputResult::Handled);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
 
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
@@ -76,8 +75,7 @@ fn on_sequence_reset_gap_fill_new_seq_no_equal_target_rejects() {
     storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
     // GapFill in sequence (MsgSeqNum=5=NextNumIn) with NewSeqNo=5 (== MsgSeqNum).
     let msg = test_helpers::sequence_reset(5, 5, true);
-    let result = accept_input(&mut engine, msg, &mut storage);
-    assert_matches!(result, InputResult::Handled);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
 
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
@@ -91,6 +89,37 @@ fn on_sequence_reset_gap_fill_new_seq_no_equal_target_rejects() {
     assert_eq!(reject.ref_tag_id, Some(36)); // NewSeqNo
     // The rejected SequenceReset must NOT advance NextNumIn.
     assert_eq!(storage.next_target_msg_seq_num().get(), 5);
+}
+
+#[test]
+fn queued_invalid_gap_fill_rejects_before_callback_after_recovery() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
+    let msg = test_helpers::sequence_reset(7, 7, true);
+    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
+    assert_resend_request(&mut engine, 5, 6);
+    assert!(engine.take_admin_output().is_none());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 5);
+
+    for seq in 5..7 {
+        accept_input(
+            &mut engine,
+            test_helpers::heartbeat(seq, None),
+            &mut storage,
+        );
+    }
+    assert_matches!(
+        engine.next_queued_message(&mut storage),
+        Ok(Some(InputResult::Handled))
+    );
+    let reply = take_admin(&mut engine);
+    assert_matches!(as_admin(&reply), AdminBase::Reject(reject)
+        if reject.ref_seq_num == 7 && reject.ref_tag_id == Some(36)
+            && reject.session_reject_reason
+                == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
+    assert_eq!(storage.next_target_msg_seq_num().get(), 7);
+    assert_eq!(engine.queued_count(), 0);
+    assert!(engine.take_admin_output().is_none());
 }
 
 /// Session Test Cases Scenario 11b: a `SequenceReset` with

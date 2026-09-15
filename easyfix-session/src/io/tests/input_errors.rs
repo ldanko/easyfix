@@ -63,6 +63,68 @@ fn build_missing_seq_num_bytes() -> Vec<u8> {
     bytes
 }
 
+#[tokio::test]
+async fn invalid_recovery_messages_do_not_reach_admin_callback() {
+    let local = LocalSet::new();
+    local
+        .run_until(async {
+            for (name, msg, next_seq, tag) in [
+                ("resend range", test_helpers::resend_request(2, 0, 0), 3, 7),
+                ("gap fill", test_helpers::sequence_reset(2, 2, true), 2, 36),
+                ("reset", test_helpers::sequence_reset(2, 0, false), 2, 36),
+            ] {
+                let harness = build_harness();
+                let (server_io, mut client_io) = io::duplex(8192);
+                let (server_reader, server_writer) = io::split(server_io);
+                let (session_task, mut events_rx, control_tx) =
+                    harness.spawn_acceptor(server_reader, server_writer, build_peer_logon(1, 30));
+                logon_handshake(&mut client_io, &mut events_rx).await;
+
+                client_io
+                    .write_all(&test_helpers::serialize_message(&msg))
+                    .await
+                    .unwrap();
+                let mut buf = Vec::new();
+                let reply = read_one_message(&mut client_io, &mut buf).await;
+                assert_matches!(
+                    reply.try_as_admin(),
+                    Some(AdminBase::Reject(reject))
+                        if reject.ref_seq_num == 2
+                            && reject.ref_tag_id == Some(tag)
+                            && reject.session_reject_reason
+                                == Some(SessionRejectReasonBase::ValueIsIncorrect.into()),
+                    "{name}"
+                );
+                assert_matches!(events_rx.try_recv(), Err(TryRecvError::Empty), "{name}");
+
+                // Rejection preserves the message-specific numbering rules,
+                // so the next valid message can still reach the application.
+                client_io
+                    .write_all(&test_helpers::heartbeat_bytes(next_seq))
+                    .await
+                    .unwrap();
+                assert_matches!(
+                    events_rx.recv().await.unwrap(),
+                    TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat),
+                    "{name}"
+                );
+                control_tx.send(ControlMsg::Disconnect).await.unwrap();
+                session_task.await.unwrap();
+                assert_matches!(
+                    events_rx.recv().await.unwrap(),
+                    TestEvent::SessionEnd(DisconnectReason::Disconnected),
+                    "{name}"
+                );
+                assert_matches!(
+                    events_rx.try_recv(),
+                    Err(TryRecvError::Disconnected),
+                    "{name}"
+                );
+            }
+        })
+        .await;
+}
+
 /// An application rejecting without a diagnostic must still put a real
 /// `Reject<3>` on the wire. `Text(58)` is optional there (FIX Transport
 /// 5.5), but an empty value is not a legal FIX field, so an empty `Text`

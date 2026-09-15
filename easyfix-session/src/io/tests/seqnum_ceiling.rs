@@ -357,10 +357,7 @@ async fn farewell_before_the_logon_ack_does_not_release_staged_app_messages() {
             let logout = read_one_message(&mut client_io, &mut buf).await;
             assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
 
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Logon)
-            );
+            // The invalid acknowledgement never reaches on_admin_msg_in.
             expect_session_end(&mut events_rx, DisconnectReason::InvalidLogonState).await;
             session_task.await.unwrap();
 

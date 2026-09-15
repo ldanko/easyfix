@@ -41,10 +41,7 @@ async fn peer_reset_with_invalid_tag_789_preserves_storage() {
                 Some(true),
                 Some(next_expected),
             );
-            assert_matches!(
-                accept_input(&mut engine, msg, &mut storage),
-                InputResult::Handled
-            );
+            assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
             assert_eq!(
                 engine.disconnect_reason(),
                 Some(DisconnectReason::InvalidLogonState)
@@ -87,10 +84,7 @@ async fn peer_reset_with_invalid_tag_789_preserves_storage() {
                 Some(true),
                 Some(40),
             );
-            assert_matches!(
-                accept_input(&mut engine, msg, &mut storage),
-                InputResult::Handled
-            );
+            assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
             let expected_text = if heartbeat < 0 {
                 let reject = take_admin(&mut engine);
                 assert_matches!(as_admin(&reject), AdminBase::Reject(reject)

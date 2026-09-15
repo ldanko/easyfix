@@ -165,17 +165,27 @@ impl<M: SessionMessage> SessionEngine<M> {
         }));
     }
 
-    /// Validate the header, reset permission, acknowledgement shape and
-    /// encryption method before application input. A valid ACK confirms our
-    /// local reset here; body-value checks and the application's decision
-    /// follow without a second storage reset. Retransmitted resets only
-    /// participate in recovery.
+    /// Validate a Logon before passing it to application input.
     pub(super) fn on_logon<S: MessagesStorage>(
         &mut self,
         header: &HeaderBase<'_>,
         logon: LogonBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
+        Ok(self
+            .validate_logon(header, logon, storage)?
+            .unwrap_or(HandlerResult::AdminMsg))
+    }
+
+    /// Validate the header, reset permission, acknowledgement shape and body.
+    /// A valid ACK confirms our local reset before the remaining body checks;
+    /// retransmitted peer resets only participate in recovery.
+    pub(super) fn validate_logon<S: MessagesStorage>(
+        &mut self,
+        header: &HeaderBase<'_>,
+        logon: LogonBase,
+        storage: &mut S,
+    ) -> Result<Option<HandlerResult>, FatalError> {
         self.ensure_healthy()?;
 
         let reset_seq_num_flag = logon.reset_seq_num_flag.unwrap_or(false);
@@ -186,8 +196,17 @@ impl<M: SessionMessage> SessionEngine<M> {
         // `process_logon`, so refusing it is `InputAction::Logout` away.
 
         // Verify the header before judging reset permission and ACK fields.
-        if let Some(hr) = self.validate_logon(header, storage, reset_seq_num_flag)? {
-            return Ok(hr);
+        // Logon's too-high handling follows its acknowledgement. A local
+        // reset ACK has its sequence number checked together with tag 141.
+        if let Some(hr) = self.validate_impl(
+            header,
+            MsgTypeField::from(MsgTypeBase::Logon),
+            storage,
+            false,
+            !self.state.local_reset_unconfirmed,
+            reset_seq_num_flag,
+        )? {
+            return Ok(Some(hr));
         }
 
         if self.state.local_reset_unconfirmed {
@@ -200,15 +219,15 @@ impl<M: SessionMessage> SessionEngine<M> {
                             .to_owned(),
                     ),
                 );
-                return Ok(HandlerResult::Disconnect(
+                return Ok(Some(HandlerResult::Disconnect(
                     DisconnectReason::InvalidLogonState,
-                ));
+                )));
             }
             if !reset_seq_num_flag || header.msg_seq_num != 1 {
                 self.push_logout(None, Some(fix_str!("Sequence number reset acknowledgement requires ResetSeqNumFlag=Y and MsgSeqNum=1").to_owned()));
-                return Ok(HandlerResult::Disconnect(
+                return Ok(Some(HandlerResult::Disconnect(
                     DisconnectReason::InvalidLogonState,
-                ));
+                )));
             }
             // A too-high 789 contradicts the reset acknowledgement itself.
             // Zero is judged later as an invalid body value after confirmation.
@@ -217,14 +236,15 @@ impl<M: SessionMessage> SessionEngine<M> {
                     .next_expected_msg_seq_num
                     .is_some_and(|seq| seq > storage.next_sender_msg_seq_num().get())
             {
-                return Ok(self
-                    .check_logon_next_expected_range(
+                return Ok(Some(
+                    self.check_logon_next_expected_range(
                         logon.next_expected_msg_seq_num,
                         storage.next_sender_msg_seq_num().get(),
                     )
                     .unwrap_or(HandlerResult::Disconnect(
                         DisconnectReason::InvalidLogonState,
-                    )));
+                    )),
+                ));
             }
             if !self.state.queue.is_empty() {
                 error!("discarding queued input after peer confirmed our sequence number reset");
@@ -232,31 +252,25 @@ impl<M: SessionMessage> SessionEngine<M> {
             self.state.queue.clear();
             self.state.resend_range = None;
             self.state.local_reset_unconfirmed = false;
-            return self.check_encrypt_method(
-                header.msg_seq_num,
-                logon.encrypt_method_raw,
-                storage,
-            );
-        }
-
-        // A retransmitted reset carries old numbering, not permission to
-        // discard the current session again. Only its
-        // sequence number participates in recovery; its body is not applied.
-        if reset_seq_num_flag && self.answers_logon() && header.poss_dup_flag.unwrap_or(false) {
+        } else if reset_seq_num_flag
+            && self.answers_logon()
+            && header.poss_dup_flag.unwrap_or(false)
+        {
+            // A retransmitted reset carries old numbering, not permission to
+            // discard the current session again. Only its sequence number
+            // participates in recovery; its body is not applied.
             let next_target = storage.next_target_msg_seq_num().get();
             if next_target == SeqNum::MAX
                 || Self::check_seq_num_too_low(header, next_target).is_err()
             {
-                return Ok(HandlerResult::Handled);
+                return Ok(Some(HandlerResult::Handled));
             }
             if header.msg_seq_num > next_target {
-                return Ok(HandlerResult::Enqueue);
+                return Ok(Some(HandlerResult::Enqueue));
             }
             self.consume_seq_num(MsgTypeBase::Logon.into(), header.msg_seq_num, storage)?;
-            return Ok(HandlerResult::Handled);
-        }
-
-        if reset_seq_num_flag {
+            return Ok(Some(HandlerResult::Handled));
+        } else if reset_seq_num_flag {
             let text = if header.msg_seq_num != 1 {
                 Some(FixString::from_ascii_lossy(
                     format!(
@@ -283,13 +297,57 @@ impl<M: SessionMessage> SessionEngine<M> {
             if let Some(text) = text {
                 error!("{text}");
                 self.push_logout(None, Some(text));
-                return Ok(HandlerResult::Disconnect(
+                return Ok(Some(HandlerResult::Disconnect(
                     DisconnectReason::InvalidLogonState,
-                ));
+                )));
             }
         }
 
-        self.check_encrypt_method(header.msg_seq_num, logon.encrypt_method_raw, storage)
+        if let Some(hr) =
+            self.check_encrypt_method(header.msg_seq_num, logon.encrypt_method_raw, storage)?
+        {
+            return Ok(Some(hr));
+        }
+
+        // A Reject consumes the expected incoming number, but none of the
+        // body checks may discard storage for a peer's reset request.
+        let heart_bt_secs =
+            match self.check_heart_bt_int(header.msg_seq_num, logon.heart_bt_int, storage)? {
+                Ok(secs) => secs,
+                Err(hr) => return Ok(Some(hr)),
+            };
+        let acknowledge = self.answers_logon();
+        let first_logon = matches!(self.state.logon_state, LogonState::Idle);
+        let expected_heart_bt_secs = self.state.heartbeat_interval.map_or(0, NonZeroU64::get);
+        if !first_logon && heart_bt_secs != expected_heart_bt_secs {
+            let text = if acknowledge {
+                self.state.heartbeat_interval.map_or_else(
+                    || fix_str!("Invalid HeartBtInt(108)").to_owned(),
+                    invalid_heart_bt_int_text,
+                )
+            } else {
+                FixString::from_ascii_lossy(format!(
+                    "HeartBtInt(108) not echoed: expected {expected_heart_bt_secs}, got {heart_bt_secs}"
+                ).into_bytes())
+            };
+            error!("{text}");
+            self.push_logout(None, Some(text));
+            return Ok(Some(HandlerResult::Disconnect(
+                DisconnectReason::InvalidLogonState,
+            )));
+        }
+
+        if self.session_settings.enable_next_expected_msg_seq_num {
+            let next_sender = if reset_seq_num_flag && acknowledge {
+                1
+            } else {
+                storage.next_sender_msg_seq_num().get()
+            };
+            return Ok(
+                self.check_logon_next_expected_range(logon.next_expected_msg_seq_num, next_sender)
+            );
+        }
+        Ok(None)
     }
 
     /// Whether the session answers an incoming Logon with an acknowledgement
@@ -313,9 +371,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         )
     }
 
-    /// Apply an application-accepted Logon. Check HeartBtInt and the peer's
-    /// tag 789 before a requested reset can discard storage, then acknowledge
-    /// a peer request or complete our exchange. In LogoutSent, preserve the
+    /// Apply a validated, application-accepted Logon: acknowledge a peer
+    /// request or complete our exchange. In LogoutSent, preserve the
     /// existing state and deadline instead of reviving the connection.
     pub(super) fn process_logon<S: MessagesStorage>(
         &mut self,
@@ -336,41 +393,10 @@ impl<M: SessionMessage> SessionEngine<M> {
         let acknowledge = self.answers_logon();
         let first_logon = matches!(self.state.logon_state, LogonState::Idle);
 
-        // Judge the offered HeartBtInt before the reset below touches the
-        // storage: an invalid Logon must not reset it. A Reject still
-        // consumes the expected incoming sequence number.
-        let heart_bt_secs = match self.check_heart_bt_int(msg_seq_num, heart_bt_int, storage)? {
-            Ok(secs) => secs,
-            Err(hr) => return Ok(hr),
-        };
-
-        let expected_heart_bt_secs = self.state.heartbeat_interval.map_or(0, NonZeroU64::get);
-        if !first_logon && heart_bt_secs != expected_heart_bt_secs {
-            let text = if acknowledge {
-                self.state.heartbeat_interval.map_or_else(
-                    || fix_str!("Invalid HeartBtInt(108)").to_owned(),
-                    invalid_heart_bt_int_text,
-                )
-            } else {
-                FixString::from_ascii_lossy(format!(
-                    "HeartBtInt(108) not echoed: expected {expected_heart_bt_secs}, got {heart_bt_secs}"
-                ).into_bytes())
-            };
-            error!("{text}");
-            self.push_logout(None, Some(text));
-            return Ok(HandlerResult::Disconnect(
-                DisconnectReason::InvalidLogonState,
-            ));
-        }
-
-        let peer_reset = reset_seq_num_flag && acknowledge;
-        if peer_reset
-            && self.session_settings.enable_next_expected_msg_seq_num
-            && let Some(hr) = self.check_logon_next_expected_range(next_expected_msg_seq_num, 1)
-        {
-            return Ok(hr);
-        }
-        let did_reset = peer_reset;
+        // Validation established that the interval equals its magnitude.
+        debug_assert!(heart_bt_int >= 0);
+        let heart_bt_secs = heart_bt_int.unsigned_abs();
+        let did_reset = reset_seq_num_flag && acknowledge;
 
         // 1. Apply the peer's sequence reset before reading final counters.
         if did_reset {
@@ -385,8 +411,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             self.discard_recovery_state();
         }
 
-        // 2. Transition to Established. If a later phase fails with
-        // Disconnect, `should_disconnect` overrides the protocol state.
+        // 2. Transition to Established.
         if !matches!(self.state.logon_state, LogonState::LogoutSent { .. }) {
             self.state.logon_state = LogonState::Established;
         }
@@ -400,17 +425,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         let enable_next_expected = self.session_settings.enable_next_expected_msg_seq_num
             && next_expected_msg_seq_num.is_some();
 
-        // 3. Validate tag 789 if present and enabled (range check)
-        if enable_next_expected
-            && !peer_reset
-            && let Some(hr) = self.check_logon_next_expected_range(
-                next_expected_msg_seq_num,
-                storage.next_sender_msg_seq_num().get(),
-            )
-        {
-            return Ok(hr);
-        }
-
         let next_sender_at_logon = storage.next_sender_msg_seq_num().get();
 
         // Whether the Logon itself is in sequence. Decided here, ahead of the
@@ -419,7 +433,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         let next_target = storage.next_target_msg_seq_num().get();
         let is_normal = msg_seq_num <= next_target || did_reset;
 
-        // 4. Acknowledge a Logon we did not ask for. Adopt HeartBtInt only on
+        // 3. Acknowledge a Logon we did not ask for. Adopt HeartBtInt only on
         // the first Logon; running resets echo the validated effective value.
         if acknowledge {
             if first_logon {
@@ -436,7 +450,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             info!("Received logon response");
         }
 
-        // 5. Handle out-of-sequence logon (too high)
+        // 4. Handle out-of-sequence logon (too high)
         if !acknowledge && is_normal {
             self.state.next_expected_msg_seq_num = None;
         }
@@ -457,7 +471,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             warn!("Target MsgSeqNum too high, expected {next_target}, got {msg_seq_num}");
         }
 
-        // 6. Handle implicit resend via tag 789
+        // 5. Handle implicit resend via tag 789
         if enable_next_expected
             && let Some(next_expected) = next_expected_msg_seq_num
             && next_expected != next_sender_at_logon
@@ -468,7 +482,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             self.pending_resends.push_back(next_expected..=end);
         }
 
-        // 7. Reset grace period if logged on
+        // 6. Reset grace period if logged on
         if self.is_logged_on() {
             self.state.grace_period_test_req_ids.clear();
         }
@@ -484,7 +498,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         })
     }
 
-    /// Process-logon step 3: validate an offered NextExpectedMsgSeqNum(789)
+    /// Validate an offered NextExpectedMsgSeqNum(789)
     /// against our own sender counter. Above `next_sender` the peer expects
     /// messages we never sent (Session Layer §4.4.1); zero names no message
     /// at all, since sequence numbers start at 1 (§4.1). Either way the
@@ -496,7 +510,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Pass the planned sender counter of 1 for a peer reset request,
     /// before changing storage; otherwise pass the current sender counter.
     // Runs before the one consumer of the peer's tag 789, the implicit
-    // resend in step 6. Zero has to die here: step 6 would queue a resend
+    // resend. Zero has to die here: processing it would queue a resend
     // from 0 and put a gap-fill stamped MsgSeqNum(34)=0 on the wire.
     fn check_logon_next_expected_range(
         &mut self,
@@ -534,9 +548,9 @@ impl<M: SessionMessage> SessionEngine<M> {
         msg_seq_num: SeqNum,
         encrypt_method: Int,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
+    ) -> Result<Option<HandlerResult>, FatalError> {
         if encrypt_method == EncryptMethodBase::None as Int {
-            return Ok(HandlerResult::AdminMsg);
+            return Ok(None);
         }
 
         // Refuse the Logon without attempting encryption negotiation. The
@@ -549,9 +563,9 @@ impl<M: SessionMessage> SessionEngine<M> {
         error!("{text}");
         self.consume_seq_num(MsgTypeBase::Logon.into(), msg_seq_num, storage)?;
         self.push_logout(None, Some(text));
-        Ok(HandlerResult::Disconnect(
+        Ok(Some(HandlerResult::Disconnect(
             DisconnectReason::InvalidLogonState,
-        ))
+        )))
     }
 
     /// Reject a negative HeartBtInt(108); zero disables regular heartbeats
@@ -628,7 +642,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         };
 
         // In Idle, adopt and echo the initiator's HeartBtInt verbatim. In
-        // Established/ResetPending/ResetProbe, process_logon has required the
+        // Established/ResetPending/ResetProbe, validate_logon has required the
         // existing effective value. Refusal is via Logout, never a counter-
         // proposal (Session Layer Sections 4.3.4 and 4.3.5.1).
         // Rewriting tag 108 from on_admin_msg_out would disagree with timers.

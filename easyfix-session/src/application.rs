@@ -301,9 +301,15 @@ pub trait Application<M: SessionMessage> {
     // an application message.
     async fn on_app_msg_in(&mut self, msg: Box<M>) -> InputAction;
 
-    /// Inbound admin message after header and protocol-state validation.
+    /// Inbound admin message that passed all applicable session validation
+    /// for its message type, the current session state, and configuration.
     /// Return [`InputAction`] to accept or refuse it (e.g. invalid Logon
-    /// credentials); acceptance applies the remaining message-specific logic.
+    /// credentials).
+    ///
+    /// [`InputAction::Accept`] proceeds with message-specific processing
+    /// without further header or body validation. Processing may still fail
+    /// due to storage or transport errors. Messages rejected by session
+    /// validation are not delivered to this callback.
     ///
     /// For reset requests and acknowledgements, see
     /// [reset callbacks](crate::session_reset#application-callbacks).

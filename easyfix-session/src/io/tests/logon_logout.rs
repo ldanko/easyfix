@@ -589,8 +589,8 @@ async fn acceptor_gives_up_when_the_rejected_handshake_stalls() {
 }
 
 /// A first `Logon<A>` the engine refuses ends the connection before there
-/// is a session to announce. The application sees the Logon in
-/// `on_admin_msg_in`, the Scenario 1S(d) Reject and Logout go on the wire,
+/// is a session to announce. The invalid Logon does not reach
+/// `on_admin_msg_in`; the Scenario 1S(d) Reject and Logout go on the wire,
 /// and then `on_session_end` runs with no `on_session_ready` before it -
 /// no `Sender` is ever handed over. This is the contract
 /// `Application::on_session_end` documents; the test pins it so the
@@ -604,7 +604,7 @@ async fn refused_first_logon_ends_without_session_ready() {
             let (server_io, mut client_io) = io::duplex(8192);
             let (server_reader, server_writer) = io::split(server_io);
             // A negative HeartBtInt(108) fails the engine's own check on
-            // the first Logon, after the application has seen it.
+            // the first Logon, before application input.
             let first_msg = build_peer_logon(1, -1);
             let (session_task, mut events_rx, _control_tx) =
                 harness.spawn_acceptor(server_reader, server_writer, first_msg);
@@ -617,10 +617,6 @@ async fn refused_first_logon_ends_without_session_ready() {
             let logout = read_one_message(&mut client_io, &mut rbuf).await;
             assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
 
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Logon)
-            );
             assert_matches!(
                 events_rx.recv().await.unwrap(),
                 TestEvent::SessionEnd(DisconnectReason::InvalidLogonState)

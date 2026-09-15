@@ -164,10 +164,7 @@ async fn on_logon_reset_in_session_with_different_heart_bt_int_is_refused() {
             Some(true),
             None,
         );
-        assert_matches!(
-            accept_input(&mut engine, msg, &mut storage),
-            InputResult::Handled
-        );
+        assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
         assert_reset_refused(
             &mut engine,
             &mut storage,

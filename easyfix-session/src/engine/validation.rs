@@ -1,10 +1,14 @@
-//! Header verification and the session's response to validation failures.
+//! Inbound message validation and the session's response to failures.
 
 use chrono::Utc;
 use easyfix_core::{
-    base_messages::{HeaderBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
+    base_messages::{
+        HeaderBase, MsgTypeBase, ResendRequestBase, SequenceResetBase, SessionRejectReasonBase,
+        SessionStatusBase,
+    },
     basic_types::{
-        FixStr, FixString, MsgTypeField, SeqNum, SessionRejectReasonField, TagNum, UtcTimestamp,
+        FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, TagNum,
+        UtcTimestamp,
     },
     fix_str,
     message::SessionMessage,
@@ -18,6 +22,8 @@ const TAG_SENDER_COMP_ID: TagNum = 49;
 const TAG_SENDING_TIME: TagNum = 52;
 const TAG_TARGET_COMP_ID: TagNum = 56;
 const TAG_ORIG_SENDING_TIME: TagNum = 122;
+const TAG_BEGIN_SEQ_NO: TagNum = 7;
+const TAG_NEW_SEQ_NO: TagNum = 36;
 
 /// Failure of header verification.
 ///
@@ -474,73 +480,95 @@ impl<M: SessionMessage> SessionEngine<M> {
         self.validate_impl(header, msg_type, storage, true, true, false)
     }
 
-    /// [`Self::validate_impl`] specialized for [`Self::on_logon`]. Skips
-    /// the too-high check (Logon's seq-num is decided after `is_normal`
-    /// branching in the handler) and forwards `reset_pending` so the
-    /// logon-state check permits a re-Logon when ResetSeqNumFlag=Y.
-    ///
-    /// An unconfirmed local reset skips too-low validation: its ACK
-    /// number and reset flag are checked together by [`Self::on_logon`].
-    pub(super) fn validate_logon<S: MessagesStorage>(
-        &mut self,
-        header: &HeaderBase<'_>,
-        storage: &mut S,
-        reset_pending: bool,
-    ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
-        self.validate_impl(
-            header,
-            MsgTypeField::from(MsgTypeBase::Logon),
-            storage,
-            false,
-            !self.state.local_reset_unconfirmed,
-            reset_pending,
-        )
-    }
-
-    /// [`Self::validate_impl`] specialized for
-    /// [`Self::on_sequence_reset`]. Both seq-num checks are gated by
-    /// `gap_fill_flag`: a SequenceReset without GapFill is a reset
-    /// directive whose own seq-num is irrelevant.
+    /// Validate the header and NewSeqNo before delivering a SequenceReset.
+    /// A Reset ignores its own MsgSeqNum; a GapFill follows normal ordering.
     pub(super) fn validate_sequence_reset<S: MessagesStorage>(
         &mut self,
         header: &HeaderBase<'_>,
+        sequence_reset: SequenceResetBase,
         storage: &mut S,
-        gap_fill_flag: bool,
     ) -> Result<Option<HandlerResult>, FatalError> {
         self.ensure_healthy()?;
 
-        self.validate_impl(
+        let gap_fill_flag = sequence_reset.gap_fill_flag.unwrap_or(false);
+        let msg_type = MsgTypeField::from(MsgTypeBase::SequenceReset);
+        if let Some(result) = self.validate_impl(
             header,
-            MsgTypeField::from(MsgTypeBase::SequenceReset),
+            msg_type,
             storage,
             gap_fill_flag,
             gap_fill_flag,
             false,
-        )
+        )? {
+            return Ok(Some(result));
+        }
+
+        // A GapFill reaches this check in sequence. Equality is invalid
+        // there (Test Cases Scenario 10(e)), but a Reset with the same
+        // NewSeqNo is accepted (Scenario 11(b)). Neither refusal consumes
+        // an incoming number (Scenario 11(c)).
+        let new_seq_no = sequence_reset.new_seq_no;
+        let next_target = storage.next_target_msg_seq_num().get();
+        if new_seq_no < next_target || (gap_fill_flag && new_seq_no == next_target) {
+            let reason = SessionRejectReasonBase::ValueIsIncorrect;
+            let tag = Int::from(TAG_NEW_SEQ_NO);
+            let text = format!("{reason:?} (tag={tag}) - attempt to lower sequence number");
+            self.send_reject(
+                Some(msg_type.as_fix_str().to_owned()),
+                header.msg_seq_num,
+                reason.into(),
+                Some(TAG_NEW_SEQ_NO),
+                Some(FixString::from_ascii_lossy(text.into_bytes())),
+            );
+            return Ok(Some(HandlerResult::Handled));
+        }
+
+        Ok(None)
     }
 
-    /// [`Self::validate_impl`] specialized for
-    /// [`Self::on_resend_request`]. Skips the too-high check; a
-    /// ResendRequest with too-high seq must not auto-trigger another
-    /// ResendRequest (would cascade). The handler does its own too-high
-    /// enqueue after queueing the peer's resend range.
+    /// Validate the header and requested range before delivering a ResendRequest.
+    /// A valid request's too-high MsgSeqNum is handled after application acceptance.
     pub(super) fn validate_resend_request<S: MessagesStorage>(
         &mut self,
         header: &HeaderBase<'_>,
+        resend_request: ResendRequestBase,
         storage: &mut S,
     ) -> Result<Option<HandlerResult>, FatalError> {
         self.ensure_healthy()?;
 
-        self.validate_impl(
-            header,
-            MsgTypeField::from(MsgTypeBase::ResendRequest),
-            storage,
-            false,
-            true,
-            false,
-        )
+        let msg_type = MsgTypeField::from(MsgTypeBase::ResendRequest);
+        if let Some(result) = self.validate_impl(header, msg_type, storage, false, true, false)? {
+            return Ok(Some(result));
+        }
+
+        let begin_seq_no = resend_request.begin_seq_no;
+        let end_seq_no = resend_request.end_seq_no;
+        // BeginSeqNo starts at 1; EndSeqNo=0 means infinity (Session Layer
+        // Sections 4.1, 4.8.2). An invalid range draws Reject 373=5
+        // (Test Cases Scenario 14(e)), even when its MsgSeqNum is too high:
+        // a queued ResendRequest is not processed again after gap recovery.
+        if begin_seq_no == 0 || (end_seq_no != 0 && begin_seq_no > end_seq_no) {
+            let reason = SessionRejectReasonBase::ValueIsIncorrect;
+            let tag = Int::from(TAG_BEGIN_SEQ_NO);
+            let text = format!(
+                "{reason:?} (tag={tag}) - invalid resend range {begin_seq_no}..{end_seq_no}"
+            );
+            self.send_reject(
+                Some(msg_type.as_fix_str().to_owned()),
+                header.msg_seq_num,
+                reason.into(),
+                Some(TAG_BEGIN_SEQ_NO),
+                Some(FixString::from_ascii_lossy(text.into_bytes())),
+            );
+
+            if header.msg_seq_num > storage.next_target_msg_seq_num().get() {
+                return Ok(Some(HandlerResult::Enqueue));
+            }
+            self.consume_seq_num(msg_type, header.msg_seq_num, storage)?;
+            return Ok(Some(HandlerResult::Handled));
+        }
+
+        Ok(None)
     }
 
     /// [`Self::validate_impl`] specialized for [`Self::on_reject`].

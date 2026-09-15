@@ -107,13 +107,11 @@ impl<M: SessionMessage> SessionEngine<M> {
     ///    `AppMsg` / `AdminMsg` for the application callback, or setting
     ///    the disconnect flag.
     ///
-    /// Protocol logic (sending heartbeats, transitioning logon state,
-    /// handling resend ranges, etc.) does **not** run during this call.
-    /// It is deferred to [`Self::process_admin_input`] /
-    /// [`Self::process_app_input`], which the IO loop calls after the
-    /// `on_admin_msg_in` / `on_app_msg_in` callback returns. This guarantees
-    /// the application sees every inbound message after validation but
-    /// before the engine reacts on the wire.
+    /// A delivered message has passed all applicable session validation.
+    /// Accepted-message processing is deferred to [`Self::process_admin_input`]
+    /// / [`Self::process_app_input`] after the application callback returns.
+    /// Validation may already handle failures, queue out-of-order input, or
+    /// confirm the peer's acknowledgement of a local reset.
     pub(crate) fn on_input<S: MessagesStorage>(
         &mut self,
         msg: Box<M>,
