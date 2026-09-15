@@ -46,10 +46,16 @@ impl<M: SessionMessage> SessionEngine<M> {
         _reject: RejectBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
+        // A Reject during gap recovery must not trigger another resend cycle.
         Ok(self
-            .validate_reject(header, storage)?
+            .validate(
+                header,
+                MsgTypeBase::Reject.into(),
+                storage,
+                false,
+                true,
+                false,
+            )?
             .unwrap_or(HandlerResult::AdminMsg))
     }
 
@@ -59,8 +65,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         _reject: RejectBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         self.advance_target(storage)?;
         Ok(HandlerResult::Handled)
     }
@@ -99,7 +103,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// 1. [`Self::dispatch`] borrows the message, extracts the
     ///    [`AdminBase`] variant once, and routes to the per-variant
     ///    `on_X` validation handler (or the app-message header validator).
-    ///    On success `on_X` returns `HandlerResult::AdminMsg` (admin) or
+    ///    On success it returns `HandlerResult::AdminMsg` (admin) or
     ///    `HandlerResult::AppMsg` (app); on failure it returns the
     ///    appropriate `Handled` / `Enqueue` / `Disconnect`.
     /// 2. [`Self::apply_result`] consumes `msg` according to the
@@ -131,8 +135,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         msg: &M,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         let header = msg.header();
         Ok(match msg.try_as_admin() {
             Some(AdminBase::Heartbeat(hb)) => self.on_heartbeat(&header, hb, storage)?,
@@ -143,10 +145,8 @@ impl<M: SessionMessage> SessionEngine<M> {
             Some(AdminBase::Logout(lo)) => self.on_logout(&header, lo, storage)?,
             Some(AdminBase::Logon(lg)) => self.on_logon(&header, lg, storage)?,
             None => {
-                // App message: validate header; AppMsg if it passed, otherwise
-                // the failure-mapped HandlerResult.
                 let msg_type = msg.msg_type();
-                self.validate(&header, msg_type, storage)?
+                self.validate(&header, msg_type, storage, true, true, false)?
                     .unwrap_or(HandlerResult::AppMsg)
             }
         })
@@ -163,8 +163,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         msg: &M,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         let header = msg.header();
         // TODO: this `try_as_admin()` re-projects the same AdminBase variant
         // that `dispatch` already built during validation. The construction
@@ -319,7 +317,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Logon follow `preserve_seq_num_on_logon_refusal`.
     ///
     /// For `Reject`: emit a session-level Reject<3> referencing the
-    /// original message - consistent with the [`Self::validate_impl`]
+    /// original message - consistent with the [`Self::validate`]
     /// Reject path.
     ///
     /// For `Logout`: stage a Logout and enter `LogoutSent` when waiting, or
@@ -340,8 +338,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         S: MessagesStorage,
         F: FnOnce(&mut Self, &mut S) -> Result<InputResult<M>, FatalError>,
     {
-        self.ensure_healthy()?;
-
         // Preserving the counter keeps unauthenticated attempts from locking
         // out the real peer. A waiting Logout must still consume the number
         // so the peer's acknowledgement is in sequence.
@@ -513,7 +509,7 @@ impl<M: SessionMessage> SessionEngine<M> {
 
     /// Failed-decode handling when the message's header was recovered
     /// (`DeserializeError::header`): header verdicts run through
-    /// [`Self::validate_impl`] exactly like a cleanly-parsed message and
+    /// [`Self::validate`] exactly like a cleanly-parsed message and
     /// take precedence over the body-level Reject (FIX Session Layer
     /// 4.8.1/4.8.2; Scenario 2(b)/(c)/(e); DESIGN-parse-error-header.md).
     ///
@@ -526,8 +522,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         text: FixString,
         storage: &mut S,
     ) -> Result<(), FatalError> {
-        self.ensure_healthy()?;
-
         let (
             DeserializeErrorKind::Reject {
                 seq_num,
@@ -557,7 +551,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             (true, true)
         };
 
-        match self.validate_impl(
+        match self.validate(
             header,
             msg_type,
             storage,
@@ -603,10 +597,10 @@ impl<M: SessionMessage> SessionEngine<M> {
                 self.request_resend_through(seq_num, storage);
             }
             // Duplicate (silently ignored, Scenario 2(e)) or a
-            // header-level Reject that validate_impl already sent in
+            // header-level Reject that validate already sent in
             // place of the body-level one.
             Some(HandlerResult::Handled) => {}
-            // Session-ending header verdicts. validate_impl already staged
+            // Session-ending header verdicts. validate already staged
             // the output where the spec mandates one: TooLow -> Logout
             // (ReceivedMsgSeqNumTooLow), CompID / SendingTime accuracy ->
             // Reject + Logout. InvalidLogonState disconnects SILENTLY -
@@ -615,7 +609,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             Some(HandlerResult::Disconnect(reason)) => {
                 self.begin_disconnect(reason);
             }
-            // validate_impl never produces message-dispatch results.
+            // validate never produces message-dispatch results.
             Some(HandlerResult::AppMsg | HandlerResult::AdminMsg) => {}
         }
         Ok(())

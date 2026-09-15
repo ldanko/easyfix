@@ -170,8 +170,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         msg: &mut M,
         storage: &mut S,
     ) -> Result<(), FatalError> {
-        self.ensure_healthy()?;
-
         let fill = mem::take(&mut self.state.last_fill);
         if let Some(seq) = fill.seq_num
             && msg.msg_seq_num() == seq.get()

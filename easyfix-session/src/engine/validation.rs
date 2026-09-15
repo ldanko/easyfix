@@ -30,7 +30,7 @@ const TAG_NEW_SEQ_NO: TagNum = 36;
 /// Pure observation - no message ownership, no state mutation. Each
 /// variant is a specific check that did not pass; the downstream policy
 /// (silent ignore, recovery, reject, disconnect) is the caller's
-/// concern via [`SessionEngine::validate_impl`].
+/// concern via [`SessionEngine::validate`].
 #[derive(Debug)]
 pub(super) enum VerifyError {
     /// Sequence number too high - caller enqueues the message and sends
@@ -64,10 +64,9 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// sequence number too-high/too-low. Pure observation: returns
     /// `Result<(), VerifyError>`; queueing the message and sending
     /// ResendRequest/Reject/Logout are the caller's responsibility
-    /// (typically via [`SessionEngine::validate_impl`] or one of its
-    /// role-named wrappers).
+    /// (via [`SessionEngine::validate`]).
     ///
-    /// `reset_pending` is set by [`Self::on_logon`] when the incoming
+    /// `reset_pending` is set by [`Self::validate_logon`] when the incoming
     /// Logon carries `ResetSeqNumFlag=Y` - it bypasses the seq-num
     /// checks (the peer is legitimately renumbering) and tells
     /// [`Self::check_logon_state`] to permit a re-Logon while
@@ -190,7 +189,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Check if the message type is allowed in the current logon state.
     ///
     /// `reset_pending` is forwarded from [`Self::verify_header`] - true
-    /// only when [`Self::on_logon`] is processing a Logon with
+    /// only when [`Self::validate_logon`] is processing a Logon with
     /// `ResetSeqNumFlag=Y`. It permits a re-Logon over an already
     /// established session.
     fn check_logon_state(
@@ -367,12 +366,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     ///   for silently-ignored failures (Duplicate, Reject without
     ///   disconnect); `Enqueue`/`Disconnect(_)` for failures that the
     ///   dispatcher must surface.
-    ///
-    /// Most callers use the role-named wrappers ([`Self::validate`],
-    /// [`Self::validate_logon`], [`Self::validate_sequence_reset`],
-    /// [`Self::validate_resend_request`], [`Self::validate_reject`])
-    /// rather than calling this directly.
-    pub(super) fn validate_impl<S: MessagesStorage>(
+    pub(super) fn validate<S: MessagesStorage>(
         &mut self,
         header: &HeaderBase<'_>,
         msg_type: MsgTypeField,
@@ -381,8 +375,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         check_too_low: bool,
         reset_pending: bool,
     ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
         let Some(error) = self
             .verify_header(
                 header,
@@ -465,21 +457,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         }))
     }
 
-    /// [`Self::validate_impl`] for the common case: check both seq-num
-    /// directions, no reset pending. Used by handlers and the dispatch
-    /// app-message branch - anywhere validation should auto-trigger gap
-    /// recovery on too-high and auto-handle Duplicate/TooLow.
-    pub(super) fn validate<S: MessagesStorage>(
-        &mut self,
-        header: &HeaderBase<'_>,
-        msg_type: MsgTypeField,
-        storage: &mut S,
-    ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
-        self.validate_impl(header, msg_type, storage, true, true, false)
-    }
-
     /// Validate the header and NewSeqNo before delivering a SequenceReset.
     /// A Reset ignores its own MsgSeqNum; a GapFill follows normal ordering.
     pub(super) fn validate_sequence_reset<S: MessagesStorage>(
@@ -488,11 +465,9 @@ impl<M: SessionMessage> SessionEngine<M> {
         sequence_reset: SequenceResetBase,
         storage: &mut S,
     ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
         let gap_fill_flag = sequence_reset.gap_fill_flag.unwrap_or(false);
         let msg_type = MsgTypeField::from(MsgTypeBase::SequenceReset);
-        if let Some(result) = self.validate_impl(
+        if let Some(result) = self.validate(
             header,
             msg_type,
             storage,
@@ -534,10 +509,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         resend_request: ResendRequestBase,
         storage: &mut S,
     ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
         let msg_type = MsgTypeField::from(MsgTypeBase::ResendRequest);
-        if let Some(result) = self.validate_impl(header, msg_type, storage, false, true, false)? {
+        if let Some(result) = self.validate(header, msg_type, storage, false, true, false)? {
             return Ok(Some(result));
         }
 
@@ -569,25 +542,5 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
 
         Ok(None)
-    }
-
-    /// [`Self::validate_impl`] specialized for [`Self::on_reject`].
-    /// Skips the too-high check; a Reject during gap recovery must not
-    /// trigger another resend cycle.
-    pub(super) fn validate_reject<S: MessagesStorage>(
-        &mut self,
-        header: &HeaderBase<'_>,
-        storage: &mut S,
-    ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
-        self.validate_impl(
-            header,
-            MsgTypeField::from(MsgTypeBase::Reject),
-            storage,
-            false,
-            true,
-            false,
-        )
     }
 }

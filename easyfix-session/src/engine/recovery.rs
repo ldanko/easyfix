@@ -294,8 +294,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         resend_request: ResendRequestBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         Ok(self
             .validate_resend_request(header, resend_request, storage)?
             .unwrap_or(HandlerResult::AdminMsg))
@@ -307,8 +305,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         resend_request: ResendRequestBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         let msg_seq_num = header.msg_seq_num;
         let begin_seq_no = resend_request.begin_seq_no;
         let end_seq_no = resend_request.end_seq_no;
@@ -359,8 +355,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         sequence_reset: SequenceResetBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         Ok(self
             .validate_sequence_reset(header, sequence_reset, storage)?
             .unwrap_or(HandlerResult::AdminMsg))
@@ -372,8 +366,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         sequence_reset: SequenceResetBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         let new_seq_no = sequence_reset.new_seq_no;
         let next_target = storage.next_target_msg_seq_num().get();
 

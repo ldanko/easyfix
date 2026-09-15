@@ -5,7 +5,7 @@ use std::{borrow::Cow, num::NonZeroU64, time::Duration};
 use chrono::Utc;
 use easyfix_core::{
     base_messages::{AdminBase, HeaderBase, HeartbeatBase, MsgTypeBase, TestRequestBase},
-    basic_types::{FixString, Int, MsgTypeField, NonZeroSeqNum, SeqNum},
+    basic_types::{FixString, Int, NonZeroSeqNum, SeqNum},
     fix_str,
     message::SessionMessage,
 };
@@ -67,11 +67,15 @@ impl<M: SessionMessage> SessionEngine<M> {
         _heartbeat: HeartbeatBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
-        let msg_type = MsgTypeField::from(MsgTypeBase::Heartbeat);
         Ok(self
-            .validate(header, msg_type, storage)?
+            .validate(
+                header,
+                MsgTypeBase::Heartbeat.into(),
+                storage,
+                true,
+                true,
+                false,
+            )?
             .unwrap_or(HandlerResult::AdminMsg))
     }
 
@@ -81,8 +85,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         heartbeat: HeartbeatBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         // Session Layer §4.5.5 answers a TestRequest only with a Heartbeat
         // carrying its TestReqID(112); Transport §5.1 reads the same rule
         // without the id ("If there is still no Heartbeat message
@@ -149,11 +151,15 @@ impl<M: SessionMessage> SessionEngine<M> {
         _test_request: TestRequestBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
-        let msg_type = MsgTypeField::from(MsgTypeBase::TestRequest);
         Ok(self
-            .validate(header, msg_type, storage)?
+            .validate(
+                header,
+                MsgTypeBase::TestRequest.into(),
+                storage,
+                true,
+                true,
+                false,
+            )?
             .unwrap_or(HandlerResult::AdminMsg))
     }
 
@@ -163,8 +169,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         test_request: TestRequestBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         self.send_heartbeat(Some(test_request.test_req_id.into_owned()));
         self.advance_target(storage)?;
         Ok(HandlerResult::Handled)

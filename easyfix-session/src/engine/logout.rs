@@ -89,10 +89,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         _logout: LogoutBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         Ok(if self.state.local_reset_unconfirmed {
-            self.validate_impl(
+            self.validate(
                 header,
                 MsgTypeBase::Logout.into(),
                 storage,
@@ -103,7 +101,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             .unwrap_or(HandlerResult::AdminMsg)
         } else if self.session_settings.verify_logout {
             let msg_type = MsgTypeField::from(MsgTypeBase::Logout);
-            self.validate(header, msg_type, storage)?
+            self.validate(header, msg_type, storage, true, true, false)?
                 .unwrap_or(HandlerResult::AdminMsg)
         } else {
             HandlerResult::AdminMsg
@@ -116,8 +114,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         _logout: LogoutBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         self.state.reset_probe_id = None;
         self.advance_target(storage)?;
         Ok(match self.state.logon_state {

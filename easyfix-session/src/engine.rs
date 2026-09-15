@@ -456,6 +456,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         self.state.fatal_error
     }
 
+    // Check at fallible engine entry points. Internal helpers propagate fatal
+    // errors immediately, so nested checks cannot observe a new failure.
     fn ensure_healthy(&self) -> Result<(), FatalError> {
         if self.has_fatal_error() {
             Err(FatalError)
@@ -478,7 +480,6 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Consume the incoming sequence number just processed.
     // The dispatch tail handles reaching MAX, including via SequenceReset.
     fn advance_target<S: MessagesStorage>(&mut self, storage: &mut S) -> Result<(), FatalError> {
-        self.ensure_healthy()?;
         let seq_num = storage.next_target_msg_seq_num();
         if let Some(next) = seq_num.checked_add(1) {
             storage.set_next_target_msg_seq_num(next).map_err(|error| {
@@ -490,7 +491,6 @@ impl<M: SessionMessage> SessionEngine<M> {
     }
 
     fn reset_storage<S: MessagesStorage>(&mut self, storage: &mut S) -> Result<(), FatalError> {
-        self.ensure_healthy()?;
         storage
             .reset()
             .map_err(|error| self.fail_storage("reset", &error))
@@ -507,8 +507,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         seq_num: SeqNum,
         storage: &mut S,
     ) -> Result<(), FatalError> {
-        self.ensure_healthy()?;
-
         if msg_type != MsgTypeBase::SequenceReset
             && seq_num == storage.next_target_msg_seq_num().get()
         {

@@ -186,8 +186,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         logon: LogonBase,
         storage: &mut S,
     ) -> Result<Option<HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
         let reset_seq_num_flag = logon.reset_seq_num_flag.unwrap_or(false);
 
         // The peer's MaxMessageSize(383) is deliberately not judged here -
@@ -198,7 +196,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         // Verify the header before judging reset permission and ACK fields.
         // Logon's too-high handling follows its acknowledgement. A local
         // reset ACK has its sequence number checked together with tag 141.
-        if let Some(hr) = self.validate_impl(
+        if let Some(hr) = self.validate(
             header,
             MsgTypeField::from(MsgTypeBase::Logon),
             storage,
@@ -380,8 +378,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         logon: LogonBase,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.ensure_healthy()?;
-
         let msg_seq_num = header.msg_seq_num;
 
         let reset_seq_num_flag = logon.reset_seq_num_flag.unwrap_or(false);
@@ -582,8 +578,6 @@ impl<M: SessionMessage> SessionEngine<M> {
         heart_bt_int: Int,
         storage: &mut S,
     ) -> Result<Result<u64, HandlerResult>, FatalError> {
-        self.ensure_healthy()?;
-
         // The conversion is the check: every non-negative `Int` fits, and
         // nothing above zero is refused - the spec sets no ceiling.
         if let Ok(secs) = u64::try_from(heart_bt_int) {
