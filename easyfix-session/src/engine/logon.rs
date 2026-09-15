@@ -1,13 +1,13 @@
 //! Logon exchange, parameter negotiation, and reset acknowledgement.
 
-use std::{num::NonZeroU64, time::Instant};
+use std::{borrow::Cow, num::NonZeroU64, time::Instant};
 
 use easyfix_core::{
     base_messages::{
         AdminBase, EncryptMethodBase, HeaderBase, LogonBase, MsgTypeBase, SessionRejectReasonBase,
         SessionStatusBase,
     },
-    basic_types::{FixString, Int, Length, MsgTypeField, NonZeroSeqNum, SeqNum, TagNum},
+    basic_types::{FixStr, FixString, Int, Length, MsgTypeField, NonZeroSeqNum, SeqNum, TagNum},
     fix_str,
     message::SessionMessage,
 };
@@ -212,17 +212,16 @@ impl<M: SessionMessage> SessionEngine<M> {
                 self.consume_seq_num(MsgTypeBase::Logon.into(), header.msg_seq_num, storage)?;
                 self.push_logout(
                     None,
-                    Some(
-                        fix_str!("Retransmitted Logon cannot acknowledge sequence number reset")
-                            .to_owned(),
-                    ),
+                    Some(Cow::Borrowed(fix_str!(
+                        "Retransmitted Logon cannot acknowledge sequence number reset"
+                    ))),
                 );
                 return Ok(Some(HandlerResult::Disconnect(
                     DisconnectReason::InvalidLogonState,
                 )));
             }
             if !reset_seq_num_flag || header.msg_seq_num != 1 {
-                self.push_logout(None, Some(fix_str!("Sequence number reset acknowledgement requires ResetSeqNumFlag=Y and MsgSeqNum=1").to_owned()));
+                self.push_logout(None, Some(Cow::Borrowed(fix_str!("Sequence number reset acknowledgement requires ResetSeqNumFlag=Y and MsgSeqNum=1"))));
                 return Ok(Some(HandlerResult::Disconnect(
                     DisconnectReason::InvalidLogonState,
                 )));
@@ -270,25 +269,31 @@ impl<M: SessionMessage> SessionEngine<M> {
             return Ok(Some(HandlerResult::Handled));
         } else if reset_seq_num_flag {
             let text = if header.msg_seq_num != 1 {
-                Some(FixString::from_ascii_lossy(
+                Some(Cow::Owned(FixString::from_ascii_lossy(
                     format!(
                         "ResetSeqNumFlag=Y requires MsgSeqNum=1, got {}",
                         header.msg_seq_num
                     )
                     .into_bytes(),
-                ))
+                )))
             } else if matches!(self.state.logon_state, LogonState::LogonSent) {
-                Some(fix_str!("Unsolicited ResetSeqNumFlag=Y in Logon response").to_owned())
+                Some(Cow::Borrowed(fix_str!(
+                    "Unsolicited ResetSeqNumFlag=Y in Logon response"
+                )))
             } else if matches!(self.state.logon_state, LogonState::Idle)
                 && !self.session_settings.accept_reset_on_connect
             {
-                Some(fix_str!("Resetting the sequence number upon FIX connection establishment is not supported").to_owned())
+                Some(Cow::Borrowed(fix_str!(
+                    "Resetting the sequence number upon FIX connection establishment is not supported"
+                )))
             } else if matches!(
                 self.state.logon_state,
                 LogonState::Established | LogonState::ResetPending | LogonState::ResetProbe
             ) && !self.session_settings.accept_reset_in_session
             {
-                Some(fix_str!("Resetting the sequence number is not supported").to_owned())
+                Some(Cow::Borrowed(fix_str!(
+                    "Resetting the sequence number is not supported"
+                )))
             } else {
                 None
             };
@@ -320,13 +325,13 @@ impl<M: SessionMessage> SessionEngine<M> {
         if !first_logon && heart_bt_secs != expected_heart_bt_secs {
             let text = if acknowledge {
                 self.state.heartbeat_interval.map_or_else(
-                    || fix_str!("Invalid HeartBtInt(108)").to_owned(),
-                    invalid_heart_bt_int_text,
+                    || Cow::Borrowed(fix_str!("Invalid HeartBtInt(108)")),
+                    |interval| Cow::Owned(invalid_heart_bt_int_text(interval)),
                 )
             } else {
-                FixString::from_ascii_lossy(format!(
+                Cow::Owned(FixString::from_ascii_lossy(format!(
                     "HeartBtInt(108) not echoed: expected {expected_heart_bt_secs}, got {heart_bt_secs}"
-                ).into_bytes())
+                ).into_bytes()))
             };
             error!("{text}");
             self.push_logout(None, Some(text));
@@ -514,25 +519,28 @@ impl<M: SessionMessage> SessionEngine<M> {
         next_sender: SeqNum,
     ) -> Option<HandlerResult> {
         let next_expected = next_expected_msg_seq_num?;
-        let (session_status, text) = if next_expected == 0 {
-            (None, "NextExpectedMsgSeqNum(789) is zero".to_owned())
+        let (session_status, text): (_, Cow<'static, FixStr>) = if next_expected == 0 {
+            (
+                None,
+                Cow::Borrowed(fix_str!("NextExpectedMsgSeqNum(789) is zero")),
+            )
         } else if next_expected > next_sender {
             (
                 Some(SessionStatusBase::ReceivedNextExpectedMsgSeqNumTooHigh.into()),
-                format!(
-                    "NextExpectedMsgSeqNum(789) too high \
+                Cow::Owned(FixString::from_ascii_lossy(
+                    format!(
+                        "NextExpectedMsgSeqNum(789) too high \
                      (expected {next_sender}, got {next_expected})"
-                ),
+                    )
+                    .into_bytes(),
+                )),
             )
         } else {
             return None;
         };
 
         error!("{text}");
-        self.push_logout(
-            session_status,
-            Some(FixString::from_ascii_lossy(text.into_bytes())),
-        );
+        self.push_logout(session_status, Some(text));
         Some(HandlerResult::Disconnect(
             DisconnectReason::InvalidLogonState,
         ))
@@ -558,7 +566,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         );
         error!("{text}");
         self.consume_seq_num(MsgTypeBase::Logon.into(), msg_seq_num, storage)?;
-        self.push_logout(None, Some(text));
+        self.push_logout(None, Some(Cow::Owned(text)));
         Ok(Some(HandlerResult::Disconnect(
             DisconnectReason::InvalidLogonState,
         )))
@@ -584,23 +592,20 @@ impl<M: SessionMessage> SessionEngine<M> {
             return Ok(Ok(secs));
         }
         error!("Invalid HeartBtInt {heart_bt_int} (must be >= 0)");
-        let text = fix_str!("Invalid HeartBtInt(108)").to_owned();
-        self.consume_seq_num(MsgTypeBase::Logon.into(), msg_seq_num, storage)?;
+        const MSG_TYPE: MsgTypeField = MsgTypeBase::Logon.raw_value();
+        let text = fix_str!("Invalid HeartBtInt(108)");
+        self.consume_seq_num(MSG_TYPE, msg_seq_num, storage)?;
         self.send_reject(
-            Some(
-                MsgTypeField::from(MsgTypeBase::Logon)
-                    .as_fix_str()
-                    .to_owned(),
-            ),
+            Some(Cow::Borrowed(MSG_TYPE.as_fix_str())),
             msg_seq_num,
             SessionRejectReasonBase::ValueIsIncorrect.into(),
             Some(TAG_HEART_BT_INT),
-            Some(text.clone()),
+            Some(Cow::Borrowed(text)),
         );
         // The Reject is Test Cases §4.4.1 Scenario 1S(d)'s optional step 2;
         // the Logout with Text(58) referencing the error is its step 3, and
         // that one is not optional.
-        self.push_logout(None, Some(text));
+        self.push_logout(None, Some(Cow::Borrowed(text)));
         Ok(Err(HandlerResult::Disconnect(
             DisconnectReason::InvalidLogonState,
         )))

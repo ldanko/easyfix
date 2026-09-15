@@ -1,4 +1,4 @@
-use std::{assert_matches, cell::Cell, error::Error as StdError, fmt, rc::Rc};
+use std::{assert_matches, borrow::Cow, cell::Cell, error::Error as StdError, fmt, rc::Rc};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -1368,7 +1368,7 @@ async fn idle_lifecycle_operations_preserve_storage_without_callbacks() {
 
     assert!(!initiator.is_session_active());
     initiator
-        .logout(None, Some(fix_str!("Window closed").to_owned()))
+        .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))))
         .await
         .unwrap();
     initiator.disconnect().await.unwrap();
@@ -1425,7 +1425,7 @@ async fn logout_queued_before_first_poll_reaches_the_session() {
             let (reader, writer) = io::split(local);
             let session = initiator.session_task(reader, writer, None).unwrap();
             initiator
-                .logout(None, Some(fix_str!("Window closed").to_owned()))
+                .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))))
                 .await
                 .unwrap();
             let task = task::spawn_local(session);

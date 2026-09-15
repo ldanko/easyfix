@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -13,7 +13,7 @@ use easyfix_test_messages::Message;
 use super::support::{assert_msg_type, limit};
 use crate::{
     application::DisconnectReason,
-    engine::{PendingOutput, SendFailure},
+    engine::{PendingOutput, SendFailure, output::text_field},
     messages_storage::MessagesStorage,
     test_helpers,
     test_helpers::{
@@ -32,7 +32,7 @@ fn scratch_returns_buffer_of_at_least_max_message_size() {
 #[test]
 fn send_reject_produces_reject_in_admin_output() {
     let (mut engine, _store) = EngineBuilder::new().logged_on().build();
-    let text = fix_str!("Bad tag").to_owned();
+    let text = Cow::Borrowed(fix_str!("Bad tag"));
     engine.send_reject(
         None,
         1,
@@ -56,14 +56,18 @@ fn send_reject_produces_reject_in_admin_output() {
 
 /// `Text(58)` is optional on `Reject<3>` (FIX Transport Section 5.5), so an
 /// application that has nothing to add beyond `SessionRejectReason(373)` omits
-/// the field. Both spellings of "no text" must reach that same encoding: an
+/// the field. All spellings of "no text" must reach that same encoding: an
 /// empty value is not a legal FIX field - Session Layer reserves
 /// `SessionRejectReason = 4, Tag specified without a value` for it - so
 /// emitting `58=` would fail serialization and, before the Reject ever got a
 /// seq num on the wire, cost the whole message.
 #[test]
 fn send_reject_omits_empty_text() {
-    for text in [None, Some(FixString::default())] {
+    for text in [
+        None,
+        Some(Cow::Owned(FixString::default())),
+        Some(Cow::Borrowed(fix_str!(""))),
+    ] {
         let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
         engine.send_reject(
             None,
@@ -89,6 +93,21 @@ fn send_reject_omits_empty_text() {
             "no Text(58) field may reach the wire: {:?}",
             String::from_utf8_lossy(&bytes)
         );
+    }
+}
+
+#[test]
+fn text_field_preserves_borrowed_and_owned_storage() {
+    for msg_type in [MsgTypeBase::Reject, MsgTypeBase::Logout] {
+        let literal = fix_str!("Bad tag");
+        let borrowed = text_field(Some(Cow::Borrowed(literal)), msg_type);
+        assert_matches!(borrowed, Some(Cow::Borrowed(text)) if text == literal);
+
+        let owned = literal.to_owned();
+        let allocation = owned.as_bytes().as_ptr();
+        let result = text_field(Some(Cow::Owned(owned)), msg_type);
+        assert_matches!(result, Some(Cow::Owned(text))
+            if text == literal && text.as_bytes().as_ptr() == allocation);
     }
 }
 

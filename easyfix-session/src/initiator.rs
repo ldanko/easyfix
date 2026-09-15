@@ -11,12 +11,12 @@
 //! [`connect_with_reset`](Initiator::connect_with_reset) to request a new one.
 
 use std::{
-    cell::RefCell, error::Error as StdError, future::Future, io, marker::PhantomData,
+    borrow::Cow, cell::RefCell, error::Error as StdError, future::Future, io, marker::PhantomData,
     net::SocketAddr, rc::Rc,
 };
 
 use easyfix_core::{
-    basic_types::{FixString, SessionStatusField},
+    basic_types::{FixStr, SessionStatusField},
     message::SessionMessage,
 };
 use tokio::{
@@ -504,7 +504,7 @@ where
     pub async fn logout(
         &self,
         session_status: Option<SessionStatusField>,
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
     ) -> Result<(), InitiatorError> {
         let tx = self.inner.current_session.borrow().clone();
         if let Some(tx) = tx {

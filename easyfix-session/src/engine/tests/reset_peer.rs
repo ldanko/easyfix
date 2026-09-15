@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
@@ -229,7 +229,7 @@ async fn on_logon_reset_refused_by_application_leaves_counters() {
             msg,
             InputAction::Logout {
                 session_status: None,
-                text: Some(fix_str!("Reset refused").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("Reset refused"))),
                 disconnect: true,
             },
             &mut storage,

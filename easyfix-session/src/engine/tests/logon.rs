@@ -1,4 +1,4 @@
-use std::{assert_matches, num::NonZeroU16};
+use std::{assert_matches, borrow::Cow, num::NonZeroU16};
 
 use easyfix_core::{
     base_messages::{
@@ -702,7 +702,7 @@ fn app_rejected_logon_increments_next_num_in() {
             msg,
             InputAction::Reject {
                 reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
-                text: Some(fix_str!("rejected by application").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("rejected by application"))),
                 tag: None,
             },
             &mut storage,
@@ -746,7 +746,7 @@ async fn refused_logons_can_preserve_incoming_sequence_and_history() {
                     let action = if send_logout {
                         InputAction::Logout {
                             session_status: None,
-                            text: Some(fix_str!("Logon refused").to_owned()),
+                            text: Some(Cow::Borrowed(fix_str!("Logon refused"))),
                             disconnect: true,
                         }
                     } else {

@@ -1,4 +1,4 @@
-use std::{assert_matches, time::Duration};
+use std::{assert_matches, borrow::Cow, time::Duration};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -163,8 +163,8 @@ async fn reset_probe_callback_outcomes_precede_the_expired_preparation_budget() 
             time::advance(Duration::from_secs(2)).await;
             let action = match outcome {
                 0 => InputAction::Disconnect,
-                1 | 2 => InputAction::Logout { session_status: None, text: Some(fix_str!("Application logout").to_owned()), disconnect: outcome == 1 },
-                3 => InputAction::Reject { reason: SessionRejectReasonBase::ValueIsIncorrect.into(), tag: None, text: Some(fix_str!("Application reject").to_owned()) },
+                1 | 2 => InputAction::Logout { session_status: None, text: Some(Cow::Borrowed(fix_str!("Application logout"))), disconnect: outcome == 1 },
+                3 => InputAction::Reject { reason: SessionRejectReasonBase::ValueIsIncorrect.into(), tag: None, text: Some(Cow::Borrowed(fix_str!("Application reject"))) },
                 _ => InputAction::Accept,
             };
             release.send(action).unwrap();

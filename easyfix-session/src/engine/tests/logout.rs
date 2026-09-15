@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, LogoutBase, MsgTypeBase, SessionStatusBase},
@@ -31,7 +31,7 @@ fn send_logout_produces_logout_in_admin_output() {
 fn send_logout_with_text() {
     let (mut engine, _store) = EngineBuilder::new().logged_on().build();
     let text = FixString::from_ascii_lossy(b"Goodbye".to_vec());
-    engine.send_logout(None, Some(text));
+    engine.send_logout(None, Some(Cow::Owned(text)));
     let msg = take_admin(&mut engine);
     let AdminBase::Logout(logout) = as_admin(&msg) else {
         panic!("expected Logout");
@@ -44,21 +44,26 @@ fn send_logout_with_text() {
 /// an invalid Logon, while the preceding Reject is optional.
 #[test]
 fn send_logout_omits_empty_text() {
-    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-    engine.send_logout(None, Some(FixString::default()));
-    let mut msg = take_admin(&mut engine);
-    let AdminBase::Logout(logout) = as_admin(&msg) else {
-        panic!("expected Logout");
-    };
-    assert_eq!(logout.text, None, "empty Text(58) must be omitted");
+    for text in [
+        Cow::Borrowed(fix_str!("")),
+        Cow::Owned(FixString::default()),
+    ] {
+        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+        engine.send_logout(None, Some(text));
+        let mut msg = take_admin(&mut engine);
+        let AdminBase::Logout(logout) = as_admin(&msg) else {
+            panic!("expected Logout");
+        };
+        assert_eq!(logout.text, None, "empty Text(58) must be omitted");
 
-    engine.fill_header(&mut msg, &mut storage).unwrap();
-    let bytes = test_helpers::serialize_message(&msg);
-    assert!(
-        !bytes.windows(4).any(|w| w == b"\x0158="),
-        "no Text(58) field may reach the wire: {:?}",
-        String::from_utf8_lossy(&bytes)
-    );
+        engine.fill_header(&mut msg, &mut storage).unwrap();
+        let bytes = test_helpers::serialize_message(&msg);
+        assert!(
+            !bytes.windows(4).any(|w| w == b"\x0158="),
+            "no Text(58) field may reach the wire: {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
 }
 
 // --- Logout ---
@@ -237,7 +242,7 @@ fn on_control_logout_sends_logout_and_sets_deadline() {
 
     engine.on_control(ControlMsg::Logout {
         session_status: Some(SessionStatusBase::SessionLogoutComplete.into()),
-        text: Some(fix_str!("Shutting down").to_owned()),
+        text: Some(Cow::Borrowed(fix_str!("Shutting down"))),
     });
 
     // Logout in admin_output

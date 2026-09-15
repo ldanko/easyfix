@@ -1,11 +1,13 @@
 use std::{
+    borrow::Cow,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU64},
 };
 
 use easyfix_core::{
     basic_types::{
-        FixString, Length, SessionRejectReasonField, SessionStatusField, TagNum, TimePrecision,
+        FixStr, FixString, Length, SessionRejectReasonField, SessionStatusField, TagNum,
+        TimePrecision,
     },
     message::{DeserializeError, SessionMessage},
     serializer::SerializeError,
@@ -29,7 +31,7 @@ pub enum InputAction {
         /// (FIX Session Layer §4.5.4), so prefer one where the reason
         /// alone does not identify the problem. An empty string is
         /// treated as `None` - a FIX field cannot carry an empty value.
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
         /// Tag that triggered the reject, sent as `RefTagID(371)`.
         tag: Option<TagNum>,
     },
@@ -43,7 +45,7 @@ pub enum InputAction {
         session_status: Option<SessionStatusField>,
         /// Sent as `Text(58)`. An empty string is treated as `None` - a FIX
         /// field cannot carry an empty value.
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
         /// If `true`, disconnect after sending the Logout.
         disconnect: bool,
     },
@@ -61,9 +63,10 @@ pub enum InputAction {
 /// single value this acceptor requires: `"Invalid HeartBtInt(108), expected
 /// value N seconds"`, the wording FIX Session Layer §4.3.5.1 prescribes.
 ///
-/// Pass it as the `text` of an [`InputAction::Logout`] returned from
-/// [`Application::on_admin_msg_in`]. `expected` is the spec's N, which
-/// Section 4.3.5.1 requires to be larger than zero.
+/// Wrap in `Some(Cow::Owned(...))` and pass as the `text` of an
+/// [`InputAction::Logout`] returned from [`Application::on_admin_msg_in`].
+/// `expected` is the spec's N, which Section 4.3.5.1 requires to be larger
+/// than zero.
 pub fn invalid_heart_bt_int_text(expected: impl Into<NonZeroU64>) -> FixString {
     let expected: NonZeroU64 = expected.into();
     // The spec's wording is ASCII throughout and `expected` renders as
@@ -78,9 +81,10 @@ pub fn invalid_heart_bt_int_text(expected: impl Into<NonZeroU64>) -> FixString {
 /// between N and M seconds"`, the wording FIX Session Layer §4.3.5.2
 /// prescribes.
 ///
-/// Pass it as the `text` of an [`InputAction::Logout`] returned from
-/// [`Application::on_admin_msg_in`]. `min` and `max` are the spec's N and M;
-/// §4.3.5.2 requires M to be larger than N, which the types cannot express.
+/// Wrap in `Some(Cow::Owned(...))` and pass as the `text` of an
+/// [`InputAction::Logout`] returned from [`Application::on_admin_msg_in`].
+/// `min` and `max` are the spec's N and M; §4.3.5.2 requires M to be larger
+/// than N, which the types cannot express.
 pub fn invalid_heart_bt_int_range_text(min: NonZeroU16, max: NonZeroU16) -> FixString {
     FixString::from_ascii_lossy(
         format!("Invalid HeartBtInt(108), expected value between {min} and {max} seconds")
@@ -93,9 +97,10 @@ pub fn invalid_heart_bt_int_range_text(min: NonZeroU16, max: NonZeroU16) -> FixS
 /// exceeds maximum message size of Y"`, the wording FIX Session Layer §4.3.6
 /// prescribes.
 ///
-/// Pass it as the `text` of an [`InputAction::Logout`] returned from
-/// [`Application::on_admin_msg_in`]. `announced` is the peer's value, taken
-/// from its `Logon<A>`; `supported` is the largest this side can process.
+/// Wrap in `Some(Cow::Owned(...))` and pass as the `text` of an
+/// [`InputAction::Logout`] returned from [`Application::on_admin_msg_in`].
+/// `announced` is the peer's value, taken from its `Logon<A>`; `supported`
+/// is the largest this side can process.
 /// The session does not judge the peer's value itself - either peer may end
 /// the connection over it, and which sizes are workable is the application's
 /// to know.

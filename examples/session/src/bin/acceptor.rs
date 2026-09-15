@@ -14,7 +14,7 @@
 //! fits in the per-session handler. Nothing but the shutdown signal lives
 //! outside the session.
 
-use std::{cell::Cell, net::SocketAddr, rc::Rc};
+use std::{borrow::Cow, cell::Cell, net::SocketAddr, rc::Rc};
 
 use easyfix_session::{
     Acceptor, Application, ApplicationFactory, DisconnectReason, InMemoryStorage, InputAction,
@@ -206,7 +206,7 @@ async fn run_acceptor() {
     acceptor
         .shutdown(ShutdownMode::GracefulLogout {
             session_status: None,
-            text: Some(fix_str!("server shutting down").to_owned()),
+            text: Some(Cow::Borrowed(fix_str!("server shutting down"))),
         })
         .await;
     info!("shutdown complete");

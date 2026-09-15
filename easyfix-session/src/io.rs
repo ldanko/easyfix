@@ -6,10 +6,10 @@ mod timer;
 #[cfg(test)]
 mod tests;
 
-use std::{io, ops::RangeInclusive, time::Instant};
+use std::{borrow::Cow, io, ops::RangeInclusive, time::Instant};
 
 use easyfix_core::{
-    basic_types::{FixString, NonZeroSeqNum, SeqNum, SessionStatusField},
+    basic_types::{FixStr, NonZeroSeqNum, SeqNum, SessionStatusField},
     deserializer::DeserializeErrorKind,
     message::{DeserializeError, MsgCat, SessionMessage},
 };
@@ -38,7 +38,7 @@ use crate::{
 pub(crate) enum ControlMsg {
     Logout {
         session_status: Option<SessionStatusField>,
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
     },
     Disconnect,
     ResetRunningSession,

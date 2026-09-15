@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
@@ -29,7 +29,7 @@ fn send_heartbeat_produces_heartbeat_in_admin_output() {
 #[test]
 fn send_heartbeat_with_test_req_id() {
     let (mut engine, _store) = EngineBuilder::new().logged_on().build();
-    let test_req_id = fix_str!("TEST123").to_owned();
+    let test_req_id = Cow::Borrowed(fix_str!("TEST123"));
     engine.send_heartbeat(Some(test_req_id));
     let msg = take_admin(&mut engine);
     let AdminBase::Heartbeat(hb) = as_admin(&msg) else {
@@ -41,7 +41,7 @@ fn send_heartbeat_with_test_req_id() {
 #[test]
 fn send_test_request_produces_test_request_in_admin_output() {
     let (mut engine, _store) = EngineBuilder::new().logged_on().build();
-    let test_req_id = fix_str!("REQ001").to_owned();
+    let test_req_id = Cow::Borrowed(fix_str!("REQ001"));
     engine.send_test_request(test_req_id);
     let msg = take_admin(&mut engine);
     assert_msg_type(&msg, MsgTypeBase::TestRequest);

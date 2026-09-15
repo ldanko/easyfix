@@ -4,7 +4,7 @@ use std::{borrow::Cow, mem};
 
 use easyfix_core::{
     base_messages::{AdminBase, HeaderBase, MsgTypeBase},
-    basic_types::{FixStr, FixString, NonZeroSeqNum, SeqNum, UtcTimestamp},
+    basic_types::{FixStr, NonZeroSeqNum, SeqNum, UtcTimestamp},
     message::SessionMessage,
 };
 use tracing::{error, warn};
@@ -36,19 +36,20 @@ use crate::{
 // bug does. `msg_type` is a parameter because `push_admin` runs outside the
 // `msg` span, so the log has no other way to say which message lost the field.
 pub(super) fn text_field(
-    text: Option<FixString>,
+    text: Option<Cow<'static, FixStr>>,
     msg_type: MsgTypeBase,
 ) -> Option<Cow<'static, FixStr>> {
-    match text {
-        Some(text) if text.is_empty() => {
+    text.filter(|text| {
+        if text.is_empty() {
             warn!(
                 ?msg_type,
                 "empty Text(58) dropped - a FIX field cannot carry an empty value; pass None"
             );
-            None
+            false
+        } else {
+            true
         }
-        other => other.map(Cow::Owned),
-    }
+    })
 }
 
 impl<M: SessionMessage> SessionEngine<M> {

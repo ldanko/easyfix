@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use easyfix_core::{
     base_messages::{AdminBase, HeaderBase, MsgTypeBase, RejectBase, SessionRejectReasonBase},
-    basic_types::{FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, TagNum},
+    basic_types::{FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, TagNum},
     deserializer::{DeserializeErrorKind, LogoutReason},
     fix_str,
     message::{DeserializeError, SessionMessage},
@@ -24,17 +24,17 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Push a Reject<3> to admin_output.
     pub(super) fn send_reject(
         &mut self,
-        ref_msg_type: Option<FixString>,
+        ref_msg_type: Option<Cow<'static, FixStr>>,
         ref_seq_num: SeqNum,
         reason: SessionRejectReasonField,
         ref_tag_id: Option<TagNum>,
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
     ) {
         info!("Message {ref_seq_num} Rejected: {reason:?} (tag={ref_tag_id:?})");
         self.push_admin(AdminBase::Reject(RejectBase {
             ref_seq_num,
             ref_tag_id: ref_tag_id.map(Int::from),
-            ref_msg_type: ref_msg_type.map(Cow::Owned),
+            ref_msg_type,
             session_reject_reason: Some(reason),
             text: text_field(text, MsgTypeBase::Reject),
         }));
@@ -94,7 +94,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             format!("Message size {frame_len} exceeds maximum message size of {limit}")
                 .into_bytes(),
         );
-        self.push_logout(None, Some(text));
+        self.push_logout(None, Some(Cow::Owned(text)));
         self.begin_disconnect(DisconnectReason::MessageTooLarge);
     }
 
@@ -271,9 +271,9 @@ impl<M: SessionMessage> SessionEngine<M> {
             if !matches!(self.state.logon_state, LogonState::LogoutSent { .. }) {
                 self.push_logout(
                     None,
-                    Some(
-                        fix_str!("Reset Logon acknowledgement rejected by application").to_owned(),
-                    ),
+                    Some(Cow::Borrowed(fix_str!(
+                        "Reset Logon acknowledgement rejected by application"
+                    ))),
                 );
             }
             self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
@@ -350,7 +350,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             InputAction::Reject { reason, text, tag } => {
                 self.consume_seq_num(ref_msg_type, ref_seq_num, storage)?;
                 self.send_reject(
-                    Some(ref_msg_type.as_fix_str().to_owned()),
+                    Some(Cow::Owned(ref_msg_type.as_fix_str().to_owned())),
                     ref_seq_num,
                     reason,
                     tag,
@@ -392,7 +392,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) -> Result<InputResult<M>, FatalError> {
         self.ensure_healthy()?;
 
-        let text = FixString::from_ascii_lossy(error.to_string().into_bytes());
+        let text = Cow::Owned(FixString::from_ascii_lossy(error.to_string().into_bytes()));
         error!(deserialize_error = %text);
 
         match &error.kind {
@@ -415,7 +415,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                         DisconnectReason::InvalidBeginString,
                     ),
                 };
-                self.push_logout(None, Some(text.to_owned()));
+                self.push_logout(None, Some(Cow::Borrowed(text)));
                 self.begin_disconnect(disconnect_reason);
             }
             DeserializeErrorKind::Reject {
@@ -446,7 +446,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                     // The decoder may preserve a syntactically valid raw type
                     // even when that type is absent from the dictionary.
                     self.send_reject(
-                        msg_type.clone(),
+                        msg_type.clone().map(Cow::Owned),
                         *seq_num,
                         *reason,
                         *tag,
@@ -469,7 +469,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                     self.begin_disconnect(DisconnectReason::InvalidLogonState);
                 } else {
                     self.send_reject(
-                        msg_type.clone(),
+                        msg_type.clone().map(Cow::Owned),
                         *seq_num,
                         *reason,
                         *tag,
@@ -519,7 +519,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         &mut self,
         error: &DeserializeError,
         msg_type: MsgTypeField,
-        text: FixString,
+        text: Cow<'static, FixStr>,
         storage: &mut S,
     ) -> Result<(), FatalError> {
         let (
@@ -566,7 +566,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             None => {
                 self.consume_seq_num(msg_type, seq_num, storage)?;
                 self.send_reject(
-                    Some(msg_type.as_fix_str().to_owned()),
+                    Some(Cow::Owned(msg_type.as_fix_str().to_owned())),
                     seq_num,
                     reason,
                     tag,

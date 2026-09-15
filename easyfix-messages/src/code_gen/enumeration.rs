@@ -1,6 +1,6 @@
 use easyfix_core::{
     base_messages::{EncryptMethodBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
-    basic_types::{FixStr, Int, MsgTypeValue, SessionRejectReasonValue, SessionStatusValue},
+    basic_types::{FixStr, Int, SessionRejectReasonValue, SessionStatusValue},
 };
 use easyfix_dictionary::Variant;
 use proc_macro2::{Ident, Literal, Span, TokenStream};

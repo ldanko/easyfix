@@ -81,7 +81,7 @@ impl Application<Message> for ResetApp {
         {
             InputAction::Logout {
                 session_status: None,
-                text: Some(fix_str!("Peer rejected reset").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("Peer rejected reset"))),
                 disconnect: true,
             }
         } else {
@@ -2922,7 +2922,7 @@ async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting
                 TEST_TIMEOUT,
                 acceptor.shutdown(ShutdownMode::LogoutAndDisconnect {
                     session_status: None,
-                    text: Some(fix_str!("maintenance").to_owned()),
+                    text: Some(Cow::Borrowed(fix_str!("maintenance"))),
                 }),
             )
             .await
@@ -2988,7 +2988,7 @@ async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
                     acceptor
                         .shutdown(ShutdownMode::GracefulLogout {
                             session_status: None,
-                            text: Some(fix_str!("end of day").to_owned()),
+                            text: Some(Cow::Borrowed(fix_str!("end of day"))),
                         })
                         .await;
                 }
@@ -3103,7 +3103,7 @@ impl Application<Message> for ActionApp {
             AppAction::Accept => InputAction::Accept,
             AppAction::Reject => InputAction::Reject {
                 reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
-                text: Some(fix_str!("not today").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("not today"))),
                 tag: None,
             },
             AppAction::LogoutAndWait => InputAction::Logout {

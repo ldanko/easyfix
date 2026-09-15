@@ -5,7 +5,7 @@ use std::{borrow::Cow, num::NonZeroU64, time::Duration};
 use chrono::Utc;
 use easyfix_core::{
     base_messages::{AdminBase, HeaderBase, HeartbeatBase, MsgTypeBase, TestRequestBase},
-    basic_types::{FixString, Int, NonZeroSeqNum, SeqNum},
+    basic_types::{FixStr, FixString, Int, NonZeroSeqNum, SeqNum},
     fix_str,
     message::SessionMessage,
 };
@@ -48,17 +48,13 @@ impl<M: SessionMessage> SessionEngine<M> {
     }
 
     /// Push a Heartbeat to admin_output.
-    pub(crate) fn send_heartbeat(&mut self, test_req_id: Option<FixString>) {
-        self.push_admin(AdminBase::Heartbeat(HeartbeatBase {
-            test_req_id: test_req_id.map(Cow::Owned),
-        }));
+    pub(crate) fn send_heartbeat(&mut self, test_req_id: Option<Cow<'static, FixStr>>) {
+        self.push_admin(AdminBase::Heartbeat(HeartbeatBase { test_req_id }));
     }
 
     /// Push a TestRequest to admin_output.
-    pub(super) fn send_test_request(&mut self, test_req_id: FixString) {
-        self.push_admin(AdminBase::TestRequest(TestRequestBase {
-            test_req_id: Cow::Owned(test_req_id),
-        }));
+    pub(super) fn send_test_request(&mut self, test_req_id: Cow<'static, FixStr>) {
+        self.push_admin(AdminBase::TestRequest(TestRequestBase { test_req_id }));
     }
 
     pub(super) fn on_heartbeat<S: MessagesStorage>(
@@ -169,7 +165,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         test_request: TestRequestBase<'_>,
         storage: &mut S,
     ) -> Result<HandlerResult, FatalError> {
-        self.send_heartbeat(Some(test_request.test_req_id.into_owned()));
+        self.send_heartbeat(Some(Cow::Owned(test_request.test_req_id.into_owned())));
         self.advance_target(storage)?;
         Ok(HandlerResult::Handled)
     }
@@ -205,7 +201,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         );
         if self.state.grace_period_test_req_ids.len() >= limit {
             warn!("Grace period is over");
-            self.push_logout(None, Some(fix_str!("Heartbeat timeout").to_owned()));
+            self.push_logout(None, Some(Cow::Borrowed(fix_str!("Heartbeat timeout"))));
             self.begin_disconnect(DisconnectReason::HeartbeatTimeout);
             return;
         }
@@ -219,7 +215,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         self.state
             .grace_period_test_req_ids
             .insert(test_req_id.clone());
-        self.send_test_request(test_req_id);
+        self.send_test_request(Cow::Owned(test_req_id));
     }
 
     /// No output sent within timeout. Sends a Heartbeat once the session is

@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
@@ -153,7 +153,7 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
             let (mut engine, mut storage) = reset_waiting_engine_with_origin(false, running);
             engine.on_control(ControlMsg::Logout {
                 session_status: Some(SessionStatusBase::SessionLogoutComplete.into()),
-                text: Some(fix_str!("Original Logout").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("Original Logout"))),
             });
             let original_state = engine.state.logon_state;
             let deadline = engine.logout_deadline();
@@ -161,9 +161,9 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
                 advance(Duration::from_secs(1)).await;
                 engine.on_control(ControlMsg::Logout {
                     session_status: None,
-                    text: Some(fix_str!("Replacement").to_owned()),
+                    text: Some(Cow::Borrowed(fix_str!("Replacement"))),
                 });
-                engine.send_logout(None, Some(fix_str!("Replacement direct").to_owned()));
+                engine.send_logout(None, Some(Cow::Borrowed(fix_str!("Replacement direct"))));
                 assert_eq!(engine.state.logon_state, original_state);
                 assert_eq!(engine.logout_deadline(), deadline);
                 if !drained {

@@ -8,6 +8,7 @@
 //! [`ApplicationFactory`] to serve it.
 
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     collections::{HashMap, hash_map::Entry},
     error::Error as StdError,
@@ -21,7 +22,7 @@ use std::{
 
 use easyfix_core::{
     base_messages::MsgTypeBase,
-    basic_types::{FixString, SessionStatusField},
+    basic_types::{FixStr, SessionStatusField},
     message::{DeserializeError, SessionMessage},
 };
 use tokio::{
@@ -87,7 +88,7 @@ pub enum ShutdownMode {
     /// peer's Logout response.
     LogoutAndDisconnect {
         session_status: Option<SessionStatusField>,
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
     },
     /// Send Logout, wait for the peer's Logout response (up to each
     /// session's logout deadline), then disconnect. Standard FIX
@@ -96,7 +97,7 @@ pub enum ShutdownMode {
     /// preserves the original acknowledgement deadline.
     GracefulLogout {
         session_status: Option<SessionStatusField>,
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
     },
 }
 
@@ -847,7 +848,7 @@ where
         &self,
         session_id: &SessionId,
         session_status: Option<SessionStatusField>,
-        text: Option<FixString>,
+        text: Option<Cow<'static, FixStr>>,
     ) -> Result<(), AcceptorError> {
         // `Ok(None)` = already logged out - no-op.
         if let Some(tx) = self.active_session_control(session_id)? {

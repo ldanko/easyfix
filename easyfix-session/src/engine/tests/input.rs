@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
@@ -164,7 +164,7 @@ fn process_app_input_reject() {
             ref_msg_type,
             InputAction::Reject {
                 reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
-                text: Some(fix_str!("bad value").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("bad value"))),
                 tag: Some(44),
             },
             &mut storage,
@@ -200,7 +200,7 @@ fn process_app_input_logout_with_disconnect() {
             ref_msg_type,
             InputAction::Logout {
                 session_status: None,
-                text: Some(fix_str!("bad credentials").to_owned()),
+                text: Some(Cow::Borrowed(fix_str!("bad credentials"))),
                 disconnect: true,
             },
             &mut storage,

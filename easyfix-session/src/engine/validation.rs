@@ -1,5 +1,7 @@
 //! Inbound message validation and the session's response to failures.
 
+use std::borrow::Cow;
+
 use chrono::Utc;
 use easyfix_core::{
     base_messages::{
@@ -43,12 +45,12 @@ pub(super) enum VerifyError {
     Reject {
         reason: SessionRejectReasonField,
         tag: Option<TagNum>,
-        text: FixString,
+        text: Cow<'static, FixStr>,
         disconnect: Option<DisconnectReason>,
     },
     /// Sequence number too low without PossDupFlag - caller sends Logout
     /// carrying `text` and disconnects.
-    TooLow { text: FixString },
+    TooLow { text: Cow<'static, FixStr> },
     /// The persisted incoming counter has reached the implementation limit.
     SeqNumExhausted,
     /// Message not allowed in current logon state - caller disconnects.
@@ -146,7 +148,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             return Err(VerifyError::Reject {
                 reason: SessionRejectReasonBase::RequiredTagMissing.into(),
                 tag: Some(TAG_ORIG_SENDING_TIME),
-                text: fix_str!("Required tag missing: OrigSendingTime(122)").to_owned(),
+                text: Cow::Borrowed(fix_str!("Required tag missing: OrigSendingTime(122)")),
                 disconnect: None,
             });
         };
@@ -155,7 +157,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             return Err(VerifyError::Reject {
                 reason: SessionRejectReasonBase::SendingTimeAccuracyProblem.into(),
                 tag: Some(TAG_ORIG_SENDING_TIME),
-                text: fix_str!("OrigSendingTime(122) after SendingTime(52)").to_owned(),
+                text: Cow::Borrowed(fix_str!("OrigSendingTime(122) after SendingTime(52)")),
                 disconnect: Some(DisconnectReason::InvalidOrigSendingTime),
             });
         }
@@ -182,7 +184,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         error!(next_target, "Target MsgSeqNum too low, got {msg_seq_num}");
         let text = format!("MsgSeqNum too low, expected {next_target}, got {msg_seq_num}");
         Err(VerifyError::TooLow {
-            text: FixString::from_ascii_lossy(text.into_bytes()),
+            text: Cow::Owned(FixString::from_ascii_lossy(text.into_bytes())),
         })
     }
 
@@ -316,7 +318,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             Err(VerifyError::Reject {
                 reason: SessionRejectReasonBase::SendingTimeAccuracyProblem.into(),
                 tag: Some(TAG_SENDING_TIME),
-                text: fix_str!("SendingTime accuracy problem").to_owned(),
+                text: Cow::Borrowed(fix_str!("SendingTime accuracy problem")),
                 // Spec mandates Reject(373=10) "followed by a Logout(35=5)" and
                 // disconnect (FIX Session Layer §4.2.3; Scenario 2(o)) - matching
                 // the CompID and OrigSendingTime reject paths, not a bare Reject
@@ -341,14 +343,14 @@ impl<M: SessionMessage> SessionEngine<M> {
             Err(VerifyError::Reject {
                 reason: SessionRejectReasonBase::CompIdProblem.into(),
                 tag: Some(TAG_TARGET_COMP_ID),
-                text: fix_str!("TargetCompID does not match").to_owned(),
+                text: Cow::Borrowed(fix_str!("TargetCompID does not match")),
                 disconnect: Some(DisconnectReason::InvalidCompId),
             })
         } else if self.session_id.target_comp_id() != sender_comp_id {
             Err(VerifyError::Reject {
                 reason: SessionRejectReasonBase::CompIdProblem.into(),
                 tag: Some(TAG_SENDER_COMP_ID),
-                text: fix_str!("SenderCompID does not match").to_owned(),
+                text: Cow::Borrowed(fix_str!("SenderCompID does not match")),
                 disconnect: Some(DisconnectReason::InvalidCompId),
             })
         } else {
@@ -418,7 +420,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 self.consume_seq_num(msg_type, msg_seq_num, storage)?;
 
                 self.send_reject(
-                    Some(msg_type.as_fix_str().to_owned()),
+                    Some(Cow::Owned(msg_type.as_fix_str().to_owned())),
                     msg_seq_num,
                     reason,
                     tag,
@@ -466,10 +468,10 @@ impl<M: SessionMessage> SessionEngine<M> {
         storage: &mut S,
     ) -> Result<Option<HandlerResult>, FatalError> {
         let gap_fill_flag = sequence_reset.gap_fill_flag.unwrap_or(false);
-        let msg_type = MsgTypeField::from(MsgTypeBase::SequenceReset);
+        const MSG_TYPE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
         if let Some(result) = self.validate(
             header,
-            msg_type,
+            MSG_TYPE,
             storage,
             gap_fill_flag,
             gap_fill_flag,
@@ -489,11 +491,11 @@ impl<M: SessionMessage> SessionEngine<M> {
             let tag = Int::from(TAG_NEW_SEQ_NO);
             let text = format!("{reason:?} (tag={tag}) - attempt to lower sequence number");
             self.send_reject(
-                Some(msg_type.as_fix_str().to_owned()),
+                Some(Cow::Borrowed(MSG_TYPE.as_fix_str())),
                 header.msg_seq_num,
                 reason.into(),
                 Some(TAG_NEW_SEQ_NO),
-                Some(FixString::from_ascii_lossy(text.into_bytes())),
+                Some(Cow::Owned(FixString::from_ascii_lossy(text.into_bytes()))),
             );
             return Ok(Some(HandlerResult::Handled));
         }
@@ -509,8 +511,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         resend_request: ResendRequestBase,
         storage: &mut S,
     ) -> Result<Option<HandlerResult>, FatalError> {
-        let msg_type = MsgTypeField::from(MsgTypeBase::ResendRequest);
-        if let Some(result) = self.validate(header, msg_type, storage, false, true, false)? {
+        const MSG_TYPE: MsgTypeField = MsgTypeBase::ResendRequest.raw_value();
+        if let Some(result) = self.validate(header, MSG_TYPE, storage, false, true, false)? {
             return Ok(Some(result));
         }
 
@@ -527,17 +529,17 @@ impl<M: SessionMessage> SessionEngine<M> {
                 "{reason:?} (tag={tag}) - invalid resend range {begin_seq_no}..{end_seq_no}"
             );
             self.send_reject(
-                Some(msg_type.as_fix_str().to_owned()),
+                Some(Cow::Borrowed(MSG_TYPE.as_fix_str())),
                 header.msg_seq_num,
                 reason.into(),
                 Some(TAG_BEGIN_SEQ_NO),
-                Some(FixString::from_ascii_lossy(text.into_bytes())),
+                Some(Cow::Owned(FixString::from_ascii_lossy(text.into_bytes()))),
             );
 
             if header.msg_seq_num > storage.next_target_msg_seq_num().get() {
                 return Ok(Some(HandlerResult::Enqueue));
             }
-            self.consume_seq_num(msg_type, header.msg_seq_num, storage)?;
+            self.consume_seq_num(MSG_TYPE, header.msg_seq_num, storage)?;
             return Ok(Some(HandlerResult::Handled));
         }
 

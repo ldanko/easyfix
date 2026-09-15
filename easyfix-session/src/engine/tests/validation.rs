@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
@@ -101,11 +101,13 @@ fn verify_header_too_low_poss_dup_missing_orig_time() {
             reason,
             tag,
             disconnect,
-            ..
+            text,
         }) => {
             assert_eq!(reason, SessionRejectReasonBase::RequiredTagMissing);
             assert_eq!(tag, Some(122)); // TAG_ORIG_SENDING_TIME
             assert!(disconnect.is_none());
+            assert_matches!(text, Cow::Borrowed(value)
+                if value == fix_str!("Required tag missing: OrigSendingTime(122)"));
         }
         other => panic!("expected Reject, got {other:?}"),
     }

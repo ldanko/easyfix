@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use easyfix_core::{
     base_messages::{AdminBase, SessionRejectReasonBase},
     basic_types::{FixStr, FixString, SeqNum},
@@ -81,7 +83,7 @@ pub(super) fn reset_waiting_engine(logout_sent: bool) -> (SessionEngine<Message>
     let _ = engine.take_pending();
     assert!(engine.state.local_reset_unconfirmed);
     if logout_sent {
-        engine.send_logout(None, Some(fix_str!("First Logout").to_owned()));
+        engine.send_logout(None, Some(Cow::Borrowed(fix_str!("First Logout"))));
         let mut logout = take_admin(&mut engine);
         assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
         assert!(engine.commit_send(logout, &mut storage).is_ok());
@@ -101,7 +103,7 @@ pub(super) fn reset_waiting_engine_with_origin(
     if logout_sent {
         engine.on_control(ControlMsg::Logout {
             session_status: None,
-            text: Some(fix_str!("First Logout").to_owned()),
+            text: Some(Cow::Borrowed(fix_str!("First Logout"))),
         });
         let _ = commit_reset_admin(&mut engine, &mut storage);
     }

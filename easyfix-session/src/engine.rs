@@ -1,6 +1,7 @@
 //! Synchronous session engine: shared state and coordination.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashSet, VecDeque},
     fmt::Display,
     num::NonZeroU64,
@@ -380,7 +381,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         let id = FixString::from_ascii_lossy(format!("RESET-{count}").into_bytes());
         self.state.reset_probe_id = Some(id.clone());
         self.state.probe_stale = false;
-        self.send_test_request(id);
+        self.send_test_request(Cow::Owned(id));
         self.state.logon_state = LogonState::ResetProbe;
     }
 
@@ -526,7 +527,9 @@ impl<M: SessionMessage> SessionEngine<M> {
         };
         self.push_logout(
             None,
-            Some(fix_str!("Sequence number reset not acknowledged").to_owned()),
+            Some(Cow::Borrowed(fix_str!(
+                "Sequence number reset not acknowledged"
+            ))),
         );
         self.begin_disconnect(reason);
     }
@@ -619,7 +622,9 @@ impl<M: SessionMessage> SessionEngine<M> {
             // app-send drain on an unacknowledged handshake (§4.3.10).
             self.push_logout(
                 None,
-                Some(fix_str!("Incoming sequence numbers exhausted").to_owned()),
+                Some(Cow::Borrowed(fix_str!(
+                    "Incoming sequence numbers exhausted"
+                ))),
             );
         }
         self.begin_disconnect(DisconnectReason::SeqNumExhausted);
@@ -649,10 +654,9 @@ impl<M: SessionMessage> SessionEngine<M> {
         {
             self.push_logout(
                 None,
-                Some(
-                    fix_str!("Sequence number expected for reset acknowledgement already consumed")
-                        .to_owned(),
-                ),
+                Some(Cow::Borrowed(fix_str!(
+                    "Sequence number expected for reset acknowledgement already consumed"
+                ))),
             );
         }
         self.begin_disconnect(DisconnectReason::InvalidLogonState);
