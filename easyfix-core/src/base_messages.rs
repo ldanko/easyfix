@@ -54,15 +54,9 @@ impl MsgTypeBase {
         MsgTypeBase::Logout,
         MsgTypeBase::Logon,
     ];
-}
 
-const _: () = assert!(
-    MsgTypeBase::ALL.len() == variant_count::<MsgTypeBase>(),
-    "MsgTypeBase::ALL is missing a variant"
-);
-
-impl MsgTypeValue for MsgTypeBase {
-    fn raw_value(&self) -> MsgTypeField {
+    /// The compact MsgType field value for this administrative message type.
+    pub const fn raw_value(&self) -> MsgTypeField {
         match self {
             MsgTypeBase::Heartbeat => MsgTypeField::from_raw([b'0', 0]),
             MsgTypeBase::TestRequest => MsgTypeField::from_raw([b'1', 0]),
@@ -72,6 +66,17 @@ impl MsgTypeValue for MsgTypeBase {
             MsgTypeBase::Logout => MsgTypeField::from_raw([b'5', 0]),
             MsgTypeBase::Logon => MsgTypeField::from_raw([b'A', 0]),
         }
+    }
+}
+
+const _: () = assert!(
+    MsgTypeBase::ALL.len() == variant_count::<MsgTypeBase>(),
+    "MsgTypeBase::ALL is missing a variant"
+);
+
+impl MsgTypeValue for MsgTypeBase {
+    fn raw_value(&self) -> MsgTypeField {
+        MsgTypeBase::raw_value(self)
     }
 }
 

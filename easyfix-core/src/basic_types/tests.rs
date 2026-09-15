@@ -1,4 +1,25 @@
 use super::*;
+use crate::base_messages::MsgTypeBase;
+
+#[test]
+fn msg_type_views_are_const_and_exclude_padding() {
+    const SINGLE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
+    const DOUBLE: MsgTypeField = match MsgTypeField::from_bytes(b"AB") {
+        Ok(value) => value,
+        Err(_) => panic!("valid two-byte message type"),
+    };
+    const VIEWS: [(&[u8], &str, &FixStr); 2] = [
+        (SINGLE.as_bytes(), SINGLE.as_str(), SINGLE.as_fix_str()),
+        (DOUBLE.as_bytes(), DOUBLE.as_str(), DOUBLE.as_fix_str()),
+    ];
+
+    for ((bytes, text, fix_text), expected) in VIEWS.into_iter().zip(["4", "AB"]) {
+        assert_eq!(bytes, expected.as_bytes());
+        assert_eq!(text, expected);
+        assert_eq!(fix_text.as_bytes(), expected.as_bytes());
+    }
+    assert_eq!(MsgTypeField::from(MsgTypeBase::SequenceReset), SINGLE);
+}
 
 #[test]
 fn fix_string_fail_on_ctrl_character() {

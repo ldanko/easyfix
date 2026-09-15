@@ -1692,15 +1692,15 @@ impl MsgTypeField {
     }
 
     /// The live bytes - one or two, never the padding.
-    pub fn as_bytes(&self) -> &[u8] {
+    pub const fn as_bytes(&self) -> &[u8] {
         match self.buf {
-            [_, 0] => &self.buf[..1],
+            [_, 0] => self.buf.split_at(1).0,
             [_, _] => &self.buf,
         }
     }
 
     /// The live bytes as `&str`. Infallible - the validated bytes are ASCII.
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         // SAFETY: We validate during construction that all bytes are ASCII
         //         alphanumeric (0-9, a-z, A-Z), which are all valid UTF-8
         unsafe { str::from_utf8_unchecked(self.as_bytes()) }
@@ -1708,7 +1708,7 @@ impl MsgTypeField {
 
     /// The live bytes as `&FixStr`. Infallible - the validated bytes are
     /// within the printable-ASCII range `FixStr` requires.
-    pub fn as_fix_str(&self) -> &FixStr {
+    pub const fn as_fix_str(&self) -> &FixStr {
         // SAFETY: MsgType bytes are ASCII alphanumeric (0x30-0x39, 0x41-0x5A,
         //         0x61-0x7A), all within the valid FixStr range (0x20-0x7E)
         unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
