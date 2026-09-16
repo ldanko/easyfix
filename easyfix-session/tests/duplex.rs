@@ -58,8 +58,8 @@ struct ResetApp {
 }
 
 impl Application<Message> for ResetApp {
-    fn on_serialize_error(&mut self, msg: Box<Message>, error: &SerializeError) {
-        self.inner.on_serialize_error(msg, error);
+    fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
+        self.inner.on_output_error(msg, error);
     }
 
     async fn on_session_ready(&mut self, id: &SessionId, sender: Sender<Message>) {
@@ -647,7 +647,7 @@ struct TestApp {
 }
 
 impl Application<Message> for TestApp {
-    fn on_serialize_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
+    fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {
         let _ = self
@@ -703,8 +703,8 @@ struct PanicOnceApp {
 }
 
 impl Application<Message> for PanicOnceApp {
-    fn on_serialize_error(&mut self, msg: Box<Message>, error: &SerializeError) {
-        self.inner.on_serialize_error(msg, error);
+    fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
+        self.inner.on_output_error(msg, error);
     }
 
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {
@@ -3084,8 +3084,8 @@ struct ActionApp {
 }
 
 impl Application<Message> for ActionApp {
-    fn on_serialize_error(&mut self, msg: Box<Message>, error: &SerializeError) {
-        self.inner.on_serialize_error(msg, error);
+    fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
+        self.inner.on_output_error(msg, error);
     }
 
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {

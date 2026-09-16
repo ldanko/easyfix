@@ -80,7 +80,7 @@ pub(crate) enum InputResult<M> {
     AppMsg(Box<M>),
     /// Admin message - call on_admin_msg_in.
     AdminMsg(Box<M>),
-    /// Deserialization error - call on_deserialize_error.
+    /// Deserialization error - call on_input_error with InputError::Deserialize.
     Error(DeserializeError),
 }
 

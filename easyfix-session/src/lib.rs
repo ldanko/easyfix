@@ -54,8 +54,9 @@ pub use acceptor::{
     TcpConnection,
 };
 pub use application::{
-    Application, ApplicationFactory, DisconnectReason, InputAction, SessionContext, ValidationError,
-    invalid_heart_bt_int_range_text, invalid_heart_bt_int_text, max_message_size_exceeded_text,
+    Application, ApplicationFactory, DisconnectReason, InputAction, InputError, SessionContext,
+    ValidationError, invalid_heart_bt_int_range_text, invalid_heart_bt_int_text,
+    max_message_size_exceeded_text,
 };
 pub use easyfix_core::{
     basic_types,

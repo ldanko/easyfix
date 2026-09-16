@@ -4,7 +4,7 @@ use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
     basic_types::{Int, MsgTypeField, SeqNum},
     fix_str,
-    message::{DeserializeError, HeaderAccess, SessionMessage},
+    message::{HeaderAccess, SessionMessage},
     serializer::SerializeError,
 };
 use easyfix_test_messages::Message;
@@ -19,7 +19,7 @@ use super::{
     wire::{build_order_missing_symbol_bytes, build_peer_logon},
 };
 use crate::{
-    ValidationError,
+    InputError, ValidationError,
     application::{Application, DisconnectReason, InputAction},
     io::{ControlMsg, InputStream, SessionOpening, sender::Sender, session_loop},
     messages_storage::MessagesStorage,
@@ -70,20 +70,17 @@ impl Application<Message> for RecordingApp {
             .unwrap();
     }
 
-    fn on_validation_error(&mut self, msg: &Message, error: &ValidationError) {
-        self.0
-            .send(Event::Validation(
-                test_helpers::serialize_message(msg),
-                error.clone(),
-            ))
-            .unwrap();
+    fn on_input_error(&mut self, error: InputError<'_, Message>) {
+        let event = match error {
+            InputError::Deserialize(_) => Event::Deserialize,
+            InputError::Validation { msg, error } => {
+                Event::Validation(test_helpers::serialize_message(msg), error.clone())
+            }
+        };
+        self.0.send(event).unwrap();
     }
 
-    fn on_deserialize_error(&mut self, _: &DeserializeError) {
-        self.0.send(Event::Deserialize).unwrap();
-    }
-
-    fn on_serialize_error(&mut self, _: Box<Message>, error: &SerializeError) {
+    fn on_output_error(&mut self, _: Box<Message>, error: &SerializeError) {
         panic!("unexpected serialization error: {error}");
     }
 }

@@ -539,7 +539,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             false,
         );
         // A failed decode has no complete message to deliver. Apply the
-        // same refusal immediately and report only on_deserialize_error.
+        // same refusal immediately and report only InputError::Deserialize.
         Ok(match result {
             Some(ValidationResult::Failure(failure)) => Some(self.apply_validation_reaction(
                 msg_type,

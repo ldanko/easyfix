@@ -133,7 +133,7 @@ struct RestagingApp {
 }
 
 impl Application<Message> for RestagingApp {
-    fn on_serialize_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
+    fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
 

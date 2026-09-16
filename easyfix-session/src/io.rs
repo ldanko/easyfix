@@ -24,7 +24,7 @@ use tokio::{
 use tracing::{Instrument, error, info, info_span, warn};
 
 use crate::{
-    application::{Application, DisconnectReason},
+    application::{Application, DisconnectReason, InputError},
     engine::{FatalError, InputResult, PendingOutput, SendFailure, SessionEngine},
     initiator::SessionStart,
     io::{
@@ -156,7 +156,7 @@ where
             {
                 match failure {
                     SendFailure::Serialize(failure) => {
-                        app.on_serialize_error(failure.msg, &failure.error)
+                        app.on_output_error(failure.msg, &failure.error)
                     }
                     SendFailure::Fatal(error) => return Err(OutputError::Fatal(error)),
                 }
@@ -261,7 +261,7 @@ where
     }
     if let Err(failure) = commit_fn(engine, msg, storage) {
         match failure {
-            SendFailure::Serialize(failure) => app.on_serialize_error(failure.msg, &failure.error),
+            SendFailure::Serialize(failure) => app.on_output_error(failure.msg, &failure.error),
             SendFailure::Fatal(error) => return Err(error),
         }
     }
@@ -341,7 +341,10 @@ where
                 seq_num = msg.msg_seq_num(),
             );
             let _entered = span.enter();
-            app.on_validation_error(&msg, &failure.error);
+            app.on_input_error(InputError::Validation {
+                msg: &msg,
+                error: &failure.error,
+            });
             engine.process_validation_failure(msg, failure, storage)?;
         }
         InputResult::Handled => {}
@@ -379,7 +382,7 @@ where
             .await?;
         }
         InputResult::Error(error) => {
-            app.on_deserialize_error(&error);
+            app.on_input_error(InputError::Deserialize(&error));
         }
     }
     // Every production entry to the engine's input path funnels through here,

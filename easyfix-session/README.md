@@ -67,7 +67,7 @@ impl Application<Message> for MyApp {
         InputAction::Accept
     }
 
-    fn on_serialize_error(&mut self, msg: Box<Message>, error: &SerializeError) {
+    fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
         // the message was not sent and will not be retried - decide here
         tracing::error!(%error, "dropping message that failed to serialize");
     }
@@ -83,6 +83,15 @@ impl ApplicationFactory<Message> for MyFactory {
     }
 }
 ```
+
+The optional `on_input_error` callback reports decoding failures as
+`InputError::Deserialize` and session validation failures as
+`InputError::Validation`, which also borrows the decoded message. The session
+chooses the response; the callback is informational. Validation failures are
+reported before their response or sequence-number update. Decoding failures
+may be reported after session state changes, but before the response is sent.
+`on_output_error` returns ownership of a message that failed to serialize;
+transport and storage failures are reported through `on_session_end`.
 
 ### Session identity and settings
 
@@ -226,7 +235,7 @@ Backend errors end the current connection and are reported through
 `on_session_end` with `StorageError`, unless an earlier disconnect reason or
 an unconfirmed local reset takes precedence. Invalid historical messages and
 replay serialization errors also end the connection. Ordinary serialization
-errors for new messages still use `on_serialize_error`. Factories and offline
+errors for new messages still use `on_output_error`. Factories and offline
 resets return `InitiatorError::Storage` or `AcceptorError::Storage`, preserving
 the original backend error as a source; error types need no `Send` or `Sync`.
 

@@ -18,10 +18,28 @@ use thiserror::Error;
 
 use crate::{io::sender::Sender, session_id::SessionId};
 
+/// An incoming message failed decoding or session validation.
+#[derive(Debug)]
+pub enum InputError<'a, M> {
+    /// Decoding failed. The error includes the parsed header when available.
+    /// Session state may already have changed when this is reported, but
+    /// any resulting protocol response has not yet been sent.
+    Deserialize(&'a DeserializeError),
+    /// A decoded message failed session validation. Reported once before its
+    /// protocol response or sequence-number update. Deferred messages are
+    /// reported only if validation later fails; ignored duplicates are not.
+    Validation {
+        /// The decoded message that failed validation.
+        msg: &'a M,
+        /// The detected validation failure.
+        error: &'a ValidationError,
+    },
+}
+
 /// Why a decoded incoming message failed session validation.
 ///
 /// The offending values are available in the message passed to
-/// [`Application::on_validation_error`]. A failure describes the validation
+/// [`Application::on_input_error`]. A failure describes the validation
 /// result; it does not guarantee that a protocol response was sent.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ValidationError {
@@ -426,7 +444,7 @@ pub trait Application<M: SessionMessage> {
     /// A MsgType that is not in the dictionary is rejected during decoding
     /// with a session-level `Reject<3>`, `SessionRejectReason=InvalidMsgType`.
     /// Session validation failures are reported through
-    /// [`Self::on_validation_error`] instead of this callback.
+    /// [`Self::on_input_error`] instead of this callback.
     ///
     /// Rejecting a message whose MsgType **is** valid but is **not supported**
     /// by this application is the application's job: send a
@@ -495,23 +513,15 @@ pub trait Application<M: SessionMessage> {
         false
     }
 
-    /// Deserialization error on inbound message. The error carries the
-    /// parsed header of the failed message when header parsing succeeded
-    /// before the failure.
-    fn on_deserialize_error(&mut self, _error: &DeserializeError) {}
-
-    /// A decoded incoming message failed session validation.
+    /// An incoming message failed decoding or session validation.
     ///
-    /// Called once for the detected failure, before its protocol response or
-    /// sequence-number update. The message is not delivered to either input
-    /// callback. This notification may precede [`Self::on_session_ready`].
+    /// The failed message is not delivered to either input message callback.
+    /// This notification may precede [`Self::on_session_ready`]. See
+    /// [`InputError`] for the timing and available data for each failure kind.
     ///
-    /// Merely deferring a message until a sequence gap is filled does not
-    /// trigger this callback. If its later validation fails, it is reported
-    /// then. Deserialization errors, ignored duplicates, application refusals
-    /// and storage errors do not trigger this callback.
+    /// Application refusals and storage errors do not trigger this callback.
     /// The session chooses the response; notification cannot override it.
-    fn on_validation_error(&mut self, _msg: &M, _error: &ValidationError) {}
+    fn on_input_error(&mut self, _error: InputError<'_, M>) {}
 
     /// An outgoing message failed to serialize and was not sent - it will not
     /// be retried, and the peer never learns of it. The sequence number it
@@ -524,7 +534,10 @@ pub trait Application<M: SessionMessage> {
     /// without a duplicate number or a stale time; whatever the application
     /// set itself stays. What to do is the application's call - e.g. panic,
     /// escalate, or drop with a log.
-    fn on_serialize_error(&mut self, msg: Box<M>, error: &SerializeError);
+    ///
+    /// Transport and storage failures are reported through
+    /// [`Self::on_session_end`], not this callback.
+    fn on_output_error(&mut self, msg: Box<M>, error: &SerializeError);
 }
 
 /// Connection-scoped facts available when a session's [`Application`] is

@@ -81,7 +81,7 @@ impl Application<Message> for OrderApp {
         InputAction::Accept
     }
 
-    fn on_serialize_error(&mut self, msg: Box<Message>, error: &SerializeError) {
+    fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
         // The message was never sent and the session will not retry it. This
         // application has nothing to fall back on, so it only records the
         // loss; a real one would escalate or re-stage a corrected message.

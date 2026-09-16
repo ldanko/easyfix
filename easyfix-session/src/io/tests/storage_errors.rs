@@ -75,7 +75,7 @@ impl RecordingApp {
 }
 
 impl Application<Message> for RecordingApp {
-    fn on_serialize_error(&mut self, _: Box<Message>, _: &SerializeError) {
+    fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {
         self.trace.borrow_mut().serialize_errors += 1;
     }
 

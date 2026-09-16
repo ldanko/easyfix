@@ -64,7 +64,7 @@ pub(super) struct AdminGate {
 }
 
 impl Application<Message> for TestApp {
-    fn on_serialize_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
+    fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _id: &SessionId, sender: Sender<Message>) {
         self.sender = Some(sender);

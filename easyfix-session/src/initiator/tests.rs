@@ -231,7 +231,7 @@ impl fmt::Debug for CapabilityEvent {
 struct CapabilityApp(mpsc::UnboundedSender<CapabilityEvent>);
 
 impl Application<CountedResetMessage> for CapabilityApp {
-    fn on_serialize_error(&mut self, _: Box<CountedResetMessage>, _: &SerializeError) {
+    fn on_output_error(&mut self, _: Box<CountedResetMessage>, _: &SerializeError) {
         panic!("serialization failed");
     }
 
@@ -399,7 +399,7 @@ fn start_input_action(decision: usize) -> InputAction {
 }
 
 impl Application<Message> for StartApp {
-    fn on_serialize_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {
+    fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {
         panic!("unexpected serialization error");
     }
 

@@ -773,7 +773,7 @@ pub(crate) fn commit_heartbeat<S: MessagesStorage>(
 pub(crate) struct StubApp;
 
 impl<M: SessionMessage> Application<M> for StubApp {
-    fn on_serialize_error(&mut self, _msg: Box<M>, _error: &SerializeError) {}
+    fn on_output_error(&mut self, _msg: Box<M>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<M>) {}
 
@@ -804,7 +804,7 @@ pub(crate) struct GatedSessionEnd {
 }
 
 impl Application<Message> for GatedSessionEnd {
-    fn on_serialize_error(&mut self, _: Box<Message>, _: &SerializeError) {}
+    fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {}
 
@@ -831,7 +831,7 @@ impl ApplicationFactory<Message> for GatedSessionEnd {
 pub(crate) struct PanicApp;
 
 impl Application<Message> for PanicApp {
-    fn on_serialize_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
+    fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {}
 
