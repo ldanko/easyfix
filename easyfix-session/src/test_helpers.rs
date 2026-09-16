@@ -702,15 +702,21 @@ pub(crate) fn as_admin(msg: &Message) -> AdminBase<'_> {
 }
 
 /// Drive an inbound message through the standard "validate -> callback ->
-/// accept" flow used by the IO loop. Validation outcomes (`Handled`, `Error`)
-/// pass through unchanged; the caller inspects the returned `InputResult`,
-/// and a session-ending verdict through `engine.disconnect_reason()`.
+/// accept" flow used by the IO loop, including validation refusal reactions.
+/// The caller inspects the returned `InputResult` and a session-ending
+/// verdict through `engine.disconnect_reason()`.
 pub(crate) fn accept_input(
     engine: &mut SessionEngine<Message>,
     msg: Box<Message>,
     storage: &mut impl MessagesStorage,
 ) -> InputResult<Message> {
     match engine.on_input(msg, storage).expect("input succeeds") {
+        InputResult::ValidationError { msg, failure } => {
+            engine
+                .process_validation_failure(msg, failure, storage)
+                .expect("validation refusal succeeds");
+            InputResult::Handled
+        }
         InputResult::AdminMsg(m) => engine
             .process_admin_input(m, InputAction::Accept, storage)
             .expect("admin input succeeds"),

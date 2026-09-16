@@ -5,27 +5,67 @@ use std::borrow::Cow;
 use chrono::Utc;
 use easyfix_core::{
     base_messages::{
-        HeaderBase, MsgTypeBase, ResendRequestBase, SequenceResetBase, SessionRejectReasonBase,
-        SessionStatusBase,
+        HeaderBase, MsgTypeBase, ResendRequestBase, SequenceResetBase, SessionStatusBase,
     },
     basic_types::{
-        FixStr, FixString, Int, MsgTypeField, SeqNum, SessionRejectReasonField, TagNum,
-        UtcTimestamp,
+        FixStr, FixString, MsgTypeField, SeqNum, SessionStatusField, TagNum, UtcTimestamp,
     },
     fix_str,
     message::SessionMessage,
 };
 use tracing::{error, warn};
 
-use super::{FatalError, HandlerResult, LogonState, SessionEngine};
-use crate::{application::DisconnectReason, messages_storage::MessagesStorage};
+use super::{
+    FatalError, HandlerResult, LogonState, SessionEngine, logout::unexpected_reset_logout_text,
+};
+use crate::{
+    application::{DisconnectReason, ValidationError},
+    messages_storage::MessagesStorage,
+};
 
 const TAG_SENDER_COMP_ID: TagNum = 49;
-const TAG_SENDING_TIME: TagNum = 52;
 const TAG_TARGET_COMP_ID: TagNum = 56;
-const TAG_ORIG_SENDING_TIME: TagNum = 122;
-const TAG_BEGIN_SEQ_NO: TagNum = 7;
-const TAG_NEW_SEQ_NO: TagNum = 36;
+
+/// A refusal waiting for its application notification.
+#[derive(Debug)]
+pub(crate) struct ValidationFailure {
+    pub(crate) error: ValidationError,
+    reaction: ValidationReaction,
+}
+
+/// A validation outcome that stops normal message delivery.
+#[derive(Debug)]
+pub(super) enum ValidationResult {
+    /// Notify the application before executing the refusal.
+    Failure(ValidationFailure),
+    /// The message needs no further processing.
+    Handled,
+    /// Defer the message until the preceding sequence gap is filled.
+    Enqueue,
+}
+
+/// How a rejected message participates in incoming sequence processing.
+#[derive(Debug)]
+pub(super) enum SequenceAction {
+    /// Leave the incoming counter and recovery queue unchanged.
+    Preserve,
+    /// Consume an expected number, except on SequenceReset.
+    Consume,
+    /// Queue the message and request the preceding sequence gap.
+    Enqueue,
+}
+
+/// Protocol work performed after the validation-error notification.
+#[derive(Debug)]
+enum ValidationReaction {
+    Reply {
+        text: Option<Cow<'static, FixStr>>,
+        disconnect: Option<DisconnectReason>,
+        sequence: SequenceAction,
+        session_status: Option<SessionStatusField>,
+    },
+    Disconnect(DisconnectReason),
+}
 
 /// Failure of header verification.
 ///
@@ -43,10 +83,8 @@ pub(super) enum VerifyError {
     Duplicate,
     /// Reject the message (CompID mismatch, SendingTime invalid, etc.).
     Reject {
-        reason: SessionRejectReasonField,
-        tag: Option<TagNum>,
+        error: ValidationError,
         text: Cow<'static, FixStr>,
-        disconnect: Option<DisconnectReason>,
     },
     /// Sequence number too low without PossDupFlag - caller sends Logout
     /// carrying `text` and disconnects.
@@ -146,19 +184,15 @@ impl<M: SessionMessage> SessionEngine<M> {
         let Some(orig_sending_time) = header.orig_sending_time else {
             warn!("PossDupFlag<43>=Y without OrigSendingTime<122>");
             return Err(VerifyError::Reject {
-                reason: SessionRejectReasonBase::RequiredTagMissing.into(),
-                tag: Some(TAG_ORIG_SENDING_TIME),
+                error: ValidationError::MissingOrigSendingTime,
                 text: Cow::Borrowed(fix_str!("Required tag missing: OrigSendingTime(122)")),
-                disconnect: None,
             });
         };
         if orig_sending_time.timestamp() > header.sending_time.timestamp() {
             error!("OrigSendingTime<122> after SendingTime<52>");
             return Err(VerifyError::Reject {
-                reason: SessionRejectReasonBase::SendingTimeAccuracyProblem.into(),
-                tag: Some(TAG_ORIG_SENDING_TIME),
+                error: ValidationError::OrigSendingTimeAfterSendingTime,
                 text: Cow::Borrowed(fix_str!("OrigSendingTime(122) after SendingTime(52)")),
-                disconnect: Some(DisconnectReason::InvalidOrigSendingTime),
             });
         }
         Ok(())
@@ -302,28 +336,22 @@ impl<M: SessionMessage> SessionEngine<M> {
         };
         // If max_latency is too large for chrono::Duration, treat it as
         // "no limit" - skip the check rather than panicking.
-        let Ok(max_latency) = chrono::Duration::from_std(max_latency) else {
+        let Ok(threshold) = chrono::Duration::from_std(max_latency) else {
             return Ok(());
         };
 
         let now = Utc::now();
         let sending_timestamp = sending_time.timestamp();
         let abs_time_diff = (now - sending_timestamp).abs();
-        if abs_time_diff > max_latency {
+        if abs_time_diff > threshold {
             warn!(
                 ?abs_time_diff,
                 ?max_latency,
                 "SendingTime<52> verification failed"
             );
             Err(VerifyError::Reject {
-                reason: SessionRejectReasonBase::SendingTimeAccuracyProblem.into(),
-                tag: Some(TAG_SENDING_TIME),
+                error: ValidationError::SendingTimeAccuracy { max_latency },
                 text: Cow::Borrowed(fix_str!("SendingTime accuracy problem")),
-                // Spec mandates Reject(373=10) "followed by a Logout(35=5)" and
-                // disconnect (FIX Session Layer §4.2.3; Scenario 2(o)) - matching
-                // the CompID and OrigSendingTime reject paths, not a bare Reject
-                // that leaves the session established.
-                disconnect: Some(DisconnectReason::SendingTimeAccuracyProblem),
             })
         } else {
             Ok(())
@@ -341,33 +369,27 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
         if self.session_id.sender_comp_id() != target_comp_id {
             Err(VerifyError::Reject {
-                reason: SessionRejectReasonBase::CompIdProblem.into(),
-                tag: Some(TAG_TARGET_COMP_ID),
+                error: ValidationError::CompIdMismatch {
+                    tag: TAG_TARGET_COMP_ID,
+                    expected: self.session_id.sender_comp_id().to_owned(),
+                },
                 text: Cow::Borrowed(fix_str!("TargetCompID does not match")),
-                disconnect: Some(DisconnectReason::InvalidCompId),
             })
         } else if self.session_id.target_comp_id() != sender_comp_id {
             Err(VerifyError::Reject {
-                reason: SessionRejectReasonBase::CompIdProblem.into(),
-                tag: Some(TAG_SENDER_COMP_ID),
+                error: ValidationError::CompIdMismatch {
+                    tag: TAG_SENDER_COMP_ID,
+                    expected: self.session_id.target_comp_id().to_owned(),
+                },
                 text: Cow::Borrowed(fix_str!("SenderCompID does not match")),
-                disconnect: Some(DisconnectReason::InvalidCompId),
             })
         } else {
             Ok(())
         }
     }
 
-    /// Run [`Self::verify_header`] and react to any failure (push
-    /// Reject/Logout, advance seq num where appropriate).
-    ///
-    /// Returns:
-    /// * `None` - header passed; the caller continues with handler-specific
-    ///   logic.
-    /// * `Some(hr)` - caller short-circuits and returns `hr`. `Handled`
-    ///   for silently-ignored failures (Duplicate, Reject without
-    ///   disconnect); `Enqueue`/`Disconnect(_)` for failures that the
-    ///   dispatcher must surface.
+    /// Check the header and return a deferred refusal, a recovery outcome,
+    /// or `None` when message-specific validation can continue.
     pub(super) fn validate<S: MessagesStorage>(
         &mut self,
         header: &HeaderBase<'_>,
@@ -376,8 +398,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         check_too_high: bool,
         check_too_low: bool,
         reset_pending: bool,
-    ) -> Result<Option<HandlerResult>, FatalError> {
-        let Some(error) = self
+    ) -> Option<ValidationResult> {
+        let error = self
             .verify_header(
                 header,
                 msg_type,
@@ -386,77 +408,46 @@ impl<M: SessionMessage> SessionEngine<M> {
                 check_too_low,
                 reset_pending,
             )
-            .err()
-        else {
-            return Ok(None);
-        };
+            .err()?;
 
-        let msg_seq_num = header.msg_seq_num;
+        Some(match error {
+            VerifyError::TooHigh => ValidationResult::Enqueue,
 
-        Ok(Some(match error {
-            VerifyError::TooHigh => HandlerResult::Enqueue,
-
-            VerifyError::Duplicate => HandlerResult::Handled,
+            VerifyError::Duplicate => ValidationResult::Handled,
 
             VerifyError::SeqNumExhausted => {
                 self.end_session_if_target_numbering_exhausted(storage);
-                HandlerResult::Handled
+                ValidationResult::Handled
             }
 
-            VerifyError::Reject {
-                reason,
-                tag,
-                text,
-                disconnect,
-            } => {
-                // Rejecting number 1 cannot leave a locally initiated reset
-                // waiting for another ACK numbered 1. Preserve specific
-                // header causes when present; otherwise make it terminal.
-                let disconnect = disconnect.or_else(|| {
-                    self.state
-                        .local_reset_unconfirmed
-                        .then_some(DisconnectReason::InvalidLogonState)
-                });
-                self.consume_seq_num(msg_type, msg_seq_num, storage)?;
+            VerifyError::Reject { error, text } => ValidationResult::Failure(
+                self.validation_failure(error, Some(text), SequenceAction::Consume, None),
+            ),
 
-                self.send_reject(
-                    Some(Cow::Owned(msg_type.as_fix_str().to_owned())),
-                    msg_seq_num,
-                    reason,
-                    tag,
-                    Some(text.clone()),
-                );
+            VerifyError::TooLow { text } => ValidationResult::Failure(self.validation_failure(
+                ValidationError::MsgSeqNumTooLow {
+                    expected: storage.next_target_msg_seq_num().get(),
+                },
+                Some(text),
+                SequenceAction::Preserve,
+                Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into()),
+            )),
 
-                if let Some(disconnect_reason) = disconnect {
-                    // The Logout carries the same Text(58) as the Reject:
-                    // every Test Cases step that mandates it names what it
-                    // must reference - the error condition for an invalid
-                    // Logon (§4.4.1 Scenario 1S(d) step 3), the offending
-                    // value for a CompID or SendingTime problem (§4.5.1
-                    // Scenario 2(k) step 3, 2(o) step 3).
-                    self.push_logout(None, Some(text));
-                    HandlerResult::Disconnect(disconnect_reason)
-                } else {
-                    HandlerResult::Handled
-                }
-            }
-
-            VerifyError::TooLow { text } => {
-                self.push_logout(
-                    Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into()),
-                    Some(text),
-                );
-                HandlerResult::Disconnect(DisconnectReason::MsgSeqNumTooLow)
-            }
-
-            VerifyError::InvalidLogonState => {
-                HandlerResult::Disconnect(DisconnectReason::InvalidLogonState)
-            }
+            VerifyError::InvalidLogonState => ValidationResult::Failure(self.validation_failure(
+                ValidationError::UnexpectedMessage,
+                None,
+                SequenceAction::Preserve,
+                None,
+            )),
             VerifyError::UnexpectedMessageDuringReset { msg_type } => {
-                self.push_unexpected_reset_logout(msg_type);
-                HandlerResult::Disconnect(DisconnectReason::InvalidLogonState)
+                ValidationResult::Failure(self.validation_failure(
+                    ValidationError::UnexpectedMessageDuringReset,
+                    Some(Cow::Owned(unexpected_reset_logout_text(msg_type))),
+                    SequenceAction::Preserve,
+                    None,
+                ))
             }
-        }))
+        })
     }
 
     /// Validate the header and NewSeqNo before delivering a SequenceReset.
@@ -466,7 +457,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         sequence_reset: SequenceResetBase,
         storage: &mut S,
-    ) -> Result<Option<HandlerResult>, FatalError> {
+    ) -> Option<ValidationResult> {
         let gap_fill_flag = sequence_reset.gap_fill_flag.unwrap_or(false);
         const MSG_TYPE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
         if let Some(result) = self.validate(
@@ -476,8 +467,8 @@ impl<M: SessionMessage> SessionEngine<M> {
             gap_fill_flag,
             gap_fill_flag,
             false,
-        )? {
-            return Ok(Some(result));
+        ) {
+            return Some(result);
         }
 
         // A GapFill reaches this check in sequence. Equality is invalid
@@ -487,20 +478,19 @@ impl<M: SessionMessage> SessionEngine<M> {
         let new_seq_no = sequence_reset.new_seq_no;
         let next_target = storage.next_target_msg_seq_num().get();
         if new_seq_no < next_target || (gap_fill_flag && new_seq_no == next_target) {
-            let reason = SessionRejectReasonBase::ValueIsIncorrect;
-            let tag = Int::from(TAG_NEW_SEQ_NO);
-            let text = format!("{reason:?} (tag={tag}) - attempt to lower sequence number");
-            self.send_reject(
-                Some(Cow::Borrowed(MSG_TYPE.as_fix_str())),
-                header.msg_seq_num,
-                reason.into(),
-                Some(TAG_NEW_SEQ_NO),
-                Some(Cow::Owned(FixString::from_ascii_lossy(text.into_bytes()))),
-            );
-            return Ok(Some(HandlerResult::Handled));
+            return Some(ValidationResult::Failure(self.validation_failure(
+                ValidationError::InvalidNewSeqNo {
+                    expected: next_target,
+                },
+                Some(Cow::Borrowed(fix_str!(
+                    "ValueIsIncorrect (tag=36) - attempt to lower sequence number"
+                ))),
+                SequenceAction::Preserve,
+                None,
+            )));
         }
 
-        Ok(None)
+        None
     }
 
     /// Validate the header and requested range before delivering a ResendRequest.
@@ -510,10 +500,10 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         resend_request: ResendRequestBase,
         storage: &mut S,
-    ) -> Result<Option<HandlerResult>, FatalError> {
+    ) -> Option<ValidationResult> {
         const MSG_TYPE: MsgTypeField = MsgTypeBase::ResendRequest.raw_value();
-        if let Some(result) = self.validate(header, MSG_TYPE, storage, false, true, false)? {
-            return Ok(Some(result));
+        if let Some(result) = self.validate(header, MSG_TYPE, storage, false, true, false) {
+            return Some(result);
         }
 
         let begin_seq_no = resend_request.begin_seq_no;
@@ -523,26 +513,118 @@ impl<M: SessionMessage> SessionEngine<M> {
         // (Test Cases Scenario 14(e)), even when its MsgSeqNum is too high:
         // a queued ResendRequest is not processed again after gap recovery.
         if begin_seq_no == 0 || (end_seq_no != 0 && begin_seq_no > end_seq_no) {
-            let reason = SessionRejectReasonBase::ValueIsIncorrect;
-            let tag = Int::from(TAG_BEGIN_SEQ_NO);
             let text = format!(
-                "{reason:?} (tag={tag}) - invalid resend range {begin_seq_no}..{end_seq_no}"
+                "ValueIsIncorrect (tag=7) - invalid resend range {begin_seq_no}..{end_seq_no}"
             );
-            self.send_reject(
-                Some(Cow::Borrowed(MSG_TYPE.as_fix_str())),
-                header.msg_seq_num,
-                reason.into(),
-                Some(TAG_BEGIN_SEQ_NO),
+            return Some(ValidationResult::Failure(self.validation_failure(
+                ValidationError::InvalidResendRange,
                 Some(Cow::Owned(FixString::from_ascii_lossy(text.into_bytes()))),
-            );
-
-            if header.msg_seq_num > storage.next_target_msg_seq_num().get() {
-                return Ok(Some(HandlerResult::Enqueue));
-            }
-            self.consume_seq_num(MSG_TYPE, header.msg_seq_num, storage)?;
-            return Ok(Some(HandlerResult::Handled));
+                if header.msg_seq_num > storage.next_target_msg_seq_num().get() {
+                    SequenceAction::Enqueue
+                } else {
+                    SequenceAction::Consume
+                },
+                None,
+            )));
         }
 
-        Ok(None)
+        None
+    }
+
+    /// Prepare a refusal with the session's termination policy.
+    pub(super) fn validation_failure(
+        &self,
+        error: ValidationError,
+        text: Option<Cow<'static, FixStr>>,
+        sequence: SequenceAction,
+        session_status: Option<SessionStatusField>,
+    ) -> ValidationFailure {
+        let disconnect = match &error {
+            ValidationError::CompIdMismatch { .. } => Some(DisconnectReason::InvalidCompId),
+            ValidationError::SendingTimeAccuracy { .. } => {
+                Some(DisconnectReason::SendingTimeAccuracyProblem)
+            }
+            ValidationError::OrigSendingTimeAfterSendingTime => {
+                Some(DisconnectReason::InvalidOrigSendingTime)
+            }
+            // Rejecting the reset ACK number cannot leave it waiting for reuse.
+            ValidationError::MissingOrigSendingTime => self
+                .state
+                .local_reset_unconfirmed
+                .then_some(DisconnectReason::InvalidLogonState),
+            ValidationError::InvalidNewSeqNo { .. } | ValidationError::InvalidResendRange => None,
+            ValidationError::MsgSeqNumTooLow { .. } => Some(DisconnectReason::MsgSeqNumTooLow),
+            ValidationError::UnexpectedMessage => {
+                return ValidationFailure {
+                    error,
+                    reaction: ValidationReaction::Disconnect(DisconnectReason::InvalidLogonState),
+                };
+            }
+            ValidationError::UnexpectedMessageDuringReset
+            | ValidationError::ResetAcknowledgementRetransmitted
+            | ValidationError::InvalidResetAcknowledgement
+            | ValidationError::InvalidResetSequenceNumber
+            | ValidationError::UnsolicitedReset
+            | ValidationError::ResetNotAllowedOnConnect
+            | ValidationError::ResetNotAllowedInSession
+            | ValidationError::UnsupportedEncryptMethod
+            | ValidationError::InvalidHeartBtInt
+            | ValidationError::HeartBtIntMismatch { .. }
+            | ValidationError::InvalidNextExpectedMsgSeqNum { .. } => {
+                Some(DisconnectReason::InvalidLogonState)
+            }
+        };
+        ValidationFailure {
+            error,
+            reaction: ValidationReaction::Reply {
+                text,
+                disconnect,
+                sequence,
+                session_status,
+            },
+        }
+    }
+
+    /// Execute a refusal after notification, or directly for a failed decode.
+    pub(super) fn apply_validation_reaction<S: MessagesStorage>(
+        &mut self,
+        msg_type: MsgTypeField,
+        seq_num: SeqNum,
+        failure: ValidationFailure,
+        storage: &mut S,
+    ) -> Result<HandlerResult, FatalError> {
+        self.ensure_healthy()?;
+        Ok(match failure.reaction {
+            ValidationReaction::Reply {
+                text,
+                disconnect,
+                sequence,
+                session_status,
+            } => {
+                if matches!(sequence, SequenceAction::Consume) {
+                    self.consume_seq_num(msg_type, seq_num, storage)?;
+                }
+                if let Some(reason) = failure.error.reject_reason() {
+                    self.send_reject(
+                        Some(Cow::Owned(msg_type.as_fix_str().to_owned())),
+                        seq_num,
+                        reason,
+                        failure.error.tag(),
+                        text.clone(),
+                    );
+                }
+                if let Some(reason) = disconnect {
+                    // Preserve the original diagnostic on both replies
+                    // (Test Cases Scenarios 1S(d), 2(k), and 2(o)).
+                    self.push_logout(session_status, text);
+                    HandlerResult::Disconnect(reason)
+                } else if matches!(sequence, SequenceAction::Enqueue) {
+                    HandlerResult::Enqueue
+                } else {
+                    HandlerResult::Handled
+                }
+            }
+            ValidationReaction::Disconnect(reason) => HandlerResult::Disconnect(reason),
+        })
     }
 }

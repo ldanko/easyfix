@@ -11,7 +11,7 @@ use easyfix_core::{
 };
 use tracing::{error, warn};
 
-use super::{FatalError, HandlerResult, LogonState, SessionEngine};
+use super::{FatalError, HandlerResult, LogonState, SessionEngine, ValidationResult};
 use crate::{application::DisconnectReason, messages_storage::MessagesStorage};
 
 impl<M: SessionMessage> SessionEngine<M> {
@@ -62,17 +62,15 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         _heartbeat: HeartbeatBase<'_>,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
-        Ok(self
-            .validate(
-                header,
-                MsgTypeBase::Heartbeat.into(),
-                storage,
-                true,
-                true,
-                false,
-            )?
-            .unwrap_or(HandlerResult::AdminMsg))
+    ) -> Option<ValidationResult> {
+        self.validate(
+            header,
+            MsgTypeBase::Heartbeat.into(),
+            storage,
+            true,
+            true,
+            false,
+        )
     }
 
     pub(super) fn process_heartbeat<S: MessagesStorage>(
@@ -146,17 +144,15 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         _test_request: TestRequestBase<'_>,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
-        Ok(self
-            .validate(
-                header,
-                MsgTypeBase::TestRequest.into(),
-                storage,
-                true,
-                true,
-                false,
-            )?
-            .unwrap_or(HandlerResult::AdminMsg))
+    ) -> Option<ValidationResult> {
+        self.validate(
+            header,
+            MsgTypeBase::TestRequest.into(),
+            storage,
+            true,
+            true,
+            false,
+        )
     }
 
     pub(super) fn process_test_request<S: MessagesStorage>(

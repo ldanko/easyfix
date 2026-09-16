@@ -2,18 +2,150 @@ use std::{
     borrow::Cow,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU64},
+    time::Duration,
 };
 
 use easyfix_core::{
+    base_messages::SessionRejectReasonBase,
     basic_types::{
-        FixStr, FixString, Length, SessionRejectReasonField, SessionStatusField, TagNum,
+        FixStr, FixString, Length, SeqNum, SessionRejectReasonField, SessionStatusField, TagNum,
         TimePrecision,
     },
     message::{DeserializeError, SessionMessage},
     serializer::SerializeError,
 };
+use thiserror::Error;
 
 use crate::{io::sender::Sender, session_id::SessionId};
+
+/// Why a decoded incoming message failed session validation.
+///
+/// The offending values are available in the message passed to
+/// [`Application::on_validation_error`]. A failure describes the validation
+/// result; it does not guarantee that a protocol response was sent.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ValidationError {
+    /// A component identifier does not match the configured counterparty.
+    #[error("component identifier at tag {tag} does not match {expected}")]
+    CompIdMismatch {
+        /// `SenderCompID(49)` or `TargetCompID(56)`.
+        tag: TagNum,
+        /// The configured value required for this tag.
+        expected: FixString,
+    },
+    /// SendingTime falls outside the configured clock tolerance.
+    #[error("SendingTime(52) exceeds the allowed clock tolerance {max_latency:?}")]
+    SendingTimeAccuracy {
+        /// Maximum permitted difference from the receiver's clock.
+        max_latency: Duration,
+    },
+    /// A retransmitted message requires an OrigSendingTime value.
+    #[error("OrigSendingTime(122) is required")]
+    MissingOrigSendingTime,
+    /// OrigSendingTime is later than SendingTime.
+    #[error("OrigSendingTime(122) is later than SendingTime(52)")]
+    OrigSendingTimeAfterSendingTime,
+    /// MsgSeqNum is below the expected number without duplicate permission.
+    #[error("MsgSeqNum(34) is too low; expected {expected}")]
+    MsgSeqNumTooLow {
+        /// Next incoming sequence number expected by the session.
+        expected: SeqNum,
+    },
+    /// The message is not allowed in the current session state.
+    #[error("message is not allowed in the current session state")]
+    UnexpectedMessage,
+    /// The message is not an acknowledgement or refusal of a pending reset.
+    #[error("unexpected message while awaiting sequence number reset confirmation")]
+    UnexpectedMessageDuringReset,
+    /// A retransmitted Logon cannot confirm a locally initiated reset.
+    #[error("retransmitted Logon cannot acknowledge sequence number reset")]
+    ResetAcknowledgementRetransmitted,
+    /// A reset acknowledgement lacks ResetSeqNumFlag=Y or MsgSeqNum=1.
+    #[error("reset acknowledgement requires ResetSeqNumFlag=Y and MsgSeqNum=1")]
+    InvalidResetAcknowledgement,
+    /// A reset request has a MsgSeqNum other than 1.
+    #[error("ResetSeqNumFlag=Y requires MsgSeqNum=1")]
+    InvalidResetSequenceNumber,
+    /// A Logon response requests a reset that was not initiated locally.
+    #[error("unsolicited ResetSeqNumFlag=Y in Logon response")]
+    UnsolicitedReset,
+    /// The session does not permit a reset during connection establishment.
+    #[error("sequence number reset on connection establishment is not allowed")]
+    ResetNotAllowedOnConnect,
+    /// The session does not permit a reset while established.
+    #[error("sequence number reset in an established session is not allowed")]
+    ResetNotAllowedInSession,
+    /// EncryptMethod requests an unsupported encryption method.
+    #[error("unsupported EncryptMethod(98)")]
+    UnsupportedEncryptMethod,
+    /// HeartBtInt is negative.
+    #[error("HeartBtInt(108) must be non-negative")]
+    InvalidHeartBtInt,
+    /// HeartBtInt differs from the interval required by the session.
+    #[error("HeartBtInt(108) does not match the required {expected} seconds")]
+    HeartBtIntMismatch {
+        /// Required interval in seconds; zero disables regular heartbeats.
+        expected: u64,
+    },
+    /// NextExpectedMsgSeqNum is zero or exceeds the sender's next number.
+    #[error("NextExpectedMsgSeqNum(789) must be between 1 and {next_sender}")]
+    InvalidNextExpectedMsgSeqNum {
+        /// Sender counter against which the offered value was checked.
+        /// A peer reset request is checked against its planned value of 1.
+        next_sender: SeqNum,
+    },
+    /// A ResendRequest names an invalid sequence-number range.
+    #[error("invalid ResendRequest sequence-number range")]
+    InvalidResendRange,
+    /// NewSeqNo would lower the incoming counter, or a GapFill would not advance it.
+    #[error("NewSeqNo(36) is invalid for the expected incoming number {expected}")]
+    InvalidNewSeqNo {
+        /// Current expected incoming number. A Reset may preserve it;
+        /// a GapFill must advance it.
+        expected: SeqNum,
+    },
+}
+
+impl ValidationError {
+    /// The field responsible for the failure, when one field identifies it.
+    pub fn tag(&self) -> Option<TagNum> {
+        match self {
+            Self::CompIdMismatch { tag, .. } => Some(*tag),
+            Self::SendingTimeAccuracy { .. } => Some(52),
+            Self::MissingOrigSendingTime | Self::OrigSendingTimeAfterSendingTime => Some(122),
+            Self::MsgSeqNumTooLow { .. } | Self::InvalidResetSequenceNumber => Some(34),
+            Self::ResetAcknowledgementRetransmitted => Some(43),
+            Self::UnsolicitedReset
+            | Self::ResetNotAllowedOnConnect
+            | Self::ResetNotAllowedInSession => Some(141),
+            Self::UnsupportedEncryptMethod => Some(98),
+            Self::InvalidHeartBtInt | Self::HeartBtIntMismatch { .. } => Some(108),
+            Self::InvalidNextExpectedMsgSeqNum { .. } => Some(789),
+            Self::InvalidResendRange => Some(7),
+            Self::InvalidNewSeqNo { .. } => Some(36),
+            Self::UnexpectedMessage
+            | Self::UnexpectedMessageDuringReset
+            | Self::InvalidResetAcknowledgement => None,
+        }
+    }
+
+    /// The session reject classification, when this failure calls for Reject.
+    /// This does not guarantee that a Reject was sent successfully.
+    pub fn reject_reason(&self) -> Option<SessionRejectReasonField> {
+        let reason = match self {
+            Self::CompIdMismatch { .. } => SessionRejectReasonBase::CompIdProblem,
+            Self::SendingTimeAccuracy { .. } | Self::OrigSendingTimeAfterSendingTime => {
+                SessionRejectReasonBase::SendingTimeAccuracyProblem
+            }
+            Self::MissingOrigSendingTime => SessionRejectReasonBase::RequiredTagMissing,
+            Self::InvalidHeartBtInt | Self::InvalidResendRange | Self::InvalidNewSeqNo { .. } => {
+                SessionRejectReasonBase::ValueIsIncorrect
+            }
+            _ => return None,
+        };
+        Some(reason.into())
+    }
+}
 
 /// Application's response to an inbound message.
 #[derive(Debug)]
@@ -289,11 +421,12 @@ pub trait Application<M: SessionMessage> {
     /// [`SendError::Closed`]: crate::SendError::Closed
     async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason);
 
-    /// Inbound application message.
+    /// Inbound application message that passed session validation.
     ///
-    /// The session delivers every message that parses against the dictionary
-    /// (a MsgType that is not in the dictionary is rejected earlier with a
-    /// session-level `Reject<3>`, `SessionRejectReason=InvalidMsgType`).
+    /// A MsgType that is not in the dictionary is rejected during decoding
+    /// with a session-level `Reject<3>`, `SessionRejectReason=InvalidMsgType`.
+    /// Session validation failures are reported through
+    /// [`Self::on_validation_error`] instead of this callback.
     ///
     /// Rejecting a message whose MsgType **is** valid but is **not supported**
     /// by this application is the application's job: send a
@@ -366,6 +499,19 @@ pub trait Application<M: SessionMessage> {
     /// parsed header of the failed message when header parsing succeeded
     /// before the failure.
     fn on_deserialize_error(&mut self, _error: &DeserializeError) {}
+
+    /// A decoded incoming message failed session validation.
+    ///
+    /// Called once for the detected failure, before its protocol response or
+    /// sequence-number update. The message is not delivered to either input
+    /// callback. This notification may precede [`Self::on_session_ready`].
+    ///
+    /// Merely deferring a message until a sequence gap is filled does not
+    /// trigger this callback. If its later validation fails, it is reported
+    /// then. Deserialization errors, ignored duplicates, application refusals
+    /// and storage errors do not trigger this callback.
+    /// The session chooses the response; notification cannot override it.
+    fn on_validation_error(&mut self, _msg: &M, _error: &ValidationError) {}
 
     /// An outgoing message failed to serialize and was not sent - it will not
     /// be retried, and the peer never learns of it. The sequence number it

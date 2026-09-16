@@ -15,4 +15,5 @@ mod reset_timeout;
 mod reset_transport;
 mod seqnum_ceiling;
 mod storage_errors;
+mod validation_callback;
 mod wire;

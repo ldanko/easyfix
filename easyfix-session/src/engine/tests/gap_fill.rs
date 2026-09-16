@@ -12,7 +12,7 @@ use easyfix_test_messages::Message;
 
 use super::{resend_support::assert_resend_request, support::assert_msg_type};
 use crate::{
-    application::DisconnectReason,
+    application::{DisconnectReason, ValidationError},
     engine::InputResult,
     messages_storage::MessagesStorage,
     test_helpers,
@@ -46,7 +46,10 @@ fn on_sequence_reset_too_low_rejects() {
     storage.set_next_target_msg_seq_num(nz_seq(10)).unwrap();
     // new_seq=5 < next_target=10 -> Reject
     let msg = test_helpers::sequence_reset(10, 5, false);
-    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
+    assert_matches!(
+        engine.process_input_without_callback(msg, &mut storage),
+        Ok(InputResult::Handled)
+    );
 
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
@@ -75,7 +78,10 @@ fn on_sequence_reset_gap_fill_new_seq_no_equal_target_rejects() {
     storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
     // GapFill in sequence (MsgSeqNum=5=NextNumIn) with NewSeqNo=5 (== MsgSeqNum).
     let msg = test_helpers::sequence_reset(5, 5, true);
-    assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
+    assert_matches!(
+        engine.process_input_without_callback(msg, &mut storage),
+        Ok(InputResult::Handled)
+    );
 
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
@@ -108,10 +114,20 @@ fn queued_invalid_gap_fill_rejects_before_callback_after_recovery() {
             &mut storage,
         );
     }
-    assert_matches!(
-        engine.next_queued_message(&mut storage),
-        Ok(Some(InputResult::Handled))
+    let Some(InputResult::ValidationError { msg, failure }) =
+        engine.next_queued_message(&mut storage).unwrap()
+    else {
+        panic!("expected queued validation failure");
+    };
+    assert_eq!(
+        failure.error,
+        ValidationError::InvalidNewSeqNo { expected: 7 }
     );
+    assert_eq!(msg.header.msg_seq_num, 7);
+    assert!(!engine.has_admin_output());
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
     let reply = take_admin(&mut engine);
     assert_matches!(as_admin(&reply), AdminBase::Reject(reject)
         if reject.ref_seq_num == 7 && reject.ref_tag_id == Some(36)

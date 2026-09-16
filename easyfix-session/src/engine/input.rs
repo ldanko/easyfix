@@ -12,8 +12,8 @@ use easyfix_core::{
 use tracing::{error, info, warn};
 
 use super::{
-    FatalError, HandlerResult, InputResult, LogonState, SessionEngine, VerifyError,
-    output::text_field,
+    FatalError, HandlerResult, InputResult, LogonState, SessionEngine, ValidationFailure,
+    ValidationResult, VerifyError, logout::unexpected_reset_logout_text, output::text_field,
 };
 use crate::{
     application::{DisconnectReason, InputAction},
@@ -45,18 +45,16 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         _reject: RejectBase<'_>,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
+    ) -> Option<ValidationResult> {
         // A Reject during gap recovery must not trigger another resend cycle.
-        Ok(self
-            .validate(
-                header,
-                MsgTypeBase::Reject.into(),
-                storage,
-                false,
-                true,
-                false,
-            )?
-            .unwrap_or(HandlerResult::AdminMsg))
+        self.validate(
+            header,
+            MsgTypeBase::Reject.into(),
+            storage,
+            false,
+            true,
+            false,
+        )
     }
 
     fn process_reject<S: MessagesStorage>(
@@ -100,22 +98,15 @@ impl<M: SessionMessage> SessionEngine<M> {
 
     /// Process an incoming deserialized message. Top-level dispatcher.
     ///
-    /// 1. [`Self::dispatch`] borrows the message, extracts the
-    ///    [`AdminBase`] variant once, and routes to the per-variant
-    ///    `on_X` validation handler (or the app-message header validator).
-    ///    On success it returns `HandlerResult::AdminMsg` (admin) or
-    ///    `HandlerResult::AppMsg` (app); on failure it returns the
-    ///    appropriate `Handled` / `Enqueue` / `Disconnect`.
-    /// 2. [`Self::apply_result`] consumes `msg` according to the
-    ///    [`HandlerResult`] - enqueueing on `Enqueue`, surfacing
-    ///    `AppMsg` / `AdminMsg` for the application callback, or setting
-    ///    the disconnect flag.
+    /// Validate the header and administrative body, then route the original
+    /// message to the appropriate callback or defer it for gap recovery.
     ///
     /// A delivered message has passed all applicable session validation.
     /// Accepted-message processing is deferred to [`Self::process_admin_input`]
     /// / [`Self::process_app_input`] after the application callback returns.
-    /// Validation may already handle failures, queue out-of-order input, or
-    /// confirm the peer's acknowledgement of a local reset.
+    /// Validation may already queue out-of-order input or confirm the peer's
+    /// acknowledgement of a local reset. Refusals are completed by
+    /// [`Self::process_validation_failure`] after the error callback.
     pub(crate) fn on_input<S: MessagesStorage>(
         &mut self,
         msg: Box<M>,
@@ -123,37 +114,38 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) -> Result<InputResult<M>, FatalError> {
         self.ensure_healthy()?;
 
-        let result = self.dispatch(&msg, storage)?;
-        Ok(self.apply_result(msg, result, storage))
-    }
-
-    /// Borrow `msg`, extract its admin variant once, and dispatch to the
-    /// matching `on_X` validation handler. Handlers receive the borrowed
-    /// header and the typed `*Base` variant.
-    fn dispatch<S: MessagesStorage>(
-        &mut self,
-        msg: &M,
-        storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
         let header = msg.header();
-        Ok(match msg.try_as_admin() {
-            Some(AdminBase::Heartbeat(hb)) => self.on_heartbeat(&header, hb, storage)?,
-            Some(AdminBase::TestRequest(tr)) => self.on_test_request(&header, tr, storage)?,
-            Some(AdminBase::ResendRequest(rr)) => self.on_resend_request(&header, rr, storage)?,
-            Some(AdminBase::Reject(rj)) => self.on_reject(&header, rj, storage)?,
-            Some(AdminBase::SequenceReset(sr)) => self.on_sequence_reset(&header, sr, storage)?,
-            Some(AdminBase::Logout(lo)) => self.on_logout(&header, lo, storage)?,
+        let admin = msg.try_as_admin();
+        let is_admin = admin.is_some();
+        let result = match admin {
+            Some(AdminBase::Heartbeat(hb)) => self.on_heartbeat(&header, hb, storage),
+            Some(AdminBase::TestRequest(tr)) => self.on_test_request(&header, tr, storage),
+            Some(AdminBase::ResendRequest(rr)) => self.on_resend_request(&header, rr, storage),
+            Some(AdminBase::Reject(rj)) => self.on_reject(&header, rj, storage),
+            Some(AdminBase::SequenceReset(sr)) => self.on_sequence_reset(&header, sr, storage),
+            Some(AdminBase::Logout(lo)) => self.on_logout(&header, lo, storage),
             Some(AdminBase::Logon(lg)) => self.on_logon(&header, lg, storage)?,
             None => {
                 let msg_type = msg.msg_type();
-                self.validate(&header, msg_type, storage, true, true, false)?
-                    .unwrap_or(HandlerResult::AppMsg)
+                self.validate(&header, msg_type, storage, true, true, false)
+            }
+        };
+        Ok(match result {
+            None if is_admin => InputResult::AdminMsg(msg),
+            None => InputResult::AppMsg(msg),
+            Some(ValidationResult::Failure(failure)) => {
+                InputResult::ValidationError { msg, failure }
+            }
+            Some(ValidationResult::Handled) => InputResult::Handled,
+            Some(ValidationResult::Enqueue) => {
+                self.enqueue_input(msg, storage);
+                InputResult::Handled
             }
         })
     }
 
     /// Re-borrow `msg`, extract its admin variant, and run the matching
-    /// `process_X` post-callback handler. Mirror of [`Self::dispatch`] for
+    /// `process_X` post-callback handler. Mirror of [`Self::on_input`] for
     /// the second phase: the engine has just returned from the
     /// `on_admin_msg_in` callback with `InputAction::Accept`, so it is now
     /// safe to mutate state (transition logon, send responses, advance
@@ -165,11 +157,11 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) -> Result<HandlerResult, FatalError> {
         let header = msg.header();
         // TODO: this `try_as_admin()` re-projects the same AdminBase variant
-        // that `dispatch` already built during validation. The construction
+        // that `on_input` already built during validation. The construction
         // is zero-allocation (Cow::Borrowed projections), but doing it
         // twice per inbound admin message is structurally redundant.
         // Two viable fixes:
-        // 1. Carry the typed body forward in `HandlerResult::AdminMsg`
+        // 1. Carry the typed body forward in `InputResult::AdminMsg`
         //    via an owned `AdminPayload` enum (cost: small allocations
         //    when fields are non-Copy - Heartbeat test_req_id, etc.).
         // 2. Move the validate->callback->process flow into a single async
@@ -192,41 +184,45 @@ impl<M: SessionMessage> SessionEngine<M> {
         })
     }
 
-    /// Convert a handler outcome into the public [`InputResult`],
-    /// applying the side effects that need ownership of the original
-    /// message (queue insert, app/admin callback dispatch, disconnect).
-    fn apply_result<S: MessagesStorage>(
+    /// Finish processing with ownership of the original message.
+    fn apply_processing_outcome<S: MessagesStorage>(
         &mut self,
         msg: Box<M>,
         result: HandlerResult,
         storage: &mut S,
-    ) -> InputResult<M> {
+    ) {
         match result {
-            HandlerResult::Handled => InputResult::Handled,
-            HandlerResult::Enqueue => {
-                let seq = msg.msg_seq_num();
-                // Park the original incoming message in the out-of-order
-                // queue under its sequence number. For most types it is
-                // re-dispatched through `on_input` once the gap is filled
-                // (see `next_queued_message`). For Logon and ResendRequest
-                // the body was processed or deliberately ignored at receipt - those
-                // are recognized by `next_queued_message` from
-                // `msg.msg_type()` alone, which only advances the target
-                // sequence and does not re-process the body. Storing the
-                // original message - rather than synthesizing a
-                // placeholder - is simpler, costs nothing, and makes the
-                // queue contents truthful for any future reader.
-                self.state.queue.insert(seq, msg);
-                self.request_resend(seq, storage);
-                InputResult::Handled
-            }
-            HandlerResult::AppMsg => InputResult::AppMsg(msg),
-            HandlerResult::AdminMsg => InputResult::AdminMsg(msg),
+            HandlerResult::Handled => {}
+            HandlerResult::Enqueue => self.enqueue_input(msg, storage),
             HandlerResult::Disconnect(reason) => {
                 self.begin_disconnect(reason);
-                InputResult::Handled
             }
         }
+    }
+
+    /// Park the original message and request the preceding sequence gap.
+    fn enqueue_input<S: MessagesStorage>(&mut self, msg: Box<M>, storage: &mut S) {
+        let seq = msg.msg_seq_num();
+        // Most types are re-dispatched through `on_input` once the gap is
+        // filled. Logon and ResendRequest were processed or deliberately
+        // ignored at receipt; `next_queued_message` recognizes them by type
+        // and only advances the target counter. Keep the original message
+        // so the queue contents remain truthful in both cases.
+        self.state.queue.insert(seq, msg);
+        self.request_resend(seq, storage);
+    }
+
+    /// Complete the refusal after the application has observed its cause.
+    pub(crate) fn process_validation_failure<S: MessagesStorage>(
+        &mut self,
+        msg: Box<M>,
+        failure: ValidationFailure,
+        storage: &mut S,
+    ) -> Result<(), FatalError> {
+        let result =
+            self.apply_validation_reaction(msg.msg_type(), msg.msg_seq_num(), failure, storage)?;
+        self.apply_processing_outcome(msg, result, storage);
+        Ok(())
     }
 
     /// Feed back the application's response to an inbound admin message.
@@ -260,7 +256,8 @@ impl<M: SessionMessage> SessionEngine<M> {
             storage,
             move |this, storage| {
                 let result = this.dispatch_process(&msg, storage)?;
-                Ok(this.apply_result(msg, result, storage))
+                this.apply_processing_outcome(msg, result, storage);
+                Ok(InputResult::Handled)
             },
         )?;
         if rejected_reset_ack {
@@ -311,7 +308,7 @@ impl<M: SessionMessage> SessionEngine<M> {
 
     /// Branch on the application's `InputAction` response. The caller
     /// supplies an `on_accept` closure that owns the per-flow Accept
-    /// logic (admin: dispatch_process + apply_result; app: increment
+    /// logic (admin: dispatch_process + apply_processing_outcome; app: increment
     /// target seq num). Other actions consume the message's seq num via
     /// [`Self::consume_seq_num`]. Immediate refusals of the acceptor's initial
     /// Logon follow `preserve_seq_num_on_logon_refusal`.
@@ -392,7 +389,8 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) -> Result<InputResult<M>, FatalError> {
         self.ensure_healthy()?;
 
-        let text = Cow::Owned(FixString::from_ascii_lossy(error.to_string().into_bytes()));
+        let text: Cow<'static, FixStr> =
+            Cow::Owned(FixString::from_ascii_lossy(error.to_string().into_bytes()));
         error!(deserialize_error = %text);
 
         match &error.kind {
@@ -433,73 +431,74 @@ impl<M: SessionMessage> SessionEngine<M> {
                 let msg_type_field = msg_type
                     .as_deref()
                     .and_then(|mt| MsgTypeField::from_bytes(mt.as_bytes()).ok());
-                if let Some(msg_type_field) = msg_type_field
-                    && error.header.is_some()
-                {
-                    self.reject_error_with_header(&error, msg_type_field, text, storage)?;
-                } else if self.state.local_reset_unconfirmed
-                    && (msg_type_field.is_none()
-                        || *reason == SessionRejectReasonBase::InvalidMsgType)
-                {
-                    // Unknown types still get the decoder's Reject, but must
-                    // not consume the reset ACK number and leave it reusable.
-                    // The decoder may preserve a syntactically valid raw type
-                    // even when that type is absent from the dictionary.
-                    self.send_reject(
-                        msg_type.clone().map(Cow::Owned),
-                        *seq_num,
-                        *reason,
-                        *tag,
-                        Some(text.clone()),
-                    );
-                    if *seq_num == storage.next_target_msg_seq_num().get() {
-                        self.advance_target(storage)?;
+                let recovered_header = msg_type_field.zip(error.header.as_deref());
+                if let Some((msg_type, header)) = recovered_header {
+                    if let Some(result) =
+                        self.validate_failed_decode_header(header, msg_type, storage)?
+                    {
+                        match result {
+                            // The unparseable message cannot be queued. Request
+                            // its replacement along with the gap (4.8.2).
+                            HandlerResult::Enqueue => {
+                                self.request_resend_through(*seq_num, storage);
+                            }
+                            HandlerResult::Handled => {}
+                            HandlerResult::Disconnect(reason) => self.begin_disconnect(reason),
+                        }
+                        return Ok(InputResult::Error(error));
                     }
+                    // Only a validated header gets the normal consumption
+                    // rule, including its SequenceReset exception.
+                    self.consume_seq_num(msg_type, *seq_num, storage)?;
+                } else {
+                    // Unknown types retain the decoder's Reject during a reset
+                    // (Scenario 2(q)), followed by the terminal response below.
+                    // A raw MsgType can be syntactically valid but absent from
+                    // the dictionary, so the reject reason matters too.
+                    let reject_unknown_type = self.state.local_reset_unconfirmed
+                        && (msg_type_field.is_none()
+                            || *reason == SessionRejectReasonBase::InvalidMsgType);
+                    // A decode failure does not waive the logon-state gate:
+                    // disallowed traffic gets the state verdict, not a Reject.
+                    if !reject_unknown_type
+                        && let Err(verdict) = self.check_failed_decode_logon_state(msg_type_field)
+                    {
+                        if let VerifyError::UnexpectedMessageDuringReset { msg_type } = verdict {
+                            self.push_logout(
+                                None,
+                                Some(Cow::Owned(unexpected_reset_logout_text(msg_type))),
+                            );
+                        }
+                        self.begin_disconnect(DisconnectReason::InvalidLogonState);
+                        return Ok(InputResult::Error(error));
+                    }
+                }
+
+                self.send_reject(
+                    msg_type.clone().map(Cow::Owned),
+                    *seq_num,
+                    *reason,
+                    *tag,
+                    Some(text.clone()),
+                );
+                // Without a validated header, retain the conservative rule:
+                // advance only an expected number, after staging the Reject.
+                if recovered_header.is_none() && *seq_num == storage.next_target_msg_seq_num().get()
+                {
+                    self.advance_target(storage)?;
+                }
+                // Invalid Logon during establishment: Reject, then Logout
+                // naming the error and disconnect (Test Cases Scenario 1S(d)).
+                // A failed response to our reset is terminal as well.
+                if self.state.local_reset_unconfirmed
+                    || (msg_type_field == Some(MsgTypeBase::Logon.into())
+                        && matches!(
+                            self.state.logon_state,
+                            LogonState::Idle | LogonState::LogonSent
+                        ))
+                {
                     self.push_logout(None, Some(text));
                     self.begin_disconnect(DisconnectReason::InvalidLogonState);
-                } else if let Err(error) = self.check_failed_decode_logon_state(msg_type_field) {
-                    // A decode failure does not waive the logon-state gate:
-                    // a message type not permitted in this state must not
-                    // draw a Reject or advance NextNumIn just because it was
-                    // too damaged to validate. Preserve the reset-window
-                    // Logout verdict as on the recovered-header path.
-                    if let VerifyError::UnexpectedMessageDuringReset { msg_type } = error {
-                        self.push_unexpected_reset_logout(msg_type);
-                    }
-                    self.begin_disconnect(DisconnectReason::InvalidLogonState);
-                } else {
-                    self.send_reject(
-                        msg_type.clone().map(Cow::Owned),
-                        *seq_num,
-                        *reason,
-                        *tag,
-                        Some(text.clone()),
-                    );
-                    // A rejected message must advance NextNumIn
-                    // (FIX Session Layer §4.5.4; Scenario 14 a-j), but only when it is
-                    // in sequence - a too-high/too-low message leaves the gap to be
-                    // recovered by ResendRequest, mirroring the `verify_header`
-                    // Reject path.
-                    if *seq_num == storage.next_target_msg_seq_num().get() {
-                        self.advance_target(storage)?;
-                    }
-                    // An invalid Logon(35=A) while the logon exchange is still in
-                    // progress can never lead to an established session - Test
-                    // Cases Scenario 1S(d) mandates escalation after the
-                    // (optional) Reject: Logout with Text(58) referencing the
-                    // error condition, then disconnect. (This header-less
-                    // fallback cannot check the header, so the escalation is
-                    // keyed on the recovered MsgType alone.)
-                    if self.state.local_reset_unconfirmed
-                        || (msg_type.as_deref() == Some(fix_str!("A"))
-                            && matches!(
-                                self.state.logon_state,
-                                LogonState::Idle | LogonState::LogonSent
-                            ))
-                    {
-                        self.push_logout(None, Some(text));
-                        self.begin_disconnect(DisconnectReason::InvalidLogonState);
-                    }
                 }
             }
         }
@@ -507,38 +506,18 @@ impl<M: SessionMessage> SessionEngine<M> {
         Ok(InputResult::Error(error))
     }
 
-    /// Failed-decode handling when the message's header was recovered
-    /// (`DeserializeError::header`): header verdicts run through
-    /// [`Self::validate`] exactly like a cleanly-parsed message and
-    /// take precedence over the body-level Reject (FIX Session Layer
-    /// 4.8.1/4.8.2; Scenario 2(b)/(c)/(e); DESIGN-parse-error-header.md).
-    ///
-    /// The caller guarantees `error.kind` is `Reject` and `error.header`
-    /// is `Some`.
-    fn reject_error_with_header<S: MessagesStorage>(
+    /// Validate a recovered header before responding to its body error.
+    /// `None` permits the body-level Reject; `Some` replaces it with the
+    /// header verdict (FIX Session Layer 4.8.1/4.8.2; Scenario 2(b)/(c)/(e)).
+    fn validate_failed_decode_header<S: MessagesStorage>(
         &mut self,
-        error: &DeserializeError,
+        header: &HeaderBase<'_>,
         msg_type: MsgTypeField,
-        text: Cow<'static, FixStr>,
         storage: &mut S,
-    ) -> Result<(), FatalError> {
-        let (
-            DeserializeErrorKind::Reject {
-                seq_num,
-                tag,
-                reason,
-                ..
-            },
-            Some(header),
-        ) = (&error.kind, &error.header)
-        else {
-            return Ok(());
-        };
-        let (seq_num, tag, reason) = (*seq_num, *tag, *reason);
-
+    ) -> Result<Option<HandlerResult>, FatalError> {
         // Seq-num check gating mirrors the clean-path role wrappers:
         // Logon skips too-high (the tag-789 logic needs the parsed body;
-        // the pre-established escalation below covers a broken Logon) and
+        // the caller escalates a broken Logon before establishment) and
         // SequenceReset skips both (Reset mode ignores its own MsgSeqNum,
         // 4.8.8, and the GapFillFlag is unknowable from a broken body).
         let (check_too_high, check_too_low) = if msg_type == MsgTypeBase::Logon {
@@ -551,67 +530,26 @@ impl<M: SessionMessage> SessionEngine<M> {
             (true, true)
         };
 
-        match self.validate(
+        let result = self.validate(
             header,
             msg_type,
             storage,
             check_too_high,
             check_too_low,
             false,
-        )? {
-            // Header fully valid and in sequence: the body-level Reject
-            // stands and consumes the seq num (4.5.4) - same advance rule
-            // as every other Reject path (SequenceReset excluded, see
-            // `consume_seq_num`).
-            None => {
-                self.consume_seq_num(msg_type, seq_num, storage)?;
-                self.send_reject(
-                    Some(Cow::Owned(msg_type.as_fix_str().to_owned())),
-                    seq_num,
-                    reason,
-                    tag,
-                    Some(text.clone()),
-                );
-                // An invalid Logon(35=A) while the logon exchange is still
-                // in progress can never lead to an established session -
-                // Test Cases Scenario 1S(d) mandates escalation after the
-                // (optional) Reject: Logout with Text(58) referencing the
-                // error condition, then disconnect.
-                if self.state.local_reset_unconfirmed
-                    || (msg_type == MsgTypeBase::Logon
-                        && matches!(
-                            self.state.logon_state,
-                            LogonState::Idle | LogonState::LogonSent
-                        ))
-                {
-                    self.push_logout(None, Some(text));
-                    self.begin_disconnect(DisconnectReason::InvalidLogonState);
-                }
-            }
-            // Too high: the unparseable message cannot be queued, so the
-            // gap request extends THROUGH its seq num (drop-and-request,
-            // 4.8.2 Figure 12); the redelivered copy arrives in sequence
-            // and is rejected there. No Reject now - a message above the
-            // gap must not be processed before the gap is filled (4.8.2).
-            Some(HandlerResult::Enqueue) => {
-                self.request_resend_through(seq_num, storage);
-            }
-            // Duplicate (silently ignored, Scenario 2(e)) or a
-            // header-level Reject that validate already sent in
-            // place of the body-level one.
-            Some(HandlerResult::Handled) => {}
-            // Session-ending header verdicts. validate already staged
-            // the output where the spec mandates one: TooLow -> Logout
-            // (ReceivedMsgSeqNumTooLow), CompID / SendingTime accuracy ->
-            // Reject + Logout. InvalidLogonState disconnects SILENTLY -
-            // no Reject, no Logout - matching the clean-path reaction.
-            // Latch the disconnect like the clean-path dispatcher does.
-            Some(HandlerResult::Disconnect(reason)) => {
-                self.begin_disconnect(reason);
-            }
-            // validate never produces message-dispatch results.
-            Some(HandlerResult::AppMsg | HandlerResult::AdminMsg) => {}
-        }
-        Ok(())
+        );
+        // A failed decode has no complete message to deliver. Apply the
+        // same refusal immediately and report only on_deserialize_error.
+        Ok(match result {
+            Some(ValidationResult::Failure(failure)) => Some(self.apply_validation_reaction(
+                msg_type,
+                header.msg_seq_num,
+                failure,
+                storage,
+            )?),
+            Some(ValidationResult::Handled) => Some(HandlerResult::Handled),
+            Some(ValidationResult::Enqueue) => Some(HandlerResult::Enqueue),
+            None => None,
+        })
     }
 }

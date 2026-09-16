@@ -337,16 +337,20 @@ fn on_deserialize_error_with_header_invalid_logon_escalates_when_idle() {
         Some(1137),
         SessionRejectReasonBase::ValueIsIncorrect,
     );
+    let expected_text = error.to_string();
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(_));
+    assert_matches!(result, InputResult::Error(error) if error.header.is_some());
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::InvalidLogonState)
     );
     let reject_msg = take_admin(&mut engine);
-    assert_msg_type(&reject_msg, MsgTypeBase::Reject);
+    assert_matches!(as_admin(&reject_msg), AdminBase::Reject(reject)
+        if reject.text.as_deref().unwrap().as_bytes() == expected_text.as_bytes());
     let logout_msg = take_admin(&mut engine);
-    assert_msg_type(&logout_msg, MsgTypeBase::Logout);
+    assert_matches!(as_admin(&logout_msg), AdminBase::Logout(logout)
+        if logout.text.as_deref().unwrap().as_bytes() == expected_text.as_bytes());
+    assert!(!engine.has_admin_output());
     assert!(engine.should_disconnect());
     assert_eq!(storage.next_target_msg_seq_num().get(), 2);
 }

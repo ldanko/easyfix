@@ -35,7 +35,10 @@ async fn invalid_ack_body_values_do_not_send_a_second_logout() {
                 Some(true),
                 if negative_heartbeat { None } else { Some(0) },
             );
-            assert_matches!(engine.on_input(ack, &mut storage), Ok(InputResult::Handled));
+            assert_matches!(
+                engine.process_input_without_callback(ack, &mut storage),
+                Ok(InputResult::Handled)
+            );
             assert!(!engine.state.local_reset_unconfirmed);
             assert_eq!(
                 engine.disconnect_reason(),
@@ -68,7 +71,7 @@ async fn invalid_ack_body_values_do_not_send_a_second_logout() {
                 None,
             );
             assert_matches!(
-                engine.on_input(request, &mut storage),
+                engine.process_input_without_callback(request, &mut storage),
                 Ok(InputResult::Handled)
             );
             assert_eq!(

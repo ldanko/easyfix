@@ -11,7 +11,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, ValidationError},
     engine::InputResult,
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -139,11 +139,19 @@ fn on_resend_request_with_a_range_naming_no_message_rejects_before_callback() {
         storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
 
         let msg = test_helpers::resend_request(seq, begin, end);
-        assert_matches!(
-            engine.on_input(msg, &mut storage),
-            Ok(InputResult::Handled),
-            "{name}"
-        );
+        let InputResult::ValidationError { msg, failure } =
+            engine.on_input(msg, &mut storage).unwrap()
+        else {
+            panic!("expected validation failure: {name}");
+        };
+        assert_eq!(failure.error, ValidationError::InvalidResendRange, "{name}");
+        assert_eq!(msg.header.msg_seq_num, seq, "{name}");
+        assert!(!engine.has_admin_output(), "{name}");
+        assert_eq!(engine.queued_count(), 0, "{name}");
+        assert_eq!(storage.next_target_msg_seq_num().get(), 1, "{name}");
+        engine
+            .process_validation_failure(msg, failure, &mut storage)
+            .unwrap();
 
         let reject_msg = take_admin(&mut engine);
         assert_msg_type(&reject_msg, MsgTypeBase::Reject);

@@ -7,7 +7,7 @@ use easyfix_core::{
 
 use super::support::assert_msg_type;
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, ValidationError},
     engine::InputResult,
     messages_storage::MessagesStorage,
     test_helpers,
@@ -127,7 +127,16 @@ fn on_input_before_logon() {
     let (mut engine, mut storage) = EngineBuilder::new().build();
     let msg = test_helpers::heartbeat(1, None);
     let result = engine.on_input(msg, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Handled);
+    let InputResult::ValidationError { msg, failure } = result else {
+        panic!("expected validation failure");
+    };
+    assert_eq!(failure.error, ValidationError::UnexpectedMessage);
+    assert!(!engine.should_disconnect());
+    assert!(!engine.has_admin_output());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::InvalidLogonState)

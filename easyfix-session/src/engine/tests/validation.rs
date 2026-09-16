@@ -1,4 +1,4 @@
-use std::{assert_matches, borrow::Cow};
+use std::{assert_matches, borrow::Cow, ptr};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
@@ -11,7 +11,7 @@ use tokio::time::Duration;
 
 use super::support::{assert_msg_type, verify_test};
 use crate::{
-    application::DisconnectReason,
+    application::{DisconnectReason, ValidationError},
     engine::{InputResult, VerifyError},
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -21,6 +21,102 @@ use crate::{
         timestamp_offset_secs,
     },
 };
+
+#[test]
+fn header_validation_returns_original_message_before_refusal_side_effects() {
+    for (expected, reject, text, disconnect) in [
+        (
+            ValidationError::CompIdMismatch {
+                tag: 49,
+                expected: fix_str!("TARGET").to_owned(),
+            },
+            Some((SessionRejectReasonBase::CompIdProblem, 49)),
+            fix_str!("SenderCompID does not match"),
+            Some(DisconnectReason::InvalidCompId),
+        ),
+        (
+            ValidationError::CompIdMismatch {
+                tag: 56,
+                expected: fix_str!("SENDER").to_owned(),
+            },
+            Some((SessionRejectReasonBase::CompIdProblem, 56)),
+            fix_str!("TargetCompID does not match"),
+            Some(DisconnectReason::InvalidCompId),
+        ),
+        (
+            ValidationError::MissingOrigSendingTime,
+            Some((SessionRejectReasonBase::RequiredTagMissing, 122)),
+            fix_str!("Required tag missing: OrigSendingTime(122)"),
+            None,
+        ),
+        (
+            ValidationError::OrigSendingTimeAfterSendingTime,
+            Some((SessionRejectReasonBase::SendingTimeAccuracyProblem, 122)),
+            fix_str!("OrigSendingTime(122) after SendingTime(52)"),
+            Some(DisconnectReason::InvalidOrigSendingTime),
+        ),
+        (
+            ValidationError::MsgSeqNumTooLow { expected: 2 },
+            None,
+            fix_str!("MsgSeqNum too low, expected 2, got 1"),
+            Some(DisconnectReason::MsgSeqNumTooLow),
+        ),
+    ] {
+        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+        let mut msg = test_helpers::heartbeat(1, None);
+        match &expected {
+            ValidationError::CompIdMismatch { tag: 49, .. } => {
+                msg.header.sender_comp_id = fix_str!("WRONG").to_owned();
+            }
+            ValidationError::CompIdMismatch { .. } => {
+                msg.header.target_comp_id = fix_str!("WRONG").to_owned();
+            }
+            ValidationError::MissingOrigSendingTime => {
+                msg.set_poss_dup_flag(Some(true));
+            }
+            ValidationError::OrigSendingTimeAfterSendingTime => {
+                msg.set_poss_dup_flag(Some(true));
+                msg.set_orig_sending_time(Some(timestamp_offset_secs(10)));
+            }
+            ValidationError::MsgSeqNumTooLow { .. } => {
+                storage.set_next_target_msg_seq_num(nz_seq(2)).unwrap();
+            }
+            other => panic!("unexpected case: {other:?}"),
+        }
+        let original = ptr::from_ref(&*msg);
+        let target = storage.next_target_msg_seq_num();
+        let InputResult::ValidationError { msg, failure } =
+            engine.on_input(msg, &mut storage).unwrap()
+        else {
+            panic!("expected validation failure: {expected:?}");
+        };
+        assert_eq!(failure.error, expected);
+        assert!(ptr::eq(&*msg, original));
+        assert!(!engine.has_admin_output());
+        assert!(!engine.should_disconnect());
+        assert_eq!(storage.next_target_msg_seq_num(), target);
+        assert_eq!(engine.queued_count(), 0);
+        engine
+            .process_validation_failure(msg, failure, &mut storage)
+            .unwrap();
+        if let Some((reason, tag)) = reject {
+            let reply = take_admin(&mut engine);
+            assert_matches!(as_admin(&reply), AdminBase::Reject(ref reject)
+                if reject.session_reject_reason == Some(reason.into())
+                    && reject.ref_tag_id == Some(tag)
+                    && reject.ref_seq_num == 1
+                    && reject.text.as_deref() == Some(text));
+        }
+        if disconnect.is_some() {
+            let reply = take_admin(&mut engine);
+            assert_matches!(as_admin(&reply), AdminBase::Logout(ref logout)
+                if logout.text.as_deref() == Some(text));
+        }
+        assert_eq!(engine.disconnect_reason(), disconnect, "{expected:?}");
+        assert_eq!(storage.next_target_msg_seq_num().get(), 2, "{expected:?}");
+        assert!(!engine.has_admin_output(), "{expected:?}");
+    }
+}
 
 #[test]
 fn verify_header_normal_seq_num() {
@@ -39,7 +135,7 @@ fn verify_header_too_high_check_enabled() {
     let result = verify_test(&engine, &msg, &storage, true, true);
     assert_matches!(result, Err(VerifyError::TooHigh));
     // `verify_header` is pure observation - queue insertion is the
-    // dispatcher's job (`apply_result` on `HandlerResult::TooHigh`). The
+    // dispatcher's job (`enqueue_input` on `ValidationResult::Enqueue`). The
     // end-to-end behavior is exercised in the `on_input_*` tests.
     assert_eq!(engine.queued_count(), 0);
 }
@@ -97,15 +193,13 @@ fn verify_header_too_low_poss_dup_missing_orig_time() {
     // No OrigSendingTime set -> Reject with RequiredTagMissing
     let result = verify_test(&engine, &msg, &storage, true, true);
     match result {
-        Err(VerifyError::Reject {
-            reason,
-            tag,
-            disconnect,
-            text,
-        }) => {
-            assert_eq!(reason, SessionRejectReasonBase::RequiredTagMissing);
-            assert_eq!(tag, Some(122)); // TAG_ORIG_SENDING_TIME
-            assert!(disconnect.is_none());
+        Err(VerifyError::Reject { error, text }) => {
+            assert_eq!(error, ValidationError::MissingOrigSendingTime);
+            assert_eq!(
+                error.reject_reason(),
+                Some(SessionRejectReasonBase::RequiredTagMissing.into())
+            );
+            assert_eq!(error.tag(), Some(122));
             assert_matches!(text, Cow::Borrowed(value)
                 if value == fix_str!("Required tag missing: OrigSendingTime(122)"));
         }
@@ -125,15 +219,13 @@ fn verify_header_too_low_poss_dup_orig_time_after_sending() {
     msg.set_orig_sending_time(Some(future)); // orig > sending -> invalid
     let result = verify_test(&engine, &msg, &storage, true, true);
     match result {
-        Err(VerifyError::Reject {
-            reason,
-            tag,
-            disconnect,
-            ..
-        }) => {
-            assert_eq!(reason, SessionRejectReasonBase::SendingTimeAccuracyProblem);
-            assert_eq!(tag, Some(122)); // TAG_ORIG_SENDING_TIME
-            assert_eq!(disconnect, Some(DisconnectReason::InvalidOrigSendingTime));
+        Err(VerifyError::Reject { error, .. }) => {
+            assert_eq!(error, ValidationError::OrigSendingTimeAfterSendingTime);
+            assert_eq!(
+                error.reject_reason(),
+                Some(SessionRejectReasonBase::SendingTimeAccuracyProblem.into())
+            );
+            assert_eq!(error.tag(), Some(122));
         }
         other => panic!("expected Reject, got {other:?}"),
     }
@@ -277,15 +369,19 @@ fn verify_header_wrong_sender_comp_id() {
     msg.set_sender_comp_id(fix_str!("WRONG").to_owned());
     let result = verify_test(&engine, &msg, &storage, true, true);
     match result {
-        Err(VerifyError::Reject {
-            reason,
-            tag,
-            disconnect,
-            ..
-        }) => {
-            assert_eq!(reason, SessionRejectReasonBase::CompIdProblem);
-            assert_eq!(tag, Some(49)); // TAG_SENDER_COMP_ID
-            assert_eq!(disconnect, Some(DisconnectReason::InvalidCompId));
+        Err(VerifyError::Reject { error, .. }) => {
+            assert_eq!(
+                error,
+                ValidationError::CompIdMismatch {
+                    tag: 49,
+                    expected: fix_str!("TARGET").to_owned(),
+                }
+            );
+            assert_eq!(
+                error.reject_reason(),
+                Some(SessionRejectReasonBase::CompIdProblem.into())
+            );
+            assert_eq!(error.tag(), Some(49));
         }
         other => panic!("expected Reject, got {other:?}"),
     }
@@ -299,15 +395,19 @@ fn verify_header_wrong_target_comp_id() {
     msg.set_target_comp_id(fix_str!("WRONG").to_owned());
     let result = verify_test(&engine, &msg, &storage, true, true);
     match result {
-        Err(VerifyError::Reject {
-            reason,
-            tag,
-            disconnect,
-            ..
-        }) => {
-            assert_eq!(reason, SessionRejectReasonBase::CompIdProblem);
-            assert_eq!(tag, Some(56)); // TAG_TARGET_COMP_ID
-            assert_eq!(disconnect, Some(DisconnectReason::InvalidCompId));
+        Err(VerifyError::Reject { error, .. }) => {
+            assert_eq!(
+                error,
+                ValidationError::CompIdMismatch {
+                    tag: 56,
+                    expected: fix_str!("SENDER").to_owned(),
+                }
+            );
+            assert_eq!(
+                error.reject_reason(),
+                Some(SessionRejectReasonBase::CompIdProblem.into())
+            );
+            assert_eq!(error.tag(), Some(56));
         }
         other => panic!("expected Reject, got {other:?}"),
     }
@@ -357,22 +457,18 @@ fn verify_header_stale_sending_time() {
     msg.set_sending_time(timestamp_offset_secs(-300));
     let result = verify_test(&engine, &msg, &storage, true, true);
     match result {
-        Err(VerifyError::Reject {
-            reason,
-            tag,
-            disconnect,
-            ..
-        }) => {
-            assert_eq!(reason, SessionRejectReasonBase::SendingTimeAccuracyProblem);
-            assert_eq!(tag, Some(52)); // TAG_SENDING_TIME
-            // FIX Session Layer Section 4.2.3 / Scenario 2(o): a SendingTime-accuracy
-            // Reject(373=10) must be followed by a Logout + disconnect - the
-            // VerifyError must carry a disconnect reason, mirroring the CompID
-            // and OrigSendingTime reject paths.
+        Err(VerifyError::Reject { error, .. }) => {
             assert_eq!(
-                disconnect,
-                Some(DisconnectReason::SendingTimeAccuracyProblem)
+                error,
+                ValidationError::SendingTimeAccuracy {
+                    max_latency: Duration::from_secs(2),
+                }
             );
+            assert_eq!(
+                error.reject_reason(),
+                Some(SessionRejectReasonBase::SendingTimeAccuracyProblem.into())
+            );
+            assert_eq!(error.tag(), Some(52));
         }
         other => panic!("expected Reject, got {other:?}"),
     }
@@ -395,7 +491,21 @@ fn stale_sending_time_rejects_then_logs_out_and_disconnects() {
 
     let result = engine.on_input(msg, &mut storage).unwrap();
 
-    assert_matches!(result, InputResult::Handled);
+    let InputResult::ValidationError { msg, failure } = result else {
+        panic!("expected validation failure");
+    };
+    assert_eq!(
+        failure.error,
+        ValidationError::SendingTimeAccuracy {
+            max_latency: Duration::from_secs(2),
+        }
+    );
+    assert!(!engine.should_disconnect());
+    assert!(!engine.has_admin_output());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
     assert_eq!(
         engine.disconnect_reason(),
         Some(DisconnectReason::SendingTimeAccuracyProblem)
@@ -414,8 +524,14 @@ fn stale_sending_time_rejects_then_logs_out_and_disconnects() {
         rj.session_reject_reason.expect("reject reason must be set"),
         SessionRejectReasonBase::SendingTimeAccuracyProblem
     );
+    assert_eq!(rj.ref_tag_id, Some(52));
+    assert_eq!(
+        rj.text.as_deref(),
+        Some(fix_str!("SendingTime accuracy problem"))
+    );
     let logout = take_admin(&mut engine);
-    assert_msg_type(&logout, MsgTypeBase::Logout);
+    assert_matches!(as_admin(&logout), AdminBase::Logout(ref logout)
+        if logout.text.as_deref() == Some(fix_str!("SendingTime accuracy problem")));
 }
 
 #[test]

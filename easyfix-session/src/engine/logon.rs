@@ -4,24 +4,24 @@ use std::{borrow::Cow, num::NonZeroU64, time::Instant};
 
 use easyfix_core::{
     base_messages::{
-        AdminBase, EncryptMethodBase, HeaderBase, LogonBase, MsgTypeBase, SessionRejectReasonBase,
-        SessionStatusBase,
+        AdminBase, EncryptMethodBase, HeaderBase, LogonBase, MsgTypeBase, SessionStatusBase,
     },
-    basic_types::{FixStr, FixString, Int, Length, MsgTypeField, NonZeroSeqNum, SeqNum, TagNum},
+    basic_types::{FixStr, FixString, Int, Length, MsgTypeField, NonZeroSeqNum, SeqNum},
     fix_str,
     message::SessionMessage,
 };
 use tracing::{error, info, warn};
 
-use super::{FatalError, HandlerResult, LogonState, SessionEngine};
+use super::{
+    FatalError, HandlerResult, LogonState, SessionEngine, ValidationFailure, ValidationResult,
+    validation::SequenceAction,
+};
 use crate::{
-    application::{DisconnectReason, invalid_heart_bt_int_text},
+    application::{DisconnectReason, ValidationError, invalid_heart_bt_int_text},
     initiator::SessionStart,
     messages_storage::MessagesStorage,
     settings::SessionSettings,
 };
-
-const TAG_HEART_BT_INT: TagNum = 108;
 
 /// Whether a locally constructed reset Logon survives conversion into `M`.
 pub(crate) fn supports_seq_num_reset<M: SessionMessage>(settings: &SessionSettings) -> bool {
@@ -171,10 +171,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         logon: LogonBase,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
-        Ok(self
-            .validate_logon(header, logon, storage)?
-            .unwrap_or(HandlerResult::AdminMsg))
+    ) -> Result<Option<ValidationResult>, FatalError> {
+        self.validate_logon(header, logon, storage)
     }
 
     /// Validate the header, reset permission, acknowledgement shape and body.
@@ -185,13 +183,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         logon: LogonBase,
         storage: &mut S,
-    ) -> Result<Option<HandlerResult>, FatalError> {
+    ) -> Result<Option<ValidationResult>, FatalError> {
         let reset_seq_num_flag = logon.reset_seq_num_flag.unwrap_or(false);
-
-        // The peer's MaxMessageSize(383) is deliberately not judged here -
-        // see `SessionSettings::max_message_size`. It reaches the
-        // application inside the Logon, ahead of the state transition in
-        // `process_logon`, so refusing it is `InputAction::Logout` away.
 
         // Verify the header before judging reset permission and ACK fields.
         // Logon's too-high handling follows its acknowledgement. A local
@@ -203,122 +196,158 @@ impl<M: SessionMessage> SessionEngine<M> {
             false,
             !self.state.local_reset_unconfirmed,
             reset_seq_num_flag,
-        )? {
+        ) {
             return Ok(Some(hr));
         }
 
         if self.state.local_reset_unconfirmed {
-            if header.poss_dup_flag.unwrap_or(false) {
-                self.consume_seq_num(MsgTypeBase::Logon.into(), header.msg_seq_num, storage)?;
-                self.push_logout(
-                    None,
-                    Some(Cow::Borrowed(fix_str!(
-                        "Retransmitted Logon cannot acknowledge sequence number reset"
-                    ))),
-                );
-                return Ok(Some(HandlerResult::Disconnect(
-                    DisconnectReason::InvalidLogonState,
-                )));
-            }
-            if !reset_seq_num_flag || header.msg_seq_num != 1 {
-                self.push_logout(None, Some(Cow::Borrowed(fix_str!("Sequence number reset acknowledgement requires ResetSeqNumFlag=Y and MsgSeqNum=1"))));
-                return Ok(Some(HandlerResult::Disconnect(
-                    DisconnectReason::InvalidLogonState,
-                )));
-            }
-            // A too-high 789 contradicts the reset acknowledgement itself.
-            // Zero is judged later as an invalid body value after confirmation.
-            if self.session_settings.enable_next_expected_msg_seq_num
-                && logon
-                    .next_expected_msg_seq_num
-                    .is_some_and(|seq| seq > storage.next_sender_msg_seq_num().get())
+            if let Err(failure) =
+                self.confirm_local_reset(header, &logon, storage.next_sender_msg_seq_num().get())
             {
-                return Ok(Some(
-                    self.check_logon_next_expected_range(
-                        logon.next_expected_msg_seq_num,
-                        storage.next_sender_msg_seq_num().get(),
-                    )
-                    .unwrap_or(HandlerResult::Disconnect(
-                        DisconnectReason::InvalidLogonState,
-                    )),
-                ));
+                return Ok(Some(ValidationResult::Failure(failure)));
             }
-            if !self.state.queue.is_empty() {
-                error!("discarding queued input after peer confirmed our sequence number reset");
-            }
-            self.state.queue.clear();
-            self.state.resend_range = None;
-            self.state.local_reset_unconfirmed = false;
         } else if reset_seq_num_flag
             && self.answers_logon()
             && header.poss_dup_flag.unwrap_or(false)
         {
-            // A retransmitted reset carries old numbering, not permission to
-            // discard the current session again. Only its sequence number
-            // participates in recovery; its body is not applied.
-            let next_target = storage.next_target_msg_seq_num().get();
-            if next_target == SeqNum::MAX
-                || Self::check_seq_num_too_low(header, next_target).is_err()
-            {
-                return Ok(Some(HandlerResult::Handled));
-            }
-            if header.msg_seq_num > next_target {
-                return Ok(Some(HandlerResult::Enqueue));
-            }
-            self.consume_seq_num(MsgTypeBase::Logon.into(), header.msg_seq_num, storage)?;
-            return Ok(Some(HandlerResult::Handled));
-        } else if reset_seq_num_flag {
-            let text = if header.msg_seq_num != 1 {
-                Some(Cow::Owned(FixString::from_ascii_lossy(
-                    format!(
-                        "ResetSeqNumFlag=Y requires MsgSeqNum=1, got {}",
-                        header.msg_seq_num
-                    )
-                    .into_bytes(),
-                )))
-            } else if matches!(self.state.logon_state, LogonState::LogonSent) {
-                Some(Cow::Borrowed(fix_str!(
-                    "Unsolicited ResetSeqNumFlag=Y in Logon response"
-                )))
-            } else if matches!(self.state.logon_state, LogonState::Idle)
-                && !self.session_settings.accept_reset_on_connect
-            {
-                Some(Cow::Borrowed(fix_str!(
-                    "Resetting the sequence number upon FIX connection establishment is not supported"
-                )))
-            } else if matches!(
-                self.state.logon_state,
-                LogonState::Established | LogonState::ResetPending | LogonState::ResetProbe
-            ) && !self.session_settings.accept_reset_in_session
-            {
-                Some(Cow::Borrowed(fix_str!(
-                    "Resetting the sequence number is not supported"
-                )))
-            } else {
-                None
-            };
-            if let Some(text) = text {
-                error!("{text}");
-                self.push_logout(None, Some(text));
-                return Ok(Some(HandlerResult::Disconnect(
-                    DisconnectReason::InvalidLogonState,
-                )));
-            }
+            return self
+                .process_retransmitted_reset_logon(header, storage)
+                .map(Some);
+        } else if reset_seq_num_flag
+            && let Some(failure) = self.check_peer_reset(header.msg_seq_num)
+        {
+            return Ok(Some(ValidationResult::Failure(failure)));
         }
 
-        if let Some(hr) =
-            self.check_encrypt_method(header.msg_seq_num, logon.encrypt_method_raw, storage)?
+        Ok(self
+            .check_logon_body(logon, storage.next_sender_msg_seq_num().get())
+            .err()
+            .map(ValidationResult::Failure))
+    }
+
+    /// Confirm an outstanding local reset from a Logon with a validated header.
+    /// Leaves confirmation pending on failure; remaining body checks run later.
+    fn confirm_local_reset(
+        &mut self,
+        header: &HeaderBase<'_>,
+        logon: &LogonBase,
+        next_sender: SeqNum,
+    ) -> Result<(), ValidationFailure> {
+        if header.poss_dup_flag.unwrap_or(false) {
+            return Err(self.validation_failure(
+                ValidationError::ResetAcknowledgementRetransmitted,
+                Some(Cow::Borrowed(fix_str!(
+                    "Retransmitted Logon cannot acknowledge sequence number reset"
+                ))),
+                SequenceAction::Consume,
+                None,
+            ));
+        }
+        if !logon.reset_seq_num_flag.unwrap_or(false) || header.msg_seq_num != 1 {
+            return Err(self.validation_failure(
+                ValidationError::InvalidResetAcknowledgement,
+                Some(Cow::Borrowed(fix_str!(
+                    "Sequence number reset acknowledgement requires ResetSeqNumFlag=Y and MsgSeqNum=1"
+                ))),
+                SequenceAction::Preserve,
+                None,
+            ));
+        }
+        // A too-high 789 contradicts the reset acknowledgement itself.
+        // Zero is judged later as an invalid body value after confirmation.
+        if self.session_settings.enable_next_expected_msg_seq_num
+            && let Some(failure) = self.check_logon_next_expected_range(
+                logon.next_expected_msg_seq_num.filter(|seq| *seq != 0),
+                next_sender,
+            )
         {
-            return Ok(Some(hr));
+            return Err(failure);
+        }
+        if !self.state.queue.is_empty() {
+            error!("discarding queued input after peer confirmed our sequence number reset");
+        }
+        self.state.queue.clear();
+        self.state.resend_range = None;
+        self.state.local_reset_unconfirmed = false;
+        Ok(())
+    }
+
+    /// Apply only sequence recovery for a retransmitted peer reset Logon.
+    /// The caller must validate its header first.
+    fn process_retransmitted_reset_logon<S: MessagesStorage>(
+        &mut self,
+        header: &HeaderBase<'_>,
+        storage: &mut S,
+    ) -> Result<ValidationResult, FatalError> {
+        // A retransmitted reset carries old numbering, not permission to
+        // discard the current session again. Its body is not applied.
+        let next_target = storage.next_target_msg_seq_num().get();
+        if next_target == SeqNum::MAX || Self::check_seq_num_too_low(header, next_target).is_err() {
+            return Ok(ValidationResult::Handled);
+        }
+        if header.msg_seq_num > next_target {
+            return Ok(ValidationResult::Enqueue);
+        }
+        self.consume_seq_num(MsgTypeBase::Logon.into(), header.msg_seq_num, storage)?;
+        Ok(ValidationResult::Handled)
+    }
+
+    /// Check the numbering and permission for a new peer reset request.
+    fn check_peer_reset(&self, seq_num: SeqNum) -> Option<ValidationFailure> {
+        let (error, text) = if seq_num != 1 {
+            (
+                ValidationError::InvalidResetSequenceNumber,
+                Cow::Owned(FixString::from_ascii_lossy(
+                    format!("ResetSeqNumFlag=Y requires MsgSeqNum=1, got {seq_num}").into_bytes(),
+                )),
+            )
+        } else if matches!(self.state.logon_state, LogonState::LogonSent) {
+            (
+                ValidationError::UnsolicitedReset,
+                Cow::Borrowed(fix_str!("Unsolicited ResetSeqNumFlag=Y in Logon response")),
+            )
+        } else if matches!(self.state.logon_state, LogonState::Idle)
+            && !self.session_settings.accept_reset_on_connect
+        {
+            (
+                ValidationError::ResetNotAllowedOnConnect,
+                Cow::Borrowed(fix_str!(
+                    "Resetting the sequence number upon FIX connection establishment is not supported"
+                )),
+            )
+        } else if matches!(
+            self.state.logon_state,
+            LogonState::Established | LogonState::ResetPending | LogonState::ResetProbe
+        ) && !self.session_settings.accept_reset_in_session
+        {
+            (
+                ValidationError::ResetNotAllowedInSession,
+                Cow::Borrowed(fix_str!("Resetting the sequence number is not supported")),
+            )
+        } else {
+            return None;
+        };
+        error!("{text}");
+        Some(self.validation_failure(error, Some(text), SequenceAction::Preserve, None))
+    }
+
+    /// Check Logon parameters after header and reset validation.
+    fn check_logon_body(
+        &self,
+        logon: LogonBase,
+        next_sender: SeqNum,
+    ) -> Result<(), ValidationFailure> {
+        // The peer's MaxMessageSize(383) is deliberately not judged here -
+        // see `SessionSettings::max_message_size`. It reaches the
+        // application inside the Logon, ahead of the state transition in
+        // `process_logon`, so refusing it is `InputAction::Logout` away.
+        if let Some(failure) = self.check_encrypt_method(logon.encrypt_method_raw) {
+            return Err(failure);
         }
 
         // A Reject consumes the expected incoming number, but none of the
         // body checks may discard storage for a peer's reset request.
-        let heart_bt_secs =
-            match self.check_heart_bt_int(header.msg_seq_num, logon.heart_bt_int, storage)? {
-                Ok(secs) => secs,
-                Err(hr) => return Ok(Some(hr)),
-            };
+        let heart_bt_secs = self.check_heart_bt_int(logon.heart_bt_int)?;
         let acknowledge = self.answers_logon();
         let first_logon = matches!(self.state.logon_state, LogonState::Idle);
         let expected_heart_bt_secs = self.state.heartbeat_interval.map_or(0, NonZeroU64::get);
@@ -334,23 +363,29 @@ impl<M: SessionMessage> SessionEngine<M> {
                 ).into_bytes()))
             };
             error!("{text}");
-            self.push_logout(None, Some(text));
-            return Ok(Some(HandlerResult::Disconnect(
-                DisconnectReason::InvalidLogonState,
-            )));
+            return Err(self.validation_failure(
+                ValidationError::HeartBtIntMismatch {
+                    expected: expected_heart_bt_secs,
+                },
+                Some(text),
+                SequenceAction::Preserve,
+                None,
+            ));
         }
 
         if self.session_settings.enable_next_expected_msg_seq_num {
-            let next_sender = if reset_seq_num_flag && acknowledge {
+            let next_sender = if logon.reset_seq_num_flag.unwrap_or(false) && acknowledge {
                 1
             } else {
-                storage.next_sender_msg_seq_num().get()
+                next_sender
             };
-            return Ok(
+            if let Some(failure) =
                 self.check_logon_next_expected_range(logon.next_expected_msg_seq_num, next_sender)
-            );
+            {
+                return Err(failure);
+            }
         }
-        Ok(None)
+        Ok(())
     }
 
     /// Whether the session answers an incoming Logon with an acknowledgement
@@ -458,8 +493,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         if !is_normal {
             if let Some(next_expected) = self.state.next_expected_msg_seq_num {
                 // Tag 789 was sent - set resend range to suppress the
-                // explicit ResendRequest that `apply_result` would otherwise
-                // dispatch on `HandlerResult::Enqueue`. `request_resend` reads
+                // explicit ResendRequest that `apply_processing_outcome`
+                // would dispatch on `HandlerResult::Enqueue`. `request_resend` reads
                 // `state.resend_range` and short-circuits (unless
                 // `send_redundant_resend_requests` is configured). The range
                 // must be FINITE - the implied resend covers the gap below
@@ -489,7 +524,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
 
         // Normal logon: increment seq num and signal completion. Too-high:
-        // leave the original message ownership to `apply_result`, which
+        // leave the original message to `apply_processing_outcome`, which
         // will queue it and emit a ResendRequest for the gap.
         Ok(if is_normal {
             self.advance_target(storage)?;
@@ -506,7 +541,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Logon is invalid, so the session logs out and disconnects (Session
     /// Test Cases §4.4.1 Scenario 1S(d)).
     ///
-    /// Returns `Some(Disconnect)` on failure, `None` when the check passes
+    /// Returns `Some(ValidationError)` on failure, `None` when the check passes
     /// (or no tag 789 was offered).
     /// Pass the planned sender counter of 1 for a peer reset request,
     /// before changing storage; otherwise pass the current sender counter.
@@ -514,10 +549,10 @@ impl<M: SessionMessage> SessionEngine<M> {
     // resend. Zero has to die here: processing it would queue a resend
     // from 0 and put a gap-fill stamped MsgSeqNum(34)=0 on the wire.
     fn check_logon_next_expected_range(
-        &mut self,
+        &self,
         next_expected_msg_seq_num: Option<SeqNum>,
         next_sender: SeqNum,
-    ) -> Option<HandlerResult> {
+    ) -> Option<ValidationFailure> {
         let next_expected = next_expected_msg_seq_num?;
         let (session_status, text): (_, Cow<'static, FixStr>) = if next_expected == 0 {
             (
@@ -540,21 +575,18 @@ impl<M: SessionMessage> SessionEngine<M> {
         };
 
         error!("{text}");
-        self.push_logout(session_status, Some(text));
-        Some(HandlerResult::Disconnect(
-            DisconnectReason::InvalidLogonState,
+        Some(self.validation_failure(
+            ValidationError::InvalidNextExpectedMsgSeqNum { next_sender },
+            Some(text),
+            SequenceAction::Preserve,
+            session_status,
         ))
     }
 
     /// Refuse a nonzero EncryptMethod before application input.
-    fn check_encrypt_method<S: MessagesStorage>(
-        &mut self,
-        msg_seq_num: SeqNum,
-        encrypt_method: Int,
-        storage: &mut S,
-    ) -> Result<Option<HandlerResult>, FatalError> {
+    fn check_encrypt_method(&self, encrypt_method: Int) -> Option<ValidationFailure> {
         if encrypt_method == EncryptMethodBase::None as Int {
-            return Ok(None);
+            return None;
         }
 
         // Refuse the Logon without attempting encryption negotiation. The
@@ -565,50 +597,38 @@ impl<M: SessionMessage> SessionEngine<M> {
                 .into_bytes(),
         );
         error!("{text}");
-        self.consume_seq_num(MsgTypeBase::Logon.into(), msg_seq_num, storage)?;
-        self.push_logout(None, Some(Cow::Owned(text)));
-        Ok(Some(HandlerResult::Disconnect(
-            DisconnectReason::InvalidLogonState,
-        )))
+        Some(self.validation_failure(
+            ValidationError::UnsupportedEncryptMethod,
+            Some(Cow::Owned(text)),
+            SequenceAction::Consume,
+            None,
+        ))
     }
 
     /// Reject a negative HeartBtInt(108); zero disables regular heartbeats
     /// (FIX Transport Section 5.1). The caller separately checks consistency
     /// with the interval already in force on the connection.
     ///
-    /// Returns the value as seconds when it is usable, `Err(Disconnect)`
-    /// after rejecting it.
+    /// Returns the value as seconds when it is usable, or a deferred refusal.
     // Runs before any reset: refusal preserves the old history, but its
     // Reject consumes an expected incoming number and its Logout an outgoing one.
-    fn check_heart_bt_int<S: MessagesStorage>(
-        &mut self,
-        msg_seq_num: SeqNum,
-        heart_bt_int: Int,
-        storage: &mut S,
-    ) -> Result<Result<u64, HandlerResult>, FatalError> {
+    fn check_heart_bt_int(&self, heart_bt_int: Int) -> Result<u64, ValidationFailure> {
         // The conversion is the check: every non-negative `Int` fits, and
         // nothing above zero is refused - the spec sets no ceiling.
         if let Ok(secs) = u64::try_from(heart_bt_int) {
-            return Ok(Ok(secs));
+            return Ok(secs);
         }
         error!("Invalid HeartBtInt {heart_bt_int} (must be >= 0)");
-        const MSG_TYPE: MsgTypeField = MsgTypeBase::Logon.raw_value();
         let text = fix_str!("Invalid HeartBtInt(108)");
-        self.consume_seq_num(MSG_TYPE, msg_seq_num, storage)?;
-        self.send_reject(
-            Some(Cow::Borrowed(MSG_TYPE.as_fix_str())),
-            msg_seq_num,
-            SessionRejectReasonBase::ValueIsIncorrect.into(),
-            Some(TAG_HEART_BT_INT),
-            Some(Cow::Borrowed(text)),
-        );
         // The Reject is Test Cases §4.4.1 Scenario 1S(d)'s optional step 2;
         // the Logout with Text(58) referencing the error is its step 3, and
         // that one is not optional.
-        self.push_logout(None, Some(Cow::Borrowed(text)));
-        Ok(Err(HandlerResult::Disconnect(
-            DisconnectReason::InvalidLogonState,
-        )))
+        Err(self.validation_failure(
+            ValidationError::InvalidHeartBtInt,
+            Some(Cow::Borrowed(text)),
+            SequenceAction::Consume,
+            None,
+        ))
     }
 
     /// Echo the validated peer HeartBtInt and stage the Logon response.

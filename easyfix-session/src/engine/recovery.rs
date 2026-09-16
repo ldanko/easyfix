@@ -9,7 +9,9 @@ use easyfix_core::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::{FatalError, HandlerResult, InputResult, PendingOutput, SessionEngine};
+use super::{
+    FatalError, HandlerResult, InputResult, PendingOutput, SessionEngine, ValidationResult,
+};
 use crate::{messages_storage::MessagesStorage, session_id::SessionId};
 
 /// Build the `SequenceReset`-GapFill message serialized by both the
@@ -293,10 +295,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         resend_request: ResendRequestBase,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
-        Ok(self
-            .validate_resend_request(header, resend_request, storage)?
-            .unwrap_or(HandlerResult::AdminMsg))
+    ) -> Option<ValidationResult> {
+        self.validate_resend_request(header, resend_request, storage)
     }
 
     pub(super) fn process_resend_request<S: MessagesStorage>(
@@ -335,7 +335,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         self.pending_resends.push_back(begin_seq_no..=adjusted_end);
 
         // Manual too-high check - `validate_resend_request` skipped it during
-        // the validation phase. `apply_result` handles enqueue + ResendRequest
+        // the validation phase. `apply_processing_outcome` handles enqueue
+        // and ResendRequest
         // for the gap.
         let next_target = storage.next_target_msg_seq_num().get();
         if msg_seq_num > next_target {
@@ -354,10 +355,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         sequence_reset: SequenceResetBase,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
-        Ok(self
-            .validate_sequence_reset(header, sequence_reset, storage)?
-            .unwrap_or(HandlerResult::AdminMsg))
+    ) -> Option<ValidationResult> {
+        self.validate_sequence_reset(header, sequence_reset, storage)
     }
 
     pub(super) fn process_sequence_reset<S: MessagesStorage>(

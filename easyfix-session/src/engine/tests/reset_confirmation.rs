@@ -422,7 +422,9 @@ fn header_rejected_ack_fails_the_reset() {
                     ack.header.sender_comp_id = fix_str!("WRONG").to_owned();
                 }
                 assert_matches!(
-                    engine.on_input(ack, &mut storage).unwrap(),
+                    engine
+                        .process_input_without_callback(ack, &mut storage)
+                        .unwrap(),
                     InputResult::Handled
                 );
                 assert_eq!(
@@ -474,7 +476,10 @@ fn garbled_reset_response_leaves_confirmation_and_numbering_unchanged() {
             if running {
                 assert_matches!(
                     engine
-                        .on_input(test_helpers::heartbeat(2, None), &mut storage)
+                        .process_input_without_callback(
+                            test_helpers::heartbeat(2, None),
+                            &mut storage
+                        )
                         .unwrap(),
                     InputResult::Handled
                 );
@@ -512,7 +517,10 @@ fn reset_ack_during_logout_preserves_the_deadline_and_clears_negotiation() {
             if second_logon {
                 assert_matches!(
                     engine
-                        .on_input(reset_ack(1, Some(true), None), &mut storage)
+                        .process_input_without_callback(
+                            reset_ack(1, Some(true), None),
+                            &mut storage
+                        )
                         .unwrap(),
                     InputResult::Handled
                 );
@@ -543,7 +551,10 @@ fn non_ack_traffic_during_logout_cannot_consume_the_reset_ack_number() {
             if decoded {
                 assert_matches!(
                     engine
-                        .on_input(test_helpers::heartbeat(1, None), &mut storage)
+                        .process_input_without_callback(
+                            test_helpers::heartbeat(1, None),
+                            &mut storage
+                        )
                         .unwrap(),
                     InputResult::Handled
                 );

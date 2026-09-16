@@ -10,8 +10,21 @@ use easyfix_core::{
 };
 use tracing::{info, warn};
 
-use super::{FatalError, HandlerResult, LogonState, SessionEngine, output::text_field};
+use super::{
+    FatalError, HandlerResult, LogonState, SessionEngine, ValidationResult, output::text_field,
+};
 use crate::{application::DisconnectReason, messages_storage::MessagesStorage};
+
+/// Describe a message that cannot acknowledge or refuse the pending reset.
+pub(super) fn unexpected_reset_logout_text(msg_type: MsgTypeField) -> FixString {
+    let name = MsgTypeBase::ALL
+        .iter()
+        .find(|&&kind| kind == msg_type)
+        .map_or_else(|| "MsgType".to_owned(), |kind| format!("{kind:?}"));
+    FixString::from_ascii_lossy(
+        format!("Unexpected {name}({msg_type}) during sequence number reset").into_bytes(),
+    )
+}
 
 impl<M: SessionMessage> SessionEngine<M> {
     /// When the session gives up waiting for the peer to close the connection
@@ -88,8 +101,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         header: &HeaderBase<'_>,
         _logout: LogoutBase<'_>,
         storage: &mut S,
-    ) -> Result<HandlerResult, FatalError> {
-        Ok(if self.state.local_reset_unconfirmed {
+    ) -> Option<ValidationResult> {
+        if self.state.local_reset_unconfirmed {
             self.validate(
                 header,
                 MsgTypeBase::Logout.into(),
@@ -97,15 +110,13 @@ impl<M: SessionMessage> SessionEngine<M> {
                 false,
                 false,
                 false,
-            )?
-            .unwrap_or(HandlerResult::AdminMsg)
+            )
         } else if self.session_settings.verify_logout {
             const MSG_TYPE: MsgTypeField = MsgTypeBase::Logout.raw_value();
-            self.validate(header, MSG_TYPE, storage, true, true, false)?
-                .unwrap_or(HandlerResult::AdminMsg)
+            self.validate(header, MSG_TYPE, storage, true, true, false)
         } else {
-            HandlerResult::AdminMsg
-        })
+            None
+        }
     }
 
     pub(super) fn process_logout<S: MessagesStorage>(
@@ -139,19 +150,6 @@ impl<M: SessionMessage> SessionEngine<M> {
                 HandlerResult::Handled
             }
         })
-    }
-
-    pub(super) fn push_unexpected_reset_logout(&mut self, msg_type: MsgTypeField) {
-        let name = MsgTypeBase::ALL
-            .iter()
-            .find(|&&kind| kind == msg_type)
-            .map_or_else(|| "MsgType".to_owned(), |kind| format!("{kind:?}"));
-        self.push_logout(
-            None,
-            Some(Cow::Owned(FixString::from_ascii_lossy(
-                format!("Unexpected {name}({msg_type}) during sequence number reset").into_bytes(),
-            ))),
-        );
     }
 
     /// Logout response not received in time.

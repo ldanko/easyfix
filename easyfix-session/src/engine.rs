@@ -42,14 +42,9 @@ mod tests;
 pub(crate) use logon::supports_seq_num_reset;
 pub(crate) use recovery::validate_gap_fill_fits;
 use scratch_buffer::ScratchBuffer;
-use validation::VerifyError;
+use validation::{ValidationFailure, ValidationResult, VerifyError};
 
-/// Outcome of a per-variant handler. The dispatcher converts it to the
-/// public [`InputResult`] via [`SessionEngine::apply_result`].
-///
-/// Handlers don't see `Box<M>` directly - the dispatcher in
-/// [`SessionEngine::on_input`] owns the box and applies the side effects
-/// that need ownership (queue insert, callback dispatch, disconnect).
+/// Remaining work after processing an accepted message or a validation refusal.
 #[derive(Debug)]
 enum HandlerResult {
     /// Engine handled the message internally; nothing more to do.
@@ -58,14 +53,7 @@ enum HandlerResult {
     /// message into the out-of-order queue and sends a ResendRequest
     /// for the gap.
     Enqueue,
-    /// Application message - dispatcher returns `InputResult::AppMsg(msg)`.
-    AppMsg,
-    /// Admin message that needs an `on_admin_msg_in` callback -
-    /// dispatcher returns `InputResult::AdminMsg(msg)`.
-    AdminMsg,
-    /// Engine wants to terminate the session. Dispatcher latches the reason
-    /// via [`SessionEngine::begin_disconnect`] and returns
-    /// `InputResult::Handled`.
+    /// End the session by latching the reason via [`SessionEngine::begin_disconnect`].
     Disconnect(DisconnectReason),
 }
 
@@ -81,6 +69,11 @@ pub(crate) enum PendingOutput {
 /// Result of processing an inbound message.
 #[derive(Debug)]
 pub(crate) enum InputResult<M> {
+    /// Decoded message refused by session validation; reaction is deferred.
+    ValidationError {
+        msg: Box<M>,
+        failure: ValidationFailure,
+    },
     /// Engine handled internally, no callback needed.
     Handled,
     /// Application message - call on_app_msg_in.
@@ -583,9 +576,9 @@ impl<M: SessionMessage> SessionEngine<M> {
     // graceful logout, followed by a peer message that uses up the incoming
     // numbering, is exactly the case that arm catches.
     //
-    // The state is deliberately NOT narrowed to `Established`. `check_poss_dup`
-    // yields the one `VerifyError::Reject` on the Logon path that carries no
-    // disconnect of its own, and it advances the counter on the way out, so it
+    // The state is deliberately NOT narrowed to `Established`. A missing
+    // OrigSendingTime on the ordinary Logon path does not require a disconnect
+    // of its own, and its Reject advances the counter on the way out, so it
     // can be the message that uses up the numbering - leaving this method as
     // the only thing left to end a handshake that never completed. Test Cases
     // §4.4.1 Scenario 1S(d) step 3 (and §4.3.1 Scenario 1B(d) step 3 for the

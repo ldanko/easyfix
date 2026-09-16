@@ -21,6 +21,11 @@ pub(super) fn drain_queued(
     storage: &mut impl MessagesStorage,
 ) {
     match engine.next_queued_message(storage).unwrap() {
+        Some(InputResult::ValidationError { msg, failure }) => {
+            engine
+                .process_validation_failure(msg, failure, storage)
+                .unwrap();
+        }
         Some(InputResult::AdminMsg(msg)) => {
             engine
                 .process_admin_input(msg, InputAction::Accept, storage)

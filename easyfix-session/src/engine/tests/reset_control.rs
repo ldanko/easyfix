@@ -255,7 +255,9 @@ fn running_reset_sent_rejects_unexpected_traffic_before_sequence_recovery() {
                 let _ = commit_reset_admin(&mut engine, &mut storage);
             }
             assert_matches!(
-                engine.on_input(msg, &mut storage).unwrap(),
+                engine
+                    .process_input_without_callback(msg, &mut storage)
+                    .unwrap(),
                 InputResult::Handled
             );
             assert_eq!(

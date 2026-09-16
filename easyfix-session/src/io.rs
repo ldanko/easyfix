@@ -333,6 +333,17 @@ where
         return Err(FatalError);
     }
     match result {
+        InputResult::ValidationError { msg, failure } => {
+            let span = info_span!(
+                "msg",
+                dir = "in",
+                msg_type = %msg.msg_type(),
+                seq_num = msg.msg_seq_num(),
+            );
+            let _entered = span.enter();
+            app.on_validation_error(&msg, &failure.error);
+            engine.process_validation_failure(msg, failure, storage)?;
+        }
         InputResult::Handled => {}
         InputResult::AppMsg(msg) => {
             // Capture the routing fields before handing ownership to the

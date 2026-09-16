@@ -81,7 +81,9 @@ async fn on_logon_reset_with_msg_seq_num_other_than_one_is_refused() {
                 None,
             );
             assert_matches!(
-                engine.on_input(msg, &mut storage).unwrap(),
+                engine
+                    .process_input_without_callback(msg, &mut storage)
+                    .unwrap(),
                 InputResult::Handled
             );
             assert_reset_refused(
@@ -110,7 +112,9 @@ async fn on_logon_reset_refused_when_the_applicable_permission_is_disabled() {
             None,
         );
         assert_matches!(
-            engine.on_input(msg, &mut storage).unwrap(),
+            engine
+                .process_input_without_callback(msg, &mut storage)
+                .unwrap(),
             InputResult::Handled
         );
         let text = if established {
@@ -164,7 +168,10 @@ async fn on_logon_reset_in_session_with_different_heart_bt_int_is_refused() {
             Some(true),
             None,
         );
-        assert_matches!(engine.on_input(msg, &mut storage), Ok(InputResult::Handled));
+        assert_matches!(
+            engine.process_input_without_callback(msg, &mut storage),
+            Ok(InputResult::Handled)
+        );
         assert_reset_refused(
             &mut engine,
             &mut storage,
@@ -261,7 +268,9 @@ async fn on_logon_unsolicited_reset_in_response_is_refused() {
         None,
     );
     assert_matches!(
-        engine.on_input(msg, &mut storage).unwrap(),
+        engine
+            .process_input_without_callback(msg, &mut storage)
+            .unwrap(),
         InputResult::Handled
     );
     assert_reset_refused(
@@ -318,7 +327,9 @@ fn on_logon_acceptor_reset_disallowed() {
         Some(true),
         None,
     );
-    let result = engine.on_input(msg, &mut storage).unwrap();
+    let result = engine
+        .process_input_without_callback(msg, &mut storage)
+        .unwrap();
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
         engine.disconnect_reason(),

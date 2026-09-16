@@ -4,9 +4,26 @@ use easyfix_core::{
 use easyfix_test_messages::Message;
 
 use crate::{
-    engine::{SessionEngine, VerifyError},
+    engine::{FatalError, InputResult, SessionEngine, VerifyError},
     messages_storage::MessagesStorage,
 };
+
+impl SessionEngine<Message> {
+    /// Drive validation and its refusal reaction without an application callback.
+    pub(super) fn process_input_without_callback(
+        &mut self,
+        msg: Box<Message>,
+        storage: &mut impl MessagesStorage,
+    ) -> Result<InputResult<Message>, FatalError> {
+        match self.on_input(msg, storage)? {
+            InputResult::ValidationError { msg, failure } => {
+                self.process_validation_failure(msg, failure, storage)?;
+                Ok(InputResult::Handled)
+            }
+            other => Ok(other),
+        }
+    }
+}
 
 /// Helper: check msg_type via the SessionMessage trait (returns MsgTypeField
 /// which implements PartialEq<MsgTypeBase>). The concrete Message type has an

@@ -193,25 +193,53 @@ fn on_deserialize_error_invalid_logon_escalates_when_idle() {
         tag: Some(1137),
         reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
     };
+    let expected_text = error.to_string();
     let result = engine
         .on_deserialize_error(error.into(), &mut storage)
         .unwrap();
     assert_matches!(result, InputResult::Error(..));
     let reject_msg = take_admin(&mut engine);
-    assert_msg_type(&reject_msg, MsgTypeBase::Reject);
+    assert_matches!(as_admin(&reject_msg), AdminBase::Reject(reject)
+        if reject.text.as_deref().unwrap().as_bytes() == expected_text.as_bytes());
     let logout_msg = take_admin(&mut engine);
     assert_msg_type(&logout_msg, MsgTypeBase::Logout);
     let AdminBase::Logout(ref logout) = as_admin(&logout_msg) else {
         panic!("expected Logout");
     };
-    assert!(
-        logout.text.is_some(),
-        "Logout must carry Text(58) referencing the error condition"
+    assert_eq!(
+        logout.text.as_deref().unwrap().as_bytes(),
+        expected_text.as_bytes()
     );
+    assert!(!engine.has_admin_output());
     assert!(engine.should_disconnect());
     // The in-sequence rejected Logon still advances NextNumIn
     // (FIX Session Layer Section 4.5.4).
     assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+}
+
+/// Without a recovered header, SequenceReset retains the conservative
+/// in-sequence consumption rule, unlike the validated-header path.
+#[test]
+fn on_deserialize_error_headerless_sequence_reset_consumes_expected_number() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
+    let error = DeserializeErrorKind::Reject {
+        msg_type: Some(fix_str!("4").to_owned()),
+        seq_num: 5,
+        tag: Some(49),
+        reason: SessionRejectReasonBase::TagAppearsMoreThanOnce.into(),
+    };
+    let result = engine
+        .on_deserialize_error(error.into(), &mut storage)
+        .unwrap();
+    assert_matches!(result, InputResult::Error(error) if error.header.is_none());
+    assert_matches!(as_admin(&take_admin(&mut engine)), AdminBase::Reject(reject)
+        if reject.ref_seq_num == 5 && reject.ref_tag_id == Some(49)
+        && reject.ref_msg_type.as_deref() == Some(fix_str!("4"))
+        && reject.session_reject_reason == Some(SessionRejectReasonBase::TagAppearsMoreThanOnce.into()));
+    assert_eq!(storage.next_target_msg_seq_num().get(), 6);
+    assert!(!engine.has_admin_output());
+    assert!(!engine.should_disconnect());
 }
 
 /// Scenario 1S(d), initiator side: our Logon is out, the peer's Logon

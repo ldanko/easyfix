@@ -13,7 +13,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::DisconnectReason,
+    application::{DisconnectReason, ValidationError},
     engine::{InputResult, LogonState},
     messages_storage::MessagesStorage,
     test_helpers,
@@ -41,12 +41,29 @@ async fn malformed_reset_ack_is_refused_without_another_logout() {
                     .map(<[u8]>::to_vec);
                 assert_eq!(initial_logout.is_ok(), logout_sent);
                 engine.session_settings.enable_next_expected_msg_seq_num = true;
-                assert_matches!(
-                    engine
-                        .on_input(reset_ack(seq, flag, next_expected), &mut storage)
-                        .unwrap(),
-                    InputResult::Handled
+                let InputResult::ValidationError { msg, failure } = engine
+                    .on_input(reset_ack(seq, flag, next_expected), &mut storage)
+                    .unwrap()
+                else {
+                    panic!("expected reset acknowledgement validation failure");
+                };
+                assert_eq!(
+                    failure.error,
+                    if next_expected.is_some() {
+                        ValidationError::InvalidNextExpectedMsgSeqNum {
+                            next_sender: initial_sender,
+                        }
+                    } else {
+                        ValidationError::InvalidResetAcknowledgement
+                    }
                 );
+                assert!(!engine.has_admin_output());
+                assert!(!engine.should_disconnect());
+                assert!(engine.state.local_reset_unconfirmed);
+                assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+                engine
+                    .process_validation_failure(msg, failure, &mut storage)
+                    .unwrap();
                 assert_eq!(
                     engine.disconnect_reason(),
                     Some(DisconnectReason::SeqNumResetFailed)
@@ -115,10 +132,21 @@ fn retransmitted_logon_cannot_acknowledge_a_local_reset() {
                 let mut ack = reset_ack(seq, Some(true), None);
                 ack.header.poss_dup_flag = Some(true);
                 ack.header.orig_sending_time = Some(ack.header.sending_time);
-                assert_matches!(
-                    engine.on_input(ack, &mut storage).unwrap(),
-                    InputResult::Handled
+                let InputResult::ValidationError { msg, failure } =
+                    engine.on_input(ack, &mut storage).unwrap()
+                else {
+                    panic!("expected retransmitted acknowledgement validation failure");
+                };
+                assert_eq!(
+                    failure.error,
+                    ValidationError::ResetAcknowledgementRetransmitted
                 );
+                assert!(!engine.has_admin_output());
+                assert!(!engine.should_disconnect());
+                assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+                engine
+                    .process_validation_failure(msg, failure, &mut storage)
+                    .unwrap();
                 assert!(engine.state.local_reset_unconfirmed);
                 assert_eq!(
                     engine.disconnect_reason(),
@@ -224,7 +252,9 @@ fn reset_refusal_still_validates_headers_when_logout_verification_is_disabled() 
                     logout.header.sender_comp_id = fix_str!("WRONG").to_owned();
                 }
                 assert_matches!(
-                    engine.on_input(logout, &mut storage).unwrap(),
+                    engine
+                        .process_input_without_callback(logout, &mut storage)
+                        .unwrap(),
                     InputResult::Handled
                 );
                 assert_eq!(
