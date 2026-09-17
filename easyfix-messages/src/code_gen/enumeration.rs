@@ -2,11 +2,14 @@ use easyfix_core::{
     base_messages::{EncryptMethodBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
     basic_types::{FixStr, Int, SessionRejectReasonValue, SessionStatusValue},
 };
-use easyfix_dictionary::Variant;
+use easyfix_dictionary::{MsgCat, Variant};
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
-use super::{doc_attrs, doc_text_attrs, ident::ToIdent, member::EnumerableType, serde_derives};
+use super::{
+    doc_attrs, doc_text_attrs, ident::ToIdent, member::EnumerableType, message::MessageCodeGen,
+    serde_derives,
+};
 
 /// Defines a mapping from session-relevant traits/newtypes (in easyfix-core)
 /// to generated enums. For each mapping, the generator produces:
@@ -113,6 +116,42 @@ impl EnumCodeGen {
 
     pub fn tag(&self) -> u16 {
         self.tag
+    }
+
+    pub fn generate_msg_cat(&self, messages: &[MessageCodeGen]) -> TokenStream {
+        if self.tag != 35 {
+            return quote! {};
+        }
+
+        let name = &self.name;
+        let arms = self.variants.iter().map(|variant| {
+            let value = variant.value();
+            let message = messages
+                .iter()
+                .find(|message| message.msg_type().as_bytes() == value.as_bytes())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "MsgType value {value} has no message definition; cannot determine its category"
+                    )
+                });
+            let variant_name = variant.name().to_pascal_ident();
+            let category = match message.msg_cat() {
+                MsgCat::Admin => quote! { MsgCat::Admin },
+                MsgCat::App => quote! { MsgCat::App },
+            };
+            quote! { Self::#variant_name => #category, }
+        });
+
+        quote! {
+            impl #name {
+                /// Whether this is an admin or application message type.
+                pub const fn msg_cat(&self) -> MsgCat {
+                    match self {
+                        #(#arms)*
+                    }
+                }
+            }
+        }
     }
 
     /// If this enum has a corresponding trait/newtype in easyfix-core, generate:

@@ -11,7 +11,7 @@ use easyfix_core::{
     message::{MsgCat, SessionMessage},
 };
 use easyfix_test_messages as messages;
-use messages::{ApplVerId, Body, Header, Heartbeat, Message, Trailer};
+use messages::{ApplVerId, Body, Header, Heartbeat, Message, MsgType, Trailer};
 
 fn make_heartbeat() -> Message {
     Message {
@@ -85,6 +85,51 @@ fn msg_type_returns_msg_type_field() {
 fn msg_cat_returns_admin_for_admin_message() {
     let msg = make_heartbeat();
     assert_eq!(SessionMessage::msg_cat(&msg), MsgCat::Admin);
+}
+
+#[test]
+fn msg_type_category_is_available_without_message_in_const_context() {
+    const CATEGORIES: [MsgCat; 10] = [
+        MsgType::Heartbeat.msg_cat(),
+        MsgType::TestRequest.msg_cat(),
+        MsgType::ResendRequest.msg_cat(),
+        MsgType::Reject.msg_cat(),
+        MsgType::SequenceReset.msg_cat(),
+        MsgType::Logout.msg_cat(),
+        MsgType::Logon.msg_cat(),
+        MsgType::ExecutionReport.msg_cat(),
+        MsgType::NewOrderSingle.msg_cat(),
+        MsgType::BusinessMessageReject.msg_cat(),
+    ];
+    assert_eq!(
+        CATEGORIES,
+        [
+            MsgCat::Admin,
+            MsgCat::Admin,
+            MsgCat::Admin,
+            MsgCat::Admin,
+            MsgCat::Admin,
+            MsgCat::Admin,
+            MsgCat::Admin,
+            MsgCat::App,
+            MsgCat::App,
+            MsgCat::App,
+        ]
+    );
+}
+
+#[test]
+fn msg_cat_returns_app_through_message_layers() {
+    let order = messages::NewOrderSingle::default();
+    assert_eq!(order.msg_cat(), MsgCat::App);
+    let body = Body::from(order);
+    assert_eq!(body.msg_cat(), MsgCat::App);
+    let msg = Message {
+        header: Header::default(),
+        body: Box::new(body),
+        trailer: Trailer::default(),
+    };
+    assert_eq!(SessionMessage::msg_cat(&msg), MsgCat::App);
 }
 
 // ---------------------------------------------------------------------------

@@ -1242,6 +1242,23 @@ impl From<SessionStatusField> for SessionStatus {
         SessionStatus::try_from(field.into_inner()).expect("validated by field newtype")
     }
 }
+impl MsgType {
+    /// Whether this is an admin or application message type.
+    pub const fn msg_cat(&self) -> MsgCat {
+        match self {
+            Self::Heartbeat => MsgCat::Admin,
+            Self::TestRequest => MsgCat::Admin,
+            Self::ResendRequest => MsgCat::Admin,
+            Self::Reject => MsgCat::Admin,
+            Self::SequenceReset => MsgCat::Admin,
+            Self::Logout => MsgCat::Admin,
+            Self::Logon => MsgCat::Admin,
+            Self::ExecutionReport => MsgCat::App,
+            Self::NewOrderSingle => MsgCat::App,
+            Self::BusinessMessageReject => MsgCat::App,
+        }
+    }
+}
 ///NumInGroup tag 384.
 #[allow(
     dead_code,

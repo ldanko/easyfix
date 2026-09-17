@@ -35,6 +35,14 @@ impl MessageCodeGen {
         &self.name
     }
 
+    pub fn msg_type(&self) -> MsgTypeField {
+        self.msg_type
+    }
+
+    pub fn msg_cat(&self) -> MsgCat {
+        self.msg_cat
+    }
+
     pub fn body_members(&self) -> &[Member] {
         &self.body_members
     }

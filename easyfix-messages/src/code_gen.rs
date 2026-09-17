@@ -242,11 +242,17 @@ impl Generator {
             .enums
             .iter()
             .map(|enum_| enum_.generate_base_enum_conversion());
+        let msg_categories = self
+            .enums
+            .iter()
+            .map(|enum_| enum_.generate_msg_cat(&self.messages));
 
         quote! {
             #(#enums)*
 
             #(#base_enum_conversions)*
+
+            #(#msg_categories)*
         }
     }
 

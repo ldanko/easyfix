@@ -24,18 +24,27 @@ const DOC_DICT: &str = r#"
     <message msgcat='app' msgtype='G' name='OrderCancelReplaceRequest'>
       <field name='OrigClOrdID' required='Y'/>
     </message>
+    <message msgcat='admin' msgtype='U1' name='SessionProbe'>
+      <field name='Text' required='N'/>
+    </message>
   </messages>
   <components/>
   <fields>
     <field name='BeginString' number='8' type='STRING'/>
     <field name='CheckSum' number='10' type='STRING'/>
     <field name='ClOrdID' number='11' type='STRING' doc='Unique order id.'/>
+    <field name='MsgType' number='35' type='STRING'>
+      <value enum='D' description='PLACE_ORDER'/>
+      <value enum='G' description='AMEND_ORDER'/>
+      <value enum='U1' description='CUSTOM_PROBE'/>
+    </field>
     <field name='OrigClOrdID' number='41' type='STRING'/>
     <field name='Side' number='54' type='CHAR' doc='Side of order.'>
       <value enum='1' description='BUY' doc='Buy order.'/>
       <value enum='2' description='SELL'/>
     </field>
     <field name='NoAllocs' number='78' type='NUMINGROUP'/>
+    <field name='Text' number='58' type='STRING'/>
     <field name='AllocAccount' number='79' type='STRING'/>
   </fields>
 </fix>
@@ -147,6 +156,47 @@ fn identical_field_definitions_accepted() {
         "Text",
         dict::BasicType::String,
     );
+}
+
+fn msg_type_enum(dictionary: &Dictionary) -> EnumCodeGen {
+    let field = dictionary.field_by_name(fix_str!("MsgType")).unwrap();
+    EnumCodeGen::new(
+        field.name(),
+        field.number(),
+        EnumerableType::String,
+        field.variants().to_vec(),
+        field.doc(),
+    )
+}
+
+#[test]
+fn msg_cat_matches_dictionary_by_wire_value() {
+    let dictionary = doc_dictionary("msg_cat");
+    let messages: Vec<_> = dictionary
+        .messages()
+        .map(|msg| MessageCodeGen::new(msg.name(), msg.msg_type(), Vec::new(), msg.msg_cat(), None))
+        .collect();
+    let actual = msg_type_enum(&dictionary).generate_msg_cat(&messages);
+    let expected = quote! {
+        impl MsgType {
+            /// Whether this is an admin or application message type.
+            pub const fn msg_cat(&self) -> MsgCat {
+                match self {
+                    Self::PlaceOrder => MsgCat::App,
+                    Self::AmendOrder => MsgCat::App,
+                    Self::CustomProbe => MsgCat::Admin,
+                }
+            }
+        }
+    };
+    assert_eq!(actual.to_string(), expected.to_string());
+}
+
+#[test]
+#[should_panic(expected = "MsgType value D has no message definition")]
+fn msg_cat_rejects_variant_without_message_definition() {
+    let dictionary = doc_dictionary("msg_cat_missing_message");
+    msg_type_enum(&dictionary).generate_msg_cat(&[]);
 }
 
 #[test]
