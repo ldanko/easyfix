@@ -159,6 +159,7 @@ impl Application<Message> for InvalidLogoutApp {
 async fn failed_logout_serialization_ends_without_waiting_for_an_impossible_ack() {
     let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
     engine.on_control(ControlMsg::Logout {
+        disconnect: false,
         session_status: None,
         text: None,
     });

@@ -812,6 +812,8 @@ where
     /// Query whether the given session is currently active. Returns
     /// [`AcceptorError::UnknownSession`] if no matching session has
     /// been registered.
+    /// Completion means the request was submitted; use
+    /// [`await_session_closed`](Self::await_session_closed) to wait for closure.
     pub fn is_session_active(&self, session_id: &SessionId) -> Result<bool, AcceptorError> {
         if self.inner.active_sessions.borrow().contains_key(session_id) {
             Ok(true)
@@ -842,13 +844,16 @@ where
     /// the session is already logged out and
     /// [`AcceptorError::UnknownSession`] if no matching session has
     /// been registered.
-    /// Repeating the request during logout sends no additional Logout and
-    /// does not change the original acknowledgement deadline.
+    /// If `disconnect` is true, close after sending Logout without waiting
+    /// for the peer's response. Otherwise wait for its response or timeout.
+    /// Repeating the request sends no additional Logout. With `disconnect`
+    /// true it ends the wait; otherwise the original deadline is unchanged.
     pub async fn logout(
         &self,
         session_id: &SessionId,
         session_status: Option<SessionStatusField>,
         text: Option<Cow<'static, FixStr>>,
+        disconnect: bool,
     ) -> Result<(), AcceptorError> {
         // `Ok(None)` = already logged out - no-op.
         if let Some(tx) = self.active_session_control(session_id)? {
@@ -856,6 +861,7 @@ where
                 .send(ControlMsg::Logout {
                     session_status,
                     text,
+                    disconnect,
                 })
                 .await;
         }
@@ -1082,6 +1088,7 @@ where
                     session_status,
                     text,
                 } => ControlMsg::Logout {
+                    disconnect: false,
                     session_status: *session_status,
                     text: text.clone(),
                 },

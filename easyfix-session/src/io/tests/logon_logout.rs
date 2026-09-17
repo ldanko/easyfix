@@ -512,6 +512,7 @@ async fn logout_without_response_ends_with_logout_timeout() {
             // Local logout request; the peer never acknowledges.
             peer.control
                 .send(ControlMsg::Logout {
+                    disconnect: false,
                     session_status: None,
                     text: None,
                 })

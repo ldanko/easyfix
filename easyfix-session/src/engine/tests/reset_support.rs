@@ -102,6 +102,7 @@ pub(super) fn reset_waiting_engine_with_origin(
     let (mut engine, mut storage) = running_reset_sent_engine();
     if logout_sent {
         engine.on_control(ControlMsg::Logout {
+            disconnect: false,
             session_status: None,
             text: Some(Cow::Borrowed(fix_str!("First Logout"))),
         });

@@ -204,6 +204,7 @@ async fn running_reset_probe_answer_at_the_ceiling_does_not_reset() {
 fn running_reset_logout_holds_sends_until_the_ack_and_keeps_its_deadline() {
     let (mut engine, mut storage) = running_reset_sent_engine();
     engine.on_control(ControlMsg::Logout {
+        disconnect: false,
         session_status: None,
         text: None,
     });

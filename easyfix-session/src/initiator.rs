@@ -499,12 +499,15 @@ where
     /// is active. Completion means the request was submitted, not that the
     /// session has closed; use [`await_session_closed`](Self::await_session_closed)
     /// to wait for closure.
-    /// Repeating the request during logout sends no additional Logout and
-    /// does not change the original acknowledgement deadline.
+    /// If `disconnect` is true, close after sending Logout without waiting
+    /// for the peer's response. Otherwise wait for its response or timeout.
+    /// Repeating the request sends no additional Logout. With `disconnect`
+    /// true it ends the wait; otherwise the original deadline is unchanged.
     pub async fn logout(
         &self,
         session_status: Option<SessionStatusField>,
         text: Option<Cow<'static, FixStr>>,
+        disconnect: bool,
     ) -> Result<(), InitiatorError> {
         let tx = self.inner.current_session.borrow().clone();
         if let Some(tx) = tx {
@@ -512,6 +515,7 @@ where
                 .send(ControlMsg::Logout {
                     session_status,
                     text,
+                    disconnect,
                 })
                 .await;
         }

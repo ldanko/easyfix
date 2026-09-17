@@ -278,7 +278,7 @@ pub enum DisconnectReason {
     /// storage is available.
     ResetPreparationTimeout,
     /// Locally requested logout completed - the peer's `Logout<5>` response
-    /// was received.
+    /// was received, or the application requested closure without waiting.
     LocalRequestedLogout,
     /// Logout requested remotely. The session confirms with its own
     /// `Logout<5>` (`SessionStatus(1409)=4`), then waits for the peer to

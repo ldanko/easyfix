@@ -41,6 +41,7 @@ fn running_reset_ack_uses_the_effective_heartbeat_and_current_sender_counter() {
             assert_matches!(as_admin(&logon), AdminBase::Logon(l) if l.heart_bt_int == i64::try_from(effective).unwrap());
             if logout_sent {
                 engine.on_control(ControlMsg::Logout {
+                    disconnect: false,
                     session_status: None,
                     text: None,
                 });

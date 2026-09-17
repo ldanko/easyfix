@@ -40,6 +40,7 @@ pub(crate) enum ControlMsg {
     Logout {
         session_status: Option<SessionStatusField>,
         text: Option<Cow<'static, FixStr>>,
+        disconnect: bool,
     },
     Disconnect,
     ResetRunningSession,

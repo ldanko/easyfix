@@ -452,7 +452,7 @@ async fn logon_and_logout() {
 
             // --- Initiate Logout via control channel ---
             acceptor
-                .logout(&acceptor_session_id(), None, None)
+                .logout(&acceptor_session_id(), None, None, false)
                 .await
                 .expect("logout");
 

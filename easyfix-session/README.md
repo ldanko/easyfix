@@ -156,7 +156,7 @@ let handle = initiator.connect("exchange.example.com:9876").await?;
 // established.
 
 // Graceful logout
-initiator.logout(None, None).await?;
+initiator.logout(None, None, false).await?;
 ```
 
 ### Rejected connections

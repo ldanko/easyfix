@@ -736,7 +736,7 @@ async fn consumed_reset_ack_number_stops_the_next_input() {
                 let (initiator, mut events) = start_test_initiator_for_reset(decision, in_session);
                 let (task, mut peer, mut buf) = start_reset_origin(&initiator, &mut events, in_session).await;
                 if local_logout {
-                    initiator.logout(None, None).await.unwrap();
+                    initiator.logout(None, None, false).await.unwrap();
                     let logout = test_helpers::read_one_message(&mut peer, &mut buf).await;
                     assert_eq!(logout.header.msg_seq_num, 2);
                     assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
@@ -856,7 +856,7 @@ async fn confirmed_reset_ack_preserves_application_decisions_in_the_io_loop() {
                 let (initiator, mut events) = start_test_initiator_for_reset(decision, in_session);
                 let (task, mut peer, mut buf) = start_reset_origin(&initiator, &mut events, in_session).await;
                 if local_logout {
-                    initiator.logout(None, None).await.unwrap();
+                    initiator.logout(None, None, false).await.unwrap();
                     let logout = test_helpers::read_one_message(&mut peer, &mut buf).await;
                     assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
                     assert_eq!(logout.header.msg_seq_num, 2);
@@ -1225,7 +1225,7 @@ async fn reset_at_connect_refusal(local_logout: bool) {
         let (tcp, peer_addr) = listener.accept().await.unwrap();
         let StartEvent::Ready(_sender) = start_event(&mut ini_events).await else { panic!("expected ready") };
         if local_logout {
-            initiator.logout(None, None).await.unwrap();
+            initiator.logout(None, None, false).await.unwrap();
             // Keep the acceptor from responding until both opening messages
             // are on the wire; peeking preserves them for its normal input path.
             timeout(Duration::from_secs(5), async {
@@ -1368,7 +1368,7 @@ async fn idle_lifecycle_operations_preserve_storage_without_callbacks() {
 
     assert!(!initiator.is_session_active());
     initiator
-        .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))))
+        .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))), false)
         .await
         .unwrap();
     initiator.disconnect().await.unwrap();
@@ -1425,7 +1425,7 @@ async fn logout_queued_before_first_poll_reaches_the_session() {
             let (reader, writer) = io::split(local);
             let session = initiator.session_task(reader, writer, None).unwrap();
             initiator
-                .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))))
+                .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))), false)
                 .await
                 .unwrap();
             let task = task::spawn_local(session);

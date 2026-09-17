@@ -155,6 +155,7 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
         for confirmed in [false, true] {
             let (mut engine, mut storage) = reset_waiting_engine_with_origin(false, running);
             engine.on_control(ControlMsg::Logout {
+                disconnect: false,
                 session_status: Some(SessionStatusBase::SessionLogoutComplete.into()),
                 text: Some(Cow::Borrowed(fix_str!("Original Logout"))),
             });
@@ -164,6 +165,7 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
             for drained in [false, true] {
                 advance(Duration::from_secs(1)).await;
                 engine.on_control(ControlMsg::Logout {
+                    disconnect: false,
                     session_status: None,
                     text: Some(Cow::Borrowed(fix_str!("Replacement"))),
                 });
@@ -210,6 +212,7 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
             for drained in [false, true] {
                 advance(Duration::from_secs(1)).await;
                 engine.on_control(ControlMsg::Logout {
+                    disconnect: false,
                     session_status: None,
                     text: None,
                 });

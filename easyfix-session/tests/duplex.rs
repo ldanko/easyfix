@@ -876,7 +876,7 @@ async fn logon_message_exchange_logout() {
             assert_matches!(event, TestEvent::AppMsgIn(_, msg) if is_new_order_single(&msg));
 
             // Initiator-originated graceful logout.
-            initiator.logout(None, None).await.expect("logout");
+            initiator.logout(None, None, false).await.expect("logout");
 
             // Both sides should fire SessionEnd. The initiator requested the
             // logout; the acceptor observes it as a remote request.
@@ -1221,6 +1221,90 @@ async fn spawn_raw_peer_session(
     peer.logon(1, 30).await;
     let _ = wait_for_session_ready_of(acc_events_rx, &peer.sid).await;
     peer
+}
+
+#[tokio::test(start_paused = true)]
+async fn acceptor_logout_disconnect_closes_without_peer_response() {
+    LocalSet::new()
+        .run_until(async {
+            for already_sent in [false, true] {
+                let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+                let acceptor = Acceptor::new(TestAppFactory { events_tx });
+                let mut peer =
+                    spawn_raw_peer_session(&acceptor, &mut events_rx, fix_str!("CLIENT")).await;
+                let text = Some(Cow::Borrowed(fix_str!("Closing session")));
+                if already_sent {
+                    acceptor
+                        .logout(&peer.sid, None, text.clone(), false)
+                        .await
+                        .unwrap();
+                    let logout = peer.read().await;
+                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
+                }
+                let started = time::Instant::now();
+                acceptor.logout(&peer.sid, None, text, true).await.unwrap();
+                if !already_sent {
+                    let logout = peer.read().await;
+                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
+                }
+                assert!(peer.read_to_close().await.is_empty());
+                assert_eq!(
+                    wait_for_session_end(&mut events_rx).await,
+                    DisconnectReason::LocalRequestedLogout
+                );
+                timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
+                assert_eq!(started.elapsed(), Duration::ZERO);
+            }
+        })
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn initiator_logout_disconnect_closes_without_peer_response() {
+    LocalSet::new()
+        .run_until(async {
+            for already_sent in [false, true] {
+                let mut peer = spawn_initiator_with_raw_peer(8192, build_session_settings(30));
+                peer.peer_logon_handshake(30).await;
+                // SessionReady precedes the peer's Logon response on initiators.
+                wait_until(&mut peer.events_rx, |event| {
+                    is_admin_msg_in(event, MsgTypeBase::Logon)
+                })
+                .await;
+                let text = Some(Cow::Borrowed(fix_str!("Closing session")));
+                if already_sent {
+                    peer.initiator
+                        .logout(None, text.clone(), false)
+                        .await
+                        .unwrap();
+                    let logout = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
+                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
+                }
+                let started = time::Instant::now();
+                peer.initiator.logout(None, text, true).await.unwrap();
+                if !already_sent {
+                    let logout = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
+                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
+                }
+                let mut rest = mem::take(&mut peer.peer_buf);
+                timeout(TEST_TIMEOUT, peer.peer_r.read_to_end(&mut rest))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(rest.is_empty());
+                assert_eq!(
+                    wait_for_session_end(&mut peer.events_rx).await,
+                    DisconnectReason::LocalRequestedLogout
+                );
+                timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
+                assert_eq!(started.elapsed(), Duration::ZERO);
+            }
+        })
+        .await;
 }
 
 /// One initiator connection to a live acceptor: both session tasks and the
@@ -2519,7 +2603,7 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
             );
 
             acceptor
-                .logout(&acceptor_session_id(), None, None)
+                .logout(&acceptor_session_id(), None, None, false)
                 .await
                 .expect("logout");
             assert_eq!(
@@ -2812,7 +2896,7 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
             );
 
             acceptor
-                .logout(&acceptor_session_id(), None, None)
+                .logout(&acceptor_session_id(), None, None, false)
                 .await
                 .expect("logout");
             assert_eq!(
@@ -3317,7 +3401,7 @@ async fn initiator_application_reject_reaches_the_acceptor() {
 
             // Still up: the acceptor's logout exchange runs to completion.
             p.acceptor
-                .logout(&acceptor_session_id(), None, None)
+                .logout(&acceptor_session_id(), None, None, false)
                 .await
                 .expect("logout");
             assert_eq!(

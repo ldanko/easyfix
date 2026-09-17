@@ -540,8 +540,12 @@ impl<M: SessionMessage> SessionEngine<M> {
             ControlMsg::Logout {
                 session_status,
                 text,
+                disconnect,
             } => {
-                if matches!(
+                if disconnect {
+                    self.push_logout(session_status, text);
+                    self.begin_disconnect(DisconnectReason::LocalRequestedLogout);
+                } else if matches!(
                     self.state.logon_state,
                     LogonState::LogoutSent { .. } | LogonState::LogoutAcknowledged { .. }
                 ) {

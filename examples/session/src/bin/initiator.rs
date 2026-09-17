@@ -139,7 +139,7 @@ async fn run_initiator() {
 
         _ = signal::ctrl_c() => {
             info!("ctrl-c received; requesting logout");
-            if let Err(err) = initiator.logout(None, None).await {
+            if let Err(err) = initiator.logout(None, None, false).await {
                 warn!(?err, "logout request failed (session may already be closed)");
             }
             true

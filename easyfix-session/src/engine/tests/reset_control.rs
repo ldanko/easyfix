@@ -355,6 +355,7 @@ async fn running_reset_probe_is_cancelled_by_logout_and_old_replies_stay_old() {
             .to_vec();
         if action == 0 {
             engine.on_control(ControlMsg::Logout {
+                disconnect: false,
                 session_status: None,
                 text: None,
             });

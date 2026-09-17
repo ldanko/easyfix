@@ -37,6 +37,7 @@ async fn busywait_engine_and_timers_share_the_wall_clock() {
 
     let before = Instant::now();
     engine.on_control(ControlMsg::Logout {
+        disconnect: false,
         session_status: None,
         text: None,
     });

@@ -231,6 +231,7 @@ async fn logout_ack_budget_starts_after_replay_and_the_logout_write() {
                         // replay batch, then defers Logout until replay ends.
                         peer.control
                             .send(ControlMsg::Logout {
+                                disconnect: false,
                                 session_status: None,
                                 text: None,
                             })

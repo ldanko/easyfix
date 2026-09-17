@@ -103,7 +103,7 @@ async fn count_cap_still_wakes_after_logout_during_an_unconfirmed_reset() {
         let logon = peer.read().await;
         assert_eq!(logon.msg_seq_num(), 1); assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
         assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat));
-        peer.control.send(ControlMsg::Logout { session_status: None, text: None }).await.unwrap();
+        peer.control.send(ControlMsg::Logout { disconnect: false, session_status: None, text: None }).await.unwrap();
         let logout = peer.read().await;
         assert_eq!(logout.msg_seq_num(), 2); assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(_)));
         task::yield_now().await;

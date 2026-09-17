@@ -128,6 +128,7 @@ fn on_control_logout_while_awaiting_peer_close_is_ignored() {
     drain_all_admin(&mut engine);
 
     engine.on_control(ControlMsg::Logout {
+        disconnect: false,
         session_status: None,
         text: None,
     });
@@ -215,6 +216,7 @@ fn logout_deadline_is_unarmed_when_the_budget_overflows_the_clock() {
         .auto_disconnect_after_no_logout(Duration::MAX)
         .build();
     engine.on_control(ControlMsg::Logout {
+        disconnect: false,
         session_status: None,
         text: None,
     });
@@ -242,6 +244,7 @@ async fn on_control_logout_arms_deadline_only_after_write() {
     assert!(engine.logout_deadline().is_none());
 
     engine.on_control(ControlMsg::Logout {
+        disconnect: false,
         session_status: Some(SessionStatusBase::SessionLogoutComplete.into()),
         text: Some(Cow::Borrowed(fix_str!("Shutting down"))),
     });
