@@ -670,6 +670,14 @@ impl TryFrom<&str> for FixString {
     }
 }
 
+impl str::FromStr for FixString {
+    type Err = FixStringError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
 impl TryFrom<String> for FixString {
     type Error = FixStringError;
 

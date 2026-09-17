@@ -82,6 +82,22 @@ fn fix_string_conversions_accept_printable_ascii() {
 }
 
 #[test]
+fn fix_string_parse_accepts_printable_ascii_and_empty_input() {
+    for input in ["Hello world!~", ""] {
+        assert_eq!(input.parse::<FixString>().unwrap().as_utf8(), input);
+    }
+}
+
+#[test]
+fn fix_string_parse_reports_first_invalid_byte() {
+    for (input, expected_byte) in [("ab\x01", 0x01), ("ab\x7f", 0x7f), ("ab\u{e9}", 0xc3)] {
+        let error = input.parse::<FixString>().unwrap_err();
+        assert_eq!(error.idx(), 2);
+        assert_eq!(error.value(), expected_byte);
+    }
+}
+
+#[test]
 fn fix_string_replacemen_character_on_ctrl() {
     let buf = b"Hello\x01world!".to_vec();
     assert_eq!(FixString::from_ascii_lossy(buf), "Hello?world!");
