@@ -535,6 +535,9 @@ pub trait Application<M: SessionMessage> {
     /// set itself stays. What to do is the application's call - e.g. panic,
     /// escalate, or drop with a log.
     ///
+    /// If an engine-generated Logout fails to serialize, the connection
+    /// closes after this callback instead of waiting for a reply.
+    ///
     /// Transport and storage failures are reported through
     /// [`Self::on_session_end`], not this callback.
     fn on_output_error(&mut self, msg: Box<M>, error: &SerializeError);

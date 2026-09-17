@@ -7,7 +7,7 @@ use easyfix_core::{
     message::SessionMessage,
 };
 use easyfix_test_messages::Message;
-use tokio::time::Duration;
+use tokio::time::{Duration, advance};
 
 use super::{resend_support::assert_resend_request, support::assert_msg_type};
 use crate::{
@@ -221,6 +221,7 @@ fn logout_deadline_is_unarmed_when_the_budget_overflows_the_clock() {
     // The Logout went out, so the engine is in the state that arms the
     // deadline whenever the budget is representable.
     assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    engine.mark_logout_written();
     assert!(engine.logout_deadline().is_none());
 }
 
@@ -235,8 +236,8 @@ fn on_logout_timeout_sets_disconnect_no_messages() {
     assert!(engine.take_admin_output().is_none());
 }
 
-#[test]
-fn on_control_logout_sends_logout_and_sets_deadline() {
+#[tokio::test(start_paused = true)]
+async fn on_control_logout_arms_deadline_only_after_write() {
     let (mut engine, _store) = EngineBuilder::new().logged_on().build();
     assert!(engine.logout_deadline().is_none());
 
@@ -253,8 +254,12 @@ fn on_control_logout_sends_logout_and_sets_deadline() {
     };
     assert_eq!(logout.text.as_deref(), Some(fix_str!("Shutting down")));
 
-    // logout_deadline should now be Some
-    assert!(engine.logout_deadline().is_some());
+    let budget = engine.session_settings().auto_disconnect_after_no_logout;
+    advance(budget * 2).await;
+    assert!(engine.logout_deadline().is_none());
+    let sent_at = engine.timer_backend().now();
+    engine.mark_logout_written();
+    assert_eq!(engine.logout_deadline(), sent_at.checked_add(budget));
 }
 
 #[test]

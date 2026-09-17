@@ -208,6 +208,7 @@ fn running_reset_logout_holds_sends_until_the_ack_and_keeps_its_deadline() {
         text: None,
     });
     let _ = commit_reset_admin(&mut engine, &mut storage);
+    engine.mark_logout_written();
     let deadline = engine.logout_deadline();
     assert!(deadline.is_some());
     assert!(!engine.accepts_app_sends());

@@ -308,7 +308,7 @@ fn running_reset_control_is_ignored_when_disconnected_or_not_established() {
         LogonState::ResetProbe,
         LogonState::ResetSent,
         LogonState::LogoutSent {
-            sent_at: TimerBackend::Tokio.now(),
+            sent_at: Some(TimerBackend::Tokio.now()),
         },
         LogonState::LogoutAcknowledged {
             sent_at: TimerBackend::Tokio.now(),

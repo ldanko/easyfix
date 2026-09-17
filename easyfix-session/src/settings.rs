@@ -118,6 +118,10 @@ pub struct SessionSettings {
     /// Logout of the peer's, the wait for it to close the connection after
     /// our acknowledgement ([`DisconnectReason::RemoteRequestedLogoutTimeout`]).
     /// Test Cases Scenario 13(b) allows 10 seconds for the latter.
+    /// The local Logout reply budget starts after the complete message is
+    /// written, excluding queueing and replay time (Test Cases Scenario 12).
+    /// With [`manages_admin_output`](Self::manages_admin_output), it starts
+    /// when `on_admin_msg_out` returns and delivery belongs to the application.
     ///
     /// A value too large for the clock to represent (such as
     /// [`Duration::MAX`]) means no limit.

@@ -373,7 +373,7 @@ fn reset_ack_number_guard_preserves_completed_input_outcomes() {
                                     engine.state.logon_state,
                                     LogonState::LogoutSent { .. }
                                 );
-                                assert!(engine.logout_deadline().is_some());
+                                assert!(engine.logout_deadline().is_none());
                             }
                             4 => assert_eq!(engine.state.logon_state, LogonState::Established),
                             _ => assert_eq!(engine.state.logon_state, initial_state),

@@ -9,6 +9,7 @@ mod tests;
 use std::{borrow::Cow, io, ops::RangeInclusive, time::Instant};
 
 use easyfix_core::{
+    base_messages::MsgTypeBase,
     basic_types::{FixStr, NonZeroSeqNum, SeqNum, SessionStatusField},
     deserializer::DeserializeErrorKind,
     message::{DeserializeError, MsgCat, SessionMessage},
@@ -151,18 +152,32 @@ where
         );
         bytes_written |= async {
             app.on_admin_msg_out(&mut admin_msg);
+            let is_logout = admin_msg.msg_type() == MsgTypeBase::Logout;
             if !engine.session_settings().manages_admin_output
                 && let Err(failure) = engine.commit_send(admin_msg, storage)
             {
                 match failure {
                     SendFailure::Serialize(failure) => {
-                        app.on_output_error(failure.msg, &failure.error)
+                        app.on_output_error(failure.msg, &failure.error);
+                        if is_logout {
+                            // No reply can arrive for an unsent Logout, and
+                            // its unarmed ACK timer cannot end the session.
+                            engine.begin_disconnect(DisconnectReason::Disconnected);
+                            return Ok(false);
+                        }
                     }
                     SendFailure::Fatal(error) => return Err(OutputError::Fatal(error)),
                 }
             }
             // Flush before the next commit can reuse the session buffer.
-            flush_output(writer, storage, engine).await
+            let written = flush_output(writer, storage, engine).await?;
+            // Session Test Cases Scenario 12: wait for the reply after sending
+            // Logout, not while it is queued behind replay or a blocked write.
+            // Managed output is handed to the application by the callback.
+            if is_logout {
+                engine.mark_logout_written();
+            }
+            Ok(written)
         }
         .instrument(span)
         .await?;
@@ -752,7 +767,19 @@ async fn run_session_loop<M, R, W, S, A>(
         // app send), then drain admin output committing and flushing each
         // message before the next. Flushing per commit keeps at most one
         // committed-but-unflushed message at a time, preserving scratch bytes.
-        match drain_and_flush_admin_output(writer, storage, engine, app).await {
+        // A too-high ResendRequest queues both the peer's retransmission and
+        // our request for its missing messages. Finish the retransmission
+        // before sending that request (FIX Session Layer Section 4.8.8).
+        // Already committed output must still be flushed before the resend
+        // path reuses the scratch buffer.
+        // The opening Logon was flushed before entering this loop, so its
+        // acknowledgement still precedes any implicit replay via tag 789.
+        let output = if active_resend.is_some() || engine.has_pending_resends() {
+            flush_output(writer, storage, engine).await
+        } else {
+            drain_and_flush_admin_output(writer, storage, engine, app).await
+        };
+        match output {
             Ok(written) => any_bytes_written |= written,
             Err(err) => {
                 error!(%err, "failed to flush admin output");
@@ -917,7 +944,11 @@ async fn run_session_loop<M, R, W, S, A>(
         // be stamped before any reset, and must not wait for another event.
         // Continuing also preserves the terminating block's application-send
         // gate if this dispatch ended an unconfirmed reset.
-        if engine.should_leave_loop() || engine.has_admin_output() {
+        if engine.should_leave_loop()
+            || (engine.has_admin_output()
+                && active_resend.is_none()
+                && !engine.has_pending_resends())
+        {
             continue 'session;
         }
 
@@ -953,9 +984,8 @@ async fn run_session_loop<M, R, W, S, A>(
         //  - the peer that requested the resend is busy consuming our
         //    resend stream, so it is unlikely to send new input to us
         //    before the range completes;
-        //  - control messages (Logout, Disconnect) are already picked up
-        //    by the control check above, so graceful shutdown still
-        //    pre-empts a long resend;
+        //  - control messages are picked up by the control check above:
+        //    Disconnect pre-empts replay, while Logout is queued after it;
         //  - outbound heartbeat / input-timeout deadlines do not need to
         //    fire while we are actively writing resend traffic - the
         //    peer sees that traffic as liveness.

@@ -25,6 +25,7 @@ use tokio::{
 
 use super::{
     harness::{TestEvent, build_harness, build_harness_with_settings},
+    reset_transport::gated_reset_peer,
     wire::{build_peer_logon, logon_handshake, read_lone_message},
 };
 use crate::{
@@ -492,48 +493,60 @@ async fn app_message_staged_before_logout_reaches_peer_first() {
         .await;
 }
 
-/// A locally requested Logout that gets no acknowledgement ends the
-/// session with `LocalRequestedLogoutTimeout` once `auto_disconnect_after_no_logout`
-/// expires (FIX Session Layer Section 4.6.2) - not with the catch-all
-/// `Disconnected`.
+/// Scenario 12 starts the reply budget after Logout is sent, even when its
+/// write takes longer than that budget. No reply ends the session at the
+/// deadline with `LocalRequestedLogoutTimeout` (Session Layer Section 4.6.2).
 #[tokio::test(start_paused = true)]
 async fn logout_without_response_ends_with_logout_timeout() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let harness = build_harness();
-            let logout_timeout =
-                test_helpers::default_session_settings().auto_disconnect_after_no_logout;
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
-
-            logon_handshake(&mut client_io, &mut events_rx).await;
+            let budget = Duration::from_secs(5);
+            let mut settings = test_helpers::default_session_settings();
+            settings.heartbeat_interval = None;
+            settings.auto_disconnect_after_no_logout = budget;
+            settings.write_timeout = Duration::from_secs(20);
+            let (mut peer, mut gate) = gated_reset_peer(settings).await;
+            gate.armed.set(true);
 
             // Local logout request; the peer never acknowledges.
-            control_tx
+            peer.control
                 .send(ControlMsg::Logout {
                     session_status: None,
                     text: None,
                 })
                 .await
-                .unwrap();
-            let logout = read_lone_message(&mut client_io).await;
+                .expect("request Logout");
+            gate.entered.recv().await.expect("Logout write entered");
+            time::advance(budget * 2).await;
+            gate.release.send(Ok(())).expect("finish Logout write");
+            let logout = peer.read().await;
             assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
+            let sent_at = time::Instant::now();
 
-            // Let the logout deadline expire.
-            time::advance(logout_timeout + Duration::from_secs(1)).await;
+            time::advance(Duration::from_secs(4)).await;
+            task::yield_now().await;
+            assert!(
+                !peer.task.is_finished(),
+                "the full ACK budget must be available"
+            );
+            assert_matches!(peer.events.try_recv(), Err(TryRecvError::Empty));
+            time::advance(Duration::from_secs(1)).await;
 
             assert_matches!(
-                events_rx.recv().await.unwrap(),
+                peer.events.recv().await.expect("session end"),
                 TestEvent::SessionEnd(DisconnectReason::LocalRequestedLogoutTimeout)
             );
 
-            session_task.await.unwrap();
-
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
+            peer.task.await.expect("session task completes");
+            assert_eq!(sent_at.elapsed(), budget);
+            assert_matches!(peer.events.try_recv(), Err(TryRecvError::Disconnected));
+            let mut rest = Vec::new();
+            peer.wire
+                .read_to_end(&mut rest)
+                .await
+                .expect("read closed connection");
+            assert!(peer.buffer.is_empty() && rest.is_empty());
         })
         .await;
 }

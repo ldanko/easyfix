@@ -1,4 +1,4 @@
-use std::{assert_matches, num::NonZeroUsize};
+use std::{assert_matches, num::NonZeroUsize, time::Duration};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
@@ -10,12 +10,13 @@ use tokio::{
     io,
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc::error::TryRecvError,
-    task::LocalSet,
+    task::{self, LocalSet},
     time,
 };
 
 use super::{
     harness::{TestEvent, build_harness, build_harness_with_settings},
+    reset_transport::gated_reset_peer,
     wire::{build_peer_logon, logon_handshake},
 };
 use crate::{
@@ -190,6 +191,250 @@ async fn admin_reply_from_the_queued_drain_goes_out_without_waiting_for_an_event
             if hb.test_req_id.as_deref() == Some(fix_str!("QUEUED")));
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             session_task.await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn logout_ack_budget_starts_after_replay_and_the_logout_write() {
+    LocalSet::new()
+        .run_until(async {
+            for acknowledge in [false, true] {
+                let budget = Duration::from_secs(5);
+                let write_delay = Duration::from_secs(3);
+                let mut settings = test_helpers::default_session_settings();
+                settings.heartbeat_interval = None;
+                settings.auto_disconnect_after_no_logout = budget;
+                settings.write_timeout = Duration::from_secs(10);
+                assert_eq!(settings.resend_batch_size.get(), 1);
+                let (mut peer, mut gate) = gated_reset_peer(settings).await;
+
+                for seq in 2..=4 {
+                    peer.sender
+                        .send(test_helpers::new_order_single_with_empty_header())
+                        .expect("stage order for replay");
+                    let order = peer.read().await;
+                    assert_eq!(order.header.msg_seq_num, seq);
+                }
+
+                gate.armed.set(true);
+                peer.send(&test_helpers::resend_request(2, 2, 4)).await;
+                assert_matches!(
+                    peer.events.recv().await.expect("resend request callback"),
+                    TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
+                );
+                let requested_at = time::Instant::now();
+                for seq in 2..=4 {
+                    gate.entered.recv().await.expect("replay write entered");
+                    if seq == 2 {
+                        // The loop accepts this control after its current
+                        // replay batch, then defers Logout until replay ends.
+                        peer.control
+                            .send(ControlMsg::Logout {
+                                session_status: None,
+                                text: None,
+                            })
+                            .await
+                            .expect("request Logout during replay");
+                    }
+                    time::advance(write_delay).await;
+                    gate.release.send(Ok(())).expect("release replay write");
+                    let replay = peer.read().await;
+                    assert_eq!(replay.header.msg_seq_num, seq);
+                    assert_eq!(replay.header.poss_dup_flag, Some(true));
+                    assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+                }
+                assert!(time::Instant::now().duration_since(requested_at) > budget);
+
+                // Each individual write stays below write_timeout; the
+                // total replay and the Logout write exceed the ACK budget.
+                gate.entered.recv().await.expect("Logout write entered");
+                time::advance(write_delay).await;
+                gate.release.send(Ok(())).expect("release Logout write");
+                let logout = peer.read().await;
+                assert_eq!(logout.header.msg_seq_num, 5);
+                assert_eq!(logout.header.poss_dup_flag, None);
+                assert_matches!(test_helpers::as_admin(&logout), AdminBase::Logout(_));
+                let sent_at = time::Instant::now();
+
+                time::advance(Duration::from_secs(4)).await;
+                task::yield_now().await;
+                assert!(
+                    !peer.task.is_finished(),
+                    "peer still has time to acknowledge"
+                );
+
+                let reason = if acknowledge {
+                    peer.send(&test_helpers::logout(3)).await;
+                    assert_matches!(
+                        peer.events.recv().await.expect("Logout callback"),
+                        TestEvent::AdminMsgIn(MsgTypeBase::Logout)
+                    );
+                    DisconnectReason::LocalRequestedLogout
+                } else {
+                    time::advance(Duration::from_secs(1)).await;
+                    DisconnectReason::LocalRequestedLogoutTimeout
+                };
+                assert_matches!(
+                    peer.events.recv().await.expect("session end"),
+                    TestEvent::SessionEnd(actual) if actual == reason
+                );
+                peer.task.await.expect("session task completes");
+                assert_eq!(
+                    time::Instant::now().duration_since(sent_at),
+                    if acknowledge {
+                        Duration::from_secs(4)
+                    } else {
+                        budget
+                    },
+                    "the ACK budget starts at Logout write completion"
+                );
+                assert!(peer.buffer.is_empty());
+                let mut rest = Vec::new();
+                peer.wire
+                    .read_to_end(&mut rest)
+                    .await
+                    .expect("read closed wire");
+                assert!(rest.is_empty(), "only one Logout is transmitted");
+            }
+        })
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn reconnect_logon_ack_precedes_implicit_replay() {
+    LocalSet::new()
+        .run_until(async {
+            let mut settings = test_helpers::default_session_settings();
+            settings.enable_next_expected_msg_seq_num = true;
+            let mut harness = build_harness_with_settings(settings);
+            let mut order = test_helpers::new_order_single_with_empty_header();
+            assert!(
+                harness
+                    .engine
+                    .fill_header(&mut order, &mut harness.storage)
+                    .unwrap()
+            );
+            harness
+                .engine
+                .commit_send(order, &mut harness.storage)
+                .expect("store prior order");
+            // Its live send belonged to the previous connection.
+            harness
+                .engine
+                .take_pending()
+                .expect("discard prior connection output");
+            let logon = test_helpers::logon_with_options(
+                1,
+                fix_str!("TARGET"),
+                fix_str!("SENDER"),
+                30,
+                None,
+                Some(1),
+            );
+            let (server_io, mut client_io) = io::duplex(8192);
+            let (reader, writer) = io::split(server_io);
+            let (session_task, _events_rx, control_tx) =
+                harness.spawn_acceptor(reader, writer, logon);
+            let mut wire = Vec::new();
+            // Session Layer Section 4.4.1, Figure 6: acknowledge first.
+            let ack = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(ack.header.msg_seq_num, 2);
+            assert_eq!(ack.header.poss_dup_flag, None);
+            assert_matches!(test_helpers::as_admin(&ack), AdminBase::Logon(logon)
+                if logon.next_expected_msg_seq_num == Some(2));
+            let replay = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(replay.header.msg_seq_num, 1);
+            assert_eq!(replay.header.poss_dup_flag, Some(true));
+            assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+            control_tx
+                .send(ControlMsg::Disconnect)
+                .await
+                .expect("disconnect");
+            session_task.await.expect("session task completes");
+        })
+        .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn too_high_resend_request_finishes_replay_before_requesting_the_inbound_gap() {
+    LocalSet::new()
+        .run_until(async {
+            let harness = build_harness();
+            assert_eq!(harness.engine.session_settings().resend_batch_size.get(), 1);
+            let sender = harness.sender.clone();
+            let (server_io, mut client_io) = io::duplex(8192);
+            let (reader, writer) = io::split(server_io);
+            let (session_task, mut events_rx, control_tx) =
+                harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
+            logon_handshake(&mut client_io, &mut events_rx).await;
+
+            let mut wire = Vec::new();
+            sender
+                .send(test_helpers::new_order_single_with_empty_header())
+                .expect("stage order for retransmission");
+            let order = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(order.header.msg_seq_num, 2);
+            client_io
+                .write_all(&test_helpers::serialize_message(
+                    &test_helpers::test_request(2, fix_str!("BEFORE-REPLAY")),
+                ))
+                .await
+                .expect("send test request");
+            let heartbeat = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(heartbeat.header.msg_seq_num, 3);
+            assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(_));
+
+            // Section 4.8.8 requires the requested retransmission before
+            // our ResendRequest, including both gap-fills across IO batches.
+            let before = time::Instant::now();
+            client_io
+                .write_all(&test_helpers::serialize_message(
+                    &test_helpers::resend_request(5, 1, 3),
+                ))
+                .await
+                .expect("send too-high resend request");
+            let first_gap = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(first_gap.header.msg_seq_num, 1);
+            assert_eq!(first_gap.header.poss_dup_flag, Some(true));
+            assert_matches!(test_helpers::as_admin(&first_gap), AdminBase::SequenceReset(sr)
+                if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 2);
+            let replay = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(replay.header.msg_seq_num, 2);
+            assert_eq!(replay.header.poss_dup_flag, Some(true));
+            assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+            let last_gap = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(last_gap.header.msg_seq_num, 3);
+            assert_eq!(last_gap.header.poss_dup_flag, Some(true));
+            assert_matches!(test_helpers::as_admin(&last_gap), AdminBase::SequenceReset(sr)
+                if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 4);
+            let request = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(request.header.msg_seq_num, 4);
+            assert_eq!(request.header.poss_dup_flag, None);
+            assert_matches!(test_helpers::as_admin(&request), AdminBase::ResendRequest(rr)
+                if rr.begin_seq_no == 3 && rr.end_seq_no == 4);
+            assert_eq!(time::Instant::now(), before);
+
+            // Completing the inbound gap must not replay the parked request
+            // again. The next observable reply answers fresh input at seq 6.
+            let mut input = test_helpers::heartbeat_bytes(3);
+            input.extend(test_helpers::heartbeat_bytes(4));
+            input.extend(test_helpers::serialize_message(
+                &test_helpers::test_request(6, fix_str!("AFTER-REPLAY")),
+            ));
+            client_io
+                .write_all(&input)
+                .await
+                .expect("close inbound gap");
+            let heartbeat = read_one_message(&mut client_io, &mut wire).await;
+            assert_eq!(heartbeat.header.msg_seq_num, 5);
+            assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
+                if hb.test_req_id.as_deref() == Some(fix_str!("AFTER-REPLAY")));
+            control_tx
+                .send(ControlMsg::Disconnect)
+                .await
+                .expect("disconnect");
+            session_task.await.expect("session task completes");
         })
         .await;
 }

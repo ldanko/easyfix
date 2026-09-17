@@ -40,6 +40,9 @@ async fn busywait_engine_and_timers_share_the_wall_clock() {
         session_status: None,
         text: None,
     });
+    timers.sync(&engine);
+    assert!(timers.logout.is_none());
+    engine.mark_logout_written();
     let logout_at = engine
         .logout_deadline()
         .unwrap()

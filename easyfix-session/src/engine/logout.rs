@@ -39,9 +39,12 @@ impl<M: SessionMessage> SessionEngine<M> {
     }
 
     /// When the session gives up waiting for the peer's `Logout<5>` reply.
-    /// `None` while no Logout of ours is outstanding.
+    /// `None` before our Logout is sent, including while it is queued.
     pub(crate) fn logout_deadline(&self) -> Option<Instant> {
-        if let LogonState::LogoutSent { sent_at } = self.state.logon_state {
+        if let LogonState::LogoutSent {
+            sent_at: Some(sent_at),
+        } = self.state.logon_state
+        {
             sent_at.checked_add(self.session_settings.auto_disconnect_after_no_logout)
         } else {
             None
@@ -49,7 +52,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     }
 
     /// Push a Logout to admin_output and transition to
-    /// [`LogonState::LogoutSent`] capturing the send instant - for a Logout
+    /// [`LogonState::LogoutSent`] without arming its deadline - for a Logout
     /// the session then waits to have answered. A farewell on a connection
     /// that ends in this same iteration is [`Self::push_logout`] instead.
     /// The shared `push_logout` gate suppresses repeats in both ending states;
@@ -61,9 +64,15 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) {
         if self.push_logout(session_status, text) {
             self.state.reset_probe_id = None;
-            self.state.logon_state = LogonState::LogoutSent {
-                sent_at: self.timer_backend.now(),
-            };
+            self.state.logon_state = LogonState::LogoutSent { sent_at: None };
+        }
+    }
+
+    /// Arm the reply budget once the queued Logout has been delivered.
+    /// Repeated notifications must not extend an outstanding deadline.
+    pub(crate) fn mark_logout_written(&mut self) {
+        if let LogonState::LogoutSent { sent_at } = &mut self.state.logon_state {
+            sent_at.get_or_insert_with(|| self.timer_backend.now());
         }
     }
 

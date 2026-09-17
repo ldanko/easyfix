@@ -158,8 +158,9 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
                 session_status: Some(SessionStatusBase::SessionLogoutComplete.into()),
                 text: Some(Cow::Borrowed(fix_str!("Original Logout"))),
             });
-            let original_state = engine.state.logon_state;
-            let deadline = engine.logout_deadline();
+            let mut original_state = engine.state.logon_state;
+            let mut deadline = engine.logout_deadline();
+            assert!(deadline.is_none());
             for drained in [false, true] {
                 advance(Duration::from_secs(1)).await;
                 engine.on_control(ControlMsg::Logout {
@@ -167,6 +168,9 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
                     text: Some(Cow::Borrowed(fix_str!("Replacement"))),
                 });
                 engine.send_logout(None, Some(Cow::Borrowed(fix_str!("Replacement direct"))));
+                if drained {
+                    engine.mark_logout_written();
+                }
                 assert_eq!(engine.state.logon_state, original_state);
                 assert_eq!(engine.logout_deadline(), deadline);
                 if !drained {
@@ -176,6 +180,16 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
                     && logout.session_status == Some(SessionStatusBase::SessionLogoutComplete.into()));
                     assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
                     assert!(engine.commit_send(logout, &mut storage).is_ok());
+                    let sent_at = engine.timer_backend().now();
+                    engine.mark_logout_written();
+                    deadline = engine.logout_deadline();
+                    assert_eq!(
+                        deadline,
+                        sent_at
+                            .checked_add(engine.session_settings().auto_disconnect_after_no_logout)
+                    );
+                    assert!(deadline.is_some());
+                    original_state = engine.state.logon_state;
                     if confirmed {
                         accept_input(&mut engine, reset_ack(1, Some(true), None), &mut storage);
                         assert!(!engine.state.local_reset_unconfirmed);
@@ -192,7 +206,7 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
             } else {
                 engine.send_logout(None, None);
             }
-            let original_state = engine.state.logon_state;
+            let mut original_state = engine.state.logon_state;
             for drained in [false, true] {
                 advance(Duration::from_secs(1)).await;
                 engine.on_control(ControlMsg::Logout {
@@ -200,11 +214,19 @@ async fn repeated_logout_keeps_the_original_message_and_deadline() {
                     text: None,
                 });
                 engine.send_logout(None, None);
+                if drained {
+                    engine.mark_logout_written();
+                }
                 assert_eq!(engine.state.logon_state, original_state);
                 if !drained {
                     let mut logout = take_admin(&mut engine);
                     assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
                     assert!(engine.commit_send(logout, &mut storage).is_ok());
+                    engine.mark_logout_written();
+                    if !acknowledged {
+                        assert!(engine.logout_deadline().is_some());
+                    }
+                    original_state = engine.state.logon_state;
                 }
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
                 assert!(!engine.has_admin_output());

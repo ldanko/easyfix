@@ -660,6 +660,7 @@ fn on_logon_while_logout_in_flight_disconnects() {
     let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
     engine.send_logout(None, None);
     drain_all_admin(&mut engine);
+    engine.mark_logout_written();
 
     let msg = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
     assert_matches!(

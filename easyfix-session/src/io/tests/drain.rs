@@ -132,6 +132,50 @@ struct RestagingApp {
     tx: sender::Sender<Message>,
 }
 
+#[derive(Default)]
+struct InvalidLogoutApp {
+    errors: usize,
+}
+
+impl Application<Message> for InvalidLogoutApp {
+    fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {
+        self.errors += 1;
+    }
+
+    async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
+
+    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {}
+
+    async fn on_app_msg_in(&mut self, _: Box<Message>) -> InputAction {
+        InputAction::Accept
+    }
+
+    fn on_admin_msg_out(&mut self, msg: &mut Message) {
+        msg.header.sender_comp_id = Default::default();
+    }
+}
+
+#[tokio::test]
+async fn failed_logout_serialization_ends_without_waiting_for_an_impossible_ack() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.on_control(ControlMsg::Logout {
+        session_status: None,
+        text: None,
+    });
+    let mut app = InvalidLogoutApp::default();
+    let (mut writer, reader) = io::duplex(16384);
+
+    assert!(
+        !drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
+            .await
+            .expect("serialization failure is reported to the application")
+    );
+    assert_eq!(app.errors, 1);
+    assert!(engine.should_disconnect());
+    assert!(engine.logout_deadline().is_none());
+    assert!(wire_bytes(writer, reader).await.is_empty());
+}
+
 impl Application<Message> for RestagingApp {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 

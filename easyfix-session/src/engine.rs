@@ -152,10 +152,9 @@ enum LogonState {
     /// while the reset remains unconfirmed. Uses the separate Logon-response
     /// budget; application sends and normal keep-alive output stay held.
     ResetSent,
-    /// We've sent a Logout and are waiting for the peer's response (or
-    /// for [`SessionEngine::logout_deadline`] to fire). `sent_at` drives
-    /// the deadline computation.
-    LogoutSent { sent_at: Instant },
+    /// Our Logout is queued or awaiting the peer's response. `sent_at` is
+    /// absent until delivery, so queued output does not spend the ACK budget.
+    LogoutSent { sent_at: Option<Instant> },
     /// We've acknowledged the peer's Logout request and are waiting for it
     /// to close the connection (or for [`SessionEngine::awaiting_peer_close`]
     /// to expire). Terminal for the protocol: the IO loop stops feeding input
