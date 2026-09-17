@@ -46,7 +46,7 @@ async fn heartbeat_timeout_sends_heartbeat() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
 
             session_task.await.unwrap();
@@ -124,7 +124,7 @@ async fn garbled_input_does_not_reset_input_deadline() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
             session_task.await.unwrap();
         })
@@ -324,7 +324,7 @@ async fn heart_bt_int_zero_keeps_the_wire_silent_and_the_session_up() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
             session_task.await.unwrap();
         })

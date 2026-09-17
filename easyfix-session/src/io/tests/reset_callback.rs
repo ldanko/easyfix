@@ -50,7 +50,7 @@ async fn confirmed_ack_callback_finishes_before_its_expired_budget_is_considered
             let reason = match decision {
                 0 => {
                     task::yield_now().await; peer.assert_silent(); assert!(!peer.task.is_finished());
-                    peer.control.send(ControlMsg::Disconnect).await.unwrap(); DisconnectReason::Disconnected
+                    peer.control.send(ControlMsg::Disconnect).await.unwrap(); DisconnectReason::ApplicationForcedDisconnect
                 }
                 1 => DisconnectReason::ApplicationForcedDisconnect,
                 2 | 3 => {
@@ -113,7 +113,7 @@ async fn reset_probe_callback_finishes_before_the_new_ack_budget_is_checked() {
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
             } else {
                 time::advance(Duration::from_secs(9)).await;
                 task::yield_now().await;

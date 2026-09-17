@@ -544,7 +544,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             } => {
                 if disconnect {
                     self.push_logout(session_status, text);
-                    self.begin_disconnect(DisconnectReason::LocalRequestedLogout);
+                    self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
                 } else if matches!(
                     self.state.logon_state,
                     LogonState::LogoutSent { .. } | LogonState::LogoutAcknowledged { .. }
@@ -556,7 +556,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 }
             }
             ControlMsg::Disconnect => {
-                self.begin_disconnect(DisconnectReason::Disconnected);
+                self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
             }
         }
     }

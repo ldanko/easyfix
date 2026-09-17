@@ -202,7 +202,7 @@ fn exhausted_incoming_numbering_leaves_an_already_decided_disconnect_alone() {
 
     assert_eq!(
         engine.disconnect_reason(),
-        Some(DisconnectReason::Disconnected)
+        Some(DisconnectReason::ApplicationForcedDisconnect)
     );
     assert!(engine.take_admin_output().is_none());
 }

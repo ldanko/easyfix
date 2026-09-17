@@ -158,7 +158,8 @@ impl Session {
 
     async fn stop(self) {
         self.control.send(ControlMsg::Disconnect).await.unwrap();
-        self.finish(DisconnectReason::Disconnected).await;
+        self.finish(DisconnectReason::ApplicationForcedDisconnect)
+            .await;
     }
 }
 

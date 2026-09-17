@@ -278,7 +278,7 @@ pub enum DisconnectReason {
     /// storage is available.
     ResetPreparationTimeout,
     /// Locally requested logout completed - the peer's `Logout<5>` response
-    /// was received, or the application requested closure without waiting.
+    /// was received.
     LocalRequestedLogout,
     /// Logout requested remotely. The session confirms with its own
     /// `Logout<5>` (`SessionStatus(1409)=4`), then waits for the peer to
@@ -289,8 +289,10 @@ pub enum DisconnectReason {
     /// the connection within `auto_disconnect_after_no_logout`; the session
     /// drops it (Test Cases Scenario 13(b)).
     RemoteRequestedLogoutTimeout,
-    /// The application requested termination through an inbound-message
-    /// callback. See [`InputAction`] for the actions that end the connection.
+    /// The application forced closure without waiting for a Logout response,
+    /// with or without sending a farewell Logout. Applies to inbound-message
+    /// callbacks and requests through the acceptor or initiator API,
+    /// including forced acceptor shutdown.
     ApplicationForcedDisconnect,
     /// Received a message without `MsgSeqNum(34)`. The session sends
     /// `Logout<5>` and disconnects (FIX Session Layer §4.5.3).
@@ -323,8 +325,7 @@ pub enum DisconnectReason {
     /// disconnects (FIX Session Layer §4.2.3).
     SendingTimeAccuracyProblem,
     /// The remote side closed the connection, or the session ended without a
-    /// more specific reason (e.g. a disconnect requested through the session
-    /// handle).
+    /// more specific reason.
     Disconnected,
     /// A TCP read or write failed; the session ends without a `Logout<5>`
     /// exchange.

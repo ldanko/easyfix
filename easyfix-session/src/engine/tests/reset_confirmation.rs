@@ -198,6 +198,7 @@ fn begin_disconnect_normalises_to_seq_num_reset_failed_while_a_local_reset_is_un
         DisconnectReason::IoError,
         DisconnectReason::Disconnected,
         DisconnectReason::LocalRequestedLogout,
+        DisconnectReason::ApplicationForcedDisconnect,
         DisconnectReason::InvalidLogonState,
     ] {
         for unconfirmed in [false, true] {

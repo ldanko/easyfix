@@ -517,7 +517,7 @@ async fn queued_input_waits_for_the_replay_started_by_the_gap_closing_message() 
             session_task.await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
             assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
         })
@@ -875,7 +875,7 @@ async fn resend_request_during_a_replay_is_served_after_it() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
             session_task.await.unwrap();
         })

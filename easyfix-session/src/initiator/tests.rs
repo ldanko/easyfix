@@ -334,7 +334,7 @@ async fn unsupported_running_reset_preserves_both_sessions_and_reuses_registrati
             assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::App(seq) if seq == opening_seq + 1);
             assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::App(seq) if seq == opening_seq + 1);
             initiator.disconnect().await.unwrap();
-            assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::Disconnected));
+            assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::ApplicationForcedDisconnect));
             assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::Disconnected));
             ini_task.await.unwrap(); acc_task.await.unwrap();
             for snapshot in [&ini_snapshot, &acc_snapshot] {
@@ -891,7 +891,7 @@ async fn confirmed_reset_ack_preserves_application_decisions_in_the_io_loop() {
                         assert!(!task.is_finished());
                         assert!(events.try_recv().is_err());
                         initiator.disconnect().await.unwrap();
-                        DisconnectReason::Disconnected
+                        DisconnectReason::ApplicationForcedDisconnect
                     }
                 };
                 assert!(matches!(start_event(&mut events).await, StartEvent::End(actual) if actual == reason));
@@ -981,7 +981,7 @@ async fn manual_reset_session_then_reconnect() {
                 acc_task.await.unwrap();
                 assert!(matches!(
                     start_event(&mut ini_events).await,
-                    StartEvent::End(DisconnectReason::Disconnected)
+                    StartEvent::End(DisconnectReason::ApplicationForcedDisconnect)
                 ));
                 assert!(matches!(
                     start_event(&mut acc_events).await,
@@ -1169,7 +1169,7 @@ async fn reset_then_resume_against_accepting_acceptor() {
                     acc_task.await.unwrap();
                     assert!(matches!(
                         start_event(&mut ini_events).await,
-                        StartEvent::End(DisconnectReason::Disconnected)
+                        StartEvent::End(DisconnectReason::ApplicationForcedDisconnect)
                     ));
                     assert!(matches!(
                         start_event(&mut acc_events).await,

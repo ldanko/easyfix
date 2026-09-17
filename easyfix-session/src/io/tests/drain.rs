@@ -276,7 +276,7 @@ async fn sending_time_is_stamped_at_transmission_not_at_staging() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
             session_task.await.unwrap();
         })

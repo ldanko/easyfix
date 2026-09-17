@@ -599,7 +599,7 @@ async fn heartbeat_response_to_test_request() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -685,7 +685,7 @@ async fn outbound_heartbeat_on_idle() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -771,7 +771,7 @@ async fn resend_request_on_sequence_gap_is_intercepted() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -845,7 +845,7 @@ async fn app_messages_unaffected() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             acc_handle.await.expect("acceptor task");
         })

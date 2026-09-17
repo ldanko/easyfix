@@ -848,6 +848,8 @@ where
     /// for the peer's response. Otherwise wait for its response or timeout.
     /// Repeating the request sends no additional Logout. With `disconnect`
     /// true it ends the wait; otherwise the original deadline is unchanged.
+    /// Closure without waiting reports
+    /// [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
     pub async fn logout(
         &self,
         session_id: &SessionId,
@@ -912,6 +914,7 @@ where
     /// `Ok(())` if the session is already disconnected and
     /// [`AcceptorError::UnknownSession`] if no matching session has
     /// been registered.
+    /// Reports [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
     pub async fn disconnect(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
         // `Ok(None)` = already disconnected - no-op.
         if let Some(tx) = self.active_session_control(session_id)? {
@@ -1075,8 +1078,6 @@ where
             .cloned()
             .collect();
 
-        let follow_with_disconnect = matches!(mode, ShutdownMode::LogoutAndDisconnect { .. });
-
         for tx in targets {
             let msg = match &mode {
                 ShutdownMode::Disconnect => ControlMsg::Disconnect,
@@ -1088,15 +1089,12 @@ where
                     session_status,
                     text,
                 } => ControlMsg::Logout {
-                    disconnect: false,
+                    disconnect: matches!(mode, ShutdownMode::LogoutAndDisconnect { .. }),
                     session_status: *session_status,
                     text: text.clone(),
                 },
             };
             let _ = tx.send(msg).await;
-            if follow_with_disconnect {
-                let _ = tx.send(ControlMsg::Disconnect).await;
-            }
         }
 
         // Wait for all session tasks to exit. The double-check around

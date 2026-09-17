@@ -254,7 +254,7 @@ async fn acceptor_logon_handshake() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
 
             session_task.await.unwrap();
@@ -304,7 +304,7 @@ async fn initiator_logon_handshake() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
 
             session_task.await.unwrap();

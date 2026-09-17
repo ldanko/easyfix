@@ -70,7 +70,7 @@ async fn reset_preparation_keeps_heartbeats_alive_behind_an_old_probe() {
         peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 1, Some(true), None)).await;
         assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
         peer.control.send(ControlMsg::Disconnect).await.unwrap();
-        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
         let mut storage = peer.task.await.unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 2); assert_eq!(storage.next_target_msg_seq_num().get(), 2);
         assert_eq!(storage.fetch(nz_seq(1), nz_seq(1)).await, Ok(test_helpers::serialize_message(&logon).as_slice()));
@@ -142,7 +142,7 @@ async fn queued_probe_answer_waits_for_replay_and_the_trailing_gap_fill() {
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
                 let mut storage = peer.task.await.unwrap();
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 2); assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                 assert_eq!(storage.fetch(nz_seq(1), nz_seq(1)).await, Ok(test_helpers::serialize_message(&logon).as_slice()));
@@ -220,7 +220,7 @@ async fn queued_admin_flush_precedes_reprobe_and_checks_the_original_budget() {
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
                 let mut storage = peer.task.await.unwrap();
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 2); assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                 for seq in 98..=102 { assert!(storage.fetch(nz_seq(seq), nz_seq(seq)).await.is_err()); }
@@ -297,7 +297,7 @@ async fn running_reset_replay_barriers_and_budget_check_every_completed_batch() 
                     peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                     assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                     peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                    assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+                    assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
                     let mut storage = peer.task.await.unwrap();
                     assert_eq!(storage.next_sender_msg_seq_num().get(), 2); assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                     assert!(storage.fetch(nz_seq(6), nz_seq(6)).await.is_err());

@@ -112,7 +112,7 @@ async fn invalid_recovery_messages_do_not_reach_admin_callback() {
                 session_task.await.unwrap();
                 assert_matches!(
                     events_rx.recv().await.unwrap(),
-                    TestEvent::SessionEnd(DisconnectReason::Disconnected),
+                    TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect),
                     "{name}"
                 );
                 assert_matches!(
@@ -370,7 +370,7 @@ async fn reject_flood_does_not_kill_the_session() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
             );
             session_task.await.unwrap();
         })
@@ -471,7 +471,7 @@ async fn garbled_frames_are_skipped_without_consuming_a_sequence_number() {
                 control_tx.send(ControlMsg::Disconnect).await.unwrap();
                 assert_matches!(
                     events_rx.recv().await.unwrap(),
-                    TestEvent::SessionEnd(DisconnectReason::Disconnected),
+                    TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect),
                     "{shape}"
                 );
                 session_task.await.unwrap();

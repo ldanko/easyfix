@@ -293,7 +293,7 @@ async fn graceful_shutdown_during_a_reset_leaves_both_sides_consistent() {
         let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 3).await;
         assert_snapshot_counts(&pair.acc_storage, 4, 4); assert_snapshot_counts(&pair.ini_storage, 4, 4);
         pair.initiator.disconnect().await.unwrap();
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
         ini_task.await.unwrap(); acc.close_input().await;
         assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
         acc_task.await.unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
@@ -429,7 +429,7 @@ async fn in_session_reset_converges_both_engines() {
             assert_snapshot_counts(&pair.acc_storage, 3, 3); assert_snapshot_counts(&pair.ini_storage, 3, 3);
         }
         pair.initiator.disconnect().await.unwrap();
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
         assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
         ini_task.await.unwrap(); acc_task.await.unwrap();
         for snapshot in [&pair.acc_storage, &pair.ini_storage] {
@@ -1252,7 +1252,7 @@ async fn acceptor_logout_disconnect_closes_without_peer_response() {
                 assert!(peer.read_to_close().await.is_empty());
                 assert_eq!(
                     wait_for_session_end(&mut events_rx).await,
-                    DisconnectReason::LocalRequestedLogout
+                    DisconnectReason::ApplicationForcedDisconnect
                 );
                 timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
                 assert_eq!(started.elapsed(), Duration::ZERO);
@@ -1298,7 +1298,7 @@ async fn initiator_logout_disconnect_closes_without_peer_response() {
                 assert!(rest.is_empty());
                 assert_eq!(
                     wait_for_session_end(&mut peer.events_rx).await,
-                    DisconnectReason::LocalRequestedLogout
+                    DisconnectReason::ApplicationForcedDisconnect
                 );
                 timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
                 assert_eq!(started.elapsed(), Duration::ZERO);
@@ -1417,7 +1417,7 @@ async fn resend_request_large_gap() {
             initiator.disconnect().await.expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             ini_handle.await.expect("initiator task");
         })
@@ -1532,7 +1532,7 @@ async fn resend_range_ending_on_gap_fill_flushes_trailing_gap() {
                 initiator.disconnect().await.expect("disconnect");
                 assert_eq!(
                     wait_for_session_end(&mut ini_events_rx).await,
-                    DisconnectReason::Disconnected
+                    DisconnectReason::ApplicationForcedDisconnect
                 );
                 ini_handle.await.expect("initiator task");
             }
@@ -1627,7 +1627,7 @@ async fn sequence_reset_advances_target_seq_num() {
                 .expect("acceptor disconnect");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             peer.handle.await.expect("acceptor task");
         })
@@ -1799,7 +1799,7 @@ async fn multiple_sessions_isolated() {
             // side by decision, the other on the transport going away.
             assert_eq!(
                 wait_for_session_end(&mut ini_a_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             assert_eq!(
                 wait_for_session_end_of(&mut acc_rx, &sid_a_acc).await,
@@ -1826,7 +1826,7 @@ async fn multiple_sessions_isolated() {
             initiator_b.disconnect().await.expect("disconnect B");
             assert_eq!(
                 wait_for_session_end(&mut ini_b_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             assert_eq!(
                 wait_for_session_end_of(&mut acc_rx, &sid_b_acc).await,
@@ -1918,7 +1918,7 @@ async fn nonblocking_send_preserves_order_under_write_backpressure() {
             initiator.disconnect().await.expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             ini_handle.await.expect("initiator task");
         })
@@ -2131,7 +2131,7 @@ async fn slow_consumer_eviction_recovers_backlog_on_reconnect() {
                     .expect("acceptor disconnect");
                 assert_eq!(
                     wait_for_session_end(&mut acc_events_rx).await,
-                    DisconnectReason::Disconnected
+                    DisconnectReason::ApplicationForcedDisconnect
                 );
                 peer.handle.await.expect("acceptor task #2");
             }
@@ -2245,7 +2245,7 @@ async fn lag_cap_suspended_during_resend_and_grace_window() {
                 .expect("acceptor disconnect");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected,
+                DisconnectReason::ApplicationForcedDisconnect,
                 "healthy peer must not be evicted during/after a resend"
             );
             peer.handle.await.expect("acceptor task");
@@ -2378,7 +2378,7 @@ async fn remove_session_refused_while_active_then_recoverable_after_close() {
 
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
@@ -2502,7 +2502,7 @@ async fn peer_resynchronizes_after_losing_its_session_state() {
                 .expect("acceptor disconnect");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             peer.handle.await.expect("acceptor task 2");
         })
@@ -2648,7 +2648,7 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
             acceptor.close(&acceptor_session_id()).await.expect("close");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             conn1.acc_handle.await.expect("acceptor task 1");
             let _ = conn1.ini_handle.await;
@@ -2687,7 +2687,7 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
             acceptor.close(&acceptor_session_id()).await.expect("close");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected
+                DisconnectReason::ApplicationForcedDisconnect
             );
             conn3.acc_handle.await.expect("acceptor task 3");
             let _ = conn3.ini_handle.await;
@@ -2932,11 +2932,11 @@ async fn collect_session_ends(
 }
 
 /// `ShutdownMode::Disconnect` drops every live session on the spot: no
-/// Logout on either wire, both sessions ending as `Disconnected`, and
-/// `shutdown` itself returning without waiting on peers that were never
-/// asked anything. On return the registry is settled - the sessions are
-/// removable at once, which is what a supervisor replacing the acceptor
-/// needs.
+/// Logout on either wire, both sessions ending as
+/// `ApplicationForcedDisconnect`, and `shutdown` itself returning without
+/// waiting on peers that were never asked anything. On return the registry
+/// is settled - the sessions are removable at once, which is what a
+/// supervisor replacing the acceptor needs.
 #[tokio::test]
 async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
     let local = LocalSet::new();
@@ -2966,8 +2966,8 @@ async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
             assert_eq!(
                 ends,
                 vec![
-                    (a.sid.clone(), DisconnectReason::Disconnected),
-                    (b.sid.clone(), DisconnectReason::Disconnected),
+                    (a.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
+                    (b.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
                 ]
             );
 
@@ -2986,8 +2986,8 @@ async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
 /// `ShutdownMode::LogoutAndDisconnect` puts a Logout - with the caller's
 /// `Text(58)` - on every live session's wire and closes without waiting for
 /// an answer: the peers here never reply, and `shutdown` still returns. The
-/// sessions end as `Disconnected`, the transport verdict, since the logout
-/// exchange was never completed.
+/// sessions end as `ApplicationForcedDisconnect`, since the application
+/// requested closure without completing the logout exchange.
 #[tokio::test]
 async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting() {
     let local = LocalSet::new();
@@ -3037,8 +3037,8 @@ async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting
             assert_eq!(
                 ends,
                 vec![
-                    (a.sid.clone(), DisconnectReason::Disconnected),
-                    (b.sid.clone(), DisconnectReason::Disconnected),
+                    (a.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
+                    (b.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
                 ]
             );
             a.handle.await.expect("session task A");

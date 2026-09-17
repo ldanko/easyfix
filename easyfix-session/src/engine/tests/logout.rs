@@ -272,6 +272,9 @@ fn on_control_disconnect_sets_disconnect_no_messages() {
 
     engine.on_control(ControlMsg::Disconnect);
 
-    assert!(engine.should_disconnect());
+    assert_eq!(
+        engine.disconnect_reason(),
+        Some(DisconnectReason::ApplicationForcedDisconnect)
+    );
     assert!(engine.take_admin_output().is_none());
 }

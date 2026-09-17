@@ -244,7 +244,7 @@ async fn running_session_reset_holds_app_sends_and_gap_fills_the_ack_range() {
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(kind) if kind == expected);
             }
             peer.control.send(ControlMsg::Disconnect).await.unwrap();
-            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
             assert_eq!(storage.next_target_msg_seq_num().get(), 2);

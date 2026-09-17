@@ -503,6 +503,8 @@ where
     /// for the peer's response. Otherwise wait for its response or timeout.
     /// Repeating the request sends no additional Logout. With `disconnect`
     /// true it ends the wait; otherwise the original deadline is unchanged.
+    /// Closure without waiting reports
+    /// [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
     pub async fn logout(
         &self,
         session_status: Option<SessionStatusField>,
@@ -557,6 +559,7 @@ where
     /// Request an immediate disconnect of the current session. Returns
     /// `Ok(())` if no session is active. Does not wait for closure; use
     /// [`close`](Self::close) to disconnect and wait.
+    /// Reports [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
     pub async fn disconnect(&self) -> Result<(), InitiatorError> {
         let tx = self.inner.current_session.borrow().clone();
         if let Some(tx) = tx {

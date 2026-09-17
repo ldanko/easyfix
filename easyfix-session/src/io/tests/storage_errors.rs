@@ -627,7 +627,7 @@ async fn no_history_logon_recovery_resend_request_and_reconnect_keep_counters() 
             }
             control.send(ControlMsg::Disconnect).await.unwrap();
             storage = task.await.unwrap();
-            assert_eq!(trace.borrow().ended, [DisconnectReason::Disconnected]);
+            assert_eq!(trace.borrow().ended, [DisconnectReason::ApplicationForcedDisconnect]);
             assert_eq!(trace.borrow().gap_fill_calls, 0);
             assert_eq!(live_sender.backlog_len(), 0);
             assert_eq!(storage.sender.get(), 6 + connection);

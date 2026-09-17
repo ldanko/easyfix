@@ -74,7 +74,7 @@ async fn unrepresentable_reset_budgets_leave_deadlines_unarmed() {
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
             } else {
                 time::advance(Duration::from_secs(9)).await;
                 task::yield_now().await; assert!(!peer.task.is_finished()); peer.assert_silent();
@@ -126,7 +126,7 @@ async fn reset_ack_budget_includes_the_logon_write_and_starts_after_preparation(
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
             } else {
                 let before_deadline = 18 - (9 + write_delay);
                 time::advance(Duration::from_secs(before_deadline)).await;
@@ -224,7 +224,7 @@ async fn delayed_reset_ack_keeps_short_heartbeat_timers_silent() {
         assert_eq!(order.msg_seq_num(), 2);
         assert_matches!(&*order.body, Body::NewOrderSingle(_));
         peer.control.send(ControlMsg::Disconnect).await.unwrap();
-        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::Disconnected));
+        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
         let storage = peer.task.await.unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
         assert_eq!(storage.next_target_msg_seq_num().get(), 2);
