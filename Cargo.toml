@@ -23,31 +23,31 @@ default-members = [
 ]
 
 [workspace.dependencies]
-anyhow = "1.0"
-bytes = "1.6"
-chrono = "0.4.38"
-clap = "4.6"
-convert_case = "0.6"
+anyhow = "1.0.104"
+bytes = "1.12"
+chrono = "0.4.45"
+clap = "4.6.7"
+convert_case = "0.12.0"
 easyfix-core = { version = "0.20.0", path = "easyfix-core" }
 easyfix-dictionary = { version = "0.20.0", path = "easyfix-dictionary" }
 easyfix-macros = { version = "0.20.0", path = "easyfix-macros" }
 easyfix-messages = { version = "0.20.0", path = "easyfix-messages" }
 easyfix-session = { version = "0.20.0", path = "easyfix-session" }
 easyfix-test-messages = { version = "0.1.0", path = "easyfix-test-messages" }
-futures-util = "0.3.26"
-itoa = "1.0"
-memchr = "2.8.0"
-prettyplease = "0.2"
-proc-macro2 = "1.0"
-quote = "1.0"
-rust_decimal = { version = "1.36", default-features = false }
-serde = "1.0"
-serde_json = "1.0"
-syn = "2.0"
-thiserror = "2.0"
-tokio = "1.38"
-tokio-util = "0.7"
-tracing = "0.1.40"
+futures-util = "0.3.34"
+itoa = "1.0.18"
+memchr = "2.8.3"
+prettyplease = "0.3"
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+rust_decimal = { version = "1.43", default-features = false }
+serde = "1.0.229"
+serde_json = "1.0.154"
+syn = "3.0.9"
+thiserror = "2.0.21"
+tokio = "1.53.3"
+tokio-util = "0.7.20"
+tracing = "0.1.44"
 
 [workspace.lints.clippy]
 # Inherited only by crates that opt in with `[lints] workspace = true` in their
