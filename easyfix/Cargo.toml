@@ -22,6 +22,5 @@ serde-deserialize = ["easyfix-core/serde-deserialize"]
 [dependencies]
 easyfix-core = { workspace = true }
 easyfix-dictionary = { workspace = true, optional = true }
-easyfix-macros = { workspace = true }
 easyfix-messages = { workspace = true, optional = true }
 easyfix-session = { workspace = true, optional = true }
