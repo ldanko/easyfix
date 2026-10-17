@@ -1,14 +1,24 @@
 //! ISO 4217 currency codes, as the three-character FIX `Currency` datatype.
 
-use crate::basic_types::FixStr;
+use crate::{basic_types::FixStr, fix_str};
 
 /// An ISO 4217 three-letter currency code.
+///
+/// The default is [`Unspecified`](Self::Unspecified), with empty text views
+/// and zero-filled byte views. FIX serialization rejects it; Serde represents
+/// it as an empty string in both directions.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
 pub enum Currency {
-    /// United Arab Emirates dirham
+    /// No currency has been specified.
     #[default]
+    #[cfg_attr(
+        any(feature = "serde-serialize", feature = "serde-deserialize"),
+        serde(rename = "")
+    )]
+    Unspecified,
+    /// United Arab Emirates dirham
     AED,
     /// Afghan afghani
     AFN,
@@ -371,6 +381,8 @@ pub enum Currency {
 }
 
 impl Currency {
+    /// Read an assigned code, returning `None` for unknown codes or invalid lengths.
+    /// Empty input and zero-filled byte arrays are not codes.
     pub const fn from_bytes(input: &[u8]) -> Option<Currency> {
         match input {
             b"AED" => Some(Currency::AED),
@@ -557,25 +569,37 @@ impl Currency {
         }
     }
 
-    /// Return the three-letter currency code by value.
+    /// Whether no currency has been specified.
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Unspecified)
+    }
+
+    /// Return the three-letter currency code, or three zero bytes if unspecified.
     pub const fn to_bytes(self) -> [u8; 3] {
         *self.as_bytes()
     }
 
     /// Borrow the three-letter currency code as a string.
+    /// Returns an empty string if unspecified.
     pub const fn as_str(&self) -> &'static str {
         self.as_fix_str().as_utf8()
     }
 
     /// Borrow the three-letter currency code as a FIX string.
+    /// Returns an empty string if unspecified.
     pub const fn as_fix_str(&self) -> &'static FixStr {
-        // SAFETY: Every code returned by as_bytes consists of uppercase ASCII letters.
-        unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        if self.is_empty() {
+            fix_str!("")
+        } else {
+            // SAFETY: Specified codes contain only uppercase ASCII letters.
+            unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        }
     }
 
-    /// Borrow the three-letter currency code.
+    /// Borrow the three-letter currency code, or three zero bytes if unspecified.
     pub const fn as_bytes(&self) -> &'static [u8; 3] {
         match self {
+            Currency::Unspecified => &[0; 3],
             Currency::AED => b"AED",
             Currency::AFN => b"AFN",
             Currency::ALL => b"ALL",

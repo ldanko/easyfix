@@ -112,6 +112,186 @@ fn exchange_serde_deserializes_validated_strings() {
 }
 
 #[test]
+fn language_construction_and_views_are_const() {
+    const VALUE: Language = match Language::from_bytes(b"pl") {
+        Some(value) => value,
+        None => panic!("valid language"),
+    };
+    const BYTES: [u8; 2] = VALUE.to_bytes();
+    const BORROWED: &[u8; 2] = VALUE.as_bytes();
+    const TEXT: &str = VALUE.as_str();
+    const FIX_TEXT: &FixStr = VALUE.as_fix_str();
+    const IS_EMPTY: bool = VALUE.is_empty();
+    const INVALID: Option<Language> = Language::from_bytes(b"Pl");
+
+    assert_eq!(BYTES, *b"pl");
+    assert_eq!(BORROWED, b"pl");
+    assert_eq!(TEXT, "pl");
+    assert_eq!(FIX_TEXT, fix_str!("pl"));
+    const { assert!(!IS_EMPTY) };
+    assert!(INVALID.is_none());
+}
+
+#[test]
+fn code_defaults_are_unspecified_with_const_empty_views() {
+    macro_rules! assert_unspecified {
+        ($type:ident, $width:literal) => {{
+            const EMPTY: $type = $type::Unspecified;
+            const IS_EMPTY: bool = EMPTY.is_empty();
+            const TEXT: &str = EMPTY.as_str();
+            const FIX_TEXT: &FixStr = EMPTY.as_fix_str();
+            const BYTES: [u8; $width] = EMPTY.to_bytes();
+            const BORROWED: &[u8; $width] = EMPTY.as_bytes();
+
+            assert_eq!($type::default(), EMPTY);
+            const { assert!(IS_EMPTY) };
+            assert_eq!(TEXT, "");
+            assert_eq!(FIX_TEXT, fix_str!(""));
+            assert_eq!(BYTES, [0; $width]);
+            assert_eq!(BORROWED, &[0; $width]);
+            assert!($type::from_bytes(&[0; $width]).is_none());
+            assert!($type::from_bytes(b"").is_none());
+        }};
+    }
+
+    assert_unspecified!(Country, 2);
+    assert_unspecified!(Currency, 3);
+    assert_unspecified!(Language, 2);
+}
+
+#[cfg(feature = "serde-serialize")]
+#[test]
+fn language_serde_serializes_as_string() {
+    let value = Language::PL;
+    assert_eq!(serde_json::to_string(&value).unwrap(), "\"pl\"");
+    assert_eq!(serde_json::to_string(&Language::default()).unwrap(), "\"\"");
+}
+
+#[cfg(feature = "serde-deserialize")]
+#[test]
+fn language_serde_deserializes_validated_strings() {
+    let value: Language = serde_json::from_str("\"pl\"").unwrap();
+    assert_eq!(value.to_bytes(), *b"pl");
+    let empty: Language = serde_json::from_str("\"\"").unwrap();
+    assert_eq!(empty, Language::default());
+
+    for json in [
+        "\"zz\"",
+        "\"Unspecified\"",
+        "\"p\"",
+        "\"pol\"",
+        "\"Pl\"",
+        "\"pL\"",
+        "\"p0\"",
+        "\"p \"",
+        "\"p!\"",
+        "\"p\\u0001\"",
+        "\"\\u0000\\u0000\"",
+        "\"p\\u007f\"",
+        "\"\\u00e9\"",
+        "[112, 108]",
+        "1234",
+        "null",
+    ] {
+        assert!(serde_json::from_str::<Language>(json).is_err(), "{json}");
+    }
+}
+
+#[test]
+fn language_accepts_exactly_the_registered_codes() {
+    // Alpha-2 entries in the ISO-linked registry, retrieved 2026-10-17.
+    let codes = concat!(
+        "aa ab ae af ak am an ar as av ay az ba be bg bi bm bn bo br bs ca ",
+        "ce ch co cr cs cu cv cy da de dv dz ee el en eo es et eu fa ff fi ",
+        "fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ia id ie ",
+        "ig ii ik io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv ",
+        "kw ky la lb lg li ln lo lt lu lv mg mh mi mk ml mn mr ms mt my na ",
+        "nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu rm ",
+        "rn ro ru rw sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ",
+        "ta te tg th ti tk tl tn to tr ts tt tw ty ug uk ur uz ve vi vo wa ",
+        "wo xh yi yo za zh zu",
+    );
+    let expected: Vec<_> = codes.split_ascii_whitespace().collect();
+    assert_eq!(expected.len() + 1, mem::variant_count::<Language>());
+
+    for code in &expected {
+        let language = Language::from_bytes(code.as_bytes()).unwrap();
+        assert_eq!(language.as_str(), *code);
+        assert_eq!(language.as_fix_str().as_bytes(), code.as_bytes());
+        assert_eq!(language.as_bytes(), code.as_bytes());
+        assert_eq!(language.to_bytes(), code.as_bytes());
+        assert!(!language.is_empty());
+
+        #[cfg(feature = "serde-serialize")]
+        assert_eq!(
+            serde_json::to_string(&language).unwrap(),
+            format!("\"{code}\"")
+        );
+        #[cfg(feature = "serde-deserialize")]
+        assert_eq!(
+            serde_json::from_str::<Language>(&format!("\"{code}\"")).unwrap(),
+            language
+        );
+    }
+
+    let mut accepted = 0;
+    for first in u8::MIN..=u8::MAX {
+        for second in u8::MIN..=u8::MAX {
+            let bytes = [first, second];
+            if let Some(language) = Language::from_bytes(&bytes) {
+                assert!(expected.contains(&language.as_str()));
+                assert_eq!(language.to_bytes(), bytes);
+                accepted += 1;
+            }
+        }
+    }
+    assert_eq!(accepted, expected.len());
+    assert!(Language::from_bytes(b"p").is_none());
+    assert!(Language::from_bytes(b"pol").is_none());
+}
+
+#[cfg(feature = "serde-serialize")]
+#[test]
+fn country_and_currency_serde_preserve_codes_and_unspecified() {
+    assert_eq!(serde_json::to_string(&Country::PL).unwrap(), "\"PL\"");
+    assert_eq!(serde_json::to_string(&Currency::PLN).unwrap(), "\"PLN\"");
+    assert_eq!(serde_json::to_string(&Country::default()).unwrap(), "\"\"");
+    assert_eq!(serde_json::to_string(&Currency::default()).unwrap(), "\"\"");
+}
+
+#[cfg(feature = "serde-deserialize")]
+#[test]
+fn country_and_currency_serde_read_codes_and_unspecified() {
+    assert_eq!(
+        serde_json::from_str::<Country>("\"PL\"").unwrap(),
+        Country::PL
+    );
+    assert_eq!(
+        serde_json::from_str::<Currency>("\"PLN\"").unwrap(),
+        Currency::PLN
+    );
+    assert_eq!(
+        serde_json::from_str::<Country>("\"\"").unwrap(),
+        Country::Unspecified
+    );
+    assert_eq!(
+        serde_json::from_str::<Currency>("\"\"").unwrap(),
+        Currency::Unspecified
+    );
+    for json in ["\"Unspecified\"", "\"pl\"", "\"ZZ\"", "\"\\u0000\\u0000\""] {
+        assert!(serde_json::from_str::<Country>(json).is_err(), "{json}");
+    }
+    for json in [
+        "\"Unspecified\"",
+        "\"pln\"",
+        "\"ZZZ\"",
+        "\"\\u0000\\u0000\\u0000\"",
+    ] {
+        assert!(serde_json::from_str::<Currency>(json).is_err(), "{json}");
+    }
+}
+
+#[test]
 fn msg_type_views_are_const_and_exclude_padding() {
     const SINGLE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
     const DOUBLE: MsgTypeField = match MsgTypeField::from_bytes(b"AB") {

@@ -25,7 +25,7 @@ pub use chrono::{
 pub use rust_decimal::Decimal;
 
 use crate::{base_messages::SessionRejectReasonBase, fix_str, version::Version};
-pub use crate::{country::Country, currency::Currency};
+pub use crate::{country::Country, currency::Currency, language::Language};
 
 #[cfg(test)]
 mod tests;
@@ -94,7 +94,6 @@ pub enum ExchangeError {
 /// invariant (printable ASCII) guarantees the value cannot corrupt
 /// message framing.
 pub type MonthYear = FixString;
-pub type Language = [u8; 2];
 
 /// Number of fractional-second digits a time value carries on the wire.
 ///

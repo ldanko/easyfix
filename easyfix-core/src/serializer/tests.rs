@@ -2,8 +2,8 @@ use std::{assert_matches, str};
 
 use super::{SerializeError, Serializer, max_body_len_digits};
 use crate::basic_types::{
-    Exchange, FixedOffset, NaiveDate, NaiveTime, TimeZone, TzTimeOnly, TzTimestamp, Utc,
-    UtcTimeOnly, UtcTimestamp,
+    Country, Currency, Exchange, FixedOffset, Language, NaiveDate, NaiveTime, TimeZone, TzTimeOnly,
+    TzTimestamp, Utc, UtcTimeOnly, UtcTimestamp,
 };
 
 const BEGIN_STRING: &[u8] = b"8=FIXT.1.1\x01";
@@ -339,6 +339,22 @@ fn checksum_is_always_zero_padded_to_three_digits() {
 }
 
 #[test]
+fn serialize_country_and_currency_reject_unspecified_without_writing() {
+    let mut buf = [0u8; 16];
+    let mut serializer = Serializer::new(&mut buf);
+    assert_matches!(
+        serializer.serialize_country(&Country::default()),
+        Err(SerializeError::EmptyValue)
+    );
+    assert!(serializer.written().is_empty());
+    assert_matches!(
+        serializer.serialize_currency(&Currency::default()),
+        Err(SerializeError::EmptyValue)
+    );
+    assert!(serializer.written().is_empty());
+}
+
+#[test]
 fn serialize_exchange_rejects_empty_without_writing() {
     let mut buf = [0u8; 16];
     let mut serializer = Serializer::new(&mut buf);
@@ -359,24 +375,22 @@ fn serialize_exchange_preserves_case_and_digits() {
 }
 
 #[test]
-fn serialize_language_rejects_bytes_outside_printable_ascii() {
+fn serialize_language_rejects_empty_without_writing() {
     let mut buf = [0u8; 16];
     let mut serializer = Serializer::new(&mut buf);
     assert_matches!(
-        serializer.serialize_language(b"p\x01"),
-        Err(SerializeError::InvalidValue)
+        serializer.serialize_language(&Language::default()),
+        Err(SerializeError::EmptyValue)
     );
-    assert_matches!(
-        serializer.serialize_language(&[b'p', 0xff]),
-        Err(SerializeError::InvalidValue)
-    );
+    assert!(serializer.written().is_empty());
 }
 
 #[test]
-fn serialize_language_writes_printable_ascii() {
+fn serialize_language_writes_code() {
     let mut buf = [0u8; 16];
     let mut serializer = Serializer::new(&mut buf);
-    serializer.serialize_language(b"pl").unwrap();
+    let language = Language::PL;
+    serializer.serialize_language(&language).unwrap();
     assert_eq!(serializer.written(), b"pl");
 }
 

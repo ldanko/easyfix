@@ -51,9 +51,9 @@ pub enum SerializeError {
     /// BodyLength(9) does not fit the placeholder reserved for it.
     #[error("max message size exceeded")]
     MaxMessageSizeExceeded,
-    /// A field that must carry at least one byte was empty: `FixStr`, `Exchange`,
-    /// `Data`, `XmlData`, a `MultipleCharValue` / `MultipleStringValue` collection
-    /// or one of its elements, or an enum collection.
+    /// A field that must carry at least one byte was empty: `FixStr`, `Country`,
+    /// `Currency`, `Exchange`, `Language`, `Data`, `XmlData`, a `MultipleCharValue`
+    /// / `MultipleStringValue` collection or one of its elements, or an enum collection.
     #[error("empty value")]
     EmptyValue,
     /// A value outside the range its FIX datatype allows: a zero `TagNum`,
@@ -388,14 +388,18 @@ impl<'a> Serializer<'a> {
 
     /// Serialize ISO 3166-1:2013 Codes for the representation of names of
     /// countries and their subdivision (2-character code).
+    ///
+    /// Returns [`SerializeError::EmptyValue`] when the country is unspecified.
     pub fn serialize_country(&mut self, country: &Country) -> Result<(), SerializeError> {
-        self.put_slice(country.as_bytes())
+        self.serialize_string(country.as_fix_str())
     }
 
     /// Serialize ISO 4217:2015 Codes for the representation of currencies
     /// and funds (3-character code).
+    ///
+    /// Returns [`SerializeError::EmptyValue`] when the currency is unspecified.
     pub fn serialize_currency(&mut self, currency: &Currency) -> Result<(), SerializeError> {
-        self.put_slice(currency.as_bytes())
+        self.serialize_string(currency.as_fix_str())
     }
 
     /// Serialize ISO 10383:2012 Securities and related financial
@@ -424,11 +428,10 @@ impl<'a> Serializer<'a> {
 
     /// Serialize ISO 639-1:2002 Codes for the representation of names
     /// of languages (2-character code).
+    ///
+    /// Returns [`SerializeError::EmptyValue`] when the language is unspecified.
     pub fn serialize_language(&mut self, input: &Language) -> Result<(), SerializeError> {
-        for &byte in input {
-            validate_char(byte)?;
-        }
-        self.put_slice(input)
+        self.serialize_string(input.as_fix_str())
     }
 
     /// Serialize string representing time/date combination represented

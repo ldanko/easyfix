@@ -1728,8 +1728,44 @@ fn deserialize_language_ok() {
     let result = deserializer
         .deserialize_language()
         .expect("failed to deserialize language");
-    assert_eq!(result, *b"pl");
+    assert_eq!(result.to_bytes(), *b"pl");
     assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[test]
+fn deserialize_language_rejects_unknown_codes() {
+    for input in [
+        b"Pl\x01", b"pL\x01", b"p0\x01", b"p \x01", b"p!\x01", b"zz\x01",
+    ] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_language(),
+            Err(DeserializeErrorKind::Reject { reason, .. })
+                if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+        );
+    }
+}
+
+#[test]
+fn deserialize_language_wrong_length() {
+    for input in [b"p\x01".as_slice(), b"pol\x01"] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_language(),
+            Err(DeserializeErrorKind::Reject { reason, .. })
+                if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+        );
+    }
+}
+
+#[test]
+fn deserialize_language_rejects_empty() {
+    let mut deserializer = deserializer(b"\x01");
+    assert_matches!(
+        deserializer.deserialize_language(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::TagSpecifiedWithoutAValue)
+    );
 }
 
 #[test]

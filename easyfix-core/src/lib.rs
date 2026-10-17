@@ -39,6 +39,7 @@ pub mod basic_types;
 pub mod country;
 pub mod currency;
 pub mod deserializer;
+pub mod language;
 pub mod message;
 pub mod serializer;
 pub mod version;
