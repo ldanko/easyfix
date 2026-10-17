@@ -1825,20 +1825,12 @@ impl<'de> Deserializer<'de> {
                 self.current_tag,
                 SessionRejectReasonBase::TagSpecifiedWithoutAValue,
             )),
-            [
-                a @ 0x20..=0x7e,
-                b @ 0x20..=0x7e,
-                c @ 0x20..=0x7e,
-                d @ 0x20..=0x7e,
-                b'\x01',
-                buf @ ..,
-            ] => {
+            [a, b, c, d, b'\x01', buf @ ..] => {
+                let exchange = Exchange::from_bytes([*a, *b, *c, *d]).map_err(|_| {
+                    self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
+                })?;
                 self.buf = buf;
-                Ok([*a, *b, *c, *d])
-            }
-            // Correct length, but a byte outside printable ASCII
-            [_, _, _, _, b'\x01', ..] => {
-                Err(self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect))
+                Ok(exchange)
             }
             _ => Err(self.reject(
                 self.current_tag,

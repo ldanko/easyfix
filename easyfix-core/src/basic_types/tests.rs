@@ -23,6 +23,95 @@ fn country_and_currency_views_are_const() {
 }
 
 #[test]
+fn exchange_construction_and_views_are_const() {
+    const VALUE: Exchange = match Exchange::from_bytes(*b"Az09") {
+        Ok(value) => value,
+        Err(_) => panic!("valid exchange"),
+    };
+    const BYTES: [u8; 4] = VALUE.to_bytes();
+    const BORROWED: &[u8; 4] = VALUE.as_bytes();
+    const TEXT: &str = VALUE.as_str();
+    const FIX_TEXT: &FixStr = VALUE.as_fix_str();
+    const IS_EMPTY: bool = VALUE.is_empty();
+    const INVALID: Result<Exchange, ExchangeError> = Exchange::from_bytes(*b"A!09");
+
+    assert_eq!(BYTES, *b"Az09");
+    assert_eq!(BORROWED, b"Az09");
+    assert_eq!(TEXT, "Az09");
+    assert_eq!(FIX_TEXT, fix_str!("Az09"));
+    const { assert!(!IS_EMPTY) };
+    assert!(INVALID.is_err());
+}
+
+#[test]
+fn exchange_default_has_empty_const_text_views_and_zero_bytes() {
+    const EMPTY: Exchange = Exchange([0; 4]);
+    const IS_EMPTY: bool = EMPTY.is_empty();
+    const TEXT: &str = EMPTY.as_str();
+    const FIX_TEXT: &FixStr = EMPTY.as_fix_str();
+
+    let value = Exchange::default();
+    assert_eq!(value, EMPTY);
+    const { assert!(IS_EMPTY) };
+    assert_eq!(TEXT, "");
+    assert_eq!(FIX_TEXT, fix_str!(""));
+    assert_eq!(value.to_bytes(), [0; 4]);
+    assert_eq!(value.as_bytes(), &[0; 4]);
+    assert!(Exchange::from_bytes([0; 4]).is_err());
+}
+
+#[test]
+fn exchange_validates_every_byte_position() {
+    use std::assert_matches;
+
+    for position in 0..4 {
+        for byte in u8::MIN..=u8::MAX {
+            let mut bytes = *b"XNAS";
+            bytes[position] = byte;
+            let result = Exchange::from_bytes(bytes);
+            if matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9') {
+                assert_eq!(result.unwrap().to_bytes(), bytes);
+            } else {
+                assert_matches!(result, Err(ExchangeError::InvalidChar(invalid)) if invalid == byte);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+#[test]
+fn exchange_serde_serializes_as_string() {
+    let value = Exchange::from_bytes(*b"Az09").unwrap();
+    assert_eq!(serde_json::to_string(&value).unwrap(), "\"Az09\"");
+    assert_eq!(serde_json::to_string(&Exchange::default()).unwrap(), "\"\"");
+}
+
+#[cfg(feature = "serde-deserialize")]
+#[test]
+fn exchange_serde_deserializes_validated_strings() {
+    let value: Exchange = serde_json::from_str("\"Az09\"").unwrap();
+    assert_eq!(value.to_bytes(), *b"Az09");
+    let empty: Exchange = serde_json::from_str("\"\"").unwrap();
+    assert_eq!(empty, Exchange::default());
+
+    for json in [
+        "\"ABC\"",
+        "\"ABCDE\"",
+        "\"AB C\"",
+        "\"AB!C\"",
+        "\"AB\\u0001C\"",
+        "\"\\u0000\\u0000\\u0000\\u0000\"",
+        "\"AB\\u007fC\"",
+        "\"AB\\u00e9\"",
+        "[65, 66, 67, 68]",
+        "1234",
+        "null",
+    ] {
+        assert!(serde_json::from_str::<Exchange>(json).is_err(), "{json}");
+    }
+}
+
+#[test]
 fn msg_type_views_are_const_and_exclude_padding() {
     const SINGLE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
     const DOUBLE: MsgTypeField = match MsgTypeField::from_bytes(b"AB") {

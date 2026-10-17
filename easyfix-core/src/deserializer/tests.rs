@@ -1323,7 +1323,7 @@ fn textual_values_round_trip_unchanged() {
     assert_round_trips!(deserialize_char, serialize_char, b"F");
     assert_round_trips!(deserialize_country, serialize_country, b"PL");
     assert_round_trips!(deserialize_currency, serialize_currency, b"PLN");
-    assert_round_trips!(deserialize_exchange, serialize_exchange, b"XNAS");
+    assert_round_trips!(deserialize_exchange, serialize_exchange, b"XNAS", b"Az09");
     assert_round_trips!(deserialize_language, serialize_language, b"pl");
     assert_round_trips!(deserialize_month_year, serialize_month_year, b"202401");
     assert_round_trips!(
@@ -1672,7 +1672,7 @@ fn deserialize_exchange_ok() {
     let result = deserializer
         .deserialize_exchange()
         .expect("failed to deserialize exchange");
-    assert_eq!(result, *b"XNAS");
+    assert_eq!(result.to_bytes(), *b"XNAS");
     assert_eq!(deserializer.buf, b"\x00");
 }
 
@@ -1696,6 +1696,18 @@ fn deserialize_exchange_high_byte() {
         Err(DeserializeErrorKind::Reject { reason, .. })
             if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
     );
+}
+
+#[test]
+fn deserialize_exchange_rejects_printable_non_alphanumeric() {
+    for input in [b"AB C\x01", b"AB!C\x01"] {
+        let mut deserializer = deserializer(input);
+        assert_matches!(
+            deserializer.deserialize_exchange(),
+            Err(DeserializeErrorKind::Reject { reason, .. })
+                if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+        );
+    }
 }
 
 #[test]

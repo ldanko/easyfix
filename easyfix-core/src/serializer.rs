@@ -51,9 +51,9 @@ pub enum SerializeError {
     /// BodyLength(9) does not fit the placeholder reserved for it.
     #[error("max message size exceeded")]
     MaxMessageSizeExceeded,
-    /// A field that must carry at least one byte was empty: `FixStr`, `Data`,
-    /// `XmlData`, a `MultipleCharValue` / `MultipleStringValue` collection or
-    /// one of its elements, or an enum collection.
+    /// A field that must carry at least one byte was empty: `FixStr`, `Exchange`,
+    /// `Data`, `XmlData`, a `MultipleCharValue` / `MultipleStringValue` collection
+    /// or one of its elements, or an enum collection.
     #[error("empty value")]
     EmptyValue,
     /// A value outside the range its FIX datatype allows: a zero `TagNum`,
@@ -401,11 +401,10 @@ impl<'a> Serializer<'a> {
     /// Serialize ISO 10383:2012 Securities and related financial
     /// instruments - Codes for exchanges and market identification (MIC)
     /// (4-character code).
+    ///
+    /// Returns [`SerializeError::EmptyValue`] when the code is not set.
     pub fn serialize_exchange(&mut self, exchange: &Exchange) -> Result<(), SerializeError> {
-        for &byte in exchange {
-            validate_char(byte)?;
-        }
-        self.put_slice(exchange)
+        self.serialize_string(exchange.as_fix_str())
     }
 
     /// Serialize string representing month of a year.

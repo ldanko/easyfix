@@ -67,7 +67,25 @@ pub struct FixStr([u8]);
 
 pub type MultipleStringValue = Vec<FixString>;
 
-pub type Exchange = [u8; 4];
+/// A market or exchange identifier: an ISO 10383 Market Identifier Code (MIC).
+///
+/// [`from_bytes`](Self::from_bytes) requires four ASCII alphanumeric characters
+/// and preserves letter case. It does not check membership in the MIC registry.
+///
+/// The default is empty (not yet set): its text views are empty and its byte
+/// views contain four zero bytes. FIX serialization rejects it; Serde represents
+/// it as an empty string in both directions.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Exchange([u8; 4]);
+
+/// Why bytes could not be read as an [`Exchange`].
+#[derive(Debug, thiserror::Error)]
+pub enum ExchangeError {
+    /// A byte outside `0-9`, `a-z`, `A-Z`.
+    #[error("Invalid character in exchange: {0}")]
+    InvalidChar(u8),
+}
+
 /// Month of a year, optionally narrowed to a day of the month (`YYYYMMDD`)
 /// or a week within the month (`YYYYMMWW`, `WW` = `w1`..`w5`).
 ///
@@ -786,6 +804,101 @@ impl_to_fix_string_for_integer!(u16);
 impl_to_fix_string_for_integer!(u32);
 impl_to_fix_string_for_integer!(u64);
 impl_to_fix_string_for_integer!(usize);
+
+impl Exchange {
+    /// Construct from four ASCII alphanumeric bytes, preserving letter case.
+    ///
+    /// Returns [`ExchangeError::InvalidChar`] for the first byte outside
+    /// `0-9`, `a-z`, `A-Z`.
+    pub const fn from_bytes(bytes: [u8; 4]) -> Result<Self, ExchangeError> {
+        let mut i = 0;
+        while i < bytes.len() {
+            if !bytes[i].is_ascii_alphanumeric() {
+                return Err(ExchangeError::InvalidChar(bytes[i]));
+            }
+            i += 1;
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Whether the code is empty (not yet set).
+    pub const fn is_empty(&self) -> bool {
+        matches!(self.0, [0, 0, 0, 0])
+    }
+
+    /// Return the four bytes by value, or four zero bytes for an empty code.
+    pub const fn to_bytes(self) -> [u8; 4] {
+        self.0
+    }
+
+    /// Borrow the four bytes, or four zero bytes for an empty code.
+    pub const fn as_bytes(&self) -> &[u8; 4] {
+        &self.0
+    }
+
+    /// Borrow the code as a string, preserving letter case.
+    /// Returns an empty string when the code is not set.
+    pub const fn as_str(&self) -> &str {
+        self.as_fix_str().as_utf8()
+    }
+
+    /// Borrow the code as a FIX string, preserving letter case.
+    /// Returns an empty string when the code is not set.
+    pub const fn as_fix_str(&self) -> &FixStr {
+        if self.is_empty() {
+            fix_str!("")
+        } else {
+            // SAFETY: Nonempty codes contain only validated ASCII alphanumeric bytes.
+            unsafe { FixStr::from_ascii_unchecked(self.as_bytes()) }
+        }
+    }
+}
+
+#[cfg(feature = "serde-serialize")]
+impl serde::Serialize for Exchange {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde-deserialize")]
+impl<'de> serde::Deserialize<'de> for Exchange {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct ExchangeVisitor;
+
+        impl<'de> Visitor<'de> for ExchangeVisitor {
+            type Value = Exchange;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an empty string or four ASCII alphanumeric characters")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.is_empty() {
+                    return Ok(Exchange::default());
+                }
+                let bytes = value
+                    .as_bytes()
+                    .try_into()
+                    .map_err(|_| E::invalid_length(value.len(), &self))?;
+                Exchange::from_bytes(bytes).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(ExchangeVisitor)
+    }
+}
 
 #[cfg(feature = "serde-deserialize")]
 mod utc_timestamp_serde_de {

@@ -2,8 +2,8 @@ use std::{assert_matches, str};
 
 use super::{SerializeError, Serializer, max_body_len_digits};
 use crate::basic_types::{
-    FixedOffset, NaiveDate, NaiveTime, TimeZone, TzTimeOnly, TzTimestamp, Utc, UtcTimeOnly,
-    UtcTimestamp,
+    Exchange, FixedOffset, NaiveDate, NaiveTime, TimeZone, TzTimeOnly, TzTimestamp, Utc,
+    UtcTimeOnly, UtcTimestamp,
 };
 
 const BEGIN_STRING: &[u8] = b"8=FIXT.1.1\x01";
@@ -339,25 +339,23 @@ fn checksum_is_always_zero_padded_to_three_digits() {
 }
 
 #[test]
-fn serialize_exchange_rejects_bytes_outside_printable_ascii() {
+fn serialize_exchange_rejects_empty_without_writing() {
     let mut buf = [0u8; 16];
     let mut serializer = Serializer::new(&mut buf);
     assert_matches!(
-        serializer.serialize_exchange(b"XN\x01S"),
-        Err(SerializeError::InvalidValue)
+        serializer.serialize_exchange(&Exchange::default()),
+        Err(SerializeError::EmptyValue)
     );
-    assert_matches!(
-        serializer.serialize_exchange(&[b'X', b'N', 0x80, b'S']),
-        Err(SerializeError::InvalidValue)
-    );
+    assert!(serializer.written().is_empty());
 }
 
 #[test]
-fn serialize_exchange_writes_printable_ascii() {
+fn serialize_exchange_preserves_case_and_digits() {
     let mut buf = [0u8; 16];
     let mut serializer = Serializer::new(&mut buf);
-    serializer.serialize_exchange(b"XNAS").unwrap();
-    assert_eq!(serializer.written(), b"XNAS");
+    let exchange = Exchange::from_bytes(*b"Az09").unwrap();
+    serializer.serialize_exchange(&exchange).unwrap();
+    assert_eq!(serializer.written(), b"Az09");
 }
 
 #[test]
