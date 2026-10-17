@@ -16,47 +16,12 @@ The dictionary represents the FIX protocol structure:
 
 ## Usage
 
-```rust
-use easyfix_dictionary::DictionaryBuilder;
+`DictionaryBuilder` loads XML files into a `Dictionary`. For FIX 4.x, provide
+a single FIX XML file. For FIX 5.0+, combine a FIXT XML file with application
+XML files and access each application dictionary through `subdictionary()`.
 
-let dictionary = DictionaryBuilder::new()
-    .with_fix_xml("path/to/FIX50SP2.xml")
-    .with_strict_check(true)
-    .build()
-    .expect("Failed to parse dictionary");
-
-if let Some(field) = dictionary.field_by_name("BeginString") {
-    println!("Field number: {}", field.number());
-}
-
-if let Some(message) = dictionary.message_by_name("Heartbeat") {
-    println!("Message type: {}", message.msg_type());
-
-    for member in message.members() {
-        println!("  {}, required: {}", member.name(), member.required());
-    }
-}
-```
-
-### FIXT (FIX 5.0+)
-
-FIX 5.0+ splits the protocol into transport (FIXT) and application layers.
-Provide both XML files and use `subdictionary()` to access the application
-layer:
-
-```rust
-use easyfix_dictionary::{DictionaryBuilder, Version};
-
-let dictionary = DictionaryBuilder::new()
-    .with_fixt_xml("path/to/FIXT11.xml")
-    .with_fix_xml("path/to/FIX50SP2.xml")
-    .build()
-    .expect("Failed to parse dictionary");
-
-if let Some(app) = dictionary.subdictionary(Version::FIX50SP2) {
-    // application-level messages and fields
-}
-```
+The builder offers optional strict validation. `flatten()` inlines components
+into messages and groups for simpler traversal and code generation.
 
 ## License
 

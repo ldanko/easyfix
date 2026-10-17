@@ -8,8 +8,8 @@ Part of the [easyfix](https://github.com/ldanko/easyfix) FIX engine.
 
 ## Overview
 
-`easyfix-messages` parses FIX XML specifications and generates Rust source files
-containing:
+`easyfix-messages` parses FIX XML specifications and generates a single Rust
+source file containing:
 
 - Field enumerations with typed values
 - Message structs (admin and application)
@@ -17,6 +17,8 @@ containing:
 - Header and trailer structs
 - Message type discriminator enums
 - Serialization and deserialization implementations
+- A `Message` type implementing `SessionMessage` and `HeaderAccess` for use
+  with the session layer
 
 Generated code depends on [`easyfix-core`](../easyfix-core) for runtime types
 and protocol primitives.
@@ -31,10 +33,10 @@ The crate provides both a **library API** (for `build.rs` integration) and a
 ```toml
 # Cargo.toml
 [dependencies]
-easyfix-core = "0.6"
+easyfix-core = "0.20"
 
 [build-dependencies]
-easyfix-messages = "0.6"
+easyfix-messages = "0.20"
 ```
 
 ```rust
@@ -66,6 +68,8 @@ mod messages {
 
 ### From the command line
 
+The output directory must already exist; the generator does not create it.
+
 ```bash
 easyfix-messages \
     --fixt-xml xml/FIXT11.xml \
@@ -96,6 +100,7 @@ the corresponding option to the generator:
 
 ```rust
 Generator::new()
+    .fixt_xml("xml/FIXT11.xml")
     .fix_xml("xml/FIX50SP2.xml")
     .output(out_dir.join("messages.rs"))
     .serde_serialize(true)
@@ -107,23 +112,28 @@ Or via CLI:
 
 ```bash
 easyfix-messages \
+    --fixt-xml xml/FIXT11.xml \
     --fix-xml xml/FIX50SP2.xml \
     --output src/generated/messages.rs \
     --serde-serialize \
     --serde-deserialize
 ```
 
-The consuming crate must also enable the matching features on `easyfix-core`:
+The consuming crate must also depend on `serde` with its `derive` feature and
+enable the matching features on `easyfix-core`:
 
 ```toml
 [dependencies]
-easyfix-core = { version = "0.6", features = ["serde-serialize", "serde-deserialize"] }
+easyfix-core = { version = "0.20", features = ["serde-serialize", "serde-deserialize"] }
+serde = { version = "1", features = ["derive"] }
 ```
 
 ## FIX version support
 
-- **FIX 5.0+**: Provide both `--fixt-xml` (transport layer) and `--fix-xml`
-  (application layer).
+- **FIXT 1.1 + FIX 5.0 SP2**: Provide both `--fixt-xml` (transport layer) and
+  `--fix-xml` (application layer). The generator currently selects only the
+  FIX 5.0 SP2 application dictionary; FIX 5.0 and FIX 5.0 SP1 application
+  dictionaries are not supported.
 - **Pre-FIX 5.0** (FIX 4.x): Provide only `--fix-xml` — the transport and
   application layers are defined in a single XML file.
 

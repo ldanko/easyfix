@@ -1,47 +1,43 @@
 # easyfix-session
 
-FIX session layer for the [easyfix](https://github.com/ldanko/easyfix) toolkit.
+FIX session layer for the [easyfix](https://github.com/ldanko/easyfix) toolkit,
+supporting acceptor (server) and initiator (client) roles.
 
-Implements the FIX Session Protocol (FIXT 1.1) with support for both
-acceptor (server) and initiator (client) roles.
+Handles session establishment, heartbeats, message sequencing and recovery.
+Applications provide message types, handle session events through callbacks,
+and choose a storage backend for session state and message history.
 
-## Architecture
+## Runtime requirements
 
-The crate is organized into three layers:
+The standard connection methods spawn local tasks. Run them inside a tokio
+`LocalSet`, for example on a single-threaded runtime:
 
-- **SessionEngine** -- pure sync protocol logic (`&mut self`, no async, no
-  `Rc`). Owns session state directly. Produces output into storage-provided
-  buffers or its own buffer when history is disabled.
-- **Session IO loop** -- single async `select!` loop per session. Drives the
-  engine, flushes output to TCP, manages timers.
-- **Acceptor / Initiator** -- connection lifecycle, session registry, public
-  API. Spawns one `spawn_local` task per session.
+```rust
+let runtime = tokio::runtime::Builder::new_current_thread()
+    .enable_all()
+    .build()
+    .unwrap();
+let local_set = tokio::task::LocalSet::new();
+local_set.block_on(&runtime, async { /* ... */ });
+```
 
-Key properties:
-
-- One task per session -- sessions cannot block each other.
-- Per-session `Application` trait -- direct function call, no channel hop on
-  the hot path.
-- Non-blocking staging sender -- `Sender::send` never blocks and never
-  awaits. `MsgSeqNum` and `SendingTime` are stamped when the message is
-  transmitted, not when it is staged. The queue is unbounded; the optional
-  per-session caps (`max_outbound_queued_messages`, `max_outbound_lag`) end
-  the session as a slow consumer instead of blocking the producer, and a
-  producer must yield between bursts for them to fire at all.
-- Async `fetch()` on the message storage -- supports both in-memory and
-  database-backed storage.
+Callbacks should return promptly; blocking code can stall all sessions on the
+thread. The outgoing queue is unbounded by default. Optional slow-consumer
+limits are configured through `SessionSettings`; producers must yield for
+those limits to be checked.
 
 ## Usage
 
 The snippets below show the shape of the API. A complete, runnable pair of
-programs -- an `acceptor` and an `initiator` that talk to each other -- lives
-in `examples/session` of the workspace and is built by CI; start there when
-copying code.
+programs -- an [acceptor](../examples/session/src/bin/acceptor.rs) and an
+[initiator](../examples/session/src/bin/initiator.rs) -- lives in
+`examples/session` and is built by CI. `Message` below is your message type
+implementing `SessionMessage`, generated from XML or implemented by hand.
 
 ### Application trait
 
-Implement `Application<M>` to handle session events. Each session gets its
-own instance, created by your `ApplicationFactory`.
+Implement `Application<M>` to handle session events. Your `ApplicationFactory`
+creates a fresh instance for each connection, including reconnects.
 
 ```rust
 use easyfix_session::{
@@ -84,12 +80,8 @@ impl ApplicationFactory<Message> for MyFactory {
 }
 ```
 
-The optional `on_input_error` callback reports decoding failures as
-`InputError::Deserialize` and session validation failures as
-`InputError::Validation`, which also borrows the decoded message. The session
-chooses the response; the callback is informational. Validation failures are
-reported before their response or sequence-number update. Decoding failures
-may be reported after session state changes, but before the response is sent.
+The optional `on_input_error` callback reports decoding and session validation
+failures; the session chooses the response.
 `on_output_error` returns ownership of a message that failed to serialize;
 transport and storage failures are reported through `on_session_end`.
 
@@ -113,20 +105,20 @@ let session_settings = SessionSettings::default();
 ### Acceptor (server)
 
 ```rust
+use std::net::SocketAddr;
+
 use easyfix_session::{Acceptor, InMemoryStorage, ShutdownMode, TcpConnection};
 
 // `Acceptor::new(MyFactory)` uses `AcceptorSettings::default()`; use
 // `Acceptor::with_settings(..)` to customize listener-level values.
 let acceptor = Acceptor::<Message, InMemoryStorage, MyFactory>::new(MyFactory);
 
-// Register sessions before starting. Each session carries its identity and
-// its full configuration (timeouts, buffer sizing, batch tuning).
+// Register sessions before starting.
 acceptor.register_session(session_id, session_settings, |_id, max_message_size| {
     Ok(InMemoryStorage::new(max_message_size))
 })?;
 
-// Listen for connections. `shutdown` ends the listener and waits for it,
-// so this handle needs neither abort nor await.
+// `shutdown` stops the listener and waits for it.
 let conn = TcpConnection::new("0.0.0.0:9876".parse::<SocketAddr>()?).await?;
 let _handle = acceptor.start(conn);
 
@@ -150,50 +142,39 @@ let initiator = Initiator::new(
 )?;
 
 let handle = initiator.connect("exchange.example.com:9876").await?;
-// The session task is running. The application receives its `Sender` in
-// `on_session_ready`; for an initiator that is before the Logon response
-// arrives, so anything staged there leaves the queue once the session is
-// established.
+// `on_session_ready` provides a Sender before the Logon response arrives.
+// Staged application messages wait until the session is established.
 
-// Graceful logout
+// When ready to stop, request logout and wait for the session task to finish.
 initiator.logout(None, None, false).await?;
+handle.await?;
 ```
 
 ### Rejected connections
 
-An inbound connection can die before it ever becomes a session -- an
-unregistered `SenderCompID`/`TargetCompID`, a duplicate connection for an
-already-active session, an undecodable first message, a peer that connects and
-says nothing. No `Application` exists at that point, so these are reported to
-an optional `ConnectionObserver` registered on the acceptor:
+Use an optional `ConnectionObserver` to observe connections dropped before a
+session starts, such as unknown identities, duplicate connections or timeouts:
 
 ```rust
+use std::{net::SocketAddr, rc::Rc};
+
 use easyfix_session::{ConnectionDropReason, ConnectionObserver};
 
-impl ConnectionObserver for MyPolicy {
+struct MyObserver;
+
+impl ConnectionObserver for MyObserver {
     fn on_connection_dropped(&self, peer_addr: SocketAddr, reason: ConnectionDropReason<'_>) {
-        if let ConnectionDropReason::UnknownSession(id) = reason {
-            // Many *distinct* unknown ids from one address is CompID
-            // enumeration; one id repeating is usually a misconfigured peer.
-            self.record_unknown_identity(peer_addr.ip(), id);
-        }
+        tracing::warn!(%peer_addr, ?reason, "connection dropped before session start");
     }
 }
 
-acceptor.set_connection_observer(Rc::new(my_policy));
+acceptor.set_connection_observer(Rc::new(MyObserver));
 ```
 
-The library reports; it does not classify or block. Enforcement belongs in your
-`Connection` implementation, which can drop a blocked address before any bytes
-are read -- and must, because the FIX Session Layer (4.6.4) requires an
-unrecognized identity to be dropped without a reply, so as not to reveal which
-identities are valid. Connections torn down by `Acceptor::shutdown` are not
-reported: you initiated those.
-
-An account that *is* recognized but fails authentication is a different case --
-there the spec (4.3.10) calls for `Logout<5>` carrying a `SessionStatus(1409)`
-such as `AccountLocked`, which the application returns as
-`InputAction::Logout` from `on_admin_msg_in`.
+The observer is informational; address filtering belongs in a custom
+`Connection`. Connections closed by `Acceptor::shutdown` are not reported.
+Application authentication can refuse a Logon through `InputAction::Logout`
+from `on_admin_msg_in`.
 
 ### Custom transport
 
@@ -201,70 +182,21 @@ Both `Acceptor::run_session` and `Initiator::run_session` accept any
 `impl AsyncRead + Unpin` / `impl AsyncWrite + Unpin` pair, so you can use
 TCP, Unix sockets, `tokio::io::duplex` (for tests), or any other transport.
 
-Each also takes the connection's peer address, surfaced to the application
-through `SessionContext::peer_addr`. The acceptor requires one (its
-`Connection` source always has it); the initiator takes an
-`Option<SocketAddr>`, since a caller-supplied transport need not be a socket
--- pass the address of the underlying `TcpStream` when there is one (e.g.
-under TLS), otherwise `None`.
+Both expose the peer address through `SessionContext::peer_addr`. The acceptor
+requires a `SocketAddr`; the initiator accepts `Option<SocketAddr>` for
+transports without a socket address.
 
 ### Message storage
 
-The `MessagesStorage` trait supports pluggable backends:
+`MessagesStorage` holds sequence counters and outgoing message history.
+The supplied `InMemoryStorage` retains them across reconnects using the same
+object, but not across process restarts. Implement a custom backend when
+durable storage is needed; see the [storage contract](src/messages_storage.rs).
 
-- **`InMemoryStorage`** -- `BTreeMap`-based; every committed message stays
-  retrievable, across reconnects included, so resends replay the real bytes.
-  Good for development and testing.
-- **Custom** -- implement the trait for shared-memory, database-backed, or
-  other storage strategies.
-
-`store` commits the prefix written by its serialization closure. Committed
-records remain unchanged and available until reset; writing an occupied
-sequence number fails. `fetch` returns the original bytes or an error,
-including when a record is missing. `Application::should_gap_fill` can skip a
-retransmission without deleting its record.
-
-Set `SessionSettings::persist_messages` to `false` to disable message history.
-The session then skips `store` and `fetch`, uses its own buffer for first
-transmission, and answers recovery requests with GapFill. Counters still live
-in storage and survive reconnects with that object. The remaining unsent
-queue at finalization is discarded without numbering or output callbacks.
-`InMemoryStorage` retains neither counters nor messages across process restart.
-
-Backend errors end the current connection and are reported through
-`on_session_end` with `StorageError`, unless an earlier disconnect reason or
-an unconfirmed local reset takes precedence. Invalid historical messages and
-replay serialization errors also end the connection. Ordinary serialization
-errors for new messages still use `on_output_error`. Factories and offline
-resets return `InitiatorError::Storage` or `AcceptorError::Storage`, preserving
-the original backend error as a source; error types need no `Send` or `Sync`.
-
-A failed mutation may have partially completed. Returning storage to its owner
-does not certify consistency: the backend/application must recover before
-reuse. There is no automatic repair, retry, atomic transaction spanning
-counters and records, or autonomous notification of delayed background errors.
-Durability after a process or power failure depends on the backend.
-
-When assigning `MsgSeqNum` yourself, keep it consistent with the session's
-outgoing counter. Pre-numbered messages do not advance that counter, and replay
-ranges end at `next_sender_msg_seq_num - 1`. Duplicate record detection does
-not synchronize numbering. With `manages_admin_output`, the application must
-make externally delivered admin history available when recovery needs it, or
-select `persist_messages=false`. Re-enabling history after running without it
-does not fill past gaps: a missing required record remains an error.
-
-## Runtime requirements
-
-Requires a single-threaded tokio runtime with `LocalSet`:
-
-```rust
-let runtime = tokio::runtime::Builder::new_current_thread()
-    .enable_all()
-    .build()
-    .unwrap();
-let local_set = tokio::task::LocalSet::new();
-local_set.block_on(&runtime, async { /* ... */ });
-```
+`SessionSettings::persist_messages = false` disables message history while
+retaining sequence counters. Recovery requests are answered with GapFill
+instead of replaying messages. See [session settings](src/settings.rs) for
+retention and recovery options.
 
 ## License
 

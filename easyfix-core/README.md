@@ -9,67 +9,32 @@ or hand-written for custom use cases.
 
 ## What's inside
 
-### Basic types
-
-Foundational FIX types used across the engine:
-
-- String types: `FixStr` (borrowed), `FixString` (owned)
-- Numeric types: `Int`, `Float` (`Decimal`), `SeqNum`, `TagNum`
-- Temporal types: `UtcTimestamp`, `UtcTimeOnly`, `UtcDateOnly`, `TzTimestamp`,
-  `TzTimeOnly` (re-exported from `chrono`)
-- Other: `Boolean`, `Char`, `Country`, `Currency`
-- Field newtypes: `MsgTypeField`, `SessionStatusField`,
-  `SessionRejectReasonField` — opaque wrappers used in base messages and
-  session APIs
-
-### Base messages
-
-Minimal typed structures containing only the fields the session layer needs:
-
-- `HeaderBase` — routing and sequencing fields (BeginString, SenderCompID,
-  TargetCompID, MsgSeqNum, SendingTime, etc.)
-- `AdminBase` — enum over the 7 admin message types (Logon, Logout, Heartbeat,
-  TestRequest, ResendRequest, SequenceReset, Reject)
-- Base enumerations: `MsgTypeBase`, `SessionStatusBase`,
-  `SessionRejectReasonBase`, `EncryptMethodBase`
-
-Base messages use `Cow<FixStr>` for string fields — zero-copy borrowing on
-incoming messages, owned construction on outgoing.
-
-### Traits
-
-- **`SessionMessage`** — core trait for message types. Provides
-  deserialization, serialization, header/admin extraction, and admin message
-  construction. The session is generic: `Session<M: SessionMessage>`.
-- **`HeaderAccess`** — direct get/set access to header fields. Used by the
-  session for filling outgoing headers, resend handling, and incoming
-  validation.
-
-### Serializer / Deserializer
-
-FIX tag-value format encoding and decoding:
-
-- `Deserializer` — parses raw FIX bytes into typed fields
-- `Serializer` — writes typed fields to FIX tag-value format
-- `RawMessage` — structurally validated message (BeginString, BodyLength,
-  CheckSum checked) ready for content parsing
-- `DeserializeError` — structured error with reject reason and metadata
+- Basic types: `FixStr` / `FixString`, decimal numbers, sequence and tag
+  numbers, dates and times. Timestamp and time wrappers carry `TimePrecision`.
+  The `fix_str!` macro validates string literals at compile time.
+- Version types: `Version` and `ApplVerId`; field wrappers such as
+  `MsgTypeField`, `SessionStatusField` and `SessionRejectReasonField`.
+- Base messages: `HeaderBase` for routing and sequencing fields, `AdminBase`
+  for the seven admin message types, and their base enumerations. String
+  fields use `Cow<FixStr>` for borrowed or owned values.
+- Traits: `SessionMessage` connects message implementations to the session;
+  `HeaderAccess` provides header access and the protocol version.
+- Wire encoding: `RawMessage` framing, `Deserializer` for typed fields and
+  `Serializer` writing into a caller-provided buffer, with structured
+  deserialization and serialization errors.
 
 ## Implementing custom message types
 
 For use cases where code generation from XML is not suitable, you can implement
 `SessionMessage` and `HeaderAccess` directly. See the
-[`dynamic_message`](examples/dynamic_message.rs) example for a complete
-reference implementation that stores fields in a `HashMap`.
+[`dynamic_message`](examples/dynamic_message.rs) example for a simplified
+implementation backed by a `HashMap`, covering admin messages and
+`NewOrderSingle`.
 
 ## Serde support
 
-Optional features for JSON/other format serialization of core types:
-
-```toml
-[dependencies]
-easyfix-core = { version = "0.1", features = ["serde-serialize", "serde-deserialize"] }
-```
+Optional `serde-serialize` and `serde-deserialize` features enable Serde
+support for core types.
 
 ## License
 
