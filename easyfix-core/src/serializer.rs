@@ -389,13 +389,13 @@ impl<'a> Serializer<'a> {
     /// Serialize ISO 3166-1:2013 Codes for the representation of names of
     /// countries and their subdivision (2-character code).
     pub fn serialize_country(&mut self, country: &Country) -> Result<(), SerializeError> {
-        self.put_slice(country.to_bytes())
+        self.put_slice(country.as_bytes())
     }
 
     /// Serialize ISO 4217:2015 Codes for the representation of currencies
     /// and funds (3-character code).
     pub fn serialize_currency(&mut self, currency: &Currency) -> Result<(), SerializeError> {
-        self.put_slice(currency.to_bytes())
+        self.put_slice(currency.as_bytes())
     }
 
     /// Serialize ISO 10383:2012 Securities and related financial

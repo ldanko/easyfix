@@ -2,6 +2,27 @@ use super::*;
 use crate::base_messages::MsgTypeBase;
 
 #[test]
+fn country_and_currency_views_are_const() {
+    const COUNTRY_BYTES: [u8; 2] = Country::PL.to_bytes();
+    const COUNTRY_BORROWED: &[u8; 2] = Country::PL.as_bytes();
+    const COUNTRY_TEXT: &str = Country::PL.as_str();
+    const COUNTRY_FIX_TEXT: &FixStr = Country::PL.as_fix_str();
+    const CURRENCY_BYTES: [u8; 3] = Currency::PLN.to_bytes();
+    const CURRENCY_BORROWED: &[u8; 3] = Currency::PLN.as_bytes();
+    const CURRENCY_TEXT: &str = Currency::PLN.as_str();
+    const CURRENCY_FIX_TEXT: &FixStr = Currency::PLN.as_fix_str();
+
+    assert_eq!(COUNTRY_BYTES, *b"PL");
+    assert_eq!(COUNTRY_BORROWED, b"PL");
+    assert_eq!(COUNTRY_TEXT, "PL");
+    assert_eq!(COUNTRY_FIX_TEXT, fix_str!("PL"));
+    assert_eq!(CURRENCY_BYTES, *b"PLN");
+    assert_eq!(CURRENCY_BORROWED, b"PLN");
+    assert_eq!(CURRENCY_TEXT, "PLN");
+    assert_eq!(CURRENCY_FIX_TEXT, fix_str!("PLN"));
+}
+
+#[test]
 fn msg_type_views_are_const_and_exclude_padding() {
     const SINGLE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
     const DOUBLE: MsgTypeField = match MsgTypeField::from_bytes(b"AB") {
