@@ -2,7 +2,7 @@ use std::{
     any::Any,
     cell::{Cell, RefCell},
     collections::{HashMap, hash_map::Entry},
-    future::Future,
+    future::{Future, pending},
     net::SocketAddr,
     panic::AssertUnwindSafe,
     rc::Rc,
@@ -114,6 +114,12 @@ async fn first_msg(
 #[derive(Debug)]
 struct Connection<S> {
     session: Rc<Session<S>>,
+}
+
+#[derive(Clone, Copy)]
+enum InputClosed {
+    Disconnected,
+    GracePeriodExpired,
 }
 
 /// Logout event parked by [`SessionCleanupGuard`] when the connection future
@@ -520,7 +526,7 @@ impl<S: MessagesStorage> Connection<S> {
     async fn input_loop(
         &self,
         mut input_stream: impl Stream<Item = InputEvent> + Unpin,
-        input_closed_tx: oneshot::Sender<()>,
+        input_closed_tx: oneshot::Sender<InputClosed>,
         force_disconnection_with_reason: Option<DisconnectReason>,
         mut disconnect_rx: oneshot::Receiver<()>,
     ) {
@@ -531,12 +537,13 @@ impl<S: MessagesStorage> Connection<S> {
             // Notify output loop that all input is processed so output queue can
             // be safely closed.
             // See `fn send()` and `fn send_raw()` from session.rs.
-            let _ = input_closed_tx.send(());
+            let _ = input_closed_tx.send(InputClosed::Disconnected);
 
             return;
         }
 
         let mut disconnect_reason = DisconnectReason::Disconnected;
+        let mut input_closed = InputClosed::Disconnected;
         let mut logout_deadline = None;
 
         let mut next_item = async || {
@@ -584,7 +591,7 @@ impl<S: MessagesStorage> Connection<S> {
                 // Notify output loop that all input is processed so output queue can
                 // be safely closed.
                 // See `fn send()` and `fn send_raw()` from session.rs.
-                let _ = input_closed_tx.send(());
+                let _ = input_closed_tx.send(InputClosed::Disconnected);
                 return;
             }
 
@@ -617,6 +624,7 @@ impl<S: MessagesStorage> Connection<S> {
                                 b"Grace period is over".to_vec(),
                             )),
                         );
+                        input_closed = InputClosed::GracePeriodExpired;
                         break;
                     }
                 }
@@ -633,15 +641,27 @@ impl<S: MessagesStorage> Connection<S> {
         // Notify output loop that all input is processed so output queue can
         // be safely closed.
         // See `fn send()` and `fn send_raw()` from session.rs.
-        let _ = input_closed_tx.send(());
+        let _ = input_closed_tx.send(input_closed);
     }
 
     async fn output_loop(
         &self,
         mut sink: impl AsyncWrite + Unpin,
         mut output_stream: impl Stream<Item = OutputEvent> + Unpin,
-        input_closed_rx: oneshot::Receiver<()>,
+        input_closed_rx: oneshot::Receiver<InputClosed>,
     ) {
+        let input_closed = input_closed_rx.shared();
+        // Cancel only socket I/O. Output callbacks and storage must finish so
+        // queued messages remain available for resend after reconnection.
+        let grace_expired = {
+            let input_closed = input_closed.clone();
+            async move {
+                if !matches!(input_closed.await, Ok(InputClosed::GracePeriodExpired)) {
+                    pending::<()>().await;
+                }
+            }
+            .shared()
+        };
         let mut sink_closed = false;
         let mut disconnect_reason = DisconnectReason::Disconnected;
         while let Some(event) = output_stream.next().await {
@@ -656,7 +676,16 @@ impl<S: MessagesStorage> Connection<S> {
                         // messages to made them available
                         // for ResendRequest<2>.
                         info!("Client disconnected, message will be stored for further resend");
-                    } else if let Err(error) = sink.write_all(&msg).await {
+                    } else if let Some(Err(error)) = tokio::select! {
+                        biased;
+                        // Give queued messages, including Logout, a chance to be
+                        // written, but do not wait on the peer after grace expiry.
+                        result = sink.write_all(&msg) => Some(result),
+                        () = grace_expired.clone() => {
+                            sink_closed = true;
+                            None
+                        }
+                    } {
                         sink_closed = true;
                         error!(%error, "Output write error");
                         // XXX: Don't disconnect now. If IO error happened
@@ -678,7 +707,16 @@ impl<S: MessagesStorage> Connection<S> {
                     // inplementation, at this point no new messages
                     // can be send.
                     info!("Client disconnected");
-                    if !sink_closed && let Err(error) = sink.flush().await {
+                    if !sink_closed
+                        && let Some(Err(error)) = tokio::select! {
+                            biased;
+                            result = sink.flush() => Some(result),
+                            () = grace_expired.clone() => {
+                                sink_closed = true;
+                                None
+                            }
+                        }
+                    {
                         error!(%error, "final flush failed");
                     }
                     disconnect_reason = reason;
@@ -696,11 +734,15 @@ impl<S: MessagesStorage> Connection<S> {
             return;
         }
 
-        // Don't wait for any specific value it's just notification that
-        // input_loop finished, so no more messages can be added to output
-        // queue.
-        let _ = input_closed_rx.await;
-        if let Err(error) = sink.shutdown().await {
+        // No more messages can be added by the input loop.
+        let _ = input_closed.await;
+        if !sink_closed
+            && let Some(Err(error)) = tokio::select! {
+                biased;
+                result = sink.shutdown() => Some(result),
+                () = grace_expired => None,
+            }
+        {
             error!(%error, "connection shutdown failed")
         }
         info!("disconnect, exit output processing");

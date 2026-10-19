@@ -21,13 +21,20 @@ use std::{
 use chrono::NaiveTime;
 use easyfix_macros::fix_str;
 use easyfix_messages::{
-    fields::{DefaultApplVerId, EncryptMethod, FixStr, SeqNum, SessionStatus, Utc, UtcTimestamp},
-    messages::{FixtMessage, Header, Logon, Message, SequenceReset, TestRequest, Trailer},
+    fields::{
+        BusinessRejectReason, DefaultApplVerId, EncryptMethod, FixStr, SeqNum, SessionStatus, Utc,
+        UtcTimestamp,
+    },
+    messages::{
+        BusinessMessageReject, FixtMessage, Header, Logon, Logout, Message, ResendRequest,
+        SequenceReset, TestRequest, Trailer,
+    },
 };
 use easyfix_session::{
     DisconnectReason, Sender,
     acceptor::{Acceptor, Connection},
     application::{AsEvent, FixEvent},
+    io::{InputEvent, input_stream},
     messages_storage::{InMemoryStorage, MessagesStorage},
     session_id::SessionId,
     settings::{SessionSettings, Settings},
@@ -715,9 +722,13 @@ fn stored_maximum_aborts_before_first_logon_callback() {
     });
 }
 
+#[derive(Default)]
 struct WriteProbe {
     blocked: Cell<bool>,
+    partial_bytes: Cell<usize>,
     calls: Cell<usize>,
+    flush_calls: Cell<usize>,
+    shutdown_calls: Cell<usize>,
     dropped: Cell<bool>,
     pending: Notify,
 }
@@ -741,6 +752,15 @@ impl AsyncWrite for BlockedWriter {
     ) -> Poll<io::Result<usize>> {
         self.probe.calls.set(self.probe.calls.get() + 1);
         if self.probe.blocked.get() {
+            let remaining = self.probe.partial_bytes.get();
+            if remaining > 0 {
+                let result =
+                    Pin::new(&mut self.inner).poll_write(cx, &buf[..buf.len().min(remaining)]);
+                if let Poll::Ready(Ok(written)) = result {
+                    self.probe.partial_bytes.set(remaining - written);
+                }
+                return result;
+            }
             self.probe.pending.notify_one();
             return Poll::Pending;
         }
@@ -748,10 +768,14 @@ impl AsyncWrite for BlockedWriter {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.probe.flush_calls.set(self.probe.flush_calls.get() + 1);
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.probe
+            .shutdown_calls
+            .set(self.probe.shutdown_calls.get() + 1);
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -797,6 +821,7 @@ fn abort_cancels_a_pending_write_without_polling_it_again() {
             calls: Cell::new(0),
             dropped: Cell::new(false),
             pending: Notify::new(),
+            ..Default::default()
         });
         acceptor.start(BlockedConnection {
             stream: Some(server),
@@ -872,5 +897,273 @@ fn abort_closes_transport_even_when_event_channel_is_full() {
                 break;
             }
         }
+    });
+}
+
+async fn collect_messages<S: MessagesStorage + 'static>(
+    acceptor: &mut Acceptor<S>,
+    client: DuplexStream,
+) -> (Vec<Box<FixtMessage>>, usize) {
+    let stream = input_stream(client);
+    tokio::pin!(stream);
+    let mut messages = Vec::new();
+    let mut logouts = 0;
+    loop {
+        tokio::select! {
+            biased;
+            entry = acceptor.next() => {
+                let mut entry = entry.expect("event stream closed");
+                if matches!(entry.as_event(), FixEvent::Logout(..)) {
+                    logouts += 1;
+                }
+            }
+            event = stream.next() => {
+                match event {
+                    Some(InputEvent::Message(msg)) => messages.push(msg),
+                    None => break,
+                    _ => panic!("invalid FIX response"),
+                }
+            }
+        }
+    }
+    (messages, logouts)
+}
+
+#[test]
+fn grace_period_cancels_partial_write_and_preserves_resend() {
+    run_local_test(async {
+        let probe = Rc::new(WriteProbe::default());
+        let mut config = settings();
+        config.heartbeat_interval = Some(1);
+        config.auto_disconnect_after_no_heartbeat = 1;
+        let mut acceptor = Acceptor::new(config, Box::new(|_| InMemoryStorage::new()));
+        let mut session_config = session_settings();
+        session_config.reset_on_disconnect = false;
+        session_config.persist = true;
+        acceptor.register_session(session_id(), session_config);
+
+        let (mut client, server) = tokio::io::duplex(65536);
+        acceptor.start(BlockedConnection {
+            stream: Some(server),
+            probe: probe.clone(),
+        });
+        client
+            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .await
+            .expect("logon write");
+        let sender = loop {
+            let mut entry = acceptor.next().await.expect("logon event");
+            if let FixEvent::Logon(_, sender) = entry.as_event() {
+                break sender;
+            }
+        };
+        let mut bytes = Vec::new();
+        read_until_pumping(&mut acceptor, &mut client, &mut bytes, b"\x0135=A\x01", 1).await;
+
+        probe.blocked.set(true);
+        probe.partial_bytes.set(7);
+        for text in [fix_str!("first"), fix_str!("second")] {
+            sender
+                .send(Box::new(Message::BusinessMessageReject(
+                    BusinessMessageReject {
+                        ref_msg_type: fix_str!("D").to_owned(),
+                        business_reject_reason: BusinessRejectReason::Other,
+                        text: Some(text.to_owned()),
+                        ..Default::default()
+                    },
+                )))
+                .expect("queue application message");
+        }
+        let mut first = acceptor.next().await.expect("first output event");
+        assert!(matches!(first.as_event(), FixEvent::AppMsgOut(..)));
+        drop(first);
+        probe.pending.notified().await;
+        let mut calls = probe.calls.get();
+        let mut queued_logouts = 0;
+        loop {
+            let mut entry = acceptor.next().await.expect("closing session event");
+            match entry.as_event() {
+                FixEvent::AppMsgOut(..) => {
+                    // Make the writer ready while the remaining queue is drained.
+                    // Before expiration, join! can also poll a blocked write when
+                    // an input timer wakes the connection task.
+                    calls = probe.calls.get();
+                    probe.blocked.set(false);
+                }
+                FixEvent::AdmMsgOut(msg) => {
+                    if let Message::Logout(logout) = msg.body.as_ref() {
+                        assert_eq!(
+                            logout.text.as_deref(),
+                            Some(fix_str!("Grace period is over"))
+                        );
+                        queued_logouts += 1;
+                    }
+                }
+                FixEvent::Logout(_, reason) => {
+                    assert!(matches!(reason, DisconnectReason::Disconnected));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let mut remaining = Vec::new();
+        client
+            .read_to_end(&mut remaining)
+            .await
+            .expect("closed old transport");
+        assert_eq!(queued_logouts, 1);
+        assert_eq!(remaining.len(), 7);
+        assert_eq!(
+            probe.calls.get(),
+            calls,
+            "no writes after abandoning the blocked socket"
+        );
+        assert_eq!(probe.flush_calls.get(), 0);
+        assert_eq!(probe.shutdown_calls.get(), 0);
+        assert!(probe.dropped.get());
+        assert!(
+            !acceptor
+                .is_session_active(&session_id())
+                .expect("session registered")
+        );
+
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (conn_tx, incoming) = mpsc::unbounded_channel();
+        acceptor.start(TestConnection { incoming });
+        conn_tx.send(server).expect("reconnect transport");
+        client
+            .write_all(&serialize_msg(logon(), 2, UtcTimestamp::now()))
+            .await
+            .expect("reconnect logon");
+        let mut bytes = Vec::new();
+        read_until_pumping(&mut acceptor, &mut client, &mut bytes, b"\x0135=A\x01", 1).await;
+        client
+            .write_all(&serialize_msg(
+                Message::ResendRequest(ResendRequest {
+                    begin_seq_no: 2,
+                    end_seq_no: 3,
+                }),
+                3,
+                UtcTimestamp::now(),
+            ))
+            .await
+            .expect("resend request");
+        client
+            .write_all(&serialize_msg(
+                Message::Logout(Logout::default()),
+                4,
+                UtcTimestamp::now(),
+            ))
+            .await
+            .expect("logout request");
+        let (messages, logouts) = collect_messages(&mut acceptor, client).await;
+        let replayed: Vec<_> = messages
+            .iter()
+            .filter_map(|msg| {
+                if let Message::BusinessMessageReject(body) = msg.body.as_ref() {
+                    assert_eq!(msg.header.poss_dup_flag, Some(true));
+                    Some((msg.header.msg_seq_num, body.text.as_deref()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            replayed,
+            vec![(2, Some(fix_str!("first"))), (3, Some(fix_str!("second")))]
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|msg| matches!(*msg.body, Message::Logout(_)))
+                .count(),
+            1
+        );
+        assert_eq!(logouts, 1);
+    });
+}
+
+#[test]
+fn grace_period_sends_logout_when_writer_ready() {
+    run_local_test(async {
+        let mut config = settings();
+        config.heartbeat_interval = Some(1);
+        config.auto_disconnect_after_no_heartbeat = 1;
+        let mut acceptor = Acceptor::new(config, Box::new(|_| InMemoryStorage::new()));
+        acceptor.register_session(session_id(), session_settings());
+        let (mut client, server) = tokio::io::duplex(65536);
+        let (conn_tx, incoming) = mpsc::unbounded_channel();
+        acceptor.start(TestConnection { incoming });
+        conn_tx.send(server).expect("connect transport");
+        client
+            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .await
+            .expect("logon write");
+        let mut bytes = Vec::new();
+        read_until_pumping(&mut acceptor, &mut client, &mut bytes, b"\x0135=A\x01", 1).await;
+
+        let (messages, logouts) = collect_messages(&mut acceptor, client).await;
+        let logout_messages: Vec<_> = messages
+            .iter()
+            .filter_map(|msg| match msg.body.as_ref() {
+                Message::Logout(logout) => Some(logout),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logout_messages.len(), 1);
+        assert_eq!(
+            logout_messages[0].text.as_deref(),
+            Some(fix_str!("Grace period is over"))
+        );
+        assert_eq!(
+            logout_messages[0].session_status,
+            Some(SessionStatus::SessionLogoutComplete)
+        );
+        assert_eq!(logouts, 1);
+        assert!(
+            !acceptor
+                .is_session_active(&session_id())
+                .expect("session registered")
+        );
+    });
+}
+
+#[test]
+fn ordinary_logout_flushes_and_shuts_down_transport() {
+    run_local_test(async {
+        let mut acceptor = Acceptor::new(settings(), Box::new(|_| InMemoryStorage::new()));
+        acceptor.register_session(session_id(), session_settings());
+        let (mut client, server) = tokio::io::duplex(65536);
+        let probe = Rc::new(WriteProbe::default());
+        acceptor.start(BlockedConnection {
+            stream: Some(server),
+            probe: probe.clone(),
+        });
+        client
+            .write_all(&serialize_msg(logon(), 1, UtcTimestamp::now()))
+            .await
+            .expect("logon write");
+        let mut bytes = Vec::new();
+        read_until_pumping(&mut acceptor, &mut client, &mut bytes, b"\x0135=A\x01", 1).await;
+        client
+            .write_all(&serialize_msg(
+                Message::Logout(Logout::default()),
+                2,
+                UtcTimestamp::now(),
+            ))
+            .await
+            .expect("logout request");
+        let (messages, logouts) = collect_messages(&mut acceptor, client).await;
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|msg| matches!(*msg.body, Message::Logout(_)))
+                .count(),
+            1
+        );
+        assert_eq!(logouts, 1);
+        assert!(probe.flush_calls.get() > 0);
+        assert!(probe.shutdown_calls.get() > 0);
+        assert!(probe.dropped.get());
     });
 }
