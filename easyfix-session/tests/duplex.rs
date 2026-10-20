@@ -18,15 +18,15 @@ use easyfix_core::{
         AdminBase, EncryptMethodBase, HeartbeatBase, LogonBase, MsgTypeBase, ResendRequestBase,
         SequenceResetBase, SessionRejectReasonBase,
     },
-    basic_types::{ApplVerId, FixStr, Int, NonZeroSeqNum, SeqNum},
+    basic_types::{ApplVerId, FixStr, FixString, Int, NonZeroSeqNum, SeqNum},
     fix_str,
     message::{HeaderAccess, SessionMessage},
     version::Version,
 };
 use easyfix_session::{
     Acceptor, AcceptorError, Application, ApplicationFactory, DisconnectReason, InMemoryStorage,
-    Initiator, InputAction, MessagesStorage, Sender, SerializeError, SessionContext, SessionId,
-    SessionSettings, ShutdownMode,
+    Initiator, InputAction, MessagesStorage, SendError, Sender, SerializeError, SessionContext,
+    SessionId, SessionSettings, ShutdownMode,
 };
 use easyfix_test_messages::{Body, Message};
 use futures_util::FutureExt;
@@ -2135,6 +2135,101 @@ async fn slow_consumer_eviction_recovers_backlog_on_reconnect() {
                 );
                 peer.handle.await.expect("acceptor task #2");
             }
+        })
+        .await;
+}
+
+/// A peer that stops reading must not keep its session occupied indefinitely.
+/// Keep its transport open through a second Logon and recovery of the backlog.
+#[tokio::test(start_paused = true)]
+async fn write_timeout_releases_session_for_reconnect_and_resend() {
+    LocalSet::new()
+        .run_until(async {
+            const COUNT: SeqNum = 20;
+            const PIPE_SIZE: usize = 512;
+            let write_timeout = Duration::from_secs(3);
+            let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory { events_tx });
+            let sid = acceptor_session_id();
+            let mut settings = build_session_settings(1);
+            settings.write_timeout = write_timeout;
+            // Only the write timeout may release the blocked connection.
+            settings.max_outbound_queued_messages = None;
+            settings.max_outbound_lag = None;
+            register_in_memory_session(&acceptor, sid.clone(), settings);
+
+            let mut blocked_peer = connect_raw_peer(&acceptor, sid.clone(), PIPE_SIZE);
+            blocked_peer.logon(1, 1).await;
+            let sender = wait_for_session_ready(&mut events_rx).await;
+            let started = time::Instant::now();
+            for index in 0..COUNT {
+                let mut msg = new_order_single_with_empty_header();
+                let Body::NewOrderSingle(order) = &mut *msg.body else {
+                    unreachable!("order fixture");
+                };
+                order.cl_ord_id =
+                    FixString::from_ascii_lossy(format!("BLOCKED{index}").into_bytes());
+                sender.send(msg).expect("stage order before the timeout");
+            }
+
+            // No reads, shutdown or disconnect request on the first transport.
+            // The write stalls before heartbeat escalation can be processed.
+            assert_eq!(
+                wait_for_session_end(&mut events_rx).await,
+                DisconnectReason::IoError
+            );
+            timeout(TEST_TIMEOUT, acceptor.await_session_closed(&sid))
+                .await
+                .expect("write timeout must release the session")
+                .unwrap();
+            timeout(TEST_TIMEOUT, &mut blocked_peer.handle)
+                .await
+                .expect("blocked session task must finish")
+                .unwrap();
+            assert_eq!(started.elapsed(), write_timeout);
+            assert_eq!(sender.backlog_len(), 0);
+            assert_matches!(
+                sender.send(new_order_single_with_empty_header()),
+                Err(SendError::Closed(_))
+            );
+
+            // The first peer is still open and unread. A successful Logon
+            // proves that neither the registry nor the storage is held by it.
+            let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
+            let logon = peer.logon(2, 1).await;
+            assert_eq!(logon.msg_seq_num(), COUNT + 2);
+            let _ = wait_for_session_ready(&mut events_rx).await;
+            peer.write(&peer_resend_request_bytes(&peer.peer_sid, 3, 2, COUNT + 1))
+                .await;
+
+            // Session Test Cases Scenario 8 / Session Layer Section 4.8.3:
+            // recover both the interrupted write and the still-staged orders.
+            for index in 0..COUNT {
+                let msg = peer.read().await;
+                assert_eq!(msg.msg_seq_num(), index + 2);
+                assert_eq!(msg.poss_dup_flag(), Some(true));
+                let Body::NewOrderSingle(order) = &*msg.body else {
+                    panic!("expected recovered order, got {msg:?}");
+                };
+                assert_eq!(
+                    order.cl_ord_id.as_bytes(),
+                    format!("BLOCKED{index}").as_bytes()
+                );
+            }
+
+            // Drain only after reconnect and resend have succeeded. A full
+            // pipe confirms backpressure; EOF confirms server-side closure.
+            assert_eq!(blocked_peer.read_to_close().await.len(), PIPE_SIZE);
+            acceptor.disconnect(&sid).await.unwrap();
+            assert_eq!(
+                wait_for_session_end(&mut events_rx).await,
+                DisconnectReason::ApplicationForcedDisconnect
+            );
+            timeout(TEST_TIMEOUT, peer.handle)
+                .await
+                .expect("reconnected session task must finish")
+                .unwrap();
         })
         .await;
 }
