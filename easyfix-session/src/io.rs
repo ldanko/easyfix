@@ -22,7 +22,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_stream::StreamExt;
-use tracing::{Instrument, Span, debug, error, info, info_span, warn};
+use tracing::{Instrument, Span, debug, error, info, info_span, trace, warn};
 
 use crate::{
     DisconnectReason, Error, NO_INBOUND_TIMEOUT_PADDING, Sender, SessionError,
@@ -675,7 +675,7 @@ impl<S: MessagesStorage> Connection<S> {
                         // the loop. Output stream has to process all enqueued
                         // messages to made them available
                         // for ResendRequest<2>.
-                        info!("Client disconnected, message will be stored for further resend");
+                        trace!("Client disconnected, message will be stored for further resend");
                     } else if let Some(Err(error)) = tokio::select! {
                         biased;
                         // Give queued messages, including Logout, a chance to be
