@@ -111,13 +111,7 @@ pub enum ShutdownMode {
 /// The variants carrying a [`SessionId`] are those where the peer's identity
 /// was already derived from its `Logon<A>`; the rest occur before any identity
 /// is known.
-///
-/// `#[non_exhaustive]`: a downstream `match` must include a wildcard arm.
-//
-// New variants land here as the acceptor grows; keeping the enum
-// non-exhaustive is what makes that a non-breaking change.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum ConnectionDropReason<'a> {
     /// The acceptor is suspended via [`suspend`](Acceptor::suspend), so the
     /// connection was dropped before anything was read from it - no identity

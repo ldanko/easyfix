@@ -232,15 +232,6 @@ pub fn summarize(reason: ConnectionDropReason<'_>) -> String {
         ConnectionDropReason::UnknownSession(id) => format!("unknown:{id}"),
         ConnectionDropReason::SessionAlreadyActive(id) => format!("active:{id}"),
         ConnectionDropReason::SessionSuspended(id) => format!("suspended:{id}"),
-        // The enum is `#[non_exhaustive]`; a variant this file does not know
-        // yet still gets a distinct summary. Inside the crate's own tests the
-        // match is exhaustive and this arm is dead, hence `allow` rather than
-        // `expect` - the lint is fulfilled on one side only.
-        #[allow(
-            unreachable_patterns,
-            reason = "reachable only outside the defining crate"
-        )]
-        other => format!("{other:?}"),
     }
 }
 
