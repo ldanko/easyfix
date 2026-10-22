@@ -18,6 +18,10 @@ struct Cli {
     #[arg(long)]
     output: PathBuf,
 
+    /// Rust path to the core API (default: easyfix_core; facade: easyfix::core)
+    #[arg(long)]
+    core_path: Option<String>,
+
     /// Generate #[derive(serde::Serialize)] on generated types
     #[arg(long)]
     serde_serialize: bool,
@@ -38,6 +42,10 @@ fn main() -> ExitCode {
 
     if let Some(fixt_xml) = &cli.fixt_xml {
         generator = generator.fixt_xml(fixt_xml);
+    }
+
+    if let Some(core_path) = cli.core_path {
+        generator = generator.core_path(core_path);
     }
 
     if let Err(err) = generator.generate() {

@@ -259,7 +259,12 @@ impl Generator {
         }
     }
 
-    pub fn generate_messages(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate_messages(
+        &self,
+        core_path: &syn::Path,
+        serde_serialize: bool,
+        serde_deserialize: bool,
+    ) -> TokenStream {
         let mut msg_names = Vec::new();
 
         // Generate Header and Trailer
@@ -307,13 +312,13 @@ impl Generator {
         quote! {
             use std::{borrow::Cow, fmt};
 
-            pub use easyfix_core::message::MsgCat;
+            pub use #core_path::message::MsgCat;
             // Spec-owned codeset type used directly as the field type for
             // tags 1128/1137; re-exported so dictionary consumers can name
             // it from the generated crate.
-            pub use easyfix_core::basic_types::ApplVerId;
+            pub use #core_path::basic_types::ApplVerId;
             #[allow(unused_imports, reason = "fixed import list; a given dictionary need not use every type")]
-            use easyfix_core::{
+            use #core_path::{
                 base_messages::{
                     AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
                     ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,

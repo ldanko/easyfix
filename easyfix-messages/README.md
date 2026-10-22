@@ -21,7 +21,7 @@ source file containing:
   with the session layer
 
 Generated code depends on [`easyfix-core`](../easyfix-core) for runtime types
-and protocol primitives.
+and protocol primitives, either directly or through the `easyfix` facade.
 
 ## Usage
 
@@ -88,10 +88,23 @@ Options:
   --fixt-xml <PATH>       Path to FIXT transport XML (e.g., FIXT11.xml)
   --fix-xml <PATH>        Path to FIX application XML (e.g., FIX50SP2.xml)
   --output <FILE>         Output path for generated Rust source file
+  --core-path <PATH>      Rust path to core API (default: easyfix_core)
   --serde-serialize       Generate #[derive(serde::Serialize)] on types
   --serde-deserialize     Generate #[derive(serde::Deserialize)] on types
   -h, --help              Print help
 ```
+
+### Using the `easyfix` facade
+
+If the consuming crate depends on `easyfix` instead of `easyfix-core`, set
+`.core_path("easyfix::core")` on the generator. This works with both
+`easyfix_messages::Generator` and the `easyfix::Generator` re-export (which
+requires the `codegen` feature on the build dependency).
+
+For the CLI, pass `--core-path easyfix::core`. The default is `easyfix_core`.
+A renamed dependency can use its corresponding Rust path, such as
+`my_fix::core`. The path must resolve in the module containing the generated
+code.
 
 ## Serde support
 

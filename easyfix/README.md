@@ -34,9 +34,10 @@ assert_eq!(SENDER.as_utf8(), "MY_APP");
 ```
 
 For message generation, enable `codegen` on a build dependency or use
-`easyfix-messages` directly. Generated source currently requires a direct
-dependency on `easyfix-core`. See the [generator README](../easyfix-messages/README.md)
-for build-script integration, CLI usage, and Serde configuration.
+`easyfix-messages` directly. Set `.core_path("easyfix::core")` on the generator
+or pass `--core-path easyfix::core` to its CLI so the generated source uses
+the facade. See the [generator README](../easyfix-messages/README.md) for
+build-script integration, CLI usage, and Serde configuration.
 
 Enable `session` to access the session API through `easyfix::session`.
 See the [session README](../easyfix-session/README.md) for runtime requirements

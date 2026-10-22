@@ -31,6 +31,10 @@
 //! the other route: `easyfix-test-messages` commits the generated file and
 //! regenerates it through `scripts/regenerate-test-messages.sh`.
 //!
+//! Generated imports use `easyfix_core` by default. When the consuming crate
+//! depends on the `easyfix` facade, set [`Generator::core_path`] to
+//! `"easyfix::core"` instead.
+//!
 //! Generation is strict: the dictionaries are validated
 //! (`with_strict_check(true)`) and a dictionary that customizes a codeset the
 //! FIX standard closes - `ApplVerID(1128)` / `DefaultApplVerID(1137)` - fails
@@ -44,6 +48,7 @@ use std::{
 use anyhow::Context;
 use easyfix_dictionary::DictionaryBuilder;
 use proc_macro2::TokenStream;
+use syn::{Path as RustPath, parse::Parser};
 
 mod code_gen;
 
@@ -57,6 +62,7 @@ pub struct Generator {
     fixt_xml: Option<PathBuf>,
     fix_xml: Option<PathBuf>,
     output: Option<PathBuf>,
+    core_path: String,
     serde_serialize: bool,
     serde_deserialize: bool,
 }
@@ -74,6 +80,7 @@ impl Generator {
             fixt_xml: None,
             fix_xml: None,
             output: None,
+            core_path: "easyfix_core".into(),
             serde_serialize: false,
             serde_deserialize: false,
         }
@@ -98,6 +105,15 @@ impl Generator {
         self
     }
 
+    /// Rust module path to the core API in the consuming crate.
+    /// Defaults to `easyfix_core`. Use `easyfix::core` with the facade, or
+    /// the corresponding path if the dependency is renamed.
+    /// Invalid module path syntax is reported by [`Self::generate`].
+    pub fn core_path(mut self, path: impl Into<String>) -> Self {
+        self.core_path = path.into();
+        self
+    }
+
     /// Generate `#[derive(serde::Serialize)]` on generated types.
     /// When true, the user must also enable `easyfix-core/serde-serialize` for core types.
     /// Default: false.
@@ -114,10 +130,15 @@ impl Generator {
         self
     }
 
-    /// Run the generator. Returns error if required fields (fix_xml, output) are missing.
+    /// Run the generator, validating the configured paths and dictionaries.
+    /// Returns an error if required options are missing, the core module path
+    /// is invalid, or reading, generating, or writing the source fails.
     pub fn generate(self) -> anyhow::Result<()> {
         let fix_xml = self.fix_xml.context("fix_xml path is required")?;
         let output = self.output.context("output path is required")?;
+        let core_path = RustPath::parse_mod_style
+            .parse_str(&self.core_path)
+            .with_context(|| format!("invalid core path: {:?}", self.core_path))?;
 
         let mut builder = DictionaryBuilder::new()
             .with_fix_xml(&fix_xml)
@@ -135,7 +156,7 @@ impl Generator {
 
         let fields = generator.generate_fields(serde_ser, serde_de);
         let groups = generator.generate_groups(serde_ser, serde_de);
-        let messages = generator.generate_messages(serde_ser, serde_de);
+        let messages = generator.generate_messages(&core_path, serde_ser, serde_de);
 
         let combined = quote::quote! {
             #fields
@@ -149,5 +170,71 @@ impl Generator {
             .with_context(|| format!("failed to write {}", output.display()))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{env, fs, path::PathBuf, process};
+
+    use super::Generator;
+
+    #[test]
+    fn generated_imports_use_configured_core_path() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let output = env::temp_dir().join(format!("easyfix_core_path_{}.rs", process::id()));
+        for (configured, expected) in [
+            (None, "easyfix_core"),
+            (Some("easyfix::core"), "easyfix::core"),
+            (Some("::renamed_fix::core"), "::renamed_fix::core"),
+            (Some("crate::runtime"), "crate::runtime"),
+        ] {
+            let mut generator = Generator::new()
+                .fixt_xml(root.join("../easyfix-test-messages/xml/FIXT11-test.xml"))
+                .fix_xml(root.join("../easyfix-test-messages/xml/FIX50SP2-test.xml"))
+                .output(&output);
+            if let Some(path) = configured {
+                generator = generator.core_path(path);
+            }
+            generator.generate().unwrap();
+            let code = fs::read_to_string(&output).unwrap();
+            fs::remove_file(&output).unwrap();
+
+            assert!(code.contains(&format!("pub use {expected}::message::MsgCat;")));
+            assert!(code.contains(&format!("pub use {expected}::basic_types::ApplVerId;")));
+            assert!(code.contains(&format!("use {expected}::{{")));
+            if configured.is_some() {
+                assert!(!code.contains("easyfix_core"), "core path: {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_core_path_does_not_overwrite_output() {
+        let output =
+            env::temp_dir().join(format!("easyfix_invalid_core_path_{}.rs", process::id()));
+        for path in [
+            "",
+            "easyfix-core",
+            "easyfix::",
+            "easyfix<T>",
+            "easyfix; mod other;",
+        ] {
+            fs::write(&output, "existing output").unwrap();
+            let result = Generator::new()
+                .fix_xml("unused.xml")
+                .output(&output)
+                .core_path(path)
+                .generate();
+            let code = fs::read_to_string(&output).unwrap();
+            fs::remove_file(&output).unwrap();
+
+            let error = result.unwrap_err();
+            assert!(
+                error.to_string().starts_with("invalid core path:"),
+                "{error:#}"
+            );
+            assert_eq!(code, "existing output");
+        }
     }
 }
