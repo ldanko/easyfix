@@ -22,6 +22,8 @@ source file containing:
 
 Generated code depends on [`easyfix-core`](../easyfix-core) for runtime types
 and protocol primitives, either directly or through the `easyfix` facade.
+The generated module re-exports the core types and traits used by its public
+API.
 
 ## Usage
 

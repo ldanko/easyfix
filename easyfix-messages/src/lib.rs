@@ -154,11 +154,13 @@ impl Generator {
         let serde_ser = self.serde_serialize;
         let serde_de = self.serde_deserialize;
 
+        let imports = code_gen::generate_imports(&core_path);
         let fields = generator.generate_fields(serde_ser, serde_de);
         let groups = generator.generate_groups(serde_ser, serde_de);
-        let messages = generator.generate_messages(&core_path, serde_ser, serde_de);
+        let messages = generator.generate_messages(serde_ser, serde_de);
 
         let combined = quote::quote! {
+            #imports
             #fields
             #groups
             #messages
@@ -200,9 +202,7 @@ mod tests {
             let code = fs::read_to_string(&output).unwrap();
             fs::remove_file(&output).unwrap();
 
-            assert!(code.contains(&format!("pub use {expected}::message::MsgCat;")));
-            assert!(code.contains(&format!("pub use {expected}::basic_types::ApplVerId;")));
-            assert!(code.contains(&format!("use {expected}::{{")));
+            assert!(code.contains(&format!("pub use {expected}::{{")));
             if configured.is_some() {
                 assert!(!code.contains("easyfix_core"), "core path: {expected}");
             }

@@ -1,3 +1,36 @@
+use std::{borrow::Cow, fmt};
+
+use easyfix_core::serializer::Serializer;
+#[allow(
+    unused_imports,
+    reason = "fixed import list; a given dictionary need not use every type"
+)]
+pub use easyfix_core::{
+    base_messages::{
+        AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
+        MsgTypeBase, RejectBase, ResendRequestBase, SequenceResetBase, SessionRejectReasonBase,
+        SessionStatusBase, TestRequestBase,
+    },
+    basic_types::{
+        Amt, ApplVerId, Boolean, Char, Country, Currency, Data, DateTime, DayOfMonth, Decimal,
+        DelayedFormat, Exchange, ExchangeError, FixStr, FixString, FixStringError, FixedOffset,
+        Float, Int, InvalidApplVerId, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
+        MsgTypeError, MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue,
+        NaiveDate, NaiveDateTime, NaiveTime, NumInGroup, Percentage, Price, PriceOffset, Qty,
+        SeqNum, SessionRejectReasonField, SessionRejectReasonValue, SessionStatusField,
+        SessionStatusValue, StrftimeItems, TagNum, Tenor, TenorUnit, TenorValue, TimePrecision,
+        TimeZone, ToFixString, TzTimeOnly, TzTimestamp, Utc, UtcDateOnly, UtcTimeOnly,
+        UtcTimestamp, XmlData,
+    },
+    deserializer::{
+        DeserializeErrorKind, Deserializer, FieldCursor, GarbledReason, LogoutReason, RawMessage,
+        RawMessageError,
+    },
+    fix_str,
+    message::{DeserializeError, HeaderAccess, MsgCat, SessionMessage},
+    serializer::SerializeError,
+    version::{SessionProtocol, UnknownVersionError, Version},
+};
 #[allow(
     dead_code,
     reason = "generated from the whole dictionary; a consumer uses a subset of it"
@@ -1378,34 +1411,6 @@ impl MsgTypeGrp {
         })
     }
 }
-use std::{borrow::Cow, fmt};
-
-#[allow(
-    unused_imports,
-    reason = "fixed import list; a given dictionary need not use every type"
-)]
-use easyfix_core::{
-    base_messages::{
-        AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
-        ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
-    },
-    basic_types::{
-        Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal, Exchange, FixStr,
-        FixString, Float, Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
-        MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
-        Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, SessionRejectReasonValue,
-        SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
-        ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
-    },
-    deserializer::{
-        DeserializeErrorKind, Deserializer, FieldCursor, GarbledReason, LogoutReason, RawMessage,
-    },
-    fix_str,
-    message::{DeserializeError, HeaderAccess, SessionMessage},
-    serializer::{SerializeError, Serializer},
-    version::Version,
-};
-pub use easyfix_core::{basic_types::ApplVerId, message::MsgCat};
 pub const VERSION: Version = Version::FIXT11;
 #[allow(
     dead_code,

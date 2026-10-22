@@ -89,6 +89,41 @@ fn convert_members(members: &[dict::Member]) -> Vec<Member> {
     members.iter().map(Member::new).collect()
 }
 
+pub fn generate_imports(core_path: &syn::Path) -> TokenStream {
+    quote! {
+        use std::{borrow::Cow, fmt};
+
+        #[allow(unused_imports, reason = "fixed import list; a given dictionary need not use every type")]
+        pub use #core_path::{
+            base_messages::{
+                AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase,
+                MsgTypeBase, RejectBase, ResendRequestBase, SequenceResetBase, SessionRejectReasonBase,
+                SessionStatusBase, TestRequestBase,
+            },
+            basic_types::{
+                Amt, ApplVerId, Boolean, Char, Country, Currency, Data, DateTime, DayOfMonth,
+                Decimal, DelayedFormat, Exchange, ExchangeError, FixStr, FixString, FixStringError,
+                FixedOffset, Float, Int, InvalidApplVerId, Language, Length, LocalMktDate, LocalMktTime,
+                MonthYear, MsgTypeError, MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue,
+                NaiveDate, NaiveDateTime, NaiveTime, NumInGroup, Percentage,
+                Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, SessionRejectReasonValue,
+                SessionStatusField, SessionStatusValue, StrftimeItems, TagNum, Tenor, TenorUnit,
+                TenorValue, TimePrecision, TimeZone, ToFixString, TzTimeOnly, TzTimestamp, Utc,
+                UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
+            },
+            deserializer::{
+                DeserializeErrorKind, Deserializer, FieldCursor, GarbledReason, LogoutReason,
+                RawMessage, RawMessageError,
+            },
+            fix_str,
+            message::{DeserializeError, HeaderAccess, MsgCat, SessionMessage},
+            serializer::SerializeError,
+            version::{SessionProtocol, UnknownVersionError, Version},
+        };
+        use #core_path::serializer::Serializer;
+    }
+}
+
 impl Generator {
     pub fn new(dictionary: &Dictionary) -> Generator {
         let dictionary = dictionary
@@ -259,12 +294,7 @@ impl Generator {
         }
     }
 
-    pub fn generate_messages(
-        &self,
-        core_path: &syn::Path,
-        serde_serialize: bool,
-        serde_deserialize: bool,
-    ) -> TokenStream {
+    pub fn generate_messages(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
         let mut msg_names = Vec::new();
 
         // Generate Header and Trailer
@@ -310,34 +340,6 @@ impl Generator {
         let section_diagnostics = field_layout::generate_diagnostics();
 
         quote! {
-            use std::{borrow::Cow, fmt};
-
-            pub use #core_path::message::MsgCat;
-            // Spec-owned codeset type used directly as the field type for
-            // tags 1128/1137; re-exported so dictionary consumers can name
-            // it from the generated crate.
-            pub use #core_path::basic_types::ApplVerId;
-            #[allow(unused_imports, reason = "fixed import list; a given dictionary need not use every type")]
-            use #core_path::{
-                base_messages::{
-                    AdminBase, EncryptMethodBase, HeaderBase, HeartbeatBase, LogonBase, LogoutBase, RejectBase,
-                    ResendRequestBase, SequenceResetBase, SessionRejectReasonBase, TestRequestBase,
-                },
-                basic_types::{
-                    Amt, Boolean, Char, Country, Currency, Data, DayOfMonth, Decimal, Exchange, FixStr,
-                    FixString, Float, Int, Language, Length, LocalMktDate, LocalMktTime, MonthYear,
-                    MsgTypeField, MsgTypeValue, MultipleCharValue, MultipleStringValue, NumInGroup, Percentage,
-                    Price, PriceOffset, Qty, SeqNum, SessionRejectReasonField, SessionRejectReasonValue,
-                    SessionStatusField, SessionStatusValue, TagNum, Tenor, TenorUnit, TimePrecision,
-                    ToFixString, TzTimeOnly, TzTimestamp, UtcDateOnly, UtcTimeOnly, UtcTimestamp, XmlData,
-                },
-                deserializer::{DeserializeErrorKind, Deserializer, FieldCursor, GarbledReason, LogoutReason, RawMessage},
-                fix_str,
-                message::{DeserializeError, HeaderAccess, SessionMessage},
-                serializer::{SerializeError, Serializer},
-                version::Version,
-            };
-
             pub const VERSION: Version = Version::#version_ident;
 
             #field_tag_def
