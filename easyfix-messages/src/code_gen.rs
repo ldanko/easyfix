@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 
-use easyfix_core::basic_types::FixString;
+use easyfix_core::basic_types::FixStr;
 use easyfix_dictionary::{self as dict, Dictionary, Version};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
@@ -101,35 +101,27 @@ impl Generator {
         let app_dictionary = dictionary.subdictionary(Version::FIX50SP2);
 
         // Collect group definitions from dictionary API, deduped by name
-        let mut groups_map: HashMap<FixString, GroupCodeGen> = HashMap::new();
-        for group in dictionary.groups() {
-            groups_map
-                .entry(group.name().to_owned())
-                .or_insert_with(|| {
-                    GroupCodeGen::new(
-                        group.name(),
-                        group.num_in_group().number(),
-                        convert_members(group.members()),
-                        group.doc(),
-                    )
-                });
+        let mut groups_map: HashMap<&FixStr, &dict::Group> = HashMap::new();
+        for group in dictionary
+            .groups()
+            .chain(app_dictionary.into_iter().flat_map(|d| d.groups()))
+        {
+            groups_map.entry(group.name()).or_insert(group);
         }
-        if let Some(app_dict) = app_dictionary {
-            for group in app_dict.groups() {
-                groups_map
-                    .entry(group.name().to_owned())
-                    .or_insert_with(|| {
-                        GroupCodeGen::new(
-                            group.name(),
-                            group.num_in_group().number(),
-                            convert_members(group.members()),
-                            group.doc(),
-                        )
-                    });
-            }
-        }
-        let mut groups: Vec<GroupCodeGen> = groups_map.into_values().collect();
-        groups.sort_by_key(|g| g.num_in_group_tag());
+        let mut groups: Vec<_> = groups_map.into_values().collect();
+        // Different groups can share a counter tag; names break ties deterministically.
+        groups.sort_by_key(|g| (g.num_in_group().number(), g.name()));
+        let groups = groups
+            .into_iter()
+            .map(|group| {
+                GroupCodeGen::new(
+                    group.name(),
+                    group.num_in_group().number(),
+                    convert_members(group.members()),
+                    group.doc(),
+                )
+            })
+            .collect();
 
         let all_messages = dictionary
             .messages()

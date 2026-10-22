@@ -51,14 +51,80 @@ const DOC_DICT: &str = r#"
 "#;
 
 fn doc_dictionary(file_name: &str) -> Dictionary {
+    dictionary_from_xml(file_name, DOC_DICT)
+}
+
+fn dictionary_from_xml(file_name: &str, xml: &str) -> Dictionary {
     let path = env::temp_dir().join(format!("easyfix_{}_{}.xml", file_name, process::id()));
-    fs::write(&path, DOC_DICT).unwrap();
+    fs::write(&path, xml).unwrap();
     let dictionary = Dictionary::new(path.to_str().unwrap())
         .unwrap()
         .flatten()
         .unwrap();
     fs::remove_file(&path).unwrap();
     dictionary
+}
+
+#[test]
+fn generated_groups_are_ordered_by_tag_then_name() {
+    let dictionary = dictionary_from_xml(
+        "group_order",
+        r#"
+<fix type='FIX' major='4' minor='4' servicepack='0'>
+  <header><field name='BeginString' required='Y'/></header>
+  <trailer><field name='CheckSum' required='Y'/></trailer>
+  <messages>
+    <message msgcat='app' msgtype='D' name='NewOrderSingle'>
+      <component name='Gamma' required='N'/>
+      <component name='Alpha' required='N'/>
+      <component name='Beta' required='N'/>
+      <group name='NoZulu' required='N'>
+        <field name='AllocAccount' required='N'/>
+      </group>
+    </message>
+  </messages>
+  <components>
+    <component name='Gamma'>
+      <group name='NoAllocs' required='N'>
+        <field name='AllocAccount' required='N'/>
+      </group>
+    </component>
+    <component name='Alpha'>
+      <group name='NoAllocs' required='N'>
+        <field name='AllocAccount' required='N'/>
+      </group>
+    </component>
+    <component name='Beta'>
+      <group name='NoAllocs' required='N'>
+        <field name='AllocAccount' required='N'/>
+      </group>
+    </component>
+  </components>
+  <fields>
+    <field name='BeginString' number='8' type='STRING'/>
+    <field name='CheckSum' number='10' type='STRING'/>
+    <field name='NoZulu' number='73' type='NUMINGROUP'/>
+    <field name='NoAllocs' number='78' type='NUMINGROUP'/>
+    <field name='AllocAccount' number='79' type='STRING'/>
+  </fields>
+</fix>
+"#,
+    );
+
+    // Each generator rebuilds its maps with independent hash seeds.
+    for _ in 0..16 {
+        let generator = Generator::new(&dictionary);
+        let code: syn::File = syn::parse2(generator.generate_groups(false, false)).unwrap();
+        let names: Vec<_> = code
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Struct(item) => Some(item.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["Zulu", "Alpha", "Beta", "Gamma"]);
+    }
 }
 
 #[test]

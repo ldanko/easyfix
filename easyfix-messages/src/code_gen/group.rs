@@ -27,10 +27,6 @@ impl GroupCodeGen {
         }
     }
 
-    pub fn num_in_group_tag(&self) -> u16 {
-        self.num_in_group_tag
-    }
-
     fn generate_de_group(&self) -> TokenStream {
         let name = &self.name;
         let mut de_struct_entries = Vec::with_capacity(self.members.len());
