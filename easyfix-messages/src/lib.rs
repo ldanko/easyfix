@@ -39,7 +39,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Instant,
 };
 
 use anyhow::Context;
@@ -47,18 +46,6 @@ use easyfix_dictionary::DictionaryBuilder;
 use proc_macro2::TokenStream;
 
 mod code_gen;
-
-fn log_duration<T>(msg: &str, action: impl FnOnce() -> T) -> T {
-    let start = Instant::now();
-    let result = action();
-    let elapsed = start.elapsed();
-    eprintln!(
-        "{msg} after {}.{}",
-        elapsed.as_secs(),
-        elapsed.subsec_millis()
-    );
-    result
-}
 
 fn format_token_stream(tokens: TokenStream) -> anyhow::Result<String> {
     let syntax_tree = syn::parse2::<syn::File>(tokens).context("failed to parse generated code")?;
@@ -141,20 +128,14 @@ impl Generator {
         }
 
         let dictionary = builder.build()?;
-        let generator = log_duration("Generator ready", || code_gen::Generator::new(&dictionary));
+        let generator = code_gen::Generator::new(&dictionary);
 
         let serde_ser = self.serde_serialize;
         let serde_de = self.serde_deserialize;
 
-        let fields = log_duration("Fields token stream", || {
-            generator.generate_fields(serde_ser, serde_de)
-        });
-        let groups = log_duration("Groups token stream", || {
-            generator.generate_groups(serde_ser, serde_de)
-        });
-        let messages = log_duration("Messages token stream", || {
-            generator.generate_messages(serde_ser, serde_de)
-        });
+        let fields = generator.generate_fields(serde_ser, serde_de);
+        let groups = generator.generate_groups(serde_ser, serde_de);
+        let messages = generator.generate_messages(serde_ser, serde_de);
 
         let combined = quote::quote! {
             #fields
@@ -162,13 +143,10 @@ impl Generator {
             #messages
         };
 
-        let formatted = log_duration("Format", || format_token_stream(combined))?;
-        let len = formatted.len();
+        let formatted = format_token_stream(combined)?;
 
         fs::write(&output, formatted)
             .with_context(|| format!("failed to write {}", output.display()))?;
-
-        eprintln!("{}: {len} bytes written", output.display());
 
         Ok(())
     }
