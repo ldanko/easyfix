@@ -29,6 +29,14 @@ struct Cli {
     /// Generate #[derive(serde::Deserialize)] on generated types
     #[arg(long)]
     serde_deserialize: bool,
+
+    /// Gate serde::Serialize derives on this feature of the consuming crate
+    #[arg(long, conflicts_with = "serde_serialize")]
+    serde_serialize_feature: Option<String>,
+
+    /// Gate serde::Deserialize derives on this feature of the consuming crate
+    #[arg(long, conflicts_with = "serde_deserialize")]
+    serde_deserialize_feature: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -46,6 +54,14 @@ fn main() -> ExitCode {
 
     if let Some(core_path) = cli.core_path {
         generator = generator.core_path(core_path);
+    }
+
+    if let Some(feature) = cli.serde_serialize_feature {
+        generator = generator.serde_serialize_feature(feature);
+    }
+
+    if let Some(feature) = cli.serde_deserialize_feature {
+        generator = generator.serde_deserialize_feature(feature);
     }
 
     if let Err(err) = generator.generate() {

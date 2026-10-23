@@ -8,7 +8,6 @@ use quote::quote;
 
 use super::{
     doc_attrs, doc_text_attrs, ident::ToIdent, member::EnumerableType, message::MessageCodeGen,
-    serde_derives,
 };
 
 /// Defines a mapping from session-relevant traits/newtypes (in easyfix-core)
@@ -323,7 +322,7 @@ impl EnumCodeGen {
         }
     }
 
-    pub fn generate(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate(&self, serde_derives: &TokenStream) -> TokenStream {
         let name = &self.name;
         let try_from_type = match self.enumerable_type {
             EnumerableType::Int => quote! { Int },
@@ -392,7 +391,6 @@ impl EnumCodeGen {
         } else {
             quote! { match input }
         };
-        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
         let derives = if name == "MsgType" {
             quote! {
                 #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]

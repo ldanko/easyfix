@@ -3,7 +3,7 @@ use easyfix_dictionary::MsgCat;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 
-use super::{doc_attrs, ident::ToIdent, member::Member, serde_derives};
+use super::{doc_attrs, ident::ToIdent, member::Member};
 
 /// Code generator for one message body struct.
 pub struct MessageCodeGen {
@@ -92,7 +92,7 @@ impl MessageCodeGen {
         }
     }
 
-    pub fn generate(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate(&self, serde_derives: &TokenStream) -> TokenStream {
         let name = &self.name;
         let members_definitions = self
             .body_members
@@ -104,7 +104,6 @@ impl MessageCodeGen {
             .map(|member| member.gen_serialize());
         let fn_deserialize = self.generate_de_message();
         let msg_cat = Ident::new(&format!("{:?}", self.msg_cat), Span::call_site());
-        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
         let doc_attrs = doc_attrs(
             self.doc.as_deref(),
             &format!("MsgType \"{}\".", self.msg_type),

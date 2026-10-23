@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::{member::Member, serde_derives};
+use super::member::Member;
 
 /// Trailer generator
 pub struct Trailer {
@@ -63,11 +63,10 @@ impl Trailer {
         }
     }
 
-    pub fn generate(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate(&self, serde_derives: &TokenStream) -> TokenStream {
         let members_definitions = self.members.iter().map(|member| member.gen_definition());
         let serialize = self.members.iter().map(|member| member.gen_serialize());
         let deserialize = self.generate_deserialize();
-        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
         quote! {
             #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]

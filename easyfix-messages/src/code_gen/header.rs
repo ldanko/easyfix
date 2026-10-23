@@ -4,7 +4,7 @@ use easyfix_dictionary::{BasicType, Version};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::{member::Member, serde_derives};
+use super::member::Member;
 
 /// Header generator
 pub struct Header {
@@ -16,12 +16,7 @@ impl Header {
         Header { members }
     }
 
-    pub fn generate(
-        &self,
-        version: Version,
-        serde_serialize: bool,
-        serde_deserialize: bool,
-    ) -> TokenStream {
+    pub fn generate(&self, version: Version, serde_derives: &TokenStream) -> TokenStream {
         // Tag 8 (BeginString) and tag 35 (MsgType) are not stored in Header:
         //   - BeginString is a compile-time constant per generated crate (`VERSION`).
         //   - MsgType is derived from the body.
@@ -42,8 +37,6 @@ impl Header {
         let header_self_access_impl = self.generate_header_access_for_header_impl(version);
         // TODO: move this to Message section
         let header_access_impl = self.generate_header_access_impl(version);
-
-        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
         quote! {
             #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]

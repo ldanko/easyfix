@@ -1,20 +1,17 @@
 use proc_macro2::{Ident, Literal, TokenStream};
 use quote::quote;
 
-use super::{admin, serde_derives};
+use super::admin;
 
 /// Generate `FieldTag`, its impls, and its metadata types.
 pub fn generate_field_tag(
     fields_names: &[Ident],
     fields_numbers: &[u16],
     field_layout: &TokenStream,
-    serde_serialize: bool,
-    serde_deserialize: bool,
+    serde_derives: &TokenStream,
 ) -> TokenStream {
     let fields_names_as_str = fields_names.iter().map(|f| Literal::string(&f.to_string()));
     let fields_numbers_literals = fields_numbers.iter().copied().map(Literal::u16_suffixed);
-
-    let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
     quote! {
         #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
@@ -81,11 +78,7 @@ pub fn generate_field_tag(
 
 /// Generate the `Body` enum with serialize/deserialize dispatch,
 /// From impls, msg_type(), and msg_cat().
-pub fn generate_message_enum(
-    names: &[&Ident],
-    serde_serialize: bool,
-    serde_deserialize: bool,
-) -> TokenStream {
+pub fn generate_message_enum(names: &[&Ident], serde_derives: &TokenStream) -> TokenStream {
     let admin_base_dispatch = admin::generate_admin_base_dispatch();
     let names_str = names.iter().map(|name| Literal::string(&name.to_string()));
 
@@ -98,8 +91,6 @@ pub fn generate_message_enum(
             }
         }
     });
-
-    let serde_derives = serde_derives(serde_serialize, serde_deserialize);
 
     quote! {
         #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
@@ -155,9 +146,7 @@ pub fn generate_message_enum(
 }
 
 /// Generate the `Message` struct and its impls.
-pub fn generate_fixt_message(serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
-    let serde_derives = serde_derives(serde_serialize, serde_deserialize);
-
+pub fn generate_fixt_message(serde_derives: &TokenStream) -> TokenStream {
     quote! {
         #[allow(dead_code, reason = "generated from the whole dictionary; a consumer uses a subset of it")]
         #[derive(Clone, Debug)]

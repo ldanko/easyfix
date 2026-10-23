@@ -58,21 +58,6 @@ fn doc_attrs(doc: Option<&str>, technical: &str) -> TokenStream {
     }
 }
 
-fn serde_derives(serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
-    match (serde_serialize, serde_deserialize) {
-        (true, true) => quote! {
-            #[derive(serde::Serialize, serde::Deserialize)]
-        },
-        (true, false) => quote! {
-            #[derive(serde::Serialize)]
-        },
-        (false, true) => quote! {
-            #[derive(serde::Deserialize)]
-        },
-        (false, false) => quote! {},
-    }
-}
-
 pub struct Generator {
     version: Version,
     header: Header,
@@ -260,11 +245,8 @@ impl Generator {
         }
     }
 
-    pub fn generate_fields(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
-        let enums = self
-            .enums
-            .iter()
-            .map(|enum_| enum_.generate(serde_serialize, serde_deserialize));
+    pub fn generate_fields(&self, serde_derives: &TokenStream) -> TokenStream {
+        let enums = self.enums.iter().map(|enum_| enum_.generate(serde_derives));
         let base_enum_conversions = self
             .enums
             .iter()
@@ -283,33 +265,28 @@ impl Generator {
         }
     }
 
-    pub fn generate_groups(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate_groups(&self, serde_derives: &TokenStream) -> TokenStream {
         let groups_defs = self
             .groups
             .iter()
-            .map(|group| group.generate(serde_serialize, serde_deserialize));
+            .map(|group| group.generate(serde_derives));
 
         quote! {
             #(#groups_defs)*
         }
     }
 
-    pub fn generate_messages(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate_messages(&self, serde_derives: &TokenStream) -> TokenStream {
         let mut msg_names = Vec::new();
 
         // Generate Header and Trailer
-        let header_def = self
-            .header
-            .generate(self.version, serde_serialize, serde_deserialize);
-        let trailer_def = self.trailer.generate(serde_serialize, serde_deserialize);
+        let header_def = self.header.generate(self.version, serde_derives);
+        let trailer_def = self.trailer.generate(serde_derives);
 
         let admin_base_conversions =
             admin::generate_admin_base_conversions(&self.messages, self.version);
 
-        let structs_defs = self
-            .messages
-            .iter()
-            .map(|msg| msg.generate(serde_serialize, serde_deserialize));
+        let structs_defs = self.messages.iter().map(|msg| msg.generate(serde_derives));
 
         // Generate message structs
         for msg in &self.messages {
@@ -330,13 +307,10 @@ impl Generator {
             &self.fields_names,
             &self.fields_numbers,
             &self.field_layout,
-            serde_serialize,
-            serde_deserialize,
+            serde_derives,
         );
-        let message_enum_def =
-            message_enum::generate_message_enum(&msg_names, serde_serialize, serde_deserialize);
-        let fixt_message_def =
-            message_enum::generate_fixt_message(serde_serialize, serde_deserialize);
+        let message_enum_def = message_enum::generate_message_enum(&msg_names, serde_derives);
+        let fixt_message_def = message_enum::generate_fixt_message(serde_derives);
         let section_diagnostics = field_layout::generate_diagnostics();
 
         quote! {

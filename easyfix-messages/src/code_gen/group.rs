@@ -2,7 +2,7 @@ use easyfix_core::basic_types::FixStr;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
-use super::{doc_attrs, ident::ToIdent, member::Member, serde_derives};
+use super::{doc_attrs, ident::ToIdent, member::Member};
 
 /// Code generator for one repeating group struct.
 pub struct GroupCodeGen {
@@ -133,12 +133,11 @@ impl GroupCodeGen {
         }
     }
 
-    pub fn generate(&self, serde_serialize: bool, serde_deserialize: bool) -> TokenStream {
+    pub fn generate(&self, serde_derives: &TokenStream) -> TokenStream {
         let name = &self.name;
         let members_definitions = self.members.iter().map(|member| member.gen_definition());
         let serialize = self.members.iter().map(|member| member.gen_serialize());
         let fn_deserialize = self.generate_de_group();
-        let serde_derives = serde_derives(serde_serialize, serde_deserialize);
         let doc_attrs = doc_attrs(
             self.doc.as_deref(),
             &format!("NumInGroup tag {}.", self.num_in_group_tag),

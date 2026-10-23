@@ -93,6 +93,8 @@ Options:
   --core-path <PATH>      Rust path to core API (default: easyfix_core)
   --serde-serialize       Generate #[derive(serde::Serialize)] on types
   --serde-deserialize     Generate #[derive(serde::Deserialize)] on types
+  --serde-serialize-feature <NAME>    Gate Serialize on a consuming crate feature
+  --serde-deserialize-feature <NAME>  Gate Deserialize on a consuming crate feature
   -h, --help              Print help
 ```
 
@@ -142,6 +144,55 @@ enable the matching features on `easyfix-core`:
 easyfix-core = { version = "0.20", features = ["serde-serialize", "serde-deserialize"] }
 serde = { version = "1", features = ["derive"] }
 ```
+
+For code generated once and committed, gate the derives on features of the
+consuming crate instead:
+
+```rust
+Generator::new()
+    .fixt_xml("xml/FIXT11.xml")
+    .fix_xml("xml/FIX50SP2.xml")
+    .output("src/generated/messages.rs")
+    .core_path("easyfix::core")
+    .serde_serialize_feature("serde-serialize")
+    .serde_deserialize_feature("serde-deserialize")
+    .generate()?;
+```
+
+This emits the following attributes on the generated types:
+
+```rust
+#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde-deserialize", derive(serde::Deserialize))]
+```
+
+Declare those features in the consuming crate and forward them to the core
+types through the facade:
+
+```toml
+[features]
+serde-serialize = ["dep:serde", "easyfix/serde-serialize"]
+serde-deserialize = ["dep:serde", "easyfix/serde-deserialize"]
+
+[dependencies]
+easyfix = "0.20"
+serde = { version = "1", optional = true, features = ["derive"] }
+```
+
+If serde is already a non-optional dependency, omit `dep:serde`. Consumers
+depending directly on `easyfix-core` use its feature names instead of the
+facade's and leave `core_path` at its default.
+
+Feature names are independent of easyfix's feature names. Both directions
+may use the same feature, or either direction may be omitted. Switching
+features when compiling the consuming crate does not require regeneration.
+Each builder setter replaces the previous setting for its direction;
+`serde_serialize(false)` or `serde_deserialize(false)` disables that derive
+even after a feature was configured.
+
+The equivalent CLI options are `--serde-serialize-feature serde-serialize` and
+`--serde-deserialize-feature serde-deserialize`. Each conflicts with the
+unconditional flag for the same direction.
 
 ## FIX version support
 

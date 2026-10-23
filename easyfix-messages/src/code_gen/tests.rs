@@ -114,7 +114,7 @@ fn generated_groups_are_ordered_by_tag_then_name() {
     // Each generator rebuilds its maps with independent hash seeds.
     for _ in 0..16 {
         let generator = Generator::new(&dictionary);
-        let code: syn::File = syn::parse2(generator.generate_groups(false, false)).unwrap();
+        let code: syn::File = syn::parse2(generator.generate_groups(&quote! {})).unwrap();
         let names: Vec<_> = code
             .items
             .into_iter()
@@ -140,7 +140,7 @@ fn message_doc_comments_emitted() {
         msg.msg_cat(),
         msg.doc(),
     )
-    .generate(false, false)
+    .generate(&quote! {})
     .to_string();
 
     // Message doc on the struct, followed by the technical MsgType line
@@ -166,7 +166,7 @@ fn message_without_doc_has_no_doc_separator() {
         msg.msg_cat(),
         msg.doc(),
     )
-    .generate(false, false)
+    .generate(&quote! {})
     .to_string();
 
     // Without doc attributes the output stays exactly as before:
@@ -185,7 +185,7 @@ fn group_doc_comments_emitted() {
         convert_members(group.members()),
         group.doc(),
     )
-    .generate(false, false)
+    .generate(&quote! {})
     .to_string();
 
     assert!(code.contains("Allocations of the order."));
@@ -203,7 +203,7 @@ fn enum_doc_comments_emitted() {
         side.variants().to_vec(),
         side.doc(),
     )
-    .generate(false, false)
+    .generate(&quote! {})
     .to_string();
 
     // Field doc on the enum type

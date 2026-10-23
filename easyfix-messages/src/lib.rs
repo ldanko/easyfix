@@ -35,6 +35,17 @@
 //! depends on the `easyfix` facade, set [`Generator::core_path`] to
 //! `"easyfix::core"` instead.
 //!
+//! For pre-generated code, use [`Generator::serde_serialize_feature`] and
+//! [`Generator::serde_deserialize_feature`] to gate serde derives on features
+//! of the consuming crate. For example,
+//! `.serde_serialize_feature("serde-serialize")` emits
+//! `#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]`.
+//! The consuming crate must declare that feature, enable serde's `derive`
+//! support, and forward the feature to `easyfix/serde-serialize` (or
+//! `easyfix-core/serde-serialize`). If its serde dependency is optional,
+//! include `dep:serde` in the feature as well. The deserialize direction
+//! requires the corresponding `serde-deserialize` feature.
+//!
 //! Generation is strict: the dictionaries are validated
 //! (`with_strict_check(true)`) and a dictionary that customizes a codeset the
 //! FIX standard closes - `ApplVerID(1128)` / `DefaultApplVerID(1137)` - fails
@@ -49,9 +60,28 @@ use std::{
 use anyhow::Context;
 use easyfix_dictionary::DictionaryBuilder;
 use proc_macro2::TokenStream;
+use quote::quote;
 use syn::{Path as RustPath, parse::Parser};
 
 mod code_gen;
+
+enum SerdeMode {
+    Disabled,
+    Unconditional,
+    Feature(String),
+}
+
+impl SerdeMode {
+    fn derive(&self, trait_path: TokenStream) -> TokenStream {
+        match self {
+            Self::Disabled => quote! {},
+            Self::Unconditional => quote! { #[derive(#trait_path)] },
+            Self::Feature(feature) => {
+                quote! { #[cfg_attr(feature = #feature, derive(#trait_path))] }
+            }
+        }
+    }
+}
 
 fn format_token_stream(tokens: TokenStream) -> anyhow::Result<String> {
     let syntax_tree = syn::parse2::<syn::File>(tokens).context("failed to parse generated code")?;
@@ -64,8 +94,8 @@ pub struct Generator {
     fix_xml: Option<PathBuf>,
     output: Option<PathBuf>,
     core_path: String,
-    serde_serialize: bool,
-    serde_deserialize: bool,
+    serde_serialize: SerdeMode,
+    serde_deserialize: SerdeMode,
 }
 
 impl Default for Generator {
@@ -82,8 +112,8 @@ impl Generator {
             fix_xml: None,
             output: None,
             core_path: "easyfix_core".into(),
-            serde_serialize: false,
-            serde_deserialize: false,
+            serde_serialize: SerdeMode::Disabled,
+            serde_deserialize: SerdeMode::Disabled,
         }
     }
 
@@ -117,17 +147,44 @@ impl Generator {
 
     /// Generate `#[derive(serde::Serialize)]` on generated types.
     /// When true, the user must also enable `easyfix-core/serde-serialize` for core types.
-    /// Default: false.
+    /// Default: false. Replaces any previous serialize feature setting.
     pub fn serde_serialize(mut self, value: bool) -> Self {
-        self.serde_serialize = value;
+        self.serde_serialize = if value {
+            SerdeMode::Unconditional
+        } else {
+            SerdeMode::Disabled
+        };
         self
     }
 
     /// Generate `#[derive(serde::Deserialize)]` on generated types.
     /// When true, the user must also enable `easyfix-core/serde-deserialize` for core types.
-    /// Default: false.
+    /// Default: false. Replaces any previous deserialize feature setting.
     pub fn serde_deserialize(mut self, value: bool) -> Self {
-        self.serde_deserialize = value;
+        self.serde_deserialize = if value {
+            SerdeMode::Unconditional
+        } else {
+            SerdeMode::Disabled
+        };
+        self
+    }
+
+    /// Generate `serde::Serialize` derives gated by a consuming crate feature.
+    /// The feature must enable serde with derive support and
+    /// `easyfix-core/serde-serialize` (or `easyfix/serde-serialize`).
+    /// Replaces any previous serialize setting; no separate enable call is needed.
+    pub fn serde_serialize_feature(mut self, feature: impl Into<String>) -> Self {
+        self.serde_serialize = SerdeMode::Feature(feature.into());
+        self
+    }
+
+    /// Generate `serde::Deserialize` derives gated by a consuming crate feature.
+    /// The feature must enable serde with derive support and
+    /// `easyfix-core/serde-deserialize` (or `easyfix/serde-deserialize`).
+    /// Replaces any previous deserialize setting; no separate enable call is needed.
+    /// Both directions may use the same feature name.
+    pub fn serde_deserialize_feature(mut self, feature: impl Into<String>) -> Self {
+        self.serde_deserialize = SerdeMode::Feature(feature.into());
         self
     }
 
@@ -152,15 +209,16 @@ impl Generator {
         let dictionary = builder.build()?;
         let generator = code_gen::Generator::new(&dictionary);
 
-        let serde_ser = self.serde_serialize;
-        let serde_de = self.serde_deserialize;
+        let serde_ser = self.serde_serialize.derive(quote! { serde::Serialize });
+        let serde_de = self.serde_deserialize.derive(quote! { serde::Deserialize });
+        let serde_derives = quote! { #serde_ser #serde_de };
 
         let imports = code_gen::generate_imports(&core_path);
-        let fields = generator.generate_fields(serde_ser, serde_de);
-        let groups = generator.generate_groups(serde_ser, serde_de);
-        let messages = generator.generate_messages(serde_ser, serde_de);
+        let fields = generator.generate_fields(&serde_derives);
+        let groups = generator.generate_groups(&serde_derives);
+        let messages = generator.generate_messages(&serde_derives);
 
-        let combined = quote::quote! {
+        let combined = quote! {
             #imports
             #fields
             #groups
@@ -187,6 +245,92 @@ mod tests {
     use std::{env, fs, path::PathBuf, process};
 
     use super::Generator;
+
+    #[test]
+    fn serde_settings_use_the_last_value_for_each_direction() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let output = env::temp_dir().join(format!("easyfix_serde_settings_{}.rs", process::id()));
+        for (name, generator, serialize, deserialize) in [
+            (
+                "unconditional",
+                Generator::new()
+                    .serde_serialize(true)
+                    .serde_deserialize(true),
+                Some("#[derive(serde::Serialize)]"),
+                Some("#[derive(serde::Deserialize)]"),
+            ),
+            (
+                "disable conditional",
+                Generator::new()
+                    .serde_serialize_feature("old-ser")
+                    .serde_deserialize_feature("old-de")
+                    .serde_serialize(false)
+                    .serde_deserialize(false),
+                None,
+                None,
+            ),
+            (
+                "replace conditional with unconditional",
+                Generator::new()
+                    .serde_serialize_feature("old-ser")
+                    .serde_deserialize_feature("old-de")
+                    .serde_serialize(true)
+                    .serde_deserialize(true),
+                Some("#[derive(serde::Serialize)]"),
+                Some("#[derive(serde::Deserialize)]"),
+            ),
+            (
+                "replace unconditional with conditional",
+                Generator::new()
+                    .serde_serialize(true)
+                    .serde_deserialize(true)
+                    .serde_serialize_feature("fix-to-json")
+                    .serde_deserialize_feature("from-json"),
+                Some("#[cfg_attr(feature = \"fix-to-json\", derive(serde::Serialize))]"),
+                Some("#[cfg_attr(feature = \"from-json\", derive(serde::Deserialize))]"),
+            ),
+            (
+                "replace feature names independently",
+                Generator::new()
+                    .serde_serialize_feature("old-ser")
+                    .serde_deserialize_feature("old-de")
+                    .serde_serialize_feature("fix-to-json")
+                    .serde_deserialize(true),
+                Some("#[cfg_attr(feature = \"fix-to-json\", derive(serde::Serialize))]"),
+                Some("#[derive(serde::Deserialize)]"),
+            ),
+        ] {
+            generator
+                .fixt_xml(root.join("../easyfix-test-messages/xml/FIXT11-test.xml"))
+                .fix_xml(root.join("../easyfix-test-messages/xml/FIX50SP2-test.xml"))
+                .output(&output)
+                .generate()
+                .unwrap();
+            let code = fs::read_to_string(&output).unwrap();
+            fs::remove_file(&output).unwrap();
+            assert!(!code.contains("old-ser"), "{name}");
+            assert!(!code.contains("old-de"), "{name}");
+            for (trait_name, expected) in [
+                ("serde::Serialize", serialize),
+                ("serde::Deserialize", deserialize),
+            ] {
+                let attrs: Vec<_> = code
+                    .lines()
+                    .filter(|line| line.contains(trait_name))
+                    .collect();
+                match expected {
+                    Some(expected) => {
+                        assert!(!attrs.is_empty(), "{name}: missing {trait_name}");
+                        assert!(
+                            attrs.iter().all(|line| line.trim() == expected),
+                            "{name}: {attrs:?}"
+                        );
+                    }
+                    None => assert!(attrs.is_empty(), "{name}: unexpected {trait_name}"),
+                }
+            }
+        }
+    }
 
     #[test]
     fn generated_imports_use_configured_core_path() {
