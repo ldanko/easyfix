@@ -53,7 +53,7 @@ async fn refused_encrypt_method_flushes_output_before_disconnect() {
                 writer,
                 harness.engine,
                 &mut storage,
-                harness.app,
+                harness.handler,
                 harness.sender,
                 harness.app_rx,
                 harness.control_rx,
@@ -158,7 +158,7 @@ async fn terminating_write_failure_stops_output_and_skips_peer_close_wait() {
                     settings.write_timeout = budget;
                     settings.auto_disconnect_after_no_logout = Duration::from_secs(10);
                     let mut harness = build_harness_with_settings(settings);
-                    harness.app.send_then_logout = app_logout;
+                    harness.handler.send_then_logout = app_logout;
                     let (server, mut peer) = io::duplex(8192);
                     let (reader, writer) = io::split(server);
                     let armed = Rc::new(Cell::new(false));
@@ -348,7 +348,7 @@ async fn peer_logout_closes_session_gracefully() {
 
             // Inbound Logout fires AdminMsgIn before the engine reacts
             // (sends Logout response). The application could decline at
-            // this point - `TestApp` always Accepts.
+            // this point - `TestHandler` always Accepts.
             assert_matches!(
                 events_rx.recv().await.unwrap(),
                 TestEvent::AdminMsgIn(MsgTypeBase::Logout)
@@ -451,7 +451,7 @@ async fn app_message_staged_before_logout_reaches_peer_first() {
     local
         .run_until(async {
             let mut harness = build_harness();
-            harness.app.send_then_logout = true;
+            harness.handler.send_then_logout = true;
             let (server_io, mut client_io) = io::duplex(8192);
             let (server_reader, server_writer) = io::split(server_io);
             let first_msg = build_peer_logon(1, 30);
@@ -572,7 +572,7 @@ async fn acceptor_gives_up_when_the_rejected_handshake_stalls() {
             let mut settings = test_helpers::default_session_settings();
             settings.auto_disconnect_after_no_logon_response = Duration::from_secs(3);
             let mut harness = build_harness_with_settings(settings);
-            harness.app.reject_admin = true;
+            harness.handler.reject_admin = true;
 
             let (server_io, mut client_io) = io::duplex(8192);
             let (server_reader, server_writer) = io::split(server_io);
@@ -607,7 +607,7 @@ async fn acceptor_gives_up_when_the_rejected_handshake_stalls() {
 /// `on_admin_msg_in`; the Scenario 1S(d) Reject and Logout go on the wire,
 /// and then `on_session_end` runs with no `on_session_ready` before it -
 /// no `Sender` is ever handed over. This is the contract
-/// `Application::on_session_end` documents; the test pins it so the
+/// `SessionHandler::on_session_end` documents; the test pins it so the
 /// callback pairing an application may rely on stays what the doc says.
 #[tokio::test]
 async fn refused_first_logon_ends_without_session_ready() {

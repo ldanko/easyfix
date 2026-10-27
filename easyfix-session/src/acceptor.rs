@@ -4,8 +4,7 @@
 //! task per incoming connection. Each connection reads its first message
 //! (Logon), looks up the registered session by the derived
 //! [`SessionId`], and constructs a per-session
-//! [`Application`](crate::Application) via the user-provided
-//! [`ApplicationFactory`] to serve it.
+//! [`SessionHandler`] via the user-provided `make_handler` closure to serve it.
 
 use std::{
     borrow::Cow,
@@ -34,16 +33,19 @@ use tokio::{
 use tracing::{Instrument, error, info, info_span, warn};
 
 use crate::{
-    application::{ApplicationFactory, SessionContext},
+    application::{SessionContext, SessionHandler},
     engine::{SessionEngine, supports_seq_num_reset, validate_gap_fill_fits},
     io::{
-        ControlMsg, FirstMessageEvent, InputStream, SessionOpening, sender, session_loop,
-        time::TimerBackend,
+        ControlMsg, FirstMessageEvent, InputStream, SessionOpening, initialize_handler, sender,
+        session_loop, time::TimerBackend,
     },
     messages_storage::MessagesStorage,
     session_id::SessionId,
     settings::{AcceptorSettings, SessionSettings},
 };
+
+#[cfg(test)]
+mod tests;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -106,7 +108,7 @@ pub enum ShutdownMode {
 /// Reported through [`ConnectionObserver::on_connection_dropped`]. Distinct
 /// from [`DisconnectReason`](crate::DisconnectReason), which describes the end
 /// of an *established* session: here no session ever came into being, so no
-/// `Application` exists and nothing was sent on the wire.
+/// `SessionHandler` exists and nothing was sent on the wire.
 ///
 /// The variants carrying a [`SessionId`] are those where the peer's identity
 /// was already derived from its `Logon<A>`; the rest occur before any identity
@@ -153,6 +155,14 @@ pub enum ConnectionDropReason<'a> {
     /// [`suspend_session`](Acceptor::suspend_session), so inbound connections
     /// for its identity are refused until it is resumed.
     SessionSuspended(&'a SessionId),
+    /// The application could not create the handler for this connection.
+    /// No session callbacks ran and no response was sent.
+    HandlerInitFailed {
+        /// Identity of the session whose handler could not be created.
+        session_id: &'a SessionId,
+        /// The error returned by `make_handler`.
+        error: &'a (dyn StdError + 'static),
+    },
 }
 
 /// Notified when an inbound connection ends before becoming a FIX session.
@@ -164,10 +174,10 @@ pub enum ConnectionDropReason<'a> {
 /// [`run_session`](Acceptor::run_session) /
 /// [`session_task`](Acceptor::session_task).
 ///
-/// The acceptor reports only connections dropped for reasons attributable to
-/// the peer or to acceptor / session state - not those torn down by
-/// [`shutdown`](Acceptor::shutdown), which the caller initiated and already
-/// knows about.
+/// The acceptor reports connections dropped for reasons attributable to the
+/// peer, acceptor / session state, or handler initialization. It does not
+/// report cancellation of initialization by a local logout, disconnect, or
+/// [`shutdown`](Acceptor::shutdown), which the caller initiated.
 ///
 /// Callbacks run inline in the session task. They may call back into the
 /// `Acceptor`, but should return promptly - a slow observer delays the
@@ -270,14 +280,13 @@ struct RegisteredSession<S> {
 /// Shared state between the [`Acceptor`] public API and spawned session
 /// tasks. Wrapped in an [`Rc`] so session tasks can outlive the call
 /// site that spawned them.
-struct AcceptorInner<M, S, A>
+struct AcceptorInner<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     settings: AcceptorSettings,
     timer_backend: TimerBackend,
-    app_factory: A,
+    make_handler: F,
     sessions: RefCell<HashMap<SessionId, RegisteredSession<S>>>,
     active_sessions: RefCell<HashMap<SessionId, mpsc::Sender<ControlMsg>>>,
     /// Shutdown flag. `true` stops the listener from spawning new
@@ -312,16 +321,15 @@ where
     _phantom: PhantomData<M>,
 }
 
-impl<M, S, A> AcceptorInner<M, S, A>
+impl<M, S, F> AcceptorInner<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
-    fn new(settings: AcceptorSettings, app_factory: A, timer_backend: TimerBackend) -> Self {
+    fn new(settings: AcceptorSettings, make_handler: F, timer_backend: TimerBackend) -> Self {
         AcceptorInner {
             settings,
             timer_backend,
-            app_factory,
+            make_handler,
             sessions: RefCell::new(HashMap::new()),
             active_sessions: RefCell::new(HashMap::new()),
             stopping: Cell::new(false),
@@ -378,29 +386,26 @@ where
 // the listener's guard meaningful: a guard taken on the task's first poll
 // would let a `shutdown` issued right after `start` see a zero count and
 // return with the address still bound.
-struct TaskGuard<M, S, A>
+struct TaskGuard<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
-    inner: Rc<AcceptorInner<M, S, A>>,
+    inner: Rc<AcceptorInner<M, S, F>>,
 }
 
-impl<M, S, A> TaskGuard<M, S, A>
+impl<M, S, F> TaskGuard<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
-    fn new(inner: Rc<AcceptorInner<M, S, A>>) -> Self {
+    fn new(inner: Rc<AcceptorInner<M, S, F>>) -> Self {
         inner.active_count.set(inner.active_count.get() + 1);
         TaskGuard { inner }
     }
 }
 
-impl<M, S, A> Drop for TaskGuard<M, S, A>
+impl<M, S, F> Drop for TaskGuard<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     fn drop(&mut self) {
         let next = self.inner.active_count.get() - 1;
@@ -420,12 +425,11 @@ where
 ///
 /// The session loop borrows the storage via [`Self::storage`] for its
 /// lifetime; the guard owns it and hands it back to `reg.storage`.
-struct StorageReturn<M, S, A>
+struct StorageReturn<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
-    inner: Rc<AcceptorInner<M, S, A>>,
+    inner: Rc<AcceptorInner<M, S, F>>,
     session_id: SessionId,
     /// `Some` for the whole life of the guard; `Option` only so `Drop` can
     /// move the storage back out. Borrow it through [`Self::storage`].
@@ -435,10 +439,9 @@ where
     closed: Rc<Notify>,
 }
 
-impl<M, S, A> StorageReturn<M, S, A>
+impl<M, S, F> StorageReturn<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     /// The guarded storage.
     fn storage(&mut self) -> &mut S {
@@ -451,10 +454,9 @@ where
     }
 }
 
-impl<M, S, A> Drop for StorageReturn<M, S, A>
+impl<M, S, F> Drop for StorageReturn<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     fn drop(&mut self) {
         self.inner
@@ -484,20 +486,18 @@ where
 
 /// FIX acceptor (server) - manages a set of registered sessions and
 /// spawns one task per incoming connection.
-pub struct Acceptor<M, S, A>
+pub struct Acceptor<M, S, F>
 where
     M: SessionMessage,
     S: MessagesStorage,
-    A: ApplicationFactory<M>,
 {
-    inner: Rc<AcceptorInner<M, S, A>>,
+    inner: Rc<AcceptorInner<M, S, F>>,
 }
 
-impl<M, S, A> Clone for Acceptor<M, S, A>
+impl<M, S, F> Clone for Acceptor<M, S, F>
 where
     M: SessionMessage,
     S: MessagesStorage,
-    A: ApplicationFactory<M>,
 {
     fn clone(&self) -> Self {
         Acceptor {
@@ -506,26 +506,38 @@ where
     }
 }
 
-impl<M, S, A> Acceptor<M, S, A>
+impl<M, S, F, H> Acceptor<M, S, F>
 where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M> + 'static,
-    A::App: 'static,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>> + 'static,
+    H: SessionHandler<M> + 'static,
 {
     /// Create a new `Acceptor` with default [`AcceptorSettings`]. No
     /// sessions are registered initially - call
     /// [`register_session`](Self::register_session) to add them.
-    pub fn new(app_factory: A) -> Self {
-        Self::with_settings(AcceptorSettings::default(), app_factory)
+    ///
+    /// `make_handler` asynchronously creates a [`SessionHandler`] from the
+    /// [`SessionContext`] of each admitted connection, including reconnects.
+    /// Neither the closure nor the handler needs to be `Send` or `Sync`.
+    ///
+    /// An error closes this connection and is reported through
+    /// [`ConnectionObserver`] as [`ConnectionDropReason::HandlerInitFailed`].
+    /// The session can reconnect after failure.
+    ///
+    /// Initialization must tolerate cancellation. Failure or cancellation
+    /// produces no handler callbacks. No initialization timeout is imposed;
+    /// enforce any required deadline inside the closure.
+    pub fn new(make_handler: F) -> Self {
+        Self::with_settings(AcceptorSettings::default(), make_handler)
     }
 
-    /// Create a new `Acceptor` with the given listener-level settings
-    /// and [`ApplicationFactory`]. No sessions are registered
-    /// initially - call [`register_session`](Self::register_session)
-    /// to add them.
-    pub fn with_settings(settings: AcceptorSettings, app_factory: A) -> Self {
-        Self::with_timer_backend(settings, app_factory, TimerBackend::Tokio)
+    /// Create a new `Acceptor` with the given listener-level settings and
+    /// handler constructor. `make_handler` has the same contract as in
+    /// [`new`](Self::new). No sessions are registered initially - call
+    /// [`register_session`](Self::register_session) to add them.
+    pub fn with_settings(settings: AcceptorSettings, make_handler: F) -> Self {
+        Self::with_timer_backend(settings, make_handler, TimerBackend::Tokio)
     }
 
     /// Create an acceptor with the given settings and busywait timers.
@@ -533,17 +545,17 @@ where
     /// All connections and sessions use wall-clock deadlines. Pending timers
     /// keep the executor polling until their deadlines elapse.
     #[doc(hidden)]
-    pub fn with_busywait_timers(settings: AcceptorSettings, app_factory: A) -> Self {
-        Self::with_timer_backend(settings, app_factory, TimerBackend::Busywait)
+    pub fn with_busywait_timers(settings: AcceptorSettings, make_handler: F) -> Self {
+        Self::with_timer_backend(settings, make_handler, TimerBackend::Busywait)
     }
 
     fn with_timer_backend(
         settings: AcceptorSettings,
-        app_factory: A,
+        make_handler: F,
         timer_backend: TimerBackend,
     ) -> Self {
         Acceptor {
-            inner: Rc::new(AcceptorInner::new(settings, app_factory, timer_backend)),
+            inner: Rc::new(AcceptorInner::new(settings, make_handler, timer_backend)),
         }
     }
 
@@ -578,14 +590,14 @@ where
     /// Returns [`AcceptorError::Storage`] if `build_storage` fails, without
     /// registering the session. The factory must load and validate counters
     /// before returning success.
-    pub fn register_session<F>(
+    pub fn register_session<B>(
         &self,
         session_id: SessionId,
         session_settings: SessionSettings,
-        build_storage: F,
+        build_storage: B,
     ) -> Result<(), AcceptorError>
     where
-        F: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
+        B: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
     {
         let max_message_size = usize::from(session_settings.max_message_size.get());
         if let Err(required) = validate_gap_fill_fits::<M>(
@@ -769,6 +781,7 @@ where
     /// This bypasses the listener loop entirely - the caller is
     /// responsible for accepting connections. The returned task still
     /// participates in [`shutdown`](Self::shutdown).
+    /// Handler initialization errors are reported through [`ConnectionObserver`].
     pub fn run_session<R, W>(&self, reader: R, writer: W, peer_addr: SocketAddr) -> JoinHandle<()>
     where
         R: AsyncRead + Unpin + 'static,
@@ -790,12 +803,13 @@ where
     /// Sessions started this way are tracked by the acceptor, so it is
     /// safe to call [`shutdown`](Self::shutdown) concurrently - it waits
     /// for them to finish like any other session.
+    /// Errors are reported as in [`run_session`](Self::run_session).
     pub fn session_task<R, W>(
         &self,
         reader: R,
         writer: W,
         peer_addr: SocketAddr,
-    ) -> impl Future<Output = ()> + use<M, S, A, R, W>
+    ) -> impl Future<Output = ()> + use<M, S, F, H, R, W>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
@@ -803,11 +817,10 @@ where
         session_future(self.inner.clone(), reader, writer, peer_addr)
     }
 
-    /// Query whether the given session is currently active. Returns
+    /// Query whether the given session is currently active, including while
+    /// its handler is being initialized. Returns
     /// [`AcceptorError::UnknownSession`] if no matching session has
     /// been registered.
-    /// Completion means the request was submitted; use
-    /// [`await_session_closed`](Self::await_session_closed) to wait for closure.
     pub fn is_session_active(&self, session_id: &SessionId) -> Result<bool, AcceptorError> {
         if self.inner.active_sessions.borrow().contains_key(session_id) {
             Ok(true)
@@ -844,6 +857,8 @@ where
     /// true it ends the wait; otherwise the original deadline is unchanged.
     /// Closure without waiting reports
     /// [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
+    /// Cancels pending handler initialization and closes the connection
+    /// without sending Logout or running session callbacks.
     pub async fn logout(
         &self,
         session_id: &SessionId,
@@ -909,6 +924,8 @@ where
     /// [`AcceptorError::UnknownSession`] if no matching session has
     /// been registered.
     /// Reports [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
+    /// Cancels pending handler initialization and closes the connection
+    /// without running session callbacks.
     pub async fn disconnect(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
         // `Ok(None)` = already disconnected - no-op.
         if let Some(tx) = self.active_session_control(session_id)? {
@@ -936,14 +953,14 @@ where
     ///   [`suspend_session`](Self::suspend_session) first.
     /// - Must be awaited on the same single-threaded runtime that drives the
     ///   session tasks (the crate's `LocalSet` contract), and must NOT be
-    ///   awaited from within that session's own [`Application`] callbacks: the
+    ///   awaited from within that session's own [`SessionHandler`] callbacks: the
     ///   close signal fires only after the session stops running, so a
     ///   self-await deadlocks. To drive it from a callback, [`Clone`] the
     ///   `Acceptor` and `spawn_local` a separate task that awaits it (and runs
     ///   any follow-up such as [`remove_session`](Self::remove_session)); the
     ///   callback returns immediately and the session is free to exit.
     ///
-    /// [`Application`]: crate::Application
+    /// [`SessionHandler`]: crate::SessionHandler
     pub async fn await_session_closed(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
         // Classify under a tight borrow, then clone out the per-session signal:
         // the loop below holds no `sessions` borrow across an `.await`, only the
@@ -1040,8 +1057,8 @@ where
     /// session according to [`ShutdownMode`], and returns once every session
     /// task *and* the listener started by [`start`](Self::start) have exited -
     /// so on return the listening address is free to rebind. Connections still
-    /// waiting for their first message are dropped rather than waited out, so
-    /// [`ShutdownMode::Disconnect`] is not held up by the Logon timeout.
+    /// waiting for their first message or for handler initialization are
+    /// cancelled in every mode, without session callbacks.
     ///
     /// **There is no way back.** This acceptor and every clone of it stay shut
     /// down for good; build a new [`Acceptor`] to serve again. To stop
@@ -1050,7 +1067,7 @@ where
     /// [`suspend_session`](Self::suspend_session) /
     /// [`resume_session`](Self::resume_session) for one session.
     ///
-    /// Do **not** call this from an [`Application`](crate::Application)
+    /// Do **not** call this from a [`SessionHandler`]
     /// callback: the calling session's own task is one of those being waited
     /// for, so the wait never ends. Clone the `Acceptor` and drive the call
     /// from a task of its own. If you need a hard overall deadline, wrap the
@@ -1129,15 +1146,15 @@ where
 const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 
-async fn listener_task<M, S, A, C>(
+async fn listener_task<M, S, F, H, C>(
     mut connection: C,
-    inner: Rc<AcceptorInner<M, S, A>>,
-    _guard: TaskGuard<M, S, A>,
+    inner: Rc<AcceptorInner<M, S, F>>,
+    _guard: TaskGuard<M, S, F>,
 ) where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M> + 'static,
-    A::App: 'static,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>> + 'static,
+    H: SessionHandler<M> + 'static,
     C: Connection,
 {
     info!("acceptor listener started");
@@ -1190,8 +1207,8 @@ async fn listener_task<M, S, A, C>(
 /// The [`TaskGuard`] is constructed here - so `active_count` is already
 /// incremented when the future is returned - and moved into the future, where
 /// it lives until the task finishes or the future is dropped.
-fn session_future<M, S, A, R, W>(
-    inner: Rc<AcceptorInner<M, S, A>>,
+fn session_future<M, S, F, H, R, W>(
+    inner: Rc<AcceptorInner<M, S, F>>,
     reader: R,
     writer: W,
     peer_addr: SocketAddr,
@@ -1199,8 +1216,8 @@ fn session_future<M, S, A, R, W>(
 where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M> + 'static,
-    A::App: 'static,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>> + 'static,
+    H: SessionHandler<M> + 'static,
     R: AsyncRead + Unpin + 'static,
     W: AsyncWrite + Unpin + 'static,
 {
@@ -1209,8 +1226,8 @@ where
     acceptor_session_task(inner, reader, writer, peer_addr, guard).instrument(span)
 }
 
-fn spawn_session_task<M, S, A, R, W>(
-    inner: Rc<AcceptorInner<M, S, A>>,
+fn spawn_session_task<M, S, F, H, R, W>(
+    inner: Rc<AcceptorInner<M, S, F>>,
     reader: R,
     writer: W,
     peer_addr: SocketAddr,
@@ -1218,24 +1235,25 @@ fn spawn_session_task<M, S, A, R, W>(
 where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M> + 'static,
-    A::App: 'static,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>> + 'static,
+    H: SessionHandler<M> + 'static,
     R: AsyncRead + Unpin + 'static,
     W: AsyncWrite + Unpin + 'static,
 {
     spawn_local(session_future(inner, reader, writer, peer_addr))
 }
 
-async fn acceptor_session_task<M, S, A, R, W>(
-    inner: Rc<AcceptorInner<M, S, A>>,
+async fn acceptor_session_task<M, S, F, H, R, W>(
+    inner: Rc<AcceptorInner<M, S, F>>,
     reader: R,
     writer: W,
     peer_addr: SocketAddr,
-    _guard: TaskGuard<M, S, A>,
+    _guard: TaskGuard<M, S, F>,
 ) where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M>,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>>,
+    H: SessionHandler<M>,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
@@ -1429,14 +1447,51 @@ async fn acceptor_session_task<M, S, A, R, W>(
         closed,
     };
 
-    // --- Build per-session application, engine, and channels ---
+    // Publish control before awaiting user initialization so close/logout can
+    // cancel it and the session remains reserved against another connection.
+    let (control_tx, mut control_rx) = mpsc::channel::<ControlMsg>(4);
+    inner
+        .active_sessions
+        .borrow_mut()
+        .insert(session_id.clone(), control_tx);
 
-    let time_precision = session_settings.time_precision;
-    let app = inner.app_factory.create(&SessionContext::new(
-        &session_id,
-        Some(peer_addr),
-        time_precision,
-    ));
+    let initialized = {
+        let context = SessionContext::new(
+            &session_id,
+            Some(peer_addr),
+            session_settings.time_precision,
+        );
+        tokio::select! {
+            biased;
+            () = inner.stopped() => Ok(None),
+            result = initialize_handler((inner.make_handler)(&context), &mut control_rx) => result,
+        }
+    };
+    let handler = match initialized {
+        Ok(Some(handler)) => handler,
+        Ok(None) => {
+            drop(input);
+            drop(writer);
+            return;
+        }
+        Err(error) => {
+            drop(input);
+            drop(writer);
+            drop(storage_guard);
+            error!(%session_id, %error, "failed to initialize session handler");
+            inner.notify_connection_dropped(
+                peer_addr,
+                ConnectionDropReason::HandlerInitFailed {
+                    session_id: &session_id,
+                    error: error.as_ref(),
+                },
+            );
+            return;
+        }
+    };
+
+    // --- Build the session engine and outgoing channel ---
+
     let engine = SessionEngine::<M>::new(session_id.clone(), session_settings, inner.timer_backend);
 
     // Rebuild the input stream with the session's configured
@@ -1447,12 +1502,6 @@ async fn acceptor_session_task<M, S, A, R, W>(
     let input = InputStream::<R, M>::from_parts(reader, buffered, session_max_message_size);
 
     let (sender_tx, app_rx) = sender::channel::<M>(inner.timer_backend);
-    let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(4);
-
-    inner
-        .active_sessions
-        .borrow_mut()
-        .insert(session_id.clone(), control_tx);
 
     // --- Run the session loop (storage borrowed; `storage_guard` owns it) ---
 
@@ -1468,7 +1517,7 @@ async fn acceptor_session_task<M, S, A, R, W>(
         writer,
         engine,
         storage_guard.storage(),
-        app,
+        handler,
         sender_tx,
         app_rx,
         control_rx,
@@ -1488,6 +1537,3 @@ async fn acceptor_session_task<M, S, A, R, W>(
     // `storage_guard` - that would silently flip the order so an
     // `await_session_closed` waiter could observe storage before it is restored.
 }
-
-#[cfg(test)]
-mod tests;

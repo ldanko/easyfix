@@ -2,7 +2,8 @@ use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
     collections::BTreeMap,
-    io,
+    error::Error as StdError,
+    future, io,
     num::{NonZeroU8, NonZeroU16, NonZeroU64},
     pin::Pin,
     rc::Rc,
@@ -32,7 +33,7 @@ use tokio::{
 };
 
 use crate::{
-    application::{Application, ApplicationFactory, DisconnectReason, InputAction, SessionContext},
+    application::{DisconnectReason, InputAction, SessionContext, SessionHandler},
     engine::{InputResult, SessionEngine},
     io::{sender::Sender, time::TimerBackend},
     messages_storage::{InMemoryStorage, MessagesStorage, StoreError},
@@ -767,12 +768,12 @@ pub(crate) fn commit_heartbeat<S: MessagesStorage>(
     expected_bytes
 }
 
-/// Minimal no-op [`Application`] for tests that only need to satisfy the trait
+/// Minimal no-op [`SessionHandler`] for tests that only need to satisfy the trait
 /// parameter without exercising any callback. Accepts everything; asserts
 /// nothing.
-pub(crate) struct StubApp;
+pub(crate) struct StubHandler;
 
-impl<M: SessionMessage> Application<M> for StubApp {
+impl<M: SessionMessage> SessionHandler<M> for StubHandler {
     fn on_output_error(&mut self, _msg: Box<M>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<M>) {}
@@ -784,17 +785,12 @@ impl<M: SessionMessage> Application<M> for StubApp {
     }
 }
 
-/// [`ApplicationFactory`] producing [`StubApp`] - for tests that construct an
-/// `Acceptor` / `Initiator` but never exercise the application callbacks.
-pub(crate) struct StubAppFactory;
-
-impl<M: SessionMessage> ApplicationFactory<M> for StubAppFactory {
-    type App = StubApp;
-
-    fn create(&self, _: &SessionContext<'_>) -> StubApp {
-        StubApp
-    }
+/// Builds a no-op handler for management tests.
+pub(crate) fn make_stub_handler(_: &SessionContext<'_>) -> ReadyHandler<StubHandler> {
+    future::ready(Ok(StubHandler))
 }
+
+pub(crate) type ReadyHandler<H> = future::Ready<Result<H, Box<dyn StdError>>>;
 
 /// Signals entry to `on_session_end` and holds it until explicitly released.
 #[derive(Clone, Default)]
@@ -803,7 +799,7 @@ pub(crate) struct GatedSessionEnd {
     pub release: Rc<Notify>,
 }
 
-impl Application<Message> for GatedSessionEnd {
+impl SessionHandler<Message> for GatedSessionEnd {
     fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {}
@@ -818,19 +814,11 @@ impl Application<Message> for GatedSessionEnd {
     }
 }
 
-impl ApplicationFactory<Message> for GatedSessionEnd {
-    type App = Self;
-
-    fn create(&self, _: &SessionContext<'_>) -> Self::App {
-        self.clone()
-    }
-}
-
-/// [`Application`] that panics in `on_admin_msg_in` - arbitrary user code
+/// [`SessionHandler`] that panics in `on_admin_msg_in` - arbitrary user code
 /// unwinding the session task while it owns the session's storage.
-pub(crate) struct PanicApp;
+pub(crate) struct PanicHandler;
 
-impl Application<Message> for PanicApp {
+impl SessionHandler<Message> for PanicHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {}
@@ -846,15 +834,9 @@ impl Application<Message> for PanicApp {
     }
 }
 
-/// [`ApplicationFactory`] producing [`PanicApp`].
-pub(crate) struct PanicAppFactory;
-
-impl ApplicationFactory<Message> for PanicAppFactory {
-    type App = PanicApp;
-
-    fn create(&self, _: &SessionContext<'_>) -> PanicApp {
-        PanicApp
-    }
+/// Builds a handler that panics on an incoming admin message.
+pub(crate) fn make_panic_handler(_: &SessionContext<'_>) -> ReadyHandler<PanicHandler> {
+    future::ready(Ok(PanicHandler))
 }
 
 thread_local! {

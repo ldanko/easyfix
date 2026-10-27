@@ -4,10 +4,9 @@
 //! accepts inbound connections and matches each one to a registered
 //! session, running one task per connection. Both are generic over an
 //! `M` implementing [`SessionMessage`], so session logic is decoupled
-//! from generated message types. Users implement [`Application`] (built
-//! per session by an [`ApplicationFactory`]) for callbacks and choose a
-//! [`MessagesStorage`] implementation, such as [`InMemoryStorage`], to retain
-//! sequence numbers and resend data.
+//! from generated message types. Users implement [`SessionHandler`] for
+//! callbacks and choose a [`MessagesStorage`] implementation, such as
+//! [`InMemoryStorage`], to retain sequence numbers and resend data.
 //! Tasks are spawned with `spawn_local`, so a tokio `LocalSet` (or other
 //! local-task context) is required.
 //!
@@ -54,9 +53,8 @@ pub use acceptor::{
     TcpConnection,
 };
 pub use application::{
-    Application, ApplicationFactory, DisconnectReason, InputAction, InputError, SessionContext,
-    ValidationError, invalid_heart_bt_int_range_text, invalid_heart_bt_int_text,
-    max_message_size_exceeded_text,
+    DisconnectReason, InputAction, InputError, SessionContext, SessionHandler, ValidationError,
+    invalid_heart_bt_int_range_text, invalid_heart_bt_int_text, max_message_size_exceeded_text,
 };
 pub use easyfix_core::{
     basic_types,

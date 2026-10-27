@@ -39,7 +39,7 @@ pub enum InputError<'a, M> {
 /// Why a decoded incoming message failed session validation.
 ///
 /// The offending values are available in the message passed to
-/// [`Application::on_input_error`]. A failure describes the validation
+/// [`SessionHandler::on_input_error`]. A failure describes the validation
 /// result; it does not guarantee that a protocol response was sent.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ValidationError {
@@ -214,7 +214,7 @@ pub enum InputAction {
 /// value N seconds"`, the wording FIX Session Layer §4.3.5.1 prescribes.
 ///
 /// Wrap in `Some(Cow::Owned(...))` and pass as the `text` of an
-/// [`InputAction::Logout`] returned from [`Application::on_admin_msg_in`].
+/// [`InputAction::Logout`] returned from [`SessionHandler::on_admin_msg_in`].
 /// `expected` is the spec's N, which Section 4.3.5.1 requires to be larger
 /// than zero.
 pub fn invalid_heart_bt_int_text(expected: impl Into<NonZeroU64>) -> FixString {
@@ -232,7 +232,7 @@ pub fn invalid_heart_bt_int_text(expected: impl Into<NonZeroU64>) -> FixString {
 /// prescribes.
 ///
 /// Wrap in `Some(Cow::Owned(...))` and pass as the `text` of an
-/// [`InputAction::Logout`] returned from [`Application::on_admin_msg_in`].
+/// [`InputAction::Logout`] returned from [`SessionHandler::on_admin_msg_in`].
 /// `min` and `max` are the spec's N and M; §4.3.5.2 requires M to be larger
 /// than N, which the types cannot express.
 pub fn invalid_heart_bt_int_range_text(min: NonZeroU16, max: NonZeroU16) -> FixString {
@@ -248,7 +248,7 @@ pub fn invalid_heart_bt_int_range_text(min: NonZeroU16, max: NonZeroU16) -> FixS
 /// prescribes.
 ///
 /// Wrap in `Some(Cow::Owned(...))` and pass as the `text` of an
-/// [`InputAction::Logout`] returned from [`Application::on_admin_msg_in`].
+/// [`InputAction::Logout`] returned from [`SessionHandler::on_admin_msg_in`].
 /// `announced` is the peer's value, taken from its `Logon<A>`; `supported`
 /// is the largest this side can process.
 /// The session does not judge the peer's value itself - either peer may end
@@ -263,7 +263,7 @@ pub fn max_message_size_exceeded_text(announced: Length, supported: Length) -> F
 
 /// Why a session ended.
 ///
-/// Passed to [`Application::on_session_end`] as the `reason`; covers orderly
+/// Passed to [`SessionHandler::on_session_end`] as the `reason`; covers orderly
 /// logout completions as well as protocol violations and transport failures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DisconnectReason {
@@ -372,16 +372,16 @@ pub enum DisconnectReason {
     SeqNumExhausted,
 }
 
-/// Per-connection application handler. [`ApplicationFactory::create`] builds
-/// a fresh instance for every connection a session makes, so the callbacks
-/// below describe the life of one connection.
+/// Handles messages and events for one connection of a session.
 ///
-/// All callbacks execute inline in the session's IO loop. While a callback
-/// runs, the session cannot process input, send heartbeats, or drain channels.
-/// Callbacks should return promptly - if a callback takes longer than
-/// `heartbeat_interval`, the peer may disconnect.
+/// A new handler is created for each connection, including reconnects.
+/// See [`Initiator::new`](crate::Initiator::new) and
+/// [`Acceptor::new`](crate::Acceptor::new) for initialization.
+///
+/// Callbacks delay message processing and heartbeats until they return,
+/// so they should complete promptly.
 #[expect(async_fn_in_trait, reason = "single-threaded runtime, Send not needed")]
-pub trait Application<M: SessionMessage> {
+pub trait SessionHandler<M: SessionMessage> {
     /// This side's part of the Logon handshake is on the wire. Provides the
     /// [`Sender`] for staging outgoing messages.
     ///
@@ -413,7 +413,7 @@ pub trait Application<M: SessionMessage> {
     /// storage is healthy; any remaining messages have been discarded.
     /// See [`DisconnectReason`] for the outcome.
     ///
-    /// This can be the first and only callback a connection's `Application`
+    /// This can be the first and only callback a connection's `SessionHandler`
     /// receives. [`on_session_ready`](Self::on_session_ready) is skipped when
     /// the connection ends before there is a session to announce:
     ///
@@ -434,7 +434,7 @@ pub trait Application<M: SessionMessage> {
     /// A `send()` after the session ends returns [`SendError::Closed`],
     /// handing the unsent message back. A `send()` issued from *within* this
     /// callback also returns [`SendError::Closed`]. On reconnect, a new
-    /// `Application` instance is created via [`ApplicationFactory::create`]
+    /// `SessionHandler` instance is created by the `make_handler` closure
     /// and receives a fresh `Sender` through a new `on_session_ready` call.
     ///
     /// [`SendError::Closed`]: crate::SendError::Closed
@@ -544,15 +544,14 @@ pub trait Application<M: SessionMessage> {
     fn on_output_error(&mut self, msg: Box<M>, error: &SerializeError);
 }
 
-/// Connection-scoped facts available when a session's [`Application`] is
-/// built, handed to [`ApplicationFactory::create`].
+/// Connection-scoped facts passed to the `make_handler` closure when it
+/// constructs a [`SessionHandler`].
 ///
 /// A read-only view: it is constructed by the library and only ever passed
 /// *to* application code, never accepted back by any session API.
 //
 // New attributes are exposed as additional accessor methods rather than as
-// extra `create` parameters, so the factory signature stays stable as the
-// crate grows.
+// extra closure parameters, so its signature stays stable as the crate grows.
 #[derive(Debug)]
 pub struct SessionContext<'a> {
     session_id: &'a SessionId,
@@ -615,23 +614,6 @@ impl<'a> SessionContext<'a> {
     pub fn time_precision(&self) -> TimePrecision {
         self.time_precision
     }
-}
-
-/// Factory for creating per-session [`Application`] instances.
-///
-/// The Acceptor/Initiator holds the factory and calls
-/// [`create`](ApplicationFactory::create) when a session is established.
-pub trait ApplicationFactory<M: SessionMessage> {
-    /// Handler type produced by [`create`](Self::create).
-    type App: Application<M>;
-
-    /// Create an application handler for a new session.
-    ///
-    /// Called once per connection, before the session's first message is
-    /// surfaced to the handler - so an inbound `Logon<A>` reaches
-    /// [`on_admin_msg_in`](Application::on_admin_msg_in) on a handler that
-    /// already carries everything read out of `ctx`.
-    fn create(&self, ctx: &SessionContext<'_>) -> Self::App;
 }
 
 #[cfg(test)]

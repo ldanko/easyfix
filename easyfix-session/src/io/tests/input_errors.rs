@@ -138,7 +138,7 @@ async fn reject_without_text_reaches_peer_as_a_reject() {
     local
         .run_until(async {
             let mut harness = build_harness();
-            harness.app.reject_without_text = true;
+            harness.handler.reject_without_text = true;
             let (server_io, mut client_io) = io::duplex(8192);
             let (server_reader, server_writer) = io::split(server_io);
             let first_msg = build_peer_logon(1, 30);
@@ -233,7 +233,7 @@ async fn input_io_error_ends_with_io_error() {
                     server_writer,
                     harness.engine,
                     &mut storage,
-                    harness.app,
+                    harness.handler,
                     harness.sender,
                     harness.app_rx,
                     harness.control_rx,

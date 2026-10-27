@@ -1,6 +1,7 @@
 use std::assert_matches;
 use std::{
     cell::{Cell, RefCell},
+    error::Error as StdError,
     future::{self, Future},
     // Renamed: the bare `io` in this file is `tokio::io`.
     io as std_io,
@@ -27,7 +28,8 @@ use super::{
     RegisteredSession, ShutdownMode, TaskGuard, acceptor_session_task,
 };
 use crate::{
-    application::{ApplicationFactory, SessionContext},
+    Sender, SerializeError,
+    application::{DisconnectReason, InputAction, SessionContext, SessionHandler},
     io::time::TimerBackend,
     messages_storage::{InMemoryStorage, MessagesStorage},
     session_id::SessionId,
@@ -39,7 +41,7 @@ use crate::{
 fn busywait_acceptor_runs_an_identified_session_without_a_tokio_runtime() {
     let acceptor = Acceptor::<Message, InMemoryStorage, _>::with_busywait_timers(
         AcceptorSettings::default(),
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
     );
     let id = test_helpers::default_session_id();
     acceptor
@@ -78,7 +80,7 @@ async fn session_task_panic_restores_storage_to_registry() {
         .run_until(async {
             let inner = Rc::new(AcceptorInner::<Message, InMemoryStorage, _>::new(
                 AcceptorSettings::default(),
-                test_helpers::PanicAppFactory,
+                test_helpers::make_panic_handler,
                 TimerBackend::Tokio,
             ));
 
@@ -115,18 +117,12 @@ async fn session_task_panic_restores_storage_to_registry() {
         .await;
 }
 
-/// Factory recording the [`SessionContext`] contents it was handed, so a test
-/// can assert what the acceptor exposes to application code.
-struct RecordingAppFactory {
+fn recording_handler(
     seen: Rc<Cell<Option<SocketAddr>>>,
-}
-
-impl ApplicationFactory<Message> for RecordingAppFactory {
-    type App = test_helpers::PanicApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> test_helpers::PanicApp {
-        self.seen.set(ctx.peer_addr());
-        test_helpers::PanicApp
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<test_helpers::PanicHandler, Box<dyn StdError>> {
+    async move |ctx: &SessionContext<'_>| {
+        seen.set(ctx.peer_addr());
+        Ok(test_helpers::PanicHandler)
     }
 }
 
@@ -136,14 +132,14 @@ impl ApplicationFactory<Message> for RecordingAppFactory {
 /// must be available by the time the handler is built - before the inbound
 /// `Logon<A>` reaches `on_admin_msg_in`.
 #[tokio::test]
-async fn factory_receives_peer_addr_in_session_context() {
+async fn make_handler_receives_peer_addr_in_session_context() {
     let local = LocalSet::new();
     local
         .run_until(async {
             let seen = Rc::new(Cell::new(None));
             let inner = Rc::new(AcceptorInner::<Message, InMemoryStorage, _>::new(
                 AcceptorSettings::default(),
-                RecordingAppFactory { seen: seen.clone() },
+                recording_handler(seen.clone()),
                 TimerBackend::Tokio,
             ));
             register_default_session(&inner, Some(test_helpers::default_storage()));
@@ -151,8 +147,8 @@ async fn factory_receives_peer_addr_in_session_context() {
             let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
             let (handle, _client_io) =
                 spawn_first_message(inner, &test_helpers::serialize_message(&logon)).await;
-            // `PanicApp` unwinds the task in `on_admin_msg_in`, which happens
-            // strictly after `create` - so the join error also pins down the
+            // `PanicHandler` unwinds the task in `on_admin_msg_in`, which happens
+            // strictly after `make_handler` - so the join error also pins down the
             // ordering: the address was recorded before the first message was
             // surfaced to the handler.
             let join = handle.await;
@@ -167,20 +163,318 @@ async fn factory_receives_peer_addr_in_session_context() {
         .await;
 }
 
+struct InitHandler(Rc<Cell<usize>>);
+
+impl SessionHandler<Message> for InitHandler {
+    async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {
+        self.0.set(self.0.get() + 1);
+    }
+
+    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {
+        self.0.set(self.0.get() + 1);
+    }
+
+    async fn on_app_msg_in(&mut self, _: Box<Message>) -> InputAction {
+        self.0.set(self.0.get() + 1);
+        InputAction::Accept
+    }
+
+    fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("handler initialization failed")]
+struct InitError {
+    token: Rc<()>,
+    #[source]
+    source: std_io::Error,
+}
+
+struct InitErrorObserver {
+    id: SessionId,
+    token: Rc<()>,
+    reported: Cell<bool>,
+    reenter: Box<dyn Fn()>,
+}
+
+impl ConnectionObserver for InitErrorObserver {
+    fn on_connection_dropped(&self, peer: SocketAddr, reason: ConnectionDropReason<'_>) {
+        assert_eq!(peer, test_helpers::TEST_PEER_ADDR);
+        let ConnectionDropReason::HandlerInitFailed { session_id, error } = reason else {
+            panic!("unexpected connection drop: {reason:?}");
+        };
+        assert_eq!(session_id, &self.id);
+        let original = error.downcast_ref::<InitError>().unwrap();
+        assert!(Rc::ptr_eq(&original.token, &self.token));
+        let source = error
+            .source()
+            .unwrap()
+            .downcast_ref::<std_io::Error>()
+            .unwrap();
+        assert_eq!(source.kind(), std_io::ErrorKind::ConnectionRefused);
+        (self.reenter)();
+        assert!(!self.reported.replace(true));
+    }
+}
+
+#[tokio::test]
+async fn handler_init_failure_releases_session_before_reporting_and_allows_retry() {
+    LocalSet::new()
+        .run_until(async {
+            let callbacks = Rc::new(Cell::new(0));
+            let token = Rc::new(());
+            let attempts = Rc::new(Cell::new(0));
+            let id = test_helpers::default_session_id();
+            let make_handler = {
+                let callbacks = callbacks.clone();
+                let token = token.clone();
+                let attempts = attempts.clone();
+                let id = id.clone();
+                async move |ctx: &SessionContext<'_>| -> Result<InitHandler, Box<dyn StdError>> {
+                    task::yield_now().await;
+                    // Both the context and captured Rc values are borrowed across
+                    // the await; constructors need neither owned context nor Send.
+                    assert_eq!(ctx.session_id(), &id);
+                    assert_eq!(ctx.peer_addr(), Some(test_helpers::TEST_PEER_ADDR));
+                    let attempt = attempts.replace(attempts.get() + 1);
+                    if attempt == 0 {
+                        return Err(InitError {
+                            token: token.clone(),
+                            source: std_io::Error::from(std_io::ErrorKind::ConnectionRefused),
+                        }
+                        .into());
+                    }
+                    Ok(InitHandler(callbacks.clone()))
+                }
+            };
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
+            acceptor
+                .register_session(
+                    id.clone(),
+                    test_helpers::default_session_settings(),
+                    |_, size| {
+                        let mut storage = InMemoryStorage::new(size);
+                        storage.set_next_sender_msg_seq_num(nz_seq(7)).unwrap();
+                        storage.set_next_target_msg_seq_num(nz_seq(11)).unwrap();
+                        Ok(storage)
+                    },
+                )
+                .unwrap();
+            let weak = Rc::downgrade(&acceptor.inner);
+            let observer = Rc::new(InitErrorObserver {
+                id: id.clone(),
+                token,
+                reported: Cell::new(false),
+                reenter: Box::new(move || {
+                    let acceptor = Acceptor {
+                        inner: weak.upgrade().unwrap(),
+                    };
+                    let id = test_helpers::default_session_id();
+                    assert!(!acceptor.is_session_active(&id).unwrap());
+                    let storage = acceptor.remove_session(&id).unwrap();
+                    assert_eq!(storage.next_sender_msg_seq_num().get(), 7);
+                    assert_eq!(storage.next_target_msg_seq_num().get(), 11);
+                    acceptor
+                        .register_session(id, test_helpers::default_session_settings(), |_, _| {
+                            Ok(storage)
+                        })
+                        .unwrap();
+                }),
+            });
+            acceptor.set_connection_observer(observer.clone());
+            for attempt in 0..2 {
+                let logon = test_helpers::logon(11, fix_str!("TARGET"), fix_str!("SENDER"));
+                let (writer, mut peer) = io::duplex(8192);
+                timeout(
+                    Duration::from_secs(5),
+                    acceptor.session_task(
+                        std_io::Cursor::new(test_helpers::serialize_message(&logon)),
+                        writer,
+                        test_helpers::TEST_PEER_ADDR,
+                    ),
+                )
+                .await
+                .unwrap();
+                let mut wire = Vec::new();
+                timeout(Duration::from_secs(5), peer.read_to_end(&mut wire))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(observer.reported.get());
+                assert!(!acceptor.is_session_active(&id).unwrap());
+                if attempt == 0 {
+                    assert!(wire.is_empty());
+                    assert_eq!(callbacks.get(), 0);
+                } else {
+                    assert!(!wire.is_empty());
+                    assert!(callbacks.get() > 0);
+                }
+            }
+            assert_eq!(attempts.get(), 2);
+            let storage = acceptor.remove_session(&id).unwrap();
+            assert_eq!(storage.next_sender_msg_seq_num().get(), 8);
+            assert_eq!(storage.next_target_msg_seq_num().get(), 12);
+        })
+        .await;
+}
+
+struct InitDropProbe(Rc<Cell<bool>>);
+
+impl Drop for InitDropProbe {
+    fn drop(&mut self) {
+        self.0.set(true);
+    }
+}
+
+#[tokio::test]
+async fn pending_handler_init_is_cancelled_by_local_controls_shutdown_and_abort() {
+    #[derive(Clone, Copy, Debug)]
+    enum Stop {
+        Close,
+        Logout,
+        DisconnectShutdown,
+        LogoutShutdown,
+        GracefulShutdown,
+        Abort,
+    }
+    LocalSet::new()
+        .run_until(async {
+            for stop in [
+                Stop::Close,
+                Stop::Logout,
+                Stop::DisconnectShutdown,
+                Stop::LogoutShutdown,
+                Stop::GracefulShutdown,
+                Stop::Abort,
+            ] {
+                let entered = Rc::new(Notify::new());
+                let dropped = Rc::new(Cell::new(false));
+                let callbacks = Rc::new(Cell::new(0));
+                let make_handler = {
+                    let entered = entered.clone();
+                    let dropped = dropped.clone();
+                    let callbacks = callbacks.clone();
+                    let pending_once = Cell::new(true);
+                    async move |_: &SessionContext<'_>| -> Result<InitHandler, Box<dyn StdError>> {
+                        if pending_once.replace(false) {
+                            let _probe = InitDropProbe(dropped.clone());
+                            entered.notify_one();
+                            future::pending::<()>().await;
+                        }
+                        Ok(InitHandler(callbacks.clone()))
+                    }
+                };
+                let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
+                let id = test_helpers::default_session_id();
+                acceptor
+                    .register_session(
+                        id.clone(),
+                        test_helpers::default_session_settings(),
+                        |_, size| Ok(InMemoryStorage::new(size)),
+                    )
+                    .unwrap();
+                let observer = Rc::new(RecordingObserver::default());
+                acceptor.set_connection_observer(observer.clone());
+                let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+                let (writer, mut peer) = io::duplex(8192);
+                let handle = acceptor.run_session(
+                    std_io::Cursor::new(test_helpers::serialize_message(&logon)),
+                    writer,
+                    test_helpers::TEST_PEER_ADDR,
+                );
+                timeout(Duration::from_secs(5), entered.notified())
+                    .await
+                    .unwrap();
+                assert!(acceptor.is_session_active(&id).unwrap());
+                timeout(Duration::from_secs(5), async {
+                    match stop {
+                        Stop::Close => acceptor.close(&id).await.unwrap(),
+                        Stop::Logout => acceptor.logout(&id, None, None, false).await.unwrap(),
+                        Stop::DisconnectShutdown => {
+                            acceptor.shutdown(ShutdownMode::Disconnect).await
+                        }
+                        Stop::LogoutShutdown => {
+                            acceptor
+                                .shutdown(ShutdownMode::LogoutAndDisconnect {
+                                    session_status: None,
+                                    text: None,
+                                })
+                                .await
+                        }
+                        Stop::GracefulShutdown => {
+                            acceptor
+                                .shutdown(ShutdownMode::GracefulLogout {
+                                    session_status: None,
+                                    text: None,
+                                })
+                                .await
+                        }
+                        Stop::Abort => handle.abort(),
+                    }
+                    let result = handle.await;
+                    if matches!(stop, Stop::Abort) {
+                        assert!(result.unwrap_err().is_cancelled());
+                    } else {
+                        result.unwrap();
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(dropped.get(), "initializer resource survived {stop:?}");
+                assert_eq!(callbacks.get(), 0);
+                assert!(!acceptor.is_session_active(&id).unwrap());
+                assert!(observer.summaries().is_empty());
+                let mut wire = Vec::new();
+                timeout(Duration::from_secs(5), peer.read_to_end(&mut wire))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(wire.is_empty());
+                if matches!(stop, Stop::Close | Stop::Logout | Stop::Abort) {
+                    timeout(
+                        Duration::from_secs(5),
+                        acceptor.session_task(
+                            std_io::Cursor::new(test_helpers::serialize_message(&logon)),
+                            io::sink(),
+                            test_helpers::TEST_PEER_ADDR,
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(callbacks.get() > 0);
+                }
+                let storage = acceptor.remove_session(&id).unwrap();
+                let expected = if matches!(stop, Stop::Close | Stop::Logout | Stop::Abort) {
+                    2
+                } else {
+                    1
+                };
+                assert_eq!(storage.next_sender_msg_seq_num().get(), expected);
+                assert_eq!(storage.next_target_msg_seq_num().get(), expected);
+            }
+        })
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Registry management API (synchronous): register / remove / suspend /
 // resume / await_session_closed classification. These exercise the registry
 // without a live connection, so no session task or runtime driving is needed.
 // ---------------------------------------------------------------------------
 
-fn stub_acceptor() -> Acceptor<Message, InMemoryStorage, test_helpers::StubAppFactory> {
-    Acceptor::new(test_helpers::StubAppFactory)
+type MakeStubHandler =
+    fn(&SessionContext<'_>) -> test_helpers::ReadyHandler<test_helpers::StubHandler>;
+
+fn stub_acceptor() -> Acceptor<Message, InMemoryStorage, MakeStubHandler> {
+    Acceptor::new(test_helpers::make_stub_handler)
 }
 
 #[tokio::test]
 async fn running_reset_requires_an_active_session_before_message_support() {
     let acceptor =
-        Acceptor::<CountedResetMessage, InMemoryStorage, _>::new(test_helpers::StubAppFactory);
+        Acceptor::<CountedResetMessage, InMemoryStorage, _>::new(test_helpers::make_stub_handler);
     let id = test_helpers::default_session_id();
     assert_matches!(
         acceptor.request_running_session_reset(&id).await,
@@ -205,7 +499,8 @@ async fn running_reset_requires_an_active_session_before_message_support() {
 fn reset_acceptance_requires_message_type_support() {
     for on_connect in [false, true] {
         for in_session in [false, true] {
-            let acceptor = Acceptor::<CountedResetMessage, _, _>::new(test_helpers::StubAppFactory);
+            let acceptor =
+                Acceptor::<CountedResetMessage, _, _>::new(test_helpers::make_stub_handler);
             let builds = Cell::new(0);
             let id = test_helpers::default_session_id();
             let settings = SessionSettings {
@@ -478,17 +773,17 @@ fn clone_shares_session_registry() {
 // out on the wire before any session is established.
 // ---------------------------------------------------------------------------
 
-fn stub_inner() -> Rc<AcceptorInner<Message, InMemoryStorage, test_helpers::StubAppFactory>> {
+fn stub_inner() -> Rc<AcceptorInner<Message, InMemoryStorage, MakeStubHandler>> {
     Rc::new(AcceptorInner::new(
         AcceptorSettings::default(),
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
         TimerBackend::Tokio,
     ))
 }
 
 /// Register `default_session_id()` in `inner`. `storage: None` simulates
 /// a session whose storage is already taken by an active connection.
-fn register_default_session<A: ApplicationFactory<Message>>(
+fn register_default_session<A>(
     inner: &Rc<AcceptorInner<Message, InMemoryStorage, A>>,
     storage: Option<InMemoryStorage>,
 ) -> SessionId {
@@ -513,10 +808,14 @@ fn register_default_session<A: ApplicationFactory<Message>>(
 /// the peer's end of the connection, for tests that need the join outcome
 /// itself (a panic) or the wire before the task finishes;
 /// [`run_first_message`] wraps it for the common case.
-async fn spawn_first_message<A: ApplicationFactory<Message> + 'static>(
+async fn spawn_first_message<A, H>(
     inner: Rc<AcceptorInner<Message, InMemoryStorage, A>>,
     first_bytes: &[u8],
-) -> (JoinHandle<()>, DuplexStream) {
+) -> (JoinHandle<()>, DuplexStream)
+where
+    A: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError>> + 'static,
+    H: SessionHandler<Message> + 'static,
+{
     let (server_io, mut client_io) = io::duplex(8192);
     let (server_reader, server_writer) = io::split(server_io);
     client_io.write_all(first_bytes).await.expect("write");
@@ -535,10 +834,14 @@ async fn spawn_first_message<A: ApplicationFactory<Message> + 'static>(
 /// Feed `first_bytes` to a fresh acceptor session task over a duplex
 /// connection, wait for the task to finish, and return everything the
 /// acceptor wrote to the wire.
-async fn run_first_message<A: ApplicationFactory<Message> + 'static>(
+async fn run_first_message<A, H>(
     inner: Rc<AcceptorInner<Message, InMemoryStorage, A>>,
     first_bytes: &[u8],
-) -> Vec<u8> {
+) -> Vec<u8>
+where
+    A: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError>> + 'static,
+    H: SessionHandler<Message> + 'static,
+{
     let (handle, mut client_io) = spawn_first_message(inner, first_bytes).await;
     // Bounded: a task that stops closing its connection would otherwise
     // hang every test built on this helper instead of failing it.
@@ -922,7 +1225,7 @@ async fn oversized_first_message_is_dropped_silently() {
                     max_first_message_size: limit,
                     ..AcceptorSettings::default()
                 },
-                test_helpers::StubAppFactory,
+                test_helpers::make_stub_handler,
                 TimerBackend::Tokio,
             ));
             *inner.connection_observer.borrow_mut() = Some(observer.clone());
@@ -1038,11 +1341,11 @@ async fn acceptors_keep_independent_clocks_before_session_identification() {
     };
     let busywait_acceptor = Acceptor::<Message, InMemoryStorage, _>::with_busywait_timers(
         settings.clone(),
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
     );
     let tokio_acceptor = Acceptor::<Message, InMemoryStorage, _>::with_settings(
         settings,
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
     );
     let busywait_observer = Rc::new(RecordingObserver::default());
     let tokio_observer = Rc::new(RecordingObserver::default());
@@ -1153,7 +1456,7 @@ async fn shutdown_teardown_is_not_reported() {
 /// re-enter the acceptor. The resulting reference cycle leaks, which is
 /// acceptable for the duration of a test.
 struct ReentrantObserver {
-    acceptor: RefCell<Option<Acceptor<Message, InMemoryStorage, test_helpers::StubAppFactory>>>,
+    acceptor: RefCell<Option<Acceptor<Message, InMemoryStorage, MakeStubHandler>>>,
     reentered: Cell<bool>,
 }
 
@@ -1176,7 +1479,7 @@ async fn observer_may_reenter_the_acceptor() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let acceptor = Acceptor::new(test_helpers::StubAppFactory);
+            let acceptor = stub_acceptor();
             let observer = Rc::new(ReentrantObserver {
                 acceptor: RefCell::new(Some(acceptor.clone())),
                 reentered: Cell::new(false),

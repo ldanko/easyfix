@@ -27,7 +27,7 @@ async fn confirmed_ack_callback_finishes_before_its_expired_budget_is_considered
             settings.auto_disconnect_after_no_logon_response = if expired { Duration::from_secs(10) } else { Duration::MAX };
             let mut harness = build_harness_with_settings(settings);
             let (entered, mut started) = mpsc::unbounded_channel(); let (release, action) = mpsc::unbounded_channel();
-            harness.app.admin_gate = Some(AdminGate { kind: MsgTypeBase::Logon, skip: 1, entered, action });
+            harness.handler.admin_gate = Some(AdminGate { kind: MsgTypeBase::Logon, skip: 1, entered, action });
             let mut peer = running_reset_harness(harness).await;
             peer.control.send(ControlMsg::ResetRunningSession).await.unwrap();
             let id = peer.probe().await; peer.send(&test_helpers::heartbeat(2, Some(id))).await;
@@ -92,7 +92,7 @@ async fn reset_probe_callback_finishes_before_the_new_ack_budget_is_checked() {
             let mut harness = build_harness_with_settings(settings);
             let (entered, mut started_rx) = mpsc::unbounded_channel();
             let (release, action) = mpsc::unbounded_channel();
-            harness.app.admin_gate = Some(AdminGate { kind: MsgTypeBase::Heartbeat, skip: 0, entered, action });
+            harness.handler.admin_gate = Some(AdminGate { kind: MsgTypeBase::Heartbeat, skip: 0, entered, action });
             let mut peer = running_reset_harness(harness).await;
             let started = time::Instant::now();
             peer.control.send(ControlMsg::ResetRunningSession).await.unwrap();
@@ -144,7 +144,7 @@ async fn reset_probe_callback_outcomes_precede_the_expired_preparation_budget() 
             let mut harness = build_harness_with_settings(settings);
             let (entered, mut entered_rx) = mpsc::unbounded_channel();
             let (release, action) = mpsc::unbounded_channel();
-            harness.app.admin_gate = Some(AdminGate { kind: MsgTypeBase::Heartbeat, skip: 0, entered, action });
+            harness.handler.admin_gate = Some(AdminGate { kind: MsgTypeBase::Heartbeat, skip: 0, entered, action });
             let mut peer = running_reset_harness(harness).await;
             peer.control.send(ControlMsg::ResetRunningSession).await.unwrap();
             let id = peer.probe().await;

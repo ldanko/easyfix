@@ -57,7 +57,17 @@ async fn failed_reset_logon_writes_keep_the_committed_reset_and_failure_reason()
                     let events = harness.events_rx;
                     let task = task::spawn_local(async move {
                         let mut storage = harness.storage;
-                        session_loop(SessionOpening::SendLogon(SessionStart::Reset), InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE), writer, harness.engine, &mut storage, harness.app, harness.sender, harness.app_rx, harness.control_rx).await;
+                        session_loop(
+                            SessionOpening::SendLogon(SessionStart::Reset),
+                            InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
+                            writer,
+                            harness.engine,
+                            &mut storage,
+                            harness.handler,
+                            harness.sender,
+                            harness.app_rx,
+                            harness.control_rx
+                        ).await;
                         storage
                     });
                     (events, task, wire, Vec::new(), WriteController { armed, entered: observed, release })
@@ -146,7 +156,10 @@ async fn reset_send_gates_preserve_disconnect_storage_and_the_count_cap() {
             let count = if count_cap { 2 } else { 1 };
             for _ in 0..count { peer.sender.send(test_helpers::new_order_single_with_empty_header()).unwrap(); }
             if !count_cap { peer.control.send(ControlMsg::Disconnect).await.unwrap(); }
-            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(reason) if reason == if sent { DisconnectReason::SeqNumResetFailed } else { DisconnectReason::SlowConsumer });
+            assert_matches!(
+                peer.events.recv().await.unwrap(),
+                TestEvent::SessionEnd(reason) if reason == if sent { DisconnectReason::SeqNumResetFailed } else { DisconnectReason::SlowConsumer }
+            );
             let mut storage = peer.task.await.unwrap();
             let first = if sent { 2 } else { 3 };
             assert_eq!(storage.next_sender_msg_seq_num().get(), first + count);

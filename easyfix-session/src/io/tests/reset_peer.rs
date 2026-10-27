@@ -108,7 +108,7 @@ where
             writer,
             harness.engine,
             &mut storage,
-            harness.app,
+            harness.handler,
             harness.sender,
             harness.app_rx,
             harness.control_rx,

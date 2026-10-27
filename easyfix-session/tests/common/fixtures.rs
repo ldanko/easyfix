@@ -232,6 +232,9 @@ pub fn summarize(reason: ConnectionDropReason<'_>) -> String {
         ConnectionDropReason::UnknownSession(id) => format!("unknown:{id}"),
         ConnectionDropReason::SessionAlreadyActive(id) => format!("active:{id}"),
         ConnectionDropReason::SessionSuspended(id) => format!("suspended:{id}"),
+        ConnectionDropReason::HandlerInitFailed { session_id, error } => {
+            format!("handler_init:{session_id}:{error}")
+        }
     }
 }
 

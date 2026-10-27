@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     InputError, ValidationError,
-    application::{Application, DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, SessionHandler},
     io::{ControlMsg, InputStream, SessionOpening, sender::Sender, session_loop},
     messages_storage::MessagesStorage,
     session_id::SessionId,
@@ -38,9 +38,9 @@ enum Event {
     Deserialize,
 }
 
-struct RecordingApp(mpsc::UnboundedSender<Event>);
+struct RecordingHandler(mpsc::UnboundedSender<Event>);
 
-impl Application<Message> for RecordingApp {
+impl SessionHandler<Message> for RecordingHandler {
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {
         self.0.send(Event::Ready).unwrap();
     }
@@ -107,7 +107,7 @@ impl Session {
                 writer,
                 harness.engine,
                 &mut storage,
-                RecordingApp(events_tx),
+                RecordingHandler(events_tx),
                 harness.sender,
                 harness.app_rx,
                 harness.control_rx,

@@ -31,7 +31,7 @@ use crate::{
 #[tokio::test]
 async fn process_one_resend_defers_real_resend_with_pending_gap() {
     let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-    let mut app = test_helpers::StubApp;
+    let mut handler = test_helpers::StubHandler;
 
     // Skip seq 1 and 2 - irrelevant to this test. Commits land at 3 and 4.
     storage.set_next_sender_msg_seq_num(nz_seq(3)).unwrap();
@@ -60,7 +60,7 @@ async fn process_one_resend_defers_real_resend_with_pending_gap() {
     let (mut writer, reader) = io::duplex(16384);
 
     // Iteration 1: seq 3 (admin) - accumulate gap, advance to 4..=4.
-    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut app)
+    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut handler)
         .await
         .unwrap();
     assert!(cont, "iter 1 should continue");
@@ -72,7 +72,7 @@ async fn process_one_resend_defers_real_resend_with_pending_gap() {
 
     // Iteration 2: would resend seq 4, but a gap-fill is pending -
     // flush the gap, defer the resend. Cursor must NOT advance.
-    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut app)
+    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut handler)
         .await
         .unwrap();
     assert!(cont, "iter 2 should continue");
@@ -90,7 +90,7 @@ async fn process_one_resend_defers_real_resend_with_pending_gap() {
         .expect("flush ok");
 
     // Iteration 3: seq 4 (app, no gap pending) - process resend, exhaust range.
-    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut app)
+    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut handler)
         .await
         .unwrap();
     assert!(cont, "iter 3 should continue");
@@ -100,7 +100,7 @@ async fn process_one_resend_defers_real_resend_with_pending_gap() {
         .expect("flush ok");
 
     // Iteration 4: range already None - returns false.
-    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut app)
+    let cont = process_one_resend(&mut active_resend, &mut storage, &mut engine, &mut handler)
         .await
         .unwrap();
     assert!(!cont, "iter 4 - range exhausted, should return false");

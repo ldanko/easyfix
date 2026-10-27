@@ -1,4 +1,7 @@
-use std::{assert_matches, borrow::Cow, cell::Cell, error::Error as StdError, fmt, rc::Rc};
+use std::{
+    assert_matches, borrow::Cow, cell::Cell, error::Error as StdError, fmt, future,
+    net::SocketAddr, rc::Rc,
+};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -13,7 +16,7 @@ use futures_util::FutureExt;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::mpsc,
+    sync::{Notify, mpsc},
     task::{self, JoinHandle, LocalSet, yield_now},
     time::{self, Duration, timeout},
 };
@@ -21,7 +24,7 @@ use tokio::{
 use super::{Initiator, InitiatorError, SessionStart};
 use crate::{
     Acceptor, AcceptorError, SendError, Sender, SessionId,
-    application::{Application, ApplicationFactory, DisconnectReason, InputAction, SessionContext},
+    application::{DisconnectReason, InputAction, SessionContext, SessionHandler},
     messages_storage::{InMemoryStorage, MessagesStorage},
     settings::SessionSettings,
     test_helpers::{
@@ -30,24 +33,20 @@ use crate::{
     },
 };
 
-struct NoCallbacksFactory;
-
 #[test]
 fn busywait_initiator_reconnects_without_a_tokio_runtime() {
     let initiator = Initiator::<Message, InMemoryStorage, _>::with_busywait_timers(
         test_helpers::default_session_id(),
         test_helpers::default_session_settings(),
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
         |_, size| Ok(InMemoryStorage::new(size)),
     )
     .unwrap();
 
     for _ in 0..2 {
         // Write the opening message, then complete on the peer's EOF.
-        let task = initiator
-            .session_task(io::empty(), io::sink(), None)
-            .unwrap();
-        assert_eq!(task.now_or_never(), Some(()));
+        let task = initiator.session_task(io::empty(), io::sink(), None);
+        assert_matches!(task.now_or_never(), Some(Ok(())));
     }
     assert_eq!(
         initiator
@@ -62,12 +61,284 @@ fn busywait_initiator_reconnects_without_a_tokio_runtime() {
     );
 }
 
-impl ApplicationFactory<Message> for NoCallbacksFactory {
-    type App = test_helpers::StubApp;
+fn no_callbacks(_: &SessionContext<'_>) -> test_helpers::ReadyHandler<test_helpers::StubHandler> {
+    panic!("management operations must not create a handler");
+}
 
-    fn create(&self, _: &SessionContext<'_>) -> Self::App {
-        panic!("management operations must not create an application");
+#[tokio::test]
+async fn connect_reserves_immediately_and_duplicate_failure_preserves_first_task() {
+    LocalSet::new()
+        .run_until(async {
+            let entered = Rc::new(Notify::new());
+            let initiator = initiator({
+                let entered = entered.clone();
+                async move |_: &SessionContext<'_>| {
+                    entered.notify_one();
+                    future::pending::<()>().await;
+                    Ok(test_helpers::StubHandler)
+                }
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let first = initiator.connect(address);
+            assert!(initiator.is_session_active());
+            assert_matches!(
+                initiator.reset_session(),
+                Err(InitiatorError::SessionActive)
+            );
+
+            let second = initiator.connect(address);
+            assert_matches!(
+                timeout(Duration::from_secs(1), second)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Err(InitiatorError::SessionActive)
+            );
+            assert!(initiator.is_session_active());
+            let (_peer, _) = timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .unwrap();
+            assert!(listener.accept().now_or_never().is_none());
+            assert!(!first.is_finished());
+
+            timeout(Duration::from_secs(1), initiator.close())
+                .await
+                .unwrap()
+                .unwrap();
+            first.await.unwrap().unwrap();
+            assert!(!initiator.is_session_active());
+            initiator.reset_session().unwrap();
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn connect_can_be_cancelled_before_first_poll_without_opening_tcp() {
+    #[derive(Clone, Copy, Debug)]
+    enum Stop {
+        Close,
+        Logout,
+        Disconnect,
+        Abort,
     }
+    LocalSet::new()
+        .run_until(async {
+            let initiator = initiator(no_callbacks);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            for action in [Stop::Close, Stop::Logout, Stop::Disconnect, Stop::Abort] {
+                let handle = initiator.connect(listener.local_addr().unwrap());
+                assert!(initiator.is_session_active(), "{action:?}");
+                match action {
+                    Stop::Close => timeout(Duration::from_secs(1), initiator.close())
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    Stop::Logout => initiator.logout(None, None, false).await.unwrap(),
+                    Stop::Disconnect => initiator.disconnect().await.unwrap(),
+                    Stop::Abort => handle.abort(),
+                }
+                let result = timeout(Duration::from_secs(1), handle).await.unwrap();
+                if matches!(action, Stop::Abort) {
+                    assert!(result.unwrap_err().is_cancelled());
+                } else {
+                    result.unwrap().unwrap();
+                }
+                assert!(!initiator.is_session_active(), "{action:?}");
+                assert!(listener.accept().now_or_never().is_none(), "{action:?}");
+                initiator.reset_session().unwrap();
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn tcp_setup_error_is_returned_by_task_and_allows_retry() {
+    LocalSet::new()
+        .run_until(async {
+            let creates = Rc::new(Cell::new(0));
+            let initiator = initiator(counting_start_handler(creates.clone()));
+            let no_addresses: &'static [SocketAddr] = &[];
+            let failed = initiator.connect(no_addresses);
+            assert!(initiator.is_session_active());
+            assert_matches!(
+                timeout(Duration::from_secs(1), failed)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Err(InitiatorError::Io(_))
+            );
+            assert!(!initiator.is_session_active());
+            assert_eq!(creates.get(), 0);
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let retry = initiator.connect(listener.local_addr().unwrap());
+            let (mut peer, _) = timeout(Duration::from_secs(1), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            timeout(
+                Duration::from_secs(1),
+                test_helpers::read_one_message(&mut peer, &mut Vec::new()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates.get(), 1);
+            timeout(Duration::from_secs(1), initiator.close())
+                .await
+                .unwrap()
+                .unwrap();
+            retry.await.unwrap().unwrap();
+            assert!(!initiator.is_session_active());
+        })
+        .await;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("handler initialization failed")]
+struct HandlerInitFailure(Rc<()>);
+
+#[tokio::test]
+async fn async_handler_failure_preserves_source_and_storage_for_retry() {
+    LocalSet::new()
+        .run_until(async {
+            let error_identity = Rc::new(());
+            let attempts = Rc::new(Cell::new(0));
+            let address = "127.0.0.1:4321".parse().unwrap();
+            let initiator = Initiator::<Message, InMemoryStorage, _>::new(
+                test_helpers::default_session_id(),
+                SessionSettings::default(),
+                {
+                    let error_identity = error_identity.clone();
+                    let attempts = attempts.clone();
+                    async move |ctx: &SessionContext<'_>| {
+                        yield_now().await;
+                        // Both context and captured state are borrowed across await.
+                        assert_eq!(ctx.session_id(), &test_helpers::default_session_id());
+                        assert_eq!(ctx.peer_addr(), Some(address));
+                        attempts.set(attempts.get() + 1);
+                        if attempts.get() == 1 {
+                            return Err(HandlerInitFailure(error_identity.clone()).into());
+                        }
+                        Ok(test_helpers::StubHandler)
+                    }
+                },
+                |_, max| {
+                    let mut storage = InMemoryStorage::new(max);
+                    storage.set_next_sender_msg_seq_num(nz_seq(7)).unwrap();
+                    storage.set_next_target_msg_seq_num(nz_seq(11)).unwrap();
+                    Ok(storage)
+                },
+            )
+            .unwrap();
+            let (local, mut peer) = io::duplex(8192);
+            let (reader, writer) = io::split(local);
+            let handle = initiator.run_session_with_reset(reader, writer, Some(address));
+            let error = timeout(Duration::from_secs(1), handle)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_matches!(&error, InitiatorError::HandlerInit(_));
+            let source = error
+                .source()
+                .unwrap()
+                .downcast_ref::<HandlerInitFailure>()
+                .unwrap();
+            assert!(Rc::ptr_eq(&source.0, &error_identity));
+            let mut wire = Vec::new();
+            timeout(Duration::from_secs(1), peer.read_to_end(&mut wire))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(wire.is_empty());
+            assert!(!initiator.is_session_active());
+            {
+                let storage = initiator.inner.storage.borrow();
+                let storage = storage.as_ref().unwrap();
+                assert_eq!(storage.next_sender_msg_seq_num().get(), 7);
+                assert_eq!(storage.next_target_msg_seq_num().get(), 11);
+            }
+            let retry = initiator.run_session(io::empty(), io::sink(), Some(address));
+            timeout(Duration::from_secs(1), retry)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(attempts.get(), 2);
+            assert!(!initiator.is_session_active());
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn pending_handler_initialization_is_cancelled_and_releases_resources() {
+    #[derive(Clone, Copy, Debug)]
+    enum Stop {
+        Close,
+        Logout,
+        Abort,
+    }
+    LocalSet::new()
+        .run_until(async {
+            for action in [Stop::Close, Stop::Logout, Stop::Abort] {
+                let resource = Rc::new(());
+                let entered = Rc::new(Notify::new());
+                let initiator = initiator({
+                    let resource = resource.clone();
+                    let entered = entered.clone();
+                    async move |_: &SessionContext<'_>| {
+                        let held = resource.clone();
+                        entered.notify_one();
+                        future::pending::<()>().await;
+                        drop(held);
+                        Ok(test_helpers::StubHandler)
+                    }
+                });
+                let (local, mut peer) = io::duplex(8192);
+                let (reader, writer) = io::split(local);
+                let handle = initiator.run_session(reader, writer, None);
+                timeout(Duration::from_secs(1), entered.notified())
+                    .await
+                    .unwrap();
+                assert_eq!(Rc::strong_count(&resource), 3);
+                assert!(initiator.is_session_active());
+                // An in-session reset request must not abandon pending init.
+                initiator.request_running_session_reset().await.unwrap();
+                yield_now().await;
+                assert!(!handle.is_finished());
+                match action {
+                    Stop::Close => timeout(Duration::from_secs(1), initiator.close())
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    Stop::Logout => initiator.logout(None, None, false).await.unwrap(),
+                    Stop::Abort => handle.abort(),
+                }
+                let result = timeout(Duration::from_secs(1), handle).await.unwrap();
+                if matches!(action, Stop::Abort) {
+                    assert!(result.unwrap_err().is_cancelled());
+                } else {
+                    result.unwrap().unwrap();
+                }
+                assert_eq!(Rc::strong_count(&resource), 2, "{action:?}");
+                let mut wire = Vec::new();
+                timeout(Duration::from_secs(1), peer.read_to_end(&mut wire))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(wire.is_empty(), "{action:?}");
+                assert!(!initiator.is_session_active(), "{action:?}");
+                let retry = initiator.session_task(io::empty(), io::sink(), None);
+                drop(retry);
+                initiator.reset_session().unwrap();
+            }
+        })
+        .await;
 }
 
 #[test]
@@ -80,7 +351,7 @@ fn invalid_settings_prevent_storage_factory_calls() {
     let result = Initiator::<Message, FailingStorage, _>::new(
         id.clone(),
         settings.clone(),
-        NoCallbacksFactory,
+        no_callbacks,
         |_, _| panic!("invalid settings must reject before opening storage"),
     );
     assert_matches!(
@@ -90,14 +361,14 @@ fn invalid_settings_prevent_storage_factory_calls() {
     let result = Initiator::<Message, FailingStorage, _>::with_busywait_timers(
         id.clone(),
         settings.clone(),
-        NoCallbacksFactory,
+        no_callbacks,
         |_, _| panic!("invalid settings must reject before opening storage"),
     );
     assert_matches!(
         result.err(),
         Some(InitiatorError::MaxMessageSizeTooSmall { .. })
     );
-    let acceptor = Acceptor::<Message, FailingStorage, _>::new(NoCallbacksFactory);
+    let acceptor = Acceptor::<Message, FailingStorage, _>::new(no_callbacks);
     let result = acceptor.register_session(id.clone(), settings, |_, _| {
         panic!("invalid settings must reject before opening storage");
     });
@@ -114,7 +385,7 @@ fn storage_factory_failures_preserve_source_and_allow_registration_retry() {
     let error = Initiator::<Message, FailingStorage, _>::new(
         id.clone(),
         SessionSettings::default(),
-        NoCallbacksFactory,
+        no_callbacks,
         |_, _| Err(InjectedStorageError(StorageOp::Reset)),
     )
     .err()
@@ -128,7 +399,7 @@ fn storage_factory_failures_preserve_source_and_allow_registration_retry() {
         Some(InjectedStorageError(StorageOp::Reset))
     );
 
-    let acceptor = Acceptor::<Message, FailingStorage, _>::new(NoCallbacksFactory);
+    let acceptor = Acceptor::<Message, FailingStorage, _>::new(no_callbacks);
     let error = acceptor
         .register_session(id.clone(), SessionSettings::default(), |_, _| {
             Err(InjectedStorageError(StorageOp::Reset))
@@ -168,7 +439,7 @@ fn offline_reset_failure_returns_source_without_locking_either_endpoint() {
         let initiator = Initiator::<Message, FailingStorage, _>::new(
             id.clone(),
             SessionSettings::default(),
-            NoCallbacksFactory,
+            no_callbacks,
             build,
         )
         .unwrap();
@@ -185,7 +456,7 @@ fn offline_reset_failure_returns_source_without_locking_either_endpoint() {
         let storage = initiator.inner.storage.borrow_mut().take().unwrap();
         assert_eq!(storage.trace.borrow().calls, [StorageOp::Reset]);
 
-        let acceptor = Acceptor::<Message, FailingStorage, _>::new(NoCallbacksFactory);
+        let acceptor = Acceptor::<Message, FailingStorage, _>::new(no_callbacks);
         acceptor
             .register_session(id.clone(), SessionSettings::default(), build)
             .unwrap();
@@ -228,9 +499,9 @@ impl fmt::Debug for CapabilityEvent {
     }
 }
 
-struct CapabilityApp(mpsc::UnboundedSender<CapabilityEvent>);
+struct CapabilityHandler(mpsc::UnboundedSender<CapabilityEvent>);
 
-impl Application<CountedResetMessage> for CapabilityApp {
+impl SessionHandler<CountedResetMessage> for CapabilityHandler {
     fn on_output_error(&mut self, _: Box<CountedResetMessage>, _: &SerializeError) {
         panic!("serialization failed");
     }
@@ -264,14 +535,10 @@ impl Application<CountedResetMessage> for CapabilityApp {
     }
 }
 
-struct CapabilityFactory(mpsc::UnboundedSender<CapabilityEvent>);
-
-impl ApplicationFactory<CountedResetMessage> for CapabilityFactory {
-    type App = CapabilityApp;
-
-    fn create(&self, _: &SessionContext<'_>) -> Self::App {
-        CapabilityApp(self.0.clone())
-    }
+fn capability_handler(
+    events: mpsc::UnboundedSender<CapabilityEvent>,
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<CapabilityHandler, Box<dyn StdError>> {
+    async move |_: &SessionContext<'_>| Ok(CapabilityHandler(events.clone()))
 }
 
 fn counted_order() -> Box<CountedResetMessage> {
@@ -296,9 +563,9 @@ async fn unsupported_running_reset_preserves_both_sessions_and_reuses_registrati
             store.set_next_sender_msg_seq_num(nz_seq(40)).unwrap();
             store.set_next_target_msg_seq_num(nz_seq(40)).unwrap();
         }
-        let initiator = Initiator::new(test_helpers::default_session_id(), settings.clone(), CapabilityFactory(ini_tx), |_, _| Ok(ini_store)).unwrap();
+        let initiator = Initiator::new(test_helpers::default_session_id(), settings.clone(), capability_handler(ini_tx), |_, _| Ok(ini_store)).unwrap();
         assert_eq!(reset_support_probe_count(), baseline + 1);
-        let acceptor = Acceptor::new(CapabilityFactory(acc_tx));
+        let acceptor = Acceptor::new(capability_handler(acc_tx));
         let id = test_helpers::default_session_id().reverse_route();
         acceptor.register_session(id.clone(), settings.clone(), |_, _| Ok(acc_store)).unwrap();
         assert_eq!(reset_support_probe_count(), baseline + 2);
@@ -307,7 +574,7 @@ async fn unsupported_running_reset_preserves_both_sessions_and_reuses_registrati
             let (cr, cw) = io::split(client);
             let (sr, sw) = io::split(server);
             let acc_task = acceptor.run_session(sr, sw, test_helpers::TEST_PEER_ADDR);
-            let ini_task = initiator.run_session(cr, cw, None).unwrap();
+            let ini_task = initiator.run_session(cr, cw, None);
             let CapabilityEvent::Ready(ini_sender) = ini_events.recv().await.unwrap() else { panic!("expected initiator ready"); };
             assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::Logon(seq, None) if seq == opening_seq);
             let CapabilityEvent::Ready(acc_sender) = acc_events.recv().await.unwrap() else { panic!("expected acceptor ready"); };
@@ -336,7 +603,7 @@ async fn unsupported_running_reset_preserves_both_sessions_and_reuses_registrati
             initiator.disconnect().await.unwrap();
             assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::ApplicationForcedDisconnect));
             assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::Disconnected));
-            ini_task.await.unwrap(); acc_task.await.unwrap();
+            ini_task.await.unwrap().unwrap(); acc_task.await.unwrap();
             for snapshot in [&ini_snapshot, &acc_snapshot] {
                 let snapshot = snapshot.borrow();
                 assert_eq!(snapshot.sender.get(), opening_seq + 2);
@@ -363,7 +630,7 @@ async fn running_reset_requires_an_active_session_before_message_support() {
     let initiator = Initiator::<CountedResetMessage, _, _>::new(
         test_helpers::default_session_id(),
         SessionSettings::default(),
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
         |_, max| Ok(InMemoryStorage::new(max)),
     )
     .unwrap();
@@ -375,7 +642,7 @@ async fn running_reset_requires_an_active_session_before_message_support() {
     assert!(initiator.inner.storage.borrow().is_some());
 }
 
-struct StartApp {
+struct StartHandler {
     events: mpsc::UnboundedSender<StartEvent>,
     decision: usize,
     skip_admin: usize,
@@ -398,7 +665,7 @@ fn start_input_action(decision: usize) -> InputAction {
     }
 }
 
-impl Application<Message> for StartApp {
+impl SessionHandler<Message> for StartHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {
         panic!("unexpected serialization error");
     }
@@ -430,21 +697,17 @@ impl Application<Message> for StartApp {
     }
 }
 
-struct StartFactory {
+fn start_handler(
     events: mpsc::UnboundedSender<StartEvent>,
     decision: usize,
     skip_admin: usize,
-}
-
-impl ApplicationFactory<Message> for StartFactory {
-    type App = StartApp;
-
-    fn create(&self, _ctx: &SessionContext<'_>) -> StartApp {
-        StartApp {
-            events: self.events.clone(),
-            decision: self.decision,
-            skip_admin: self.skip_admin,
-        }
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<StartHandler, Box<dyn StdError>> {
+    async move |_: &SessionContext<'_>| {
+        Ok(StartHandler {
+            events: events.clone(),
+            decision,
+            skip_admin,
+        })
     }
 }
 
@@ -467,17 +730,13 @@ async fn initiator_storage_failure_returns_backend_and_clears_active_handle() {
                 let initiator = Initiator::<Message, _, _>::new(
                     test_helpers::default_session_id(),
                     SessionSettings::default(),
-                    StartFactory {
-                        events,
-                        decision: 0,
-                        skip_admin: 0,
-                    },
+                    start_handler(events, 0, 0),
                     |_, _| Ok(storage),
                 )
                 .unwrap();
                 let (local, mut peer) = io::duplex(8192);
                 let (reader, writer) = io::split(local);
-                let task = initiator.run_session(reader, writer, None).unwrap();
+                let task = initiator.run_session(reader, writer, None);
                 let sender = if fetch_number == 2 {
                     timeout(
                         Duration::from_secs(5),
@@ -509,6 +768,7 @@ async fn initiator_storage_failure_returns_backend_and_clears_active_handle() {
                 timeout(Duration::from_secs(5), task)
                     .await
                     .unwrap()
+                    .unwrap()
                     .unwrap();
                 assert!(
                     received.try_recv().is_err(),
@@ -538,7 +798,7 @@ async fn initiator_storage_failure_returns_backend_and_clears_active_handle() {
                 // without reusing the failed backend or making another storage call.
                 let (local, _peer) = io::duplex(8192);
                 let (reader, writer) = io::split(local);
-                drop(initiator.session_task(reader, writer, None).unwrap());
+                drop(initiator.session_task(reader, writer, None));
                 assert!(initiator.inner.storage.borrow().is_some());
             }
         })
@@ -554,11 +814,7 @@ async fn acceptor_storage_failure_returns_backend_and_releases_registration() {
                 storage.fail_on(StorageOp::Fetch, fetch_number, FailureTiming::Before);
                 let trace = storage.trace.clone();
                 let (events, mut received) = mpsc::unbounded_channel();
-                let acceptor = Acceptor::<Message, _, _>::new(StartFactory {
-                    events,
-                    decision: 0,
-                    skip_admin: 0,
-                });
+                let acceptor = Acceptor::<Message, _, _>::new(start_handler(events, 0, 0));
                 let id = test_helpers::default_session_id();
                 acceptor
                     .register_session(id.clone(), SessionSettings::default(), |_, _| Ok(storage))
@@ -637,33 +893,30 @@ async fn acceptor_storage_failure_returns_backend_and_releases_registration() {
         .await;
 }
 
+type StartTestInitiator<F> = (
+    Initiator<Message, InMemoryStorage, F>,
+    mpsc::UnboundedReceiver<StartEvent>,
+);
+
 fn start_test_initiator(
     decision: usize,
-) -> (
-    Initiator<Message, InMemoryStorage, StartFactory>,
-    mpsc::UnboundedReceiver<StartEvent>,
-) {
+) -> StartTestInitiator<impl AsyncFn(&SessionContext<'_>) -> Result<StartHandler, Box<dyn StdError>>>
+{
     start_test_initiator_for_reset(decision, false)
 }
 
 fn start_test_initiator_for_reset(
     decision: usize,
     in_session: bool,
-) -> (
-    Initiator<Message, InMemoryStorage, StartFactory>,
-    mpsc::UnboundedReceiver<StartEvent>,
-) {
+) -> StartTestInitiator<impl AsyncFn(&SessionContext<'_>) -> Result<StartHandler, Box<dyn StdError>>>
+{
     let (events, rx) = mpsc::unbounded_channel();
     let mut settings = test_helpers::default_session_settings();
     settings.auto_disconnect_after_no_logon_response = Duration::MAX;
     let initiator = Initiator::new(
         test_helpers::default_session_id(),
         settings,
-        StartFactory {
-            events,
-            decision,
-            skip_admin: if in_session { 2 } else { 0 },
-        },
+        start_handler(events, decision, if in_session { 2 } else { 0 }),
         |_, max| Ok(InMemoryStorage::new(max)),
     )
     .unwrap();
@@ -682,18 +935,25 @@ fn start_ack(flag: bool) -> Vec<u8> {
 }
 
 async fn start_reset_origin(
-    initiator: &Initiator<Message, InMemoryStorage, StartFactory>,
+    initiator: &Initiator<
+        Message,
+        InMemoryStorage,
+        impl AsyncFn(&SessionContext<'_>) -> Result<StartHandler, Box<dyn StdError>> + 'static,
+    >,
     events: &mut mpsc::UnboundedReceiver<StartEvent>,
     in_session: bool,
-) -> (JoinHandle<()>, io::DuplexStream, Vec<u8>) {
+) -> (
+    JoinHandle<Result<(), InitiatorError>>,
+    io::DuplexStream,
+    Vec<u8>,
+) {
     let (local, mut peer) = io::duplex(8192);
     let (reader, writer) = io::split(local);
     let task = if in_session {
         initiator.run_session(reader, writer, None)
     } else {
         initiator.run_session_with_reset(reader, writer, None)
-    }
-    .unwrap();
+    };
     let mut buf = Vec::new();
     let first = test_helpers::read_one_message(&mut peer, &mut buf).await;
     assert_eq!(first.msg_seq_num(), 1);
@@ -772,7 +1032,7 @@ async fn consumed_reset_ack_number_stops_the_next_input() {
                 }
                 assert!(buf.is_empty());
                 assert_eq!(timeout(Duration::from_secs(5), peer.read(&mut [0u8; 1])).await.unwrap().unwrap(), 0);
-                timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+                timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
                 if first >= 2 {
                     let StartEvent::Admin(logout) = start_event(&mut events).await else { panic!("expected refusal callback") };
                     assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
@@ -795,7 +1055,7 @@ async fn unsolicited_reset_flag_in_ack_is_refused() {
         let (initiator, mut events) = start_test_initiator(0);
         let (local, mut peer) = io::duplex(8192);
         let (reader, writer) = io::split(local);
-        let task = initiator.run_session(reader, writer, None).unwrap();
+        let task = initiator.run_session(reader, writer, None);
         let mut buf = Vec::new();
         let request = test_helpers::read_one_message(&mut peer, &mut buf).await;
         assert_matches!(request.try_as_admin(), Some(AdminBase::Logon(logon)) if logon.reset_seq_num_flag.is_none());
@@ -805,7 +1065,7 @@ async fn unsolicited_reset_flag_in_ack_is_refused() {
         assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
             if logout.text.as_deref() == Some(fix_str!("Unsolicited ResetSeqNumFlag=Y in Logon response")));
         assert!(matches!(start_event(&mut events).await, StartEvent::End(DisconnectReason::InvalidLogonState)));
-        task.await.unwrap();
+        task.await.unwrap().unwrap();
         assert_eq!(initiator.inner.storage.borrow().as_ref().unwrap().next_target_msg_seq_num().get(), 1);
         assert!(events.try_recv().is_err());
     }).await;
@@ -836,7 +1096,7 @@ async fn accepted_reset_refusal_waits_for_eof_and_ignores_a_buffered_ack() {
                     start_event(&mut events).await,
                     StartEvent::End(DisconnectReason::SeqNumResetFailed)
                 ));
-                task.await.unwrap();
+                task.await.unwrap().unwrap();
                 assert!(events.try_recv().is_err());
                 let saved = initiator.inner.storage.borrow();
                 let storage = saved.as_ref().unwrap();
@@ -895,7 +1155,7 @@ async fn confirmed_reset_ack_preserves_application_decisions_in_the_io_loop() {
                     }
                 };
                 assert!(matches!(start_event(&mut events).await, StartEvent::End(actual) if actual == reason));
-                timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+                timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
                 assert!(buf.is_empty());
                 assert_eq!(timeout(Duration::from_secs(5), peer.read(&mut [0u8; 1])).await.unwrap().unwrap(), 0);
                 assert!(events.try_recv().is_err());
@@ -921,11 +1181,8 @@ async fn manual_reset_session_then_reconnect() {
                 storage.set_next_target_msg_seq_num(nz_seq(40)).unwrap();
             }
             let (events, mut acc_events) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(StartFactory {
-                events,
-                decision: 0,
-                skip_admin: 0,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(start_handler(events, 0, 0));
             let sid = test_helpers::default_session_id().reverse_route();
             acceptor
                 .register_session(
@@ -946,7 +1203,7 @@ async fn manual_reset_session_then_reconnect() {
                 let (server_r, server_w) = io::split(server);
                 let acc_task =
                     acceptor.run_session(server_r, server_w, "127.0.0.1:9876".parse().unwrap());
-                let ini_task = initiator.run_session(client_r, client_w, None).unwrap();
+                let ini_task = initiator.run_session(client_r, client_w, None);
                 assert!(matches!(
                     start_event(&mut ini_events).await,
                     StartEvent::Ready(_)
@@ -977,7 +1234,7 @@ async fn manual_reset_session_then_reconnect() {
                 );
 
                 initiator.disconnect().await.unwrap();
-                ini_task.await.unwrap();
+                ini_task.await.unwrap().unwrap();
                 acc_task.await.unwrap();
                 assert!(matches!(
                     start_event(&mut ini_events).await,
@@ -1038,12 +1295,12 @@ async fn offline_reset_session_does_not_require_reset_flag_support() {
     let initiator = Initiator::<CountedResetMessage, _, _>::new(
         sid.clone(),
         SessionSettings::default(),
-        test_helpers::StubAppFactory,
+        test_helpers::make_stub_handler,
         build_storage,
     )
     .unwrap();
     let acceptor =
-        Acceptor::<CountedResetMessage, InMemoryStorage, _>::new(test_helpers::StubAppFactory);
+        Acceptor::<CountedResetMessage, InMemoryStorage, _>::new(test_helpers::make_stub_handler);
     acceptor
         .register_session(sid.clone(), SessionSettings::default(), build_storage)
         .unwrap();
@@ -1077,11 +1334,8 @@ async fn reset_then_resume_against_accepting_acceptor() {
                     storage.set_next_target_msg_seq_num(nz_seq(40)).unwrap();
                 }
                 let (events, mut acc_events) = mpsc::unbounded_channel();
-                let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(StartFactory {
-                    events,
-                    decision: 0,
-                    skip_admin: 0,
-                });
+                let acceptor =
+                    Acceptor::<Message, InMemoryStorage, _>::new(start_handler(events, 0, 0));
                 acceptor
                     .register_session(
                         test_helpers::default_session_id().reverse_route(),
@@ -1100,27 +1354,24 @@ async fn reset_then_resume_against_accepting_acceptor() {
                     let addr = listener.local_addr().unwrap();
                     let ini_task = match opening {
                         Opening::Connect => match start {
-                            SessionStart::Reset => initiator.connect_with_reset(addr).await,
-                            SessionStart::Resume => initiator.connect(addr).await,
-                        }
-                        .unwrap(),
+                            SessionStart::Reset => initiator.connect_with_reset(addr),
+                            SessionStart::Resume => initiator.connect(addr),
+                        },
                         Opening::RunSession | Opening::SessionTask => {
                             let tcp = TcpStream::connect(addr).await.unwrap();
                             let (reader, writer) = tcp.into_split();
                             match (&opening, start) {
-                                (Opening::RunSession, SessionStart::Reset) => initiator
-                                    .run_session_with_reset(reader, writer, Some(addr))
-                                    .unwrap(),
+                                (Opening::RunSession, SessionStart::Reset) => {
+                                    initiator.run_session_with_reset(reader, writer, Some(addr))
+                                }
                                 (Opening::RunSession, SessionStart::Resume) => {
-                                    initiator.run_session(reader, writer, Some(addr)).unwrap()
+                                    initiator.run_session(reader, writer, Some(addr))
                                 }
                                 (Opening::SessionTask, SessionStart::Reset) => task::spawn_local(
-                                    initiator
-                                        .session_task_with_reset(reader, writer, Some(addr))
-                                        .unwrap(),
+                                    initiator.session_task_with_reset(reader, writer, Some(addr)),
                                 ),
                                 (Opening::SessionTask, SessionStart::Resume) => task::spawn_local(
-                                    initiator.session_task(reader, writer, Some(addr)).unwrap(),
+                                    initiator.session_task(reader, writer, Some(addr)),
                                 ),
                                 (Opening::Connect, _) => unreachable!(),
                             }
@@ -1165,7 +1416,7 @@ async fn reset_then_resume_against_accepting_acceptor() {
                         assert_eq!(order.header.msg_seq_num, 2);
                     }
                     initiator.disconnect().await.unwrap();
-                    ini_task.await.unwrap();
+                    ini_task.await.unwrap().unwrap();
                     acc_task.await.unwrap();
                     assert!(matches!(
                         start_event(&mut ini_events).await,
@@ -1211,7 +1462,7 @@ async fn reset_at_connect_refusal(local_logout: bool) {
     LocalSet::new().run_until(async {
         let (initiator, mut ini_events) = start_test_initiator(0);
         let (events, mut acc_events) = mpsc::unbounded_channel();
-        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(StartFactory { events, decision: 0, skip_admin: 0 });
+        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(start_handler(events, 0, 0));
         let mut settings = test_helpers::default_session_settings();
         settings.accept_reset_on_connect = false;
         acceptor.register_session(test_helpers::default_session_id().reverse_route(), settings, |_, max| {
@@ -1221,7 +1472,7 @@ async fn reset_at_connect_refusal(local_logout: bool) {
             Ok(storage)
         }).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let ini_task = initiator.connect_with_reset(listener.local_addr().unwrap()).await.unwrap();
+        let ini_task = initiator.connect_with_reset(listener.local_addr().unwrap());
         let (tcp, peer_addr) = listener.accept().await.unwrap();
         let StartEvent::Ready(_sender) = start_event(&mut ini_events).await else { panic!("expected ready") };
         if local_logout {
@@ -1255,7 +1506,7 @@ async fn reset_at_connect_refusal(local_logout: bool) {
             if logout.text.as_deref() == Some(fix_str!("Resetting the sequence number upon FIX connection establishment is not supported")));
         assert!(matches!(start_event(&mut ini_events).await, StartEvent::End(DisconnectReason::SeqNumResetFailed)));
         assert!(matches!(start_event(&mut acc_events).await, StartEvent::End(DisconnectReason::InvalidLogonState)));
-        ini_task.await.unwrap();
+        ini_task.await.unwrap().unwrap();
         acc_task.await.unwrap();
         let mut storage = initiator.inner.storage.borrow_mut().take().unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
@@ -1268,14 +1519,12 @@ async fn reset_at_connect_refusal(local_logout: bool) {
     }).await;
 }
 
-struct CountingStartFactory(Rc<Cell<usize>>);
-
-impl ApplicationFactory<CountedResetMessage> for CountingStartFactory {
-    type App = test_helpers::StubApp;
-
-    fn create(&self, _context: &SessionContext<'_>) -> Self::App {
-        self.0.set(self.0.get() + 1);
-        test_helpers::StubApp
+fn counting_start_handler(
+    creates: Rc<Cell<usize>>,
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<test_helpers::StubHandler, Box<dyn StdError>> {
+    async move |_: &SessionContext<'_>| {
+        creates.set(creates.get() + 1);
+        Ok(test_helpers::StubHandler)
     }
 }
 
@@ -1286,7 +1535,7 @@ async fn unsupported_reset_start_preserves_the_stored_session() {
         let history = test_helpers::serialize_message(&test_helpers::heartbeat(1, None));
         let initiator = Initiator::<CountedResetMessage, _, _>::new(
             test_helpers::default_session_id(), SessionSettings::default(),
-            CountingStartFactory(creates.clone()), |_, max| {
+            counting_start_handler(creates.clone()), |_, max| {
                 let mut storage = InMemoryStorage::new(max);
                 storage.store(nz_seq(1), |buf| {
                     buf[..history.len()].copy_from_slice(&history);
@@ -1297,17 +1546,17 @@ async fn unsupported_reset_start_preserves_the_stored_session() {
                 Ok(storage)
             }).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        assert!(matches!(initiator.connect_with_reset(listener.local_addr().unwrap()).await,
+        assert!(matches!(initiator.connect_with_reset(listener.local_addr().unwrap()).await.unwrap(),
             Err(InitiatorError::ResetSeqNumFlagNotSupportedInLogon)));
         assert!(timeout(Duration::from_millis(20), listener.accept()).await.is_err());
         for spawn in [false, true] {
             let (local, mut peer) = io::duplex(8192);
             let (reader, writer) = io::split(local);
             if spawn {
-                assert!(matches!(initiator.run_session_with_reset(reader, writer, None),
+                assert!(matches!(initiator.run_session_with_reset(reader, writer, None).await.unwrap(),
                     Err(InitiatorError::ResetSeqNumFlagNotSupportedInLogon)));
             } else {
-                assert!(matches!(initiator.session_task_with_reset(reader, writer, None),
+                assert!(matches!(initiator.session_task_with_reset(reader, writer, None).await,
                     Err(InitiatorError::ResetSeqNumFlagNotSupportedInLogon)));
             }
             assert_eq!(peer.read(&mut [0u8; 1]).await.unwrap(), 0);
@@ -1323,13 +1572,13 @@ async fn unsupported_reset_start_preserves_the_stored_session() {
         }
         let (local, mut peer) = io::duplex(8192);
         let (reader, writer) = io::split(local);
-        let task = initiator.run_session(reader, writer, None).unwrap();
+        let task = initiator.run_session(reader, writer, None);
         let request = test_helpers::read_one_message(&mut peer, &mut Vec::new()).await;
         assert_eq!(request.header.msg_seq_num, 40);
         assert_matches!(request.try_as_admin(), Some(AdminBase::Logon(logon)) if logon.reset_seq_num_flag.is_none());
         assert_eq!(creates.get(), 1);
         initiator.disconnect().await.unwrap();
-        task.await.unwrap();
+        task.await.unwrap().unwrap();
         let mut storage = initiator.inner.storage.borrow_mut().take().unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 41);
         assert_eq!(storage.next_target_msg_seq_num().get(), 40);
@@ -1337,16 +1586,15 @@ async fn unsupported_reset_start_preserves_the_stored_session() {
     }).await;
 }
 
-fn initiator<A: ApplicationFactory<Message> + 'static>(
-    app_factory: A,
-) -> Initiator<Message, InMemoryStorage, A>
+fn initiator<A, H>(make_handler: A) -> Initiator<Message, InMemoryStorage, A>
 where
-    A::App: 'static,
+    A: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError>> + 'static,
+    H: SessionHandler<Message> + 'static,
 {
     Initiator::new(
         test_helpers::default_session_id(),
         SessionSettings::default(),
-        app_factory,
+        make_handler,
         |_, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
     )
     .expect("initiator")
@@ -1361,7 +1609,7 @@ async fn idle_lifecycle_operations_preserve_storage_without_callbacks() {
     let initiator = Initiator::<Message, _, _>::new(
         test_helpers::default_session_id(),
         SessionSettings::default(),
-        NoCallbacksFactory,
+        no_callbacks,
         |_, _| Ok(storage),
     )
     .unwrap();
@@ -1391,11 +1639,11 @@ async fn idle_lifecycle_operations_preserve_storage_without_callbacks() {
 async fn lifecycle_control_reaches_a_just_spawned_session() {
     LocalSet::new()
         .run_until(async {
-            let initiator = initiator(test_helpers::StubAppFactory);
+            let initiator = initiator(test_helpers::make_stub_handler);
             for close in [false, true] {
                 let (local, _peer) = io::duplex(8192);
                 let (reader, writer) = io::split(local);
-                let task = initiator.run_session(reader, writer, None).unwrap();
+                let task = initiator.run_session(reader, writer, None);
                 assert!(initiator.is_session_active());
                 if close {
                     timeout(Duration::from_secs(1), initiator.close())
@@ -1409,7 +1657,7 @@ async fn lifecycle_control_reaches_a_just_spawned_session() {
                         .unwrap();
                 }
                 assert!(!initiator.is_session_active());
-                task.await.unwrap();
+                task.await.unwrap().unwrap();
                 initiator.reset_session().unwrap();
             }
         })
@@ -1420,10 +1668,10 @@ async fn lifecycle_control_reaches_a_just_spawned_session() {
 async fn logout_queued_before_first_poll_reaches_the_session() {
     LocalSet::new()
         .run_until(async {
-            let initiator = initiator(test_helpers::StubAppFactory);
+            let initiator = initiator(test_helpers::make_stub_handler);
             let (local, mut peer) = io::duplex(8192);
             let (reader, writer) = io::split(local);
-            let session = initiator.session_task(reader, writer, None).unwrap();
+            let session = initiator.session_task(reader, writer, None);
             initiator
                 .logout(None, Some(Cow::Borrowed(fix_str!("Window closed"))), false)
                 .await
@@ -1446,7 +1694,7 @@ async fn logout_queued_before_first_poll_reaches_the_session() {
             assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
             if logout.text.as_deref() == Some(fix_str!("Window closed")));
             initiator.close().await.unwrap();
-            task.await.unwrap();
+            task.await.unwrap().unwrap();
         })
         .await;
 }
@@ -1455,10 +1703,8 @@ async fn logout_queued_before_first_poll_reaches_the_session() {
 async fn closure_waiters_follow_replacement_session_until_it_is_dropped() {
     LocalSet::new()
         .run_until(async {
-            let initiator = Rc::new(initiator(NoCallbacksFactory));
-            let first = initiator
-                .session_task(io::empty(), io::sink(), None)
-                .unwrap();
+            let initiator = Rc::new(initiator(no_callbacks));
+            let first = initiator.session_task(io::empty(), io::sink(), None);
             let waiters: Vec<_> = (0..2)
                 .map(|_| {
                     let initiator = initiator.clone();
@@ -1469,9 +1715,7 @@ async fn closure_waiters_follow_replacement_session_until_it_is_dropped() {
             assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
 
             drop(first);
-            let replacement = initiator
-                .session_task(io::empty(), io::sink(), None)
-                .unwrap();
+            let replacement = initiator.session_task(io::empty(), io::sink(), None);
             yield_now().await;
             assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
             assert!(initiator.is_session_active());
@@ -1495,10 +1739,12 @@ async fn closure_waits_for_end_callback_and_wakes_after_completion_or_abort() {
         .run_until(async {
             for abort in [false, true] {
                 let gate = test_helpers::GatedSessionEnd::default();
-                let initiator = Rc::new(initiator(gate.clone()));
-                let task = initiator
-                    .run_session(io::empty(), io::sink(), None)
-                    .unwrap();
+                let make_handler = {
+                    let gate = gate.clone();
+                    move |_: &SessionContext<'_>| future::ready(Ok(gate.clone()))
+                };
+                let initiator = Rc::new(initiator(make_handler));
+                let task = initiator.run_session(io::empty(), io::sink(), None);
                 timeout(Duration::from_secs(1), gate.entered.notified())
                     .await
                     .unwrap();
@@ -1519,7 +1765,7 @@ async fn closure_waits_for_end_callback_and_wakes_after_completion_or_abort() {
                     assert_matches!(task.await, Err(error) if error.is_cancelled());
                 } else {
                     gate.release.notify_one();
-                    task.await.unwrap();
+                    task.await.unwrap().unwrap();
                 }
                 timeout(Duration::from_secs(1), waiter)
                     .await
@@ -1551,7 +1797,7 @@ fn reset_acceptance_requires_message_type_support() {
             let result = Initiator::<CountedResetMessage, _, _>::new(
                 test_helpers::default_session_id(),
                 settings.clone(),
-                test_helpers::StubAppFactory,
+                test_helpers::make_stub_handler,
                 |_, max| {
                     builds.set(builds.get() + 1);
                     Ok(InMemoryStorage::new(max))
@@ -1570,7 +1816,7 @@ fn reset_acceptance_requires_message_type_support() {
             let supported = Initiator::<Message, _, _>::new(
                 test_helpers::default_session_id(),
                 settings,
-                test_helpers::StubAppFactory,
+                test_helpers::make_stub_handler,
                 |_, max| Ok(InMemoryStorage::new(max)),
             )
             .unwrap();
@@ -1590,7 +1836,7 @@ async fn session_task_panic_restores_storage() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let initiator = Rc::new(initiator(test_helpers::PanicAppFactory));
+            let initiator = Rc::new(initiator(test_helpers::make_panic_handler));
 
             let (peer_io, mut peer) = io::duplex(8192);
             let (reader, writer) = io::split(peer_io);
@@ -1602,9 +1848,7 @@ async fn session_task_panic_restores_storage() {
                 .await
                 .expect("write logon");
 
-            let session = initiator
-                .session_task(reader, writer, None)
-                .expect("session_task");
+            let session = initiator.session_task(reader, writer, None);
             let waiter = {
                 let initiator = initiator.clone();
                 task::spawn_local(async move { initiator.await_session_closed().await })
@@ -1647,14 +1891,12 @@ async fn dropped_unpolled_session_task_restores_storage() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let initiator = initiator(test_helpers::StubAppFactory);
+            let initiator = initiator(test_helpers::make_stub_handler);
 
             let (peer_io, _peer) = io::duplex(8192);
             let (reader, writer) = io::split(peer_io);
 
-            let task = initiator
-                .session_task(reader, writer, None)
-                .expect("session_task");
+            let task = initiator.session_task(reader, writer, None);
             assert!(
                 initiator.inner.storage.borrow().is_none(),
                 "storage is taken while a session task is outstanding"
@@ -1667,36 +1909,38 @@ async fn dropped_unpolled_session_task_restores_storage() {
                 "dropping an unpolled session task must return the storage"
             );
 
-            // The Initiator is usable again. `assert_matches!` needs `Debug`,
-            // which the returned future does not implement.
+            // The Initiator can reserve the session again.
             let (peer_io, _peer) = io::duplex(8192);
             let (reader, writer) = io::split(peer_io);
-            assert!(initiator.session_task(reader, writer, None).is_ok());
+            let retry = initiator.session_task(reader, writer, None);
+            assert!(initiator.is_session_active());
+            drop(retry);
+            assert!(!initiator.is_session_active());
         })
         .await;
 }
 
-/// The storage doubles as the mutual-exclusion token, so a second task
-/// cannot be built while the first is outstanding.
+/// A second task reports the reservation conflict without releasing the first.
 #[tokio::test]
 async fn second_session_task_while_first_outstanding_is_refused() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let initiator = initiator(test_helpers::StubAppFactory);
+            let initiator = initiator(test_helpers::make_stub_handler);
 
             let (peer_io, _peer) = io::duplex(8192);
             let (reader, writer) = io::split(peer_io);
-            let _task = initiator
-                .session_task(reader, writer, None)
-                .expect("session_task");
+            let task = initiator.session_task(reader, writer, None);
 
             let (peer_io, _peer) = io::duplex(8192);
             let (reader, writer) = io::split(peer_io);
             assert!(matches!(
-                initiator.session_task(reader, writer, None),
+                initiator.session_task(reader, writer, None).await,
                 Err(InitiatorError::SessionActive)
             ));
+            assert!(initiator.is_session_active());
+            drop(task);
+            assert!(!initiator.is_session_active());
         })
         .await;
 }
@@ -1708,7 +1952,7 @@ async fn reset_session_reopens_the_numbering_and_is_refused_while_a_session_runs
     let local = LocalSet::new();
     local
         .run_until(async {
-            let initiator = initiator(test_helpers::StubAppFactory);
+            let initiator = initiator(test_helpers::make_stub_handler);
 
             {
                 let mut storage = initiator.inner.storage.borrow_mut();
@@ -1728,9 +1972,7 @@ async fn reset_session_reopens_the_numbering_and_is_refused_while_a_session_runs
 
             let (peer_io, _peer) = io::duplex(8192);
             let (reader, writer) = io::split(peer_io);
-            let _task = initiator
-                .session_task(reader, writer, None)
-                .expect("session_task");
+            let _task = initiator.session_task(reader, writer, None);
 
             assert!(matches!(
                 initiator.reset_session(),

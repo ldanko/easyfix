@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    application::{Application, DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, SessionHandler},
     engine::SessionEngine,
     initiator::SessionStart,
     io::{
@@ -36,7 +36,7 @@ pub(super) enum TestEvent {
     AdminMsgIn(MsgTypeBase),
 }
 
-pub(super) struct TestApp {
+pub(super) struct TestHandler {
     pub(super) events_tx: mpsc::UnboundedSender<TestEvent>,
     /// When set, `on_app_msg_in` stages a message through the session's
     /// `Sender` and *then* asks for a disconnecting Logout - the shape
@@ -63,7 +63,7 @@ pub(super) struct AdminGate {
     pub(super) action: mpsc::UnboundedReceiver<InputAction>,
 }
 
-impl Application<Message> for TestApp {
+impl SessionHandler<Message> for TestHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _id: &SessionId, sender: Sender<Message>) {
@@ -146,7 +146,7 @@ impl Application<Message> for TestApp {
 pub(super) struct TestHarness {
     pub(super) engine: SessionEngine<Message>,
     pub(super) storage: InMemoryStorage,
-    pub(super) app: TestApp,
+    pub(super) handler: TestHandler,
     pub(super) sender: Sender<Message>,
     pub(super) app_rx: Receiver<Message>,
     pub(super) control_tx: mpsc::Sender<ControlMsg>,
@@ -166,7 +166,7 @@ pub(super) fn build_harness_with_settings(settings: SessionSettings) -> TestHarn
     );
     let storage = InMemoryStorage::new(DEFAULT_MAX_MESSAGE_SIZE_BYTES);
     let (events_tx, events_rx) = mpsc::unbounded_channel();
-    let app = TestApp {
+    let handler = TestHandler {
         events_tx,
         send_then_logout: false,
         reject_without_text: false,
@@ -179,7 +179,7 @@ pub(super) fn build_harness_with_settings(settings: SessionSettings) -> TestHarn
     TestHarness {
         engine,
         storage,
-        app,
+        handler,
         sender,
         app_rx,
         control_tx,
@@ -213,7 +213,7 @@ impl TestHarness {
                 writer,
                 self.engine,
                 &mut storage,
-                self.app,
+                self.handler,
                 self.sender,
                 self.app_rx,
                 self.control_rx,
@@ -245,7 +245,7 @@ impl TestHarness {
                 writer,
                 self.engine,
                 &mut storage,
-                self.app,
+                self.handler,
                 self.sender,
                 self.app_rx,
                 self.control_rx,

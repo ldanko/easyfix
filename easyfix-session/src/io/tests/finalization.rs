@@ -11,7 +11,7 @@ use tokio::io;
 
 use super::wire::wire_bytes;
 use crate::{
-    application::{Application, DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, SessionHandler},
     engine::PendingOutput,
     io::{
         OutputError, drain_and_flush_admin_output, drain_and_flush_app_sends, finalize_session,
@@ -25,13 +25,13 @@ use crate::{
 
 /// Application that records the outgoing callbacks and the session-end reason.
 #[derive(Default)]
-struct RecordingApp {
+struct RecordingHandler {
     app_msg_out: Vec<MsgTypeField>,
     admin_msg_out: Vec<MsgTypeField>,
     session_end: Option<DisconnectReason>,
 }
 
-impl Application<Message> for RecordingApp {
+impl SessionHandler<Message> for RecordingHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
@@ -89,16 +89,16 @@ async fn finalize_drain_drops_what_it_cannot_stamp() {
         tx.send(test_helpers::new_order_single_with_empty_header())
             .expect("staging succeeds while the channel is open");
     }
-    let mut app = RecordingApp::default();
+    let mut handler = RecordingHandler::default();
 
-    finish_staged_sends(&mut engine, &mut storage, &mut app, &mut app_rx);
-    finalize_session(&engine, &mut app).await;
+    finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut app_rx);
+    finalize_session(&engine, &mut handler).await;
 
     assert!(
-        app.app_msg_out.is_empty(),
+        handler.app_msg_out.is_empty(),
         "an unstampable message must not reach the outgoing callback"
     );
-    assert_eq!(app.session_end, Some(DisconnectReason::SeqNumExhausted));
+    assert_eq!(handler.session_end, Some(DisconnectReason::SeqNumExhausted));
 }
 
 /// The reason that started the teardown is the one reported, whichever side
@@ -113,7 +113,7 @@ async fn finalize_reports_the_reason_that_started_the_teardown() {
             .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX - 1))
             .unwrap();
         let (mut writer, _reader) = io::duplex(4096);
-        let mut app = RecordingApp::default();
+        let mut handler = RecordingHandler::default();
 
         if let Some(reason) = loop_reason {
             engine.begin_disconnect(reason);
@@ -121,17 +121,17 @@ async fn finalize_reports_the_reason_that_started_the_teardown() {
         // The last outgoing message consumes the last sequence number, so the
         // engine forms `SeqNumExhausted` on its own.
         engine.send_heartbeat(None);
-        drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
+        drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
             .await
             .expect("the last message still fits");
         assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
 
         let (_tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
-        finish_staged_sends(&mut engine, &mut storage, &mut app, &mut app_rx);
-        finalize_session(&engine, &mut app).await;
+        finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut app_rx);
+        finalize_session(&engine, &mut handler).await;
 
         assert_eq!(
-            app.session_end,
+            handler.session_end,
             Some(loop_reason.unwrap_or(DisconnectReason::SeqNumExhausted)),
             "loop_reason={loop_reason:?}"
         );
@@ -147,18 +147,18 @@ async fn admin_drain_stops_at_the_message_it_cannot_stamp() {
         .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX))
         .unwrap();
     let (mut writer, reader) = io::duplex(1024);
-    let mut app = RecordingApp::default();
+    let mut handler = RecordingHandler::default();
 
     engine.send_heartbeat(None);
     engine.send_heartbeat(None);
 
-    let wrote = drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
+    let wrote = drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
         .await
         .expect("drain should succeed");
 
     assert!(!wrote);
     assert!(
-        app.admin_msg_out.is_empty(),
+        handler.admin_msg_out.is_empty(),
         "an unstampable message must not reach the outgoing callback"
     );
     let buf = wire_bytes(writer, reader).await;
@@ -174,17 +174,17 @@ async fn admin_drain_sends_the_last_usable_message_then_stops() {
         .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX - 1))
         .unwrap();
     let (mut writer, reader) = io::duplex(4096);
-    let mut app = RecordingApp::default();
+    let mut handler = RecordingHandler::default();
 
     engine.send_heartbeat(None);
     engine.send_heartbeat(None);
 
-    let wrote = drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
+    let wrote = drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
         .await
         .expect("drain should succeed");
 
     assert!(wrote);
-    assert_eq!(app.admin_msg_out, vec![MsgTypeBase::Heartbeat]);
+    assert_eq!(handler.admin_msg_out, vec![MsgTypeBase::Heartbeat]);
     assert!(engine.should_disconnect());
     assert_eq!(
         engine.disconnect_reason(),
@@ -212,7 +212,7 @@ async fn app_send_drain_stops_at_the_message_it_cannot_stamp() {
         .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX - 1))
         .unwrap();
     let (mut writer, reader) = io::duplex(4096);
-    let mut app = RecordingApp::default();
+    let mut handler = RecordingHandler::default();
 
     let (tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
     for _ in 0..3 {
@@ -224,14 +224,14 @@ async fn app_send_drain_stops_at_the_message_it_cannot_stamp() {
         &mut writer,
         &mut storage,
         &mut engine,
-        &mut app,
+        &mut handler,
         &mut app_rx,
     )
     .await
     .expect("drain should succeed");
 
     assert_eq!(
-        app.app_msg_out.len(),
+        handler.app_msg_out.len(),
         1,
         "only the message that could be stamped MAX - 1"
     );

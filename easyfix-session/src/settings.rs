@@ -78,7 +78,7 @@ pub struct SessionSettings {
     /// unresponsive peer through keep-alive timeouts. The application can
     /// still send its own `TestRequest<1>` messages through `Sender::send`,
     /// track matching `TestReqID(112)` responses in
-    /// `Application::on_admin_msg_in`, and enforce its own response timeout
+    /// `SessionHandler::on_admin_msg_in`, and enforce its own response timeout
     /// and disconnection policy. Incoming `TestRequest<1>` messages are
     /// still answered automatically.
     ///
@@ -88,7 +88,7 @@ pub struct SessionSettings {
     /// Test Cases Scenario 1B(d)).
     /// Whether the peer's value is *acceptable* is
     /// the application's call on either side: return `InputAction::Logout`
-    /// from `Application::on_admin_msg_in`, carrying
+    /// from `SessionHandler::on_admin_msg_in`, carrying
     /// [`invalid_heart_bt_int_text`] or [`invalid_heart_bt_int_range_text`]
     /// as its `Text(58)`.
     ///
@@ -186,7 +186,7 @@ pub struct SessionSettings {
     ///
     /// The peer's own `MaxMessageSize<383>` is not judged by the session: it
     /// reaches the application in the `Logon<A>` passed to
-    /// `Application::on_admin_msg_in`, which may answer `InputAction::Logout`
+    /// `SessionHandler::on_admin_msg_in`, which may answer `InputAction::Logout`
     /// to refuse it, as with [`heartbeat_interval`](Self::heartbeat_interval).
     ///
     /// [`DisconnectReason::MessageTooLarge`]: crate::DisconnectReason::MessageTooLarge
@@ -247,7 +247,7 @@ pub struct SessionSettings {
     ///
     /// There is no matching "expected peer version" setting: the peer's
     /// 1137 reaches the application inside the Logon passed to
-    /// `Application::on_admin_msg_in`, and whether it is acceptable is the
+    /// `SessionHandler::on_admin_msg_in`, and whether it is acceptable is the
     /// application's decision (answer `InputAction::Logout` to refuse) -
     /// the same policy split as documented on
     /// [`heartbeat_interval`](Self::heartbeat_interval).
@@ -304,7 +304,7 @@ pub struct SessionSettings {
 
     /// Retain outgoing message history for replay. Defaults to `true`.
     /// When disabled, recovery ranges are gap-filled without reading history
-    /// or calling [`Application::should_gap_fill`](crate::Application::should_gap_fill).
+    /// or calling [`SessionHandler::should_gap_fill`](crate::SessionHandler::should_gap_fill).
     /// Sequence counters are still stored. Unsent messages left at session end
     /// are discarded without numbering or output callbacks.
     pub persist_messages: bool,

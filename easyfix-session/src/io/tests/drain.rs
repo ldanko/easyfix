@@ -10,7 +10,7 @@ use super::{
     wire::{build_peer_logon, logon_handshake, read_lone_message, wire_bytes},
 };
 use crate::{
-    application::{Application, DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, SessionHandler},
     io::{
         ControlMsg, drain_and_flush_admin_output, drain_and_flush_app_sends, sender,
         time::TimerBackend,
@@ -28,7 +28,7 @@ async fn drain_and_flush_admin_preserves_batch_without_history() {
         .logged_on()
         .persist_messages(false)
         .build();
-    let mut app = test_helpers::StubApp;
+    let mut handler = test_helpers::StubHandler;
 
     // Two admin messages queued before any flush. Two heartbeats are a
     // minimal stand-in for the acceptor Logon-ack + ResendRequest pair.
@@ -36,9 +36,10 @@ async fn drain_and_flush_admin_preserves_batch_without_history() {
     engine.send_heartbeat(None);
 
     let (mut writer, reader) = io::duplex(16384);
-    let written = drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
-        .await
-        .expect("drain+flush should succeed");
+    let written =
+        drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
+            .await
+            .expect("drain+flush should succeed");
     assert!(written, "bytes should have been written");
 
     let wire = wire_bytes(writer, reader).await;
@@ -78,7 +79,7 @@ async fn drain_and_flush_app_sends_preserves_batch_without_history() {
         .logged_on()
         .persist_messages(false)
         .build();
-    let mut app = test_helpers::StubApp;
+    let mut handler = test_helpers::StubHandler;
 
     let (tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
     tx.send(test_helpers::new_order_single_with_empty_header())
@@ -91,7 +92,7 @@ async fn drain_and_flush_app_sends_preserves_batch_without_history() {
         &mut writer,
         &mut storage,
         &mut engine,
-        &mut app,
+        &mut handler,
         &mut app_rx,
     )
     .await
@@ -128,16 +129,16 @@ async fn drain_and_flush_app_sends_preserves_batch_without_history() {
 /// Stands in for a producer task scheduled at one of the drain's `.await`
 /// points - the drain flushes per commit, so on the single-threaded runtime a
 /// producer really does get to run between iterations.
-struct RestagingApp {
+struct RestagingHandler {
     tx: sender::Sender<Message>,
 }
 
 #[derive(Default)]
-struct InvalidLogoutApp {
+struct InvalidLogoutHandler {
     errors: usize,
 }
 
-impl Application<Message> for InvalidLogoutApp {
+impl SessionHandler<Message> for InvalidLogoutHandler {
     fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {
         self.errors += 1;
     }
@@ -163,21 +164,21 @@ async fn failed_logout_serialization_ends_without_waiting_for_an_impossible_ack(
         session_status: None,
         text: None,
     });
-    let mut app = InvalidLogoutApp::default();
+    let mut handler = InvalidLogoutHandler::default();
     let (mut writer, reader) = io::duplex(16384);
 
     assert!(
-        !drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
+        !drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
             .await
             .expect("serialization failure is reported to the application")
     );
-    assert_eq!(app.errors, 1);
+    assert_eq!(handler.errors, 1);
     assert!(engine.should_disconnect());
     assert!(engine.logout_deadline().is_none());
     assert!(wire_bytes(writer, reader).await.is_empty());
 }
 
-impl Application<Message> for RestagingApp {
+impl SessionHandler<Message> for RestagingHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
@@ -205,7 +206,7 @@ async fn drain_and_flush_app_sends_stops_at_the_backlog_it_entered_with() {
     let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
 
     let (tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
-    let mut app = RestagingApp { tx: tx.clone() };
+    let mut handler = RestagingHandler { tx: tx.clone() };
 
     tx.send(test_helpers::new_order_single_with_empty_header())
         .expect("send first");
@@ -217,7 +218,7 @@ async fn drain_and_flush_app_sends_stops_at_the_backlog_it_entered_with() {
         &mut writer,
         &mut storage,
         &mut engine,
-        &mut app,
+        &mut handler,
         &mut app_rx,
     )
     .await

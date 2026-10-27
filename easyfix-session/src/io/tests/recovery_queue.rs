@@ -634,7 +634,7 @@ async fn app_message_staged_from_queued_drain_reaches_peer_first() {
     local
         .run_until(async {
             let mut harness = build_harness();
-            harness.app.send_then_logout = true;
+            harness.handler.send_then_logout = true;
             let (server_io, mut client_io) = io::duplex(8192);
             let (server_reader, server_writer) = io::split(server_io);
             let first_msg = build_peer_logon(1, 30);

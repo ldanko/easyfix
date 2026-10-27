@@ -6,7 +6,9 @@ mod timer;
 #[cfg(test)]
 mod tests;
 
-use std::{borrow::Cow, io, ops::RangeInclusive, time::Instant};
+use std::{
+    borrow::Cow, error::Error as StdError, future::Future, io, ops::RangeInclusive, time::Instant,
+};
 
 use easyfix_core::{
     base_messages::MsgTypeBase,
@@ -25,7 +27,7 @@ use tokio::{
 use tracing::{Instrument, error, info, info_span, warn};
 
 use crate::{
-    application::{Application, DisconnectReason, InputError},
+    application::{DisconnectReason, InputError, SessionHandler},
     engine::{FatalError, InputResult, PendingOutput, SendFailure, SessionEngine},
     initiator::SessionStart,
     io::{
@@ -44,6 +46,30 @@ pub(crate) enum ControlMsg {
     },
     Disconnect,
     ResetRunningSession,
+}
+
+/// Awaits handler initialization, or returns `None` on a request to close.
+pub(crate) async fn initialize_handler<H>(
+    make_handler: impl Future<Output = Result<H, Box<dyn StdError + 'static>>>,
+    control_rx: &mut mpsc::Receiver<ControlMsg>,
+) -> Result<Option<H>, Box<dyn StdError + 'static>> {
+    tokio::pin!(make_handler);
+    loop {
+        tokio::select! {
+            // Preserve the normal opening path for constructors that are
+            // immediately ready, including controls queued before first poll.
+            biased;
+            result = &mut make_handler => return result.map(Some),
+            control = control_rx.recv() => match control {
+                Some(ControlMsg::ResetRunningSession) => {
+                    // Running resets only apply once the session is established.
+                }
+                Some(ControlMsg::Logout { .. } | ControlMsg::Disconnect) | None => {
+                    return Ok(None);
+                }
+            },
+        }
+    }
 }
 
 /// Expire the reset budget before doing more ordinary work. Returns whether
@@ -119,17 +145,17 @@ where
 ///
 /// Returns whether any bytes were written. Stops on exhausted numbering,
 /// before the unstamped message reaches its callback, or on a fatal error.
-async fn drain_and_flush_admin_output<M, W, S, A>(
+async fn drain_and_flush_admin_output<M, W, S, H>(
     writer: &mut W,
     storage: &mut S,
     engine: &mut SessionEngine<M>,
-    app: &mut A,
+    handler: &mut H,
 ) -> Result<bool, OutputError>
 where
     M: SessionMessage,
     W: AsyncWrite + Unpin,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     let mut bytes_written = flush_output(writer, storage, engine).await?;
     while let Some(mut admin_msg) = engine.take_admin_output() {
@@ -152,14 +178,14 @@ where
             seq_num = admin_msg.msg_seq_num(),
         );
         bytes_written |= async {
-            app.on_admin_msg_out(&mut admin_msg);
+            handler.on_admin_msg_out(&mut admin_msg);
             let is_logout = admin_msg.msg_type() == MsgTypeBase::Logout;
             if !engine.session_settings().manages_admin_output
                 && let Err(failure) = engine.commit_send(admin_msg, storage)
             {
                 match failure {
                     SendFailure::Serialize(failure) => {
-                        app.on_output_error(failure.msg, &failure.error);
+                        handler.on_output_error(failure.msg, &failure.error);
                         if is_logout {
                             // No reply can arrive for an unsent Logout, and
                             // its unarmed ACK timer cannot end the session.
@@ -203,18 +229,18 @@ where
 // let a busy producer extend the drain indefinitely and the session would never
 // reach its `break`. `finish_staged_sends` keeps that window shut by staying
 // entirely synchronous; here the count does it instead.
-async fn drain_and_flush_app_sends<M, W, S, A>(
+async fn drain_and_flush_app_sends<M, W, S, H>(
     writer: &mut W,
     storage: &mut S,
     engine: &mut SessionEngine<M>,
-    app: &mut A,
+    handler: &mut H,
     app_rx: &mut Receiver<M>,
 ) -> Result<bool, OutputError>
 where
     M: SessionMessage,
     W: AsyncWrite + Unpin,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     // Output from the previous iteration may still borrow the session buffer.
     let mut bytes_written = flush_output(writer, storage, engine).await?;
@@ -222,7 +248,7 @@ where
         let Some(msg) = app_rx.try_recv() else {
             break;
         };
-        if !prepare_user_send(engine, app, storage, msg, SessionEngine::commit_send)? {
+        if !prepare_user_send(engine, handler, storage, msg, SessionEngine::commit_send)? {
             error!(
                 dropped = app_rx.len() + 1,
                 "Outgoing sequence numbers exhausted, abandoning the staged send queue",
@@ -244,9 +270,9 @@ type CommitFn<M, S> = fn(&mut SessionEngine<M>, Box<M>, &mut S) -> Result<(), Se
 /// Returns `Ok(false)` when numbering is exhausted, before the callback or
 /// commit. Reports recoverable serialization errors through the application.
 /// The caller must stop draining on `Ok(false)` or a fatal error.
-fn prepare_user_send<M, S, A>(
+fn prepare_user_send<M, S, H>(
     engine: &mut SessionEngine<M>,
-    app: &mut A,
+    handler: &mut H,
     storage: &mut S,
     mut msg: Box<M>,
     commit_fn: CommitFn<M, S>,
@@ -254,7 +280,7 @@ fn prepare_user_send<M, S, A>(
 where
     M: SessionMessage,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     // Header first - the message span needs the assigned seq num.
     if !engine.fill_header(&mut msg, storage)? {
@@ -272,12 +298,12 @@ where
     )
     .entered();
     match msg.msg_cat() {
-        MsgCat::Admin => app.on_admin_msg_out(&mut msg),
-        MsgCat::App => app.on_app_msg_out(&mut msg),
+        MsgCat::Admin => handler.on_admin_msg_out(&mut msg),
+        MsgCat::App => handler.on_app_msg_out(&mut msg),
     }
     if let Err(failure) = commit_fn(engine, msg, storage) {
         match failure {
-            SendFailure::Serialize(failure) => app.on_output_error(failure.msg, &failure.error),
+            SendFailure::Serialize(failure) => handler.on_output_error(failure.msg, &failure.error),
             SendFailure::Fatal(error) => return Err(error),
         }
     }
@@ -286,20 +312,26 @@ where
 
 /// Archive unsent messages when history is enabled and storage is healthy,
 /// then close and empty the staging queue. No application callback is awaited.
-fn finish_staged_sends<M, S, A>(
+fn finish_staged_sends<M, S, H>(
     engine: &mut SessionEngine<M>,
     storage: &mut S,
-    app: &mut A,
+    handler: &mut H,
     app_rx: &mut Receiver<M>,
 ) where
     M: SessionMessage,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     let mut dropped = 0;
     if engine.session_settings().persist_messages && !engine.has_fatal_error() {
         while let Some(msg) = app_rx.try_recv() {
-            match prepare_user_send(engine, app, storage, msg, SessionEngine::store_for_resend) {
+            match prepare_user_send(
+                engine,
+                handler,
+                storage,
+                msg,
+                SessionEngine::store_for_resend,
+            ) {
                 Ok(true) => {}
                 Ok(false) | Err(_) => {
                     dropped += 1;
@@ -319,31 +351,32 @@ fn finish_staged_sends<M, S, A>(
 
 /// Notify the application of the final disconnect reason.
 /// Call after finishing staged sends and releasing both transport halves.
-async fn finalize_session<M, A>(engine: &SessionEngine<M>, app: &mut A)
+async fn finalize_session<M, H>(engine: &SessionEngine<M>, handler: &mut H)
 where
     M: SessionMessage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     let disconnect_reason = engine
         .disconnect_reason()
         .unwrap_or(DisconnectReason::Disconnected);
-    app.on_session_end(engine.session_id(), disconnect_reason)
+    handler
+        .on_session_end(engine.session_id(), disconnect_reason)
         .await;
 }
 
 /// Deliver a validated input result to the application and apply its response.
 /// Check reset acknowledgement and incoming numbering limits after processing.
 /// A fatal error stops dispatch without running those final checks.
-async fn dispatch_input_result<M, S, A>(
+async fn dispatch_input_result<M, S, H>(
     result: InputResult<M>,
     engine: &mut SessionEngine<M>,
     storage: &mut S,
-    app: &mut A,
+    handler: &mut H,
 ) -> Result<(), FatalError>
 where
     M: SessionMessage,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     if engine.has_fatal_error() {
         return Err(FatalError);
@@ -357,7 +390,7 @@ where
                 seq_num = msg.msg_seq_num(),
             );
             let _entered = span.enter();
-            app.on_input_error(InputError::Validation {
+            handler.on_input_error(InputError::Validation {
                 msg: &msg,
                 error: &failure.error,
             });
@@ -377,7 +410,7 @@ where
                 seq_num = ref_seq_num,
             );
             async {
-                let action = app.on_app_msg_in(msg).await;
+                let action = handler.on_app_msg_in(msg).await;
                 engine.process_app_input(ref_seq_num, ref_msg_type, action, storage)
             }
             .instrument(span)
@@ -391,14 +424,14 @@ where
                 seq_num = msg.msg_seq_num(),
             );
             async {
-                let action = app.on_admin_msg_in(&msg).await;
+                let action = handler.on_admin_msg_in(&msg).await;
                 engine.process_admin_input(msg, action, storage)
             }
             .instrument(span)
             .await?;
         }
         InputResult::Error(error) => {
-            app.on_input_error(InputError::Deserialize(&error));
+            handler.on_input_error(InputError::Deserialize(&error));
         }
     }
     // Every production entry to the engine's input path funnels through here,
@@ -418,16 +451,16 @@ where
 /// an accumulated gap may be queued first, leaving the current message pending.
 /// Returns `Ok(false)` when the range is exhausted. Storage or replay failures
 /// are fatal. The caller must flush pending output before the next invocation.
-async fn process_one_resend<M, S, A>(
+async fn process_one_resend<M, S, H>(
     active_resend: &mut Option<RangeInclusive<SeqNum>>,
     storage: &mut S,
     engine: &mut SessionEngine<M>,
-    app: &mut A,
+    handler: &mut H,
 ) -> Result<bool, FatalError>
 where
     M: SessionMessage,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     if engine.has_fatal_error() {
         return Err(FatalError);
@@ -462,7 +495,8 @@ where
         // Deserialize to check if we should gap-fill
         match M::from_bytes(bytes) {
             Ok(msg) => {
-                let should_gap_fill = engine.resend_as_gap_fill(&msg) || app.should_gap_fill(&msg);
+                let should_gap_fill =
+                    engine.resend_as_gap_fill(&msg) || handler.should_gap_fill(&msg);
 
                 if should_gap_fill {
                     engine.accumulate_resend_gap(seq_num);
@@ -524,13 +558,13 @@ pub(crate) enum SessionOpening<M> {
     clippy::too_many_arguments,
     reason = "internal session wiring, not public API"
 )]
-pub(crate) async fn session_loop<M, R, W, S, A>(
+pub(crate) async fn session_loop<M, R, W, S, H>(
     opening: SessionOpening<M>,
     mut input: InputStream<R, M>,
     mut writer: W,
     mut engine: SessionEngine<M>,
     storage: &mut S,
-    mut app: A,
+    mut handler: H,
     sender: Sender<M>,
     mut app_rx: Receiver<M>,
     mut control_rx: mpsc::Receiver<ControlMsg>,
@@ -539,7 +573,7 @@ pub(crate) async fn session_loop<M, R, W, S, A>(
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     // --- Pre-loop: the opening move ---
 
@@ -551,7 +585,9 @@ pub(crate) async fn session_loop<M, R, W, S, A>(
                 Err(error) => engine.on_deserialize_error(error, storage),
             };
             match result {
-                Ok(result) => dispatch_input_result(result, &mut engine, storage, &mut app).await,
+                Ok(result) => {
+                    dispatch_input_result(result, &mut engine, storage, &mut handler).await
+                }
                 Err(error) => Err(error),
             }
         }
@@ -566,7 +602,7 @@ pub(crate) async fn session_loop<M, R, W, S, A>(
     // §4.3.10).
     if opening_result.is_ok()
         && let Err(err) =
-            drain_and_flush_admin_output(&mut writer, storage, &mut engine, &mut app).await
+            drain_and_flush_admin_output(&mut writer, storage, &mut engine, &mut handler).await
     {
         error!(%err, "failed to flush the opening admin output");
         err.disconnect(&mut engine);
@@ -578,13 +614,13 @@ pub(crate) async fn session_loop<M, R, W, S, A>(
     // announce, so end here rather than hand the application a `sender` for a
     // connection that is already over.
     if engine.should_disconnect() {
-        finish_staged_sends(&mut engine, storage, &mut app, &mut app_rx);
+        finish_staged_sends(&mut engine, storage, &mut handler, &mut app_rx);
         drop(input);
         drop(writer);
-        return finalize_session(&engine, &mut app).await;
+        return finalize_session(&engine, &mut handler).await;
     }
 
-    app.on_session_ready(engine.session_id(), sender).await;
+    handler.on_session_ready(engine.session_id(), sender).await;
 
     // --- Main loop ---
 
@@ -593,7 +629,7 @@ pub(crate) async fn session_loop<M, R, W, S, A>(
         &mut writer,
         &mut engine,
         storage,
-        &mut app,
+        &mut handler,
         &mut app_rx,
         &mut control_rx,
     )
@@ -611,10 +647,10 @@ pub(crate) async fn session_loop<M, R, W, S, A>(
         await_peer_close(&mut input, &mut engine, &mut control_rx, deadline).await;
     }
 
-    finish_staged_sends(&mut engine, storage, &mut app, &mut app_rx);
+    finish_staged_sends(&mut engine, storage, &mut handler, &mut app_rx);
     drop(input);
     drop(writer);
-    finalize_session(&engine, &mut app).await;
+    finalize_session(&engine, &mut handler).await;
 }
 
 /// Wait for the peer to close the connection after its Logout was
@@ -666,12 +702,12 @@ async fn await_peer_close<M, R>(
 }
 
 /// Main session select loop. Shared between acceptor and initiator paths.
-async fn run_session_loop<M, R, W, S, A>(
+async fn run_session_loop<M, R, W, S, H>(
     input: &mut InputStream<R, M>,
     writer: &mut W,
     engine: &mut SessionEngine<M>,
     storage: &mut S,
-    app: &mut A,
+    handler: &mut H,
     app_rx: &mut Receiver<M>,
     control_rx: &mut mpsc::Receiver<ControlMsg>,
 ) where
@@ -679,7 +715,7 @@ async fn run_session_loop<M, R, W, S, A>(
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     S: MessagesStorage,
-    A: Application<M>,
+    H: SessionHandler<M>,
 {
     let time = engine.timer_backend();
     let mut timers = SessionTimers::new(engine.heartbeat_interval(), time);
@@ -749,13 +785,13 @@ async fn run_session_loop<M, R, W, S, A>(
                 && active_resend.is_none()
                 && !engine.has_pending_resends()
                 && let Err(err) =
-                    drain_and_flush_app_sends(writer, storage, engine, app, app_rx).await
+                    drain_and_flush_app_sends(writer, storage, engine, handler, app_rx).await
             {
                 error!(%err, "failed to flush staged app messages before disconnect");
                 err.disconnect(engine);
                 break 'session;
             }
-            if let Err(err) = drain_and_flush_admin_output(writer, storage, engine, app).await {
+            if let Err(err) = drain_and_flush_admin_output(writer, storage, engine, handler).await {
                 error!(%err, "failed to flush admin output before disconnect");
                 err.disconnect(engine);
             }
@@ -778,7 +814,7 @@ async fn run_session_loop<M, R, W, S, A>(
         let output = if active_resend.is_some() || engine.has_pending_resends() {
             flush_output(writer, storage, engine).await
         } else {
-            drain_and_flush_admin_output(writer, storage, engine, app).await
+            drain_and_flush_admin_output(writer, storage, engine, handler).await
         };
         match output {
             Ok(written) => any_bytes_written |= written,
@@ -810,7 +846,7 @@ async fn run_session_loop<M, R, W, S, A>(
 
         // Gated on `is_logged_on()`: `SlowConsumer` means an *established* peer
         // falling behind. Pre-logon the drain arm is gated off and an
-        // initiator's app may pre-send the moment it receives the `Sender` from
+        // initiator's handler may pre-send the moment it receives the `Sender` from
         // `on_session_ready` (which runs in `LogonSent`, before `Established`);
         // evicting on that staged backlog would mislabel a slow *peer logon* as
         // a slow consumer. The gate does NOT suppress the count cap during a
@@ -850,7 +886,7 @@ async fn run_session_loop<M, R, W, S, A>(
                 // the block below, which is the only one that also writes it
                 // to TCP. Flushing it here would consume `gap_fill_range` and
                 // disarm that block's guard.
-                match process_one_resend(&mut active_resend, storage, engine, app).await {
+                match process_one_resend(&mut active_resend, storage, engine, handler).await {
                     Ok(true) => {}
                     Ok(false) => break,
                     Err(_) => break 'session,
@@ -930,7 +966,7 @@ async fn run_session_loop<M, R, W, S, A>(
                 Ok(None) => break,
                 Err(_) => break 'session,
             };
-            if dispatch_input_result(result, engine, storage, app)
+            if dispatch_input_result(result, engine, storage, handler)
                 .await
                 .is_err()
             {
@@ -1046,7 +1082,7 @@ async fn run_session_loop<M, R, W, S, A>(
                             Ok(result) => result,
                             Err(_) => break 'session,
                         };
-                        if dispatch_input_result(result, engine, storage, app).await.is_err() {
+                        if dispatch_input_result(result, engine, storage, handler).await.is_err() {
                             break 'session;
                         }
                         check_reset_timeout(&mut timers, engine);
@@ -1059,7 +1095,7 @@ async fn run_session_loop<M, R, W, S, A>(
                             Ok(result) => result,
                             Err(_) => break 'session,
                         };
-                        if dispatch_input_result(result, engine, storage, app).await.is_err() {
+                        if dispatch_input_result(result, engine, storage, handler).await.is_err() {
                             break 'session;
                         }
                         check_reset_timeout(&mut timers, engine);
@@ -1115,7 +1151,7 @@ async fn run_session_loop<M, R, W, S, A>(
                     && !engine.has_pending_resends()
                     && engine.accepts_app_sends()) => {
                 if let Some(msg) = msg {
-                    if prepare_user_send(engine, app, storage, msg, SessionEngine::commit_send).is_err() {
+                    if prepare_user_send(engine, handler, storage, msg, SessionEngine::commit_send).is_err() {
                         break 'session;
                     }
                     processed_app_send = true;

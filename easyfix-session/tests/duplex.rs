@@ -7,6 +7,7 @@ use std::{
     assert_matches,
     borrow::Cow,
     cell::{Cell, RefCell},
+    error::Error as StdError,
     fmt, mem,
     num::NonZeroUsize,
     rc::Rc,
@@ -24,9 +25,9 @@ use easyfix_core::{
     version::Version,
 };
 use easyfix_session::{
-    Acceptor, AcceptorError, Application, ApplicationFactory, DisconnectReason, InMemoryStorage,
-    Initiator, InputAction, MessagesStorage, SendError, Sender, SerializeError, SessionContext,
-    SessionId, SessionSettings, ShutdownMode,
+    Acceptor, AcceptorError, DisconnectReason, InMemoryStorage, Initiator, InitiatorError,
+    InputAction, MessagesStorage, SendError, Sender, SerializeError, SessionContext,
+    SessionHandler, SessionId, SessionSettings, ShutdownMode,
 };
 use easyfix_test_messages::{Body, Message};
 use futures_util::FutureExt;
@@ -52,12 +53,12 @@ fn reset_settings() -> SessionSettings {
     settings
 }
 
-struct ResetApp {
-    inner: TestApp,
+struct ResetHandler {
+    inner: TestHandler,
     refuse: Rc<Cell<bool>>,
 }
 
-impl Application<Message> for ResetApp {
+impl SessionHandler<Message> for ResetHandler {
     fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
         self.inner.on_output_error(msg, error);
     }
@@ -90,28 +91,24 @@ impl Application<Message> for ResetApp {
     }
 }
 
-struct ResetFactory {
+fn reset_handler(
     events: mpsc::UnboundedSender<TestEvent>,
     refuse: Rc<Cell<bool>>,
-}
-
-impl ApplicationFactory<Message> for ResetFactory {
-    type App = ResetApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> ResetApp {
-        ResetApp {
-            inner: TestApp {
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<ResetHandler, Box<dyn StdError>> {
+    async move |ctx: &SessionContext<'_>| {
+        Ok(ResetHandler {
+            inner: TestHandler {
                 session_id: ctx.session_id().clone(),
-                events_tx: self.events.clone(),
+                events_tx: events.clone(),
             },
-            refuse: self.refuse.clone(),
-        }
+            refuse: refuse.clone(),
+        })
     }
 }
 
-struct ResetPair {
-    acceptor: Acceptor<Message, ObservedStorage, ResetFactory>,
-    initiator: Initiator<Message, ObservedStorage, ResetFactory>,
+struct ResetPair<FA, FI = FA> {
+    acceptor: Acceptor<Message, ObservedStorage, FA>,
+    initiator: Initiator<Message, ObservedStorage, FI>,
     acc_events: mpsc::UnboundedReceiver<TestEvent>,
     ini_events: mpsc::UnboundedReceiver<TestEvent>,
     acc_storage: Rc<RefCell<StorageSnapshot>>,
@@ -119,14 +116,12 @@ struct ResetPair {
     refuse: Rc<Cell<bool>>,
 }
 
-fn reset_pair() -> ResetPair {
+fn reset_pair()
+-> ResetPair<impl AsyncFn(&SessionContext<'_>) -> Result<ResetHandler, Box<dyn StdError>>> {
     let (acc_events_tx, acc_events) = mpsc::unbounded_channel();
     let (ini_events_tx, ini_events) = mpsc::unbounded_channel();
     let refuse = Rc::new(Cell::new(false));
-    let acceptor = Acceptor::new(ResetFactory {
-        events: acc_events_tx,
-        refuse: refuse.clone(),
-    });
+    let acceptor = Acceptor::new(reset_handler(acc_events_tx, refuse.clone()));
     let (acc_storage, acc_snapshot) = ObservedStorage::new(4096);
     acceptor
         .register_session(acceptor_session_id(), reset_settings(), |_, _| {
@@ -137,10 +132,7 @@ fn reset_pair() -> ResetPair {
     let initiator = Initiator::new(
         initiator_session_id(),
         reset_settings(),
-        ResetFactory {
-            events: ini_events_tx,
-            refuse: Rc::new(Cell::new(false)),
-        },
+        reset_handler(ini_events_tx, Rc::new(Cell::new(false))),
         |_, _| Ok(ini_storage),
     )
     .unwrap();
@@ -202,15 +194,23 @@ impl RelayWire {
 }
 
 async fn connect_relay_pair(
-    pair: &mut ResetPair,
+    pair: &mut ResetPair<
+        impl AsyncFn(&SessionContext<'_>) -> Result<ResetHandler, Box<dyn StdError>> + 'static,
+        impl AsyncFn(&SessionContext<'_>) -> Result<ResetHandler, Box<dyn StdError>> + 'static,
+    >,
     seq: SeqNum,
-) -> (JoinHandle<()>, JoinHandle<()>, RelayWire, RelayWire) {
+) -> (
+    JoinHandle<()>,
+    JoinHandle<Result<(), InitiatorError>>,
+    RelayWire,
+    RelayWire,
+) {
     let (acc_wire, acc_peer) = io::duplex(65536);
     let (ini_wire, ini_peer) = io::duplex(65536);
     let (acc_r, acc_w) = split(acc_wire);
     let (ini_r, ini_w) = split(ini_wire);
     let acc_task = pair.acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-    let ini_task = pair.initiator.run_session(ini_r, ini_w, None).unwrap();
+    let ini_task = pair.initiator.run_session(ini_r, ini_w, None);
     let mut acc = RelayWire {
         wire: acc_peer,
         buffer: Vec::new(),
@@ -278,7 +278,7 @@ async fn graceful_shutdown_during_a_reset_leaves_both_sides_consistent() {
         expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
         expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
         assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::RemoteRequestedLogout));
-        ini_task.await.unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
+        ini_task.await.unwrap().unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert_snapshot_counts(&pair.acc_storage, 3, 3); assert_snapshot_counts(&pair.ini_storage, 3, 3);
         for (snapshot, first, second) in [(&pair.acc_storage, &logon, &logout), (&pair.ini_storage, &ack, &logout_ack)] {
             let state = snapshot.borrow(); assert_eq!(state.messages.len(), 2);
@@ -287,14 +287,21 @@ async fn graceful_shutdown_during_a_reset_leaves_both_sides_consistent() {
         }
         let saved = pair.acceptor.remove_session(&acceptor_session_id()).unwrap();
         let (events, received) = mpsc::unbounded_channel();
-        pair.acceptor = Acceptor::new(ResetFactory { events, refuse: pair.refuse.clone() });
+        let mut pair = ResetPair {
+            acceptor: Acceptor::new(reset_handler(events, pair.refuse.clone())),
+            initiator: pair.initiator,
+            acc_events: received,
+            ini_events: pair.ini_events,
+            acc_storage: pair.acc_storage,
+            ini_storage: pair.ini_storage,
+            refuse: pair.refuse,
+        };
         pair.acceptor.register_session(acceptor_session_id(), reset_settings(), |_, _| Ok(saved)).unwrap();
-        pair.acc_events = received;
         let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 3).await;
         assert_snapshot_counts(&pair.acc_storage, 4, 4); assert_snapshot_counts(&pair.ini_storage, 4, 4);
         pair.initiator.disconnect().await.unwrap();
         assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
-        ini_task.await.unwrap(); acc.close_input().await;
+        ini_task.await.unwrap().unwrap(); acc.close_input().await;
         assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
         acc_task.await.unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert!(pair.acc_events.try_recv().is_err()); assert!(pair.ini_events.try_recv().is_err());
@@ -329,7 +336,7 @@ async fn in_session_reset_refused_by_peer() {
         assert!(!ini_task.is_finished());
         ini.close_input().await;
         assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::SeqNumResetFailed));
-        acc_task.await.unwrap(); ini_task.await.unwrap();
+        acc_task.await.unwrap(); ini_task.await.unwrap().unwrap();
         acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert_snapshot_counts(&pair.ini_storage, 3, 2); assert_snapshot_counts(&pair.acc_storage, 4, 3);
         let state = pair.ini_storage.borrow(); assert_eq!(state.messages.len(), 2);
@@ -379,7 +386,7 @@ async fn an_initiator_collision_can_end_with_an_unconfirmed_reset_failure() {
         assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::SeqNumResetFailed));
         assert!(!ini_task.is_finished()); ini.close_input().await;
         assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::RemoteRequestedLogout));
-        acc_task.await.unwrap(); ini_task.await.unwrap();
+        acc_task.await.unwrap(); ini_task.await.unwrap().unwrap();
         acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert_snapshot_counts(&pair.acc_storage, 3, 1); assert_snapshot_counts(&pair.ini_storage, 3, 3);
         for (snapshot, first, second) in [(&pair.acc_storage, &logon_b, &logout_b), (&pair.ini_storage, &ack_a, &logout_ack_a)] {
@@ -398,7 +405,7 @@ async fn in_session_reset_converges_both_engines() {
         let (acc_wire, ini_wire) = io::duplex(65536);
         let (acc_r, acc_w) = split(acc_wire); let (ini_r, ini_w) = split(ini_wire);
         let acc_task = pair.acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-        let ini_task = pair.initiator.run_session(ini_r, ini_w, None).unwrap();
+        let ini_task = pair.initiator.run_session(ini_r, ini_w, None);
         let TestEvent::SessionReady(_, ini_sender) = recv_event(&mut pair.ini_events).await else { panic!("expected sender"); };
         expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
         let TestEvent::SessionReady(_, acc_sender) = recv_event(&mut pair.acc_events).await else { panic!("expected sender"); };
@@ -431,7 +438,7 @@ async fn in_session_reset_converges_both_engines() {
         pair.initiator.disconnect().await.unwrap();
         assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
         assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
-        ini_task.await.unwrap(); acc_task.await.unwrap();
+        ini_task.await.unwrap().unwrap(); acc_task.await.unwrap();
         for snapshot in [&pair.acc_storage, &pair.ini_storage] {
             let state = snapshot.borrow(); assert_eq!(state.messages.len(), 2);
             let order = Message::from_bytes(&state.messages[&NonZeroSeqNum::new(2).unwrap()]).unwrap(); assert!(is_new_order_single(&order));
@@ -462,7 +469,7 @@ async fn unexpected_application_or_peer_timer_heartbeat_ends_the_reset_window() 
     LocalSet::new().run_until(async {
         for heartbeat in [false, true] {
             let (events_tx, mut events) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory { events_tx });
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
             let sid = acceptor_session_id();
             register_in_memory_session(&acceptor, sid.clone(), reset_settings());
             let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
@@ -501,7 +508,7 @@ async fn unexpected_application_or_peer_timer_heartbeat_ends_the_reset_window() 
 async fn acceptor_disconnect_shutdown_stores_sends_held_by_an_unconfirmed_reset() {
     LocalSet::new().run_until(async {
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory { events_tx });
+        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
         let sid = acceptor_session_id();
         register_in_memory_session(&acceptor, sid.clone(), reset_settings());
         let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
@@ -533,7 +540,7 @@ async fn acceptor_disconnect_shutdown_stores_sends_held_by_an_unconfirmed_reset(
 async fn a_peer_without_matching_probe_ids_cannot_finish_a_reset() {
     LocalSet::new().run_until(async {
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory { events_tx });
+        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
         let sid = acceptor_session_id(); let mut settings = reset_settings();
         settings.verify_test_request_id = false; settings.running_session_reset_timeout = Duration::from_secs(30);
         register_in_memory_session(&acceptor, sid.clone(), settings);
@@ -641,12 +648,12 @@ impl fmt::Debug for TestEvent {
     }
 }
 
-struct TestApp {
+struct TestHandler {
     session_id: SessionId,
     events_tx: mpsc::UnboundedSender<TestEvent>,
 }
 
-impl Application<Message> for TestApp {
+impl SessionHandler<Message> for TestHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {
@@ -677,32 +684,27 @@ impl Application<Message> for TestApp {
     }
 }
 
-#[derive(Clone)]
-struct TestAppFactory {
+fn test_handler(
     events_tx: mpsc::UnboundedSender<TestEvent>,
-}
-
-impl ApplicationFactory<Message> for TestAppFactory {
-    type App = TestApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> TestApp {
-        TestApp {
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<TestHandler, Box<dyn StdError>> {
+    async move |ctx: &SessionContext<'_>| {
+        Ok(TestHandler {
             session_id: ctx.session_id().clone(),
-            events_tx: self.events_tx.clone(),
-        }
+            events_tx: events_tx.clone(),
+        })
     }
 }
 
-/// [`TestApp`] that panics in `on_app_msg_in` while `armed` is set - once,
+/// [`TestHandler`] that panics in `on_app_msg_in` while `armed` is set - once,
 /// since the panic disarms it. Arbitrary user code unwinding the session
 /// task; the session that reconnects afterwards gets the same message again
 /// on resend and must be able to take it.
-struct PanicOnceApp {
-    inner: TestApp,
+struct PanicOnceHandler {
+    inner: TestHandler,
     armed: Rc<Cell<bool>>,
 }
 
-impl Application<Message> for PanicOnceApp {
+impl SessionHandler<Message> for PanicOnceHandler {
     fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
         self.inner.on_output_error(msg, error);
     }
@@ -727,22 +729,16 @@ impl Application<Message> for PanicOnceApp {
     }
 }
 
-/// Factory for [`PanicOnceApp`]; `armed` is shared with the test so it can
-/// arm the panic once the session is up.
-#[derive(Clone)]
-struct PanicOnceAppFactory {
-    inner: TestAppFactory,
+/// Builds handlers sharing the panic switch with the test.
+fn panic_once_handler(
+    make_inner: impl AsyncFn(&SessionContext<'_>) -> Result<TestHandler, Box<dyn StdError>>,
     armed: Rc<Cell<bool>>,
-}
-
-impl ApplicationFactory<Message> for PanicOnceAppFactory {
-    type App = PanicOnceApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> PanicOnceApp {
-        PanicOnceApp {
-            inner: self.inner.create(ctx),
-            armed: self.armed.clone(),
-        }
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<PanicOnceHandler, Box<dyn StdError>> {
+    async move |ctx| {
+        Ok(PanicOnceHandler {
+            inner: make_inner(ctx).await?,
+            armed: armed.clone(),
+        })
     }
 }
 
@@ -832,9 +828,8 @@ async fn logon_message_exchange_logout() {
             let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
 
             // Build Acceptor and register a single session.
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(
                 &acceptor,
                 acceptor_session_id(),
@@ -845,18 +840,14 @@ async fn logon_message_exchange_logout() {
             let initiator = Initiator::<Message, InMemoryStorage, _>::new(
                 initiator_session_id(),
                 build_session_settings(30),
-                TestAppFactory {
-                    events_tx: ini_events_tx,
-                },
+                test_handler(ini_events_tx),
                 |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
             )
             .expect("initiator settings valid");
 
             // Spawn both session tasks.
             let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator
-                .run_session(client_r, client_w, None)
-                .expect("initiator run_session");
+            let ini_handle = initiator.run_session(client_r, client_w, None);
 
             // Both sides should hit SessionReady after the Logon handshake
             // completes.
@@ -888,7 +879,10 @@ async fn logon_message_exchange_logout() {
 
             // Both tasks should complete cleanly (no panic).
             acc_handle.await.expect("acceptor task");
-            ini_handle.await.expect("initiator task");
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -910,9 +904,7 @@ async fn acceptor_rejected_first_logon_sends_logout_before_disconnect() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             let mut settings = build_session_settings(30);
             settings.accept_reset_on_connect = false;
             acceptor.register_session(acceptor_session_id(), settings, |_, max| {
@@ -1010,9 +1002,9 @@ fn peer_sequence_reset_bytes(
 /// Everything a raw-peer initiator test interacts with: the initiator and its
 /// running session task, the test-event stream, and the peer's end of the
 /// duplex pipe (`peer_sid` is the initiator's session id reversed).
-struct RawPeerInitiator {
-    initiator: Initiator<Message, InMemoryStorage, TestAppFactory>,
-    handle: JoinHandle<()>,
+struct RawPeerInitiator<F> {
+    initiator: Initiator<Message, InMemoryStorage, F>,
+    handle: JoinHandle<Result<(), InitiatorError>>,
     events_rx: mpsc::UnboundedReceiver<TestEvent>,
     peer_r: ReadHalf<DuplexStream>,
     peer_w: WriteHalf<DuplexStream>,
@@ -1022,7 +1014,10 @@ struct RawPeerInitiator {
 
 /// Spawn an initiator session over a duplex pipe of `pipe_size` bytes,
 /// leaving the peer side raw (driven with the `peer_*_bytes` builders).
-fn spawn_initiator_with_raw_peer(pipe_size: usize, settings: SessionSettings) -> RawPeerInitiator {
+fn spawn_initiator_with_raw_peer(
+    pipe_size: usize,
+    settings: SessionSettings,
+) -> RawPeerInitiator<impl AsyncFn(&SessionContext<'_>) -> Result<TestHandler, Box<dyn StdError>>> {
     let (ini_stream, peer_stream) = io::duplex(pipe_size);
     let (ini_r, ini_w) = split(ini_stream);
     let (peer_r, peer_w) = split(peer_stream);
@@ -1030,13 +1025,11 @@ fn spawn_initiator_with_raw_peer(pipe_size: usize, settings: SessionSettings) ->
     let initiator = Initiator::<Message, InMemoryStorage, _>::new(
         initiator_session_id(),
         settings,
-        TestAppFactory { events_tx },
+        test_handler(events_tx),
         |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
     )
     .expect("initiator settings valid");
-    let handle = initiator
-        .run_session(ini_r, ini_w, None)
-        .expect("initiator run_session");
+    let handle = initiator.run_session(ini_r, ini_w, None);
     RawPeerInitiator {
         initiator,
         handle,
@@ -1048,7 +1041,7 @@ fn spawn_initiator_with_raw_peer(pipe_size: usize, settings: SessionSettings) ->
     }
 }
 
-impl RawPeerInitiator {
+impl<F> RawPeerInitiator<F> {
     /// Drive the peer side of the logon handshake: read the initiator's
     /// Logon request (seq 1), answer it with a peer Logon carrying
     /// `heart_bt_int`, and wait for the initiator's `SessionReady`.
@@ -1114,18 +1107,25 @@ async fn poss_resend_passes_through_send_and_application_callback() {
             }
 
             peer.initiator.disconnect().await.unwrap();
-            timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
+            timeout(TEST_TIMEOUT, peer.handle)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
         })
         .await;
 }
 
 /// Register `sid` on `acceptor` under `settings`, backed by an
 /// `InMemoryStorage` sized by the acceptor.
-fn register_in_memory_session<A: ApplicationFactory<Message> + 'static>(
+fn register_in_memory_session<A, H>(
     acceptor: &Acceptor<Message, InMemoryStorage, A>,
     sid: SessionId,
     settings: SessionSettings,
-) {
+) where
+    A: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError>> + 'static,
+    H: SessionHandler<Message> + 'static,
+{
     acceptor
         .register_session(sid, settings, |_id, max_message_size| {
             Ok(InMemoryStorage::new(max_message_size))
@@ -1148,11 +1148,15 @@ struct RawPeerSession {
 /// Open a duplex pipe of `pipe_size` bytes to `acceptor`, spawn the session
 /// task for it and hand back the peer's end. Nothing has been exchanged yet;
 /// `sid` must already be registered.
-fn connect_raw_peer<A: ApplicationFactory<Message> + 'static>(
+fn connect_raw_peer<A, H>(
     acceptor: &Acceptor<Message, InMemoryStorage, A>,
     sid: SessionId,
     pipe_size: usize,
-) -> RawPeerSession {
+) -> RawPeerSession
+where
+    A: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError>> + 'static,
+    H: SessionHandler<Message> + 'static,
+{
     let (acc_stream, peer_stream) = io::duplex(pipe_size);
     let (acc_r, acc_w) = split(acc_stream);
     let (peer_r, peer_w) = split(peer_stream);
@@ -1211,7 +1215,11 @@ impl RawPeerSession {
 /// Register `target` under the default settings, connect a raw peer to it and
 /// drive the logon handshake through to the acceptor's `SessionReady`.
 async fn spawn_raw_peer_session(
-    acceptor: &Acceptor<Message, InMemoryStorage, TestAppFactory>,
+    acceptor: &Acceptor<
+        Message,
+        InMemoryStorage,
+        impl AsyncFn(&SessionContext<'_>) -> Result<TestHandler, Box<dyn StdError>> + 'static,
+    >,
     acc_events_rx: &mut mpsc::UnboundedReceiver<TestEvent>,
     target: &'static FixStr,
 ) -> RawPeerSession {
@@ -1229,7 +1237,7 @@ async fn acceptor_logout_disconnect_closes_without_peer_response() {
         .run_until(async {
             for already_sent in [false, true] {
                 let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-                let acceptor = Acceptor::new(TestAppFactory { events_tx });
+                let acceptor = Acceptor::new(test_handler(events_tx));
                 let mut peer =
                     spawn_raw_peer_session(&acceptor, &mut events_rx, fix_str!("CLIENT")).await;
                 let text = Some(Cow::Borrowed(fix_str!("Closing session")));
@@ -1300,7 +1308,11 @@ async fn initiator_logout_disconnect_closes_without_peer_response() {
                     wait_for_session_end(&mut peer.events_rx).await,
                     DisconnectReason::ApplicationForcedDisconnect
                 );
-                timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
+                timeout(TEST_TIMEOUT, peer.handle)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(started.elapsed(), Duration::ZERO);
             }
         })
@@ -1312,15 +1324,17 @@ async fn initiator_logout_disconnect_closes_without_peer_response() {
 /// session task owns everything it needs.
 struct InitiatorConnection {
     acc_handle: JoinHandle<()>,
-    ini_handle: JoinHandle<()>,
+    ini_handle: JoinHandle<Result<(), InitiatorError>>,
     events_rx: mpsc::UnboundedReceiver<TestEvent>,
 }
 
 /// Connect a fresh initiator under the default settings to `acceptor` over
 /// a duplex pipe and spawn both session tasks.
-fn connect_initiator<A: ApplicationFactory<Message> + 'static>(
-    acceptor: &Acceptor<Message, InMemoryStorage, A>,
-) -> InitiatorConnection {
+fn connect_initiator<A, H>(acceptor: &Acceptor<Message, InMemoryStorage, A>) -> InitiatorConnection
+where
+    A: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError>> + 'static,
+    H: SessionHandler<Message> + 'static,
+{
     let (acc_stream, ini_stream) = io::duplex(8192);
     let (acc_r, acc_w) = split(acc_stream);
     let (ini_r, ini_w) = split(ini_stream);
@@ -1328,14 +1342,12 @@ fn connect_initiator<A: ApplicationFactory<Message> + 'static>(
     let initiator = Initiator::<Message, InMemoryStorage, _>::new(
         initiator_session_id(),
         build_session_settings(30),
-        TestAppFactory { events_tx },
+        test_handler(events_tx),
         |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
     )
     .expect("initiator settings valid");
     let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-    let ini_handle = initiator
-        .run_session(ini_r, ini_w, None)
-        .expect("initiator run_session");
+    let ini_handle = initiator.run_session(ini_r, ini_w, None);
     InitiatorConnection {
         acc_handle,
         ini_handle,
@@ -1419,7 +1431,10 @@ async fn resend_request_large_gap() {
                 wait_for_session_end(&mut ini_events_rx).await,
                 DisconnectReason::ApplicationForcedDisconnect
             );
-            ini_handle.await.expect("initiator task");
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -1534,7 +1549,10 @@ async fn resend_range_ending_on_gap_fill_flushes_trailing_gap() {
                     wait_for_session_end(&mut ini_events_rx).await,
                     DisconnectReason::ApplicationForcedDisconnect
                 );
-                ini_handle.await.expect("initiator task");
+                ini_handle
+                    .await
+                    .expect("initiator task")
+                    .expect("handler initialization");
             }
         })
         .await;
@@ -1550,9 +1568,8 @@ async fn sequence_reset_advances_target_seq_num() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(
                 &acceptor,
                 acceptor_session_id(),
@@ -1644,9 +1661,8 @@ async fn heartbeat_timeout_sends_test_request_and_disconnects() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             // Small heartbeat; with the fixture's grace limit of 1 only
             // one TestRequest needs to go unanswered before the engine
             // escalates to Logout. Keeps the read stream short.
@@ -1711,8 +1727,7 @@ async fn multiple_sessions_isolated() {
 
             // --- Acceptor with two registered sessions ---
             let (acc_tx, mut acc_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory { events_tx: acc_tx });
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_tx));
             register_in_memory_session(&acceptor, sid_a_acc.clone(), build_session_settings(30));
             register_in_memory_session(&acceptor, sid_b_acc.clone(), build_session_settings(30));
 
@@ -1724,9 +1739,7 @@ async fn multiple_sessions_isolated() {
             let initiator_a = Initiator::<Message, InMemoryStorage, _>::new(
                 initiator_session_id_for(fix_str!("TARGET_A")),
                 build_session_settings(30),
-                TestAppFactory {
-                    events_tx: ini_a_tx,
-                },
+                test_handler(ini_a_tx),
                 |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
             )
             .expect("initiator settings valid");
@@ -1739,9 +1752,7 @@ async fn multiple_sessions_isolated() {
             let initiator_b = Initiator::<Message, InMemoryStorage, _>::new(
                 initiator_session_id_for(fix_str!("TARGET_B")),
                 build_session_settings(30),
-                TestAppFactory {
-                    events_tx: ini_b_tx,
-                },
+                test_handler(ini_b_tx),
                 |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
             )
             .expect("initiator settings valid");
@@ -1749,12 +1760,8 @@ async fn multiple_sessions_isolated() {
             // --- Spawn all four tasks ---
             let acc_a_handle = acceptor.run_session(acc_a_r, acc_a_w, TEST_PEER_ADDR);
             let acc_b_handle = acceptor.run_session(acc_b_r, acc_b_w, TEST_PEER_ADDR);
-            let ini_a_handle = initiator_a
-                .run_session(ini_a_r, ini_a_w, None)
-                .expect("initiator A run_session");
-            let ini_b_handle = initiator_b
-                .run_session(ini_b_r, ini_b_w, None)
-                .expect("initiator B run_session");
+            let ini_a_handle = initiator_a.run_session(ini_a_r, ini_a_w, None);
+            let ini_b_handle = initiator_b.run_session(ini_b_r, ini_b_w, None);
 
             // --- Wait for both sessions to be fully up, on both sides ---
             let sender_a = wait_for_session_ready(&mut ini_a_rx).await;
@@ -1806,7 +1813,10 @@ async fn multiple_sessions_isolated() {
                 DisconnectReason::Disconnected
             );
             acc_a_handle.await.expect("acceptor A task");
-            ini_a_handle.await.expect("initiator A task");
+            ini_a_handle
+                .await
+                .expect("initiator A task")
+                .expect("handler initialization");
 
             // --- Verify session B is still fully functional ---
             sender_b
@@ -1833,7 +1843,10 @@ async fn multiple_sessions_isolated() {
                 DisconnectReason::Disconnected
             );
             acc_b_handle.await.expect("acceptor B task");
-            ini_b_handle.await.expect("initiator B task");
+            ini_b_handle
+                .await
+                .expect("initiator B task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -1920,7 +1933,10 @@ async fn nonblocking_send_preserves_order_under_write_backpressure() {
                 wait_for_session_end(&mut ini_events_rx).await,
                 DisconnectReason::ApplicationForcedDisconnect
             );
-            ini_handle.await.expect("initiator task");
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -1971,7 +1987,10 @@ async fn count_cap_evicts_slow_consumer() {
             let reason = wait_for_session_end(&mut ini_events_rx).await;
             assert_eq!(reason, DisconnectReason::SlowConsumer);
 
-            ini_handle.await.expect("initiator task");
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -2037,7 +2056,10 @@ async fn lag_cap_evicts_slow_consumer() {
             let reason = wait_for_session_end(&mut ini_events_rx).await;
             assert_eq!(reason, DisconnectReason::SlowConsumer);
 
-            ini_handle.await.expect("initiator task");
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -2064,9 +2086,8 @@ async fn slow_consumer_eviction_recovers_backlog_on_reconnect() {
             let mut settings = build_session_settings(30);
             settings.max_outbound_queued_messages = Some(NonZeroUsize::new(CAP).unwrap());
 
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(&acceptor, acceptor_session_id(), settings);
 
             // --- Connection #1: logon, acceptor app stages K, peer never reads
@@ -2149,8 +2170,7 @@ async fn write_timeout_releases_session_for_reconnect_and_resend() {
             const PIPE_SIZE: usize = 512;
             let write_timeout = Duration::from_secs(3);
             let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory { events_tx });
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
             let sid = acceptor_session_id();
             let mut settings = build_session_settings(1);
             settings.write_timeout = write_timeout;
@@ -2262,9 +2282,8 @@ async fn lag_cap_suspended_during_resend_and_grace_window() {
             let mut settings = build_session_settings(30);
             settings.max_outbound_lag = Some(lag);
 
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(&acceptor, acceptor_session_id(), settings);
             // Tight pipe so the resend stalls on the write side while we let the
             // staged-during-resend message age.
@@ -2400,7 +2419,7 @@ async fn initiator_first_logon_emits_valid_next_expected_msg_seq_num_when_enable
 
             // Tear down - drop peer end so the initiator's IO closes.
             initiator.disconnect().await.expect("disconnect");
-            ini_handle.await.expect("initiator task");
+            ini_handle.await.expect("initiator task").expect("handler initialization");
         })
         .await;
 }
@@ -2425,9 +2444,8 @@ async fn remove_session_refused_while_active_then_recoverable_after_close() {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
             let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
 
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(
                 &acceptor,
                 acceptor_session_id(),
@@ -2437,17 +2455,13 @@ async fn remove_session_refused_while_active_then_recoverable_after_close() {
             let initiator = Initiator::<Message, InMemoryStorage, _>::new(
                 initiator_session_id(),
                 build_session_settings(30),
-                TestAppFactory {
-                    events_tx: ini_events_tx,
-                },
+                test_handler(ini_events_tx),
                 |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
             )
             .expect("initiator settings valid");
 
             let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator
-                .run_session(client_r, client_w, None)
-                .expect("initiator run_session");
+            let ini_handle = initiator.run_session(client_r, client_w, None);
 
             wait_for_session_ready(&mut ini_events_rx).await;
             wait_for_session_ready(&mut acc_events_rx).await;
@@ -2480,7 +2494,10 @@ async fn remove_session_refused_while_active_then_recoverable_after_close() {
                 DisconnectReason::Disconnected
             );
             acc_handle.await.expect("acceptor task");
-            let _ = ini_handle.await;
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
 
             let storage = acceptor
                 .remove_session(&acceptor_session_id())
@@ -2511,9 +2528,7 @@ async fn peer_resynchronizes_after_losing_its_session_state() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(
                 &acceptor,
                 acceptor_session_id(),
@@ -2618,12 +2633,7 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
             let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
             let armed = Rc::new(Cell::new(false));
 
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(PanicOnceAppFactory {
-                inner: TestAppFactory {
-                    events_tx: acc_events_tx,
-                },
-                armed: armed.clone(),
-            });
+            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(panic_once_handler(test_handler(acc_events_tx), armed.clone()));
             register_in_memory_session(
                 &acceptor,
                 acceptor_session_id(),
@@ -2632,9 +2642,7 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
             let initiator = Initiator::<Message, InMemoryStorage, _>::new(
                 initiator_session_id(),
                 build_session_settings(30),
-                TestAppFactory {
-                    events_tx: ini_events_tx,
-                },
+                test_handler(ini_events_tx),
                 |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
             )
             .expect("initiator settings valid");
@@ -2644,9 +2652,7 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
             let (server_r, server_w) = split(server_stream);
             let (client_r, client_w) = split(client_stream);
             let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator
-                .run_session(client_r, client_w, None)
-                .expect("initiator run_session");
+            let ini_handle = initiator.run_session(client_r, client_w, None);
             let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
             wait_for_session_ready(&mut acc_events_rx).await;
             assert_matches!(acceptor.is_session_active(&acceptor_session_id()), Ok(true));
@@ -2675,16 +2681,14 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
                 wait_for_session_end(&mut ini_events_rx).await,
                 DisconnectReason::Disconnected
             );
-            ini_handle.await.expect("initiator task");
+            ini_handle.await.expect("initiator task").expect("handler initialization");
 
             // --- Connection 2: reconnect, recover the order, log out ---
             let (server_stream, client_stream) = io::duplex(8192);
             let (server_r, server_w) = split(server_stream);
             let (client_r, client_w) = split(client_stream);
             let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator
-                .run_session(client_r, client_w, None)
-                .expect("reconnect after the panic must not be refused as a duplicate");
+            let ini_handle = initiator.run_session(client_r, client_w, None);
             wait_for_session_ready(&mut ini_events_rx).await;
             wait_for_session_ready(&mut acc_events_rx).await;
 
@@ -2710,7 +2714,7 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
                 DisconnectReason::RemoteRequestedLogout
             );
             acc_handle.await.expect("acceptor task");
-            ini_handle.await.expect("initiator task");
+            ini_handle.await.expect("initiator task").expect("handler initialization");
         })
         .await;
 }
@@ -2723,9 +2727,8 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             register_in_memory_session(
                 &acceptor,
                 acceptor_session_id(),
@@ -2746,7 +2749,11 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
                 DisconnectReason::ApplicationForcedDisconnect
             );
             conn1.acc_handle.await.expect("acceptor task 1");
-            let _ = conn1.ini_handle.await;
+            conn1
+                .ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
 
             // Reset seq state so a fresh initiator can later log on cleanly once
             // resumed (the rejected attempt below never reaches seq validation).
@@ -2768,7 +2775,11 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
                 Err(TryRecvError::Empty),
                 "a suspended session must not emit SessionReady"
             );
-            let _ = conn2.ini_handle.await;
+            conn2
+                .ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
 
             // --- Connection #3: after resume -> accepted. ---
             acceptor
@@ -2785,7 +2796,11 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
                 DisconnectReason::ApplicationForcedDisconnect
             );
             conn3.acc_handle.await.expect("acceptor task 3");
-            let _ = conn3.ini_handle.await;
+            conn3
+                .ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -2835,7 +2850,10 @@ async fn initiator_gives_up_on_an_unanswered_logon() {
                 None
             );
 
-            p.handle.await.expect("initiator task");
+            p.handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -2889,7 +2907,10 @@ async fn no_keep_alive_traffic_before_the_logon_response() {
                 DisconnectReason::LogonTimeout
             );
 
-            p.handle.await.expect("initiator task");
+            p.handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -2915,9 +2936,8 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
             let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
             let observer = Rc::new(RecordingObserver::default());
 
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             acceptor.set_connection_observer(observer.clone());
             register_in_memory_session(
                 &acceptor,
@@ -2927,9 +2947,7 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
             let initiator = Initiator::<Message, InMemoryStorage, _>::new(
                 initiator_session_id(),
                 build_session_settings(30),
-                TestAppFactory {
-                    events_tx: ini_events_tx,
-                },
+                test_handler(ini_events_tx),
                 |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
             )
             .expect("initiator settings valid");
@@ -2939,9 +2957,7 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
             let (server_r, server_w) = split(server_stream);
             let (client_r, client_w) = split(client_stream);
             let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator
-                .run_session(client_r, client_w, None)
-                .expect("initiator run_session");
+            let ini_handle = initiator.run_session(client_r, client_w, None);
             let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
             wait_for_session_ready(&mut acc_events_rx).await;
 
@@ -3003,7 +3019,10 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
                 DisconnectReason::RemoteRequestedLogout
             );
             acc_handle.await.expect("acceptor task");
-            ini_handle.await.expect("initiator task");
+            ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -3038,9 +3057,8 @@ async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             let mut a =
                 spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
             let mut b =
@@ -3089,9 +3107,8 @@ async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             let mut a =
                 spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
             let mut b =
@@ -3153,9 +3170,8 @@ async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
     local
         .run_until(async {
             let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(TestAppFactory {
-                events_tx: acc_events_tx,
-            });
+            let acceptor =
+                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
             let mut a =
                 spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
             let mut b =
@@ -3244,9 +3260,9 @@ async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
 // Application actions end-to-end
 // ---------------------------------------------------------------------------
 
-/// What an [`ActionApp`] answers an inbound application message with.
+/// What an [`ActionHandler`] answers an inbound application message with.
 #[derive(Clone, Copy)]
-enum AppAction {
+enum HandlerAction {
     Accept,
     Reject,
     /// `InputAction::Logout { disconnect: false }`: start the logout exchange
@@ -3255,14 +3271,14 @@ enum AppAction {
     Disconnect,
 }
 
-/// [`TestApp`] whose `on_app_msg_in` answers with the action currently set
+/// [`TestHandler`] whose `on_app_msg_in` answers with the action currently set
 /// in `action` - shared with the test, which flips it once the session is up.
-struct ActionApp {
-    inner: TestApp,
-    action: Rc<Cell<AppAction>>,
+struct ActionHandler {
+    inner: TestHandler,
+    action: Rc<Cell<HandlerAction>>,
 }
 
-impl Application<Message> for ActionApp {
+impl SessionHandler<Message> for ActionHandler {
     fn on_output_error(&mut self, msg: Box<Message>, error: &SerializeError) {
         self.inner.on_output_error(msg, error);
     }
@@ -3279,18 +3295,18 @@ impl Application<Message> for ActionApp {
         // Records the event; the verdict below is ours.
         let _ = self.inner.on_app_msg_in(msg).await;
         match self.action.get() {
-            AppAction::Accept => InputAction::Accept,
-            AppAction::Reject => InputAction::Reject {
+            HandlerAction::Accept => InputAction::Accept,
+            HandlerAction::Reject => InputAction::Reject {
                 reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
                 text: Some(Cow::Borrowed(fix_str!("not today"))),
                 tag: None,
             },
-            AppAction::LogoutAndWait => InputAction::Logout {
+            HandlerAction::LogoutAndWait => InputAction::Logout {
                 session_status: None,
                 text: None,
                 disconnect: false,
             },
-            AppAction::Disconnect => InputAction::Disconnect,
+            HandlerAction::Disconnect => InputAction::Disconnect,
         }
     }
 
@@ -3299,59 +3315,48 @@ impl Application<Message> for ActionApp {
     }
 }
 
-#[derive(Clone)]
-struct ActionAppFactory {
-    inner: TestAppFactory,
-    action: Rc<Cell<AppAction>>,
-}
-
-impl ApplicationFactory<Message> for ActionAppFactory {
-    type App = ActionApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> ActionApp {
-        ActionApp {
-            inner: self.inner.create(ctx),
-            action: self.action.clone(),
-        }
+fn action_handler(
+    make_inner: impl AsyncFn(&SessionContext<'_>) -> Result<TestHandler, Box<dyn StdError>>,
+    action: Rc<Cell<HandlerAction>>,
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<ActionHandler, Box<dyn StdError>> {
+    async move |ctx: &SessionContext<'_>| {
+        Ok(ActionHandler {
+            inner: make_inner(ctx).await?,
+            action: action.clone(),
+        })
     }
 }
 
 /// An established acceptor/initiator pair whose applications both start out
 /// accepting everything; each side's action can be changed through its cell.
-struct ActionPair {
-    acceptor: Acceptor<Message, InMemoryStorage, ActionAppFactory>,
+struct ActionPair<F> {
+    acceptor: Acceptor<Message, InMemoryStorage, F>,
     acc_events_rx: mpsc::UnboundedReceiver<TestEvent>,
-    acc_action: Rc<Cell<AppAction>>,
+    acc_action: Rc<Cell<HandlerAction>>,
     acc_sender: Sender<Message>,
     acc_handle: JoinHandle<()>,
     ini_events_rx: mpsc::UnboundedReceiver<TestEvent>,
-    ini_action: Rc<Cell<AppAction>>,
+    ini_action: Rc<Cell<HandlerAction>>,
     ini_sender: Sender<Message>,
-    ini_handle: JoinHandle<()>,
+    ini_handle: JoinHandle<Result<(), InitiatorError>>,
 }
 
-async fn spawn_action_pair() -> ActionPair {
+async fn spawn_action_pair()
+-> ActionPair<impl AsyncFn(&SessionContext<'_>) -> Result<ActionHandler, Box<dyn StdError>>> {
     let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
     let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
-    let acc_action = Rc::new(Cell::new(AppAction::Accept));
-    let ini_action = Rc::new(Cell::new(AppAction::Accept));
+    let acc_action = Rc::new(Cell::new(HandlerAction::Accept));
+    let ini_action = Rc::new(Cell::new(HandlerAction::Accept));
 
-    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(ActionAppFactory {
-        inner: TestAppFactory {
-            events_tx: acc_events_tx,
-        },
-        action: acc_action.clone(),
-    });
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(action_handler(
+        test_handler(acc_events_tx),
+        acc_action.clone(),
+    ));
     register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
     let initiator = Initiator::<Message, InMemoryStorage, _>::new(
         initiator_session_id(),
         build_session_settings(30),
-        ActionAppFactory {
-            inner: TestAppFactory {
-                events_tx: ini_events_tx,
-            },
-            action: ini_action.clone(),
-        },
+        action_handler(test_handler(ini_events_tx), ini_action.clone()),
         |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
     )
     .expect("initiator settings valid");
@@ -3360,9 +3365,7 @@ async fn spawn_action_pair() -> ActionPair {
     let (server_r, server_w) = split(server_stream);
     let (client_r, client_w) = split(client_stream);
     let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-    let ini_handle = initiator
-        .run_session(client_r, client_w, None)
-        .expect("initiator run_session");
+    let ini_handle = initiator.run_session(client_r, client_w, None);
     let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
     let acc_sender = wait_for_session_ready(&mut acc_events_rx).await;
     // The initiator's `SessionReady` fires in `LogonSent`, ahead of the
@@ -3396,7 +3399,7 @@ async fn application_disconnect_drops_the_transport_without_a_farewell() {
     local
         .run_until(async {
             let mut p = spawn_action_pair().await;
-            p.acc_action.set(AppAction::Disconnect);
+            p.acc_action.set(HandlerAction::Disconnect);
 
             p.ini_sender
                 .send(new_order_single_with_empty_header())
@@ -3416,7 +3419,10 @@ async fn application_disconnect_drops_the_transport_without_a_farewell() {
                 "the peer must see the transport close, with no Logout before it"
             );
             p.acc_handle.await.expect("acceptor task");
-            p.ini_handle.await.expect("initiator task");
+            p.ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -3431,7 +3437,7 @@ async fn application_logout_without_disconnect_completes_the_logout_exchange() {
     local
         .run_until(async {
             let mut p = spawn_action_pair().await;
-            p.acc_action.set(AppAction::LogoutAndWait);
+            p.acc_action.set(HandlerAction::LogoutAndWait);
 
             p.ini_sender
                 .send(new_order_single_with_empty_header())
@@ -3457,7 +3463,10 @@ async fn application_logout_without_disconnect_completes_the_logout_exchange() {
                 TestEvent::SessionEnd(_, DisconnectReason::LocalRequestedLogout)
             );
             p.acc_handle.await.expect("acceptor task");
-            p.ini_handle.await.expect("initiator task");
+            p.ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }
@@ -3471,7 +3480,7 @@ async fn initiator_application_reject_reaches_the_acceptor() {
     local
         .run_until(async {
             let mut p = spawn_action_pair().await;
-            p.ini_action.set(AppAction::Reject);
+            p.ini_action.set(HandlerAction::Reject);
 
             p.acc_sender
                 .send(new_order_single_with_empty_header())
@@ -3508,7 +3517,10 @@ async fn initiator_application_reject_reaches_the_acceptor() {
                 DisconnectReason::RemoteRequestedLogout
             );
             p.acc_handle.await.expect("acceptor task");
-            p.ini_handle.await.expect("initiator task");
+            p.ini_handle
+                .await
+                .expect("initiator task")
+                .expect("handler initialization");
         })
         .await;
 }

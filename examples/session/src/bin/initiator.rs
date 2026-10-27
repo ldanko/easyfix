@@ -15,8 +15,8 @@
 //! outside the session.
 
 use easyfix_session::{
-    Application, ApplicationFactory, DisconnectReason, InMemoryStorage, Initiator, InputAction,
-    Sender, SerializeError, SessionContext, SessionId, SessionMessage,
+    DisconnectReason, InMemoryStorage, Initiator, InputAction, Sender, SerializeError,
+    SessionContext, SessionHandler, SessionId, SessionMessage,
     basic_types::{FixStr, TimePrecision},
     fix_str,
 };
@@ -32,17 +32,17 @@ const ACCEPTOR_COMP_ID: &FixStr = fix_str!("easyfix_test_server");
 const ACCEPTOR_ADDR: &str = "127.0.0.1:10050";
 const CL_ORD_ID: &FixStr = fix_str!("ORD001");
 
-// ---- Application ---------------------------------------------------------
+// ---- Session handler -----------------------------------------------------
 
 /// Per-session handler: sends one order on logon and logs what comes back.
-struct OrderApp {
+struct OrderHandler {
     /// Captured from [`SessionContext::time_precision`] - the session stamps
     /// only `SendingTime<52>`, so body timestamps such as
     /// `TransactTime<60>` are ours to render.
     time_precision: TimePrecision,
 }
 
-impl Application<Message> for OrderApp {
+impl SessionHandler<Message> for OrderHandler {
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {
         info!(%session_id, "session ready");
 
@@ -93,19 +93,6 @@ impl Application<Message> for OrderApp {
     }
 }
 
-/// Builds the handler for the Initiator's single session.
-struct OrderAppFactory;
-
-impl ApplicationFactory<Message> for OrderAppFactory {
-    type App = OrderApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> OrderApp {
-        OrderApp {
-            time_precision: ctx.time_precision(),
-        }
-    }
-}
-
 // ---- Setup ---------------------------------------------------------------
 
 async fn run_initiator() {
@@ -114,7 +101,11 @@ async fn run_initiator() {
     let initiator = match Initiator::<Message, InMemoryStorage, _>::new(
         session_id,
         build_session_settings(),
-        OrderAppFactory,
+        async |ctx: &SessionContext<'_>| {
+            Ok(OrderHandler {
+                time_precision: ctx.time_precision(),
+            })
+        },
         |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
     ) {
         Ok(initiator) => initiator,
@@ -124,17 +115,10 @@ async fn run_initiator() {
         }
     };
 
-    // Connect to the acceptor and spawn the session task.
-    let mut session_handle = match initiator.connect(ACCEPTOR_ADDR).await {
-        Ok(h) => h,
-        Err(err) => {
-            error!(%err, "failed to connect to acceptor");
-            return;
-        }
-    };
-    info!(%ACCEPTOR_ADDR, "connected");
+    let mut session_handle = initiator.connect(ACCEPTOR_ADDR);
+    info!(%ACCEPTOR_ADDR, "connecting");
 
-    let interrupted = tokio::select! {
+    let result = tokio::select! {
         biased;
 
         _ = signal::ctrl_c() => {
@@ -142,21 +126,17 @@ async fn run_initiator() {
             if let Err(err) = initiator.logout(None, None, false).await {
                 warn!(?err, "logout request failed (session may already be closed)");
             }
-            true
+            // Also cancels a pending connection or handler initialization.
+            session_handle.await
         }
 
-        res = &mut session_handle => {
-            if let Err(err) = res {
-                warn!(?err, "session task panicked");
-            }
-            false
-        }
+        res = &mut session_handle => res,
     };
 
-    // A Logout request only starts the teardown; the session task lives until
-    // the peer confirms the Logout (or the logout timeout expires).
-    if interrupted && let Err(err) = session_handle.await {
-        warn!(?err, "session task panicked");
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => error!(%err, "session task failed"),
+        Err(err) => warn!(?err, "session task did not complete"),
     }
     info!("initiator shutdown complete");
 }

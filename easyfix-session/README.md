@@ -34,22 +34,27 @@ programs -- an [acceptor](../examples/session/src/bin/acceptor.rs) and an
 `examples/session` and is built by CI. `Message` below is your message type
 implementing `SessionMessage`, generated from XML or implemented by hand.
 
-### Application trait
+### Session handler
 
-Implement `Application<M>` to handle session events. Your `ApplicationFactory`
-creates a fresh instance for each connection, including reconnects.
+Implement `SessionHandler<M>` to handle session events. Pass a `make_handler`
+async closure to the initiator or acceptor constructor; it creates a fresh
+handler for each connection, including reconnects. The closure receives a
+`&SessionContext<'_>` with the session identity, peer address, and timestamp
+precision. It can await initialization and returns
+`Result<H, Box<dyn std::error::Error + 'static>>`, where `H` implements
+`SessionHandler<M>`.
 
 ```rust
 use easyfix_session::{
-    Application, ApplicationFactory, InputAction,
-    DisconnectReason, Sender, SerializeError, SessionContext, SessionId,
+    DisconnectReason, InputAction, Sender, SerializeError, SessionContext,
+    SessionHandler, SessionId,
 };
 
-struct MyApp {
+struct MyHandler {
     sender: Option<Sender<Message>>,
 }
 
-impl Application<Message> for MyApp {
+impl SessionHandler<Message> for MyHandler {
     async fn on_session_ready(&mut self, _id: &SessionId, sender: Sender<Message>) {
         self.sender = Some(sender);
     }
@@ -69,16 +74,17 @@ impl Application<Message> for MyApp {
     }
 }
 
-struct MyFactory;
-
-impl ApplicationFactory<Message> for MyFactory {
-    type App = MyApp;
-
-    fn create(&self, _ctx: &SessionContext<'_>) -> MyApp {
-        MyApp { sender: None }
-    }
-}
+let make_handler = async |_ctx: &SessionContext<'_>| {
+    Ok(MyHandler { sender: None })
+};
 ```
+
+Neither the closure nor the handler needs to be `Send` or `Sync`.
+
+Pending initialization is cancelled by a logout, disconnect, or initiator
+`close`, and by any acceptor shutdown mode. Failure or cancellation before a
+handler is constructed produces no handler callbacks. Initialization must
+tolerate cancellation and enforce any required timeout.
 
 The optional `on_input_error` callback reports decoding and session validation
 failures; the session chooses the response.
@@ -109,9 +115,9 @@ use std::net::SocketAddr;
 
 use easyfix_session::{Acceptor, InMemoryStorage, ShutdownMode, TcpConnection};
 
-// `Acceptor::new(MyFactory)` uses `AcceptorSettings::default()`; use
+// `Acceptor::new(make_handler)` uses `AcceptorSettings::default()`; use
 // `Acceptor::with_settings(..)` to customize listener-level values.
-let acceptor = Acceptor::<Message, InMemoryStorage, MyFactory>::new(MyFactory);
+let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
 
 // Register sessions before starting.
 acceptor.register_session(session_id, session_settings, |_id, max_message_size| {
@@ -137,23 +143,30 @@ use easyfix_session::{InMemoryStorage, Initiator};
 let initiator = Initiator::new(
     session_id,
     session_settings,
-    MyFactory,
+    make_handler,
     |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
 )?;
 
-let handle = initiator.connect("exchange.example.com:9876").await?;
+let handle = initiator.connect("exchange.example.com:9876");
 // `on_session_ready` provides a Sender before the Logon response arrives.
 // Staged application messages wait until the session is established.
 
 // When ready to stop, request logout and wait for the session task to finish.
 initiator.logout(None, None, false).await?;
-handle.await?;
+handle.await??;
 ```
+
+`connect` returns immediately; the task establishes TCP and initializes the
+handler. The task returns `Result<(), InitiatorError>`, including connection
+and initialization errors. `session_task` returns a future with the same
+output when using a caller-provided executor. `close` also cancels a pending
+connection attempt.
 
 ### Rejected connections
 
 Use an optional `ConnectionObserver` to observe connections dropped before a
-session starts, such as unknown identities, duplicate connections or timeouts:
+session starts, such as unknown identities, duplicate connections, timeouts,
+or handler initialization failures (`HandlerInitFailed { session_id, error }`):
 
 ```rust
 use std::{net::SocketAddr, rc::Rc};

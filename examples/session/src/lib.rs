@@ -3,7 +3,7 @@
 //! Both binaries use the same generated FIX message types, settings
 //! builders and message builders. This module exposes them so each
 //! `src/bin/*.rs` holds only what is role-specific: its own
-//! [`Application`](easyfix_session::Application) implementation and the
+//! [`SessionHandler`](easyfix_session::SessionHandler) implementation and the
 //! handful of setup lines around it.
 
 use std::{fmt::Write, num::NonZeroU8, time::Duration};

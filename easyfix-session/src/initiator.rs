@@ -2,8 +2,8 @@
 //!
 //! The [`Initiator`] manages a single outbound session and spawns a
 //! session task on each call to [`connect`](Initiator::connect) /
-//! [`run_session`](Initiator::run_session). The task sends a Logon
-//! request immediately, then runs the session.
+//! [`run_session`](Initiator::run_session). Each task initializes a handler
+//! and runs the session; `connect` also establishes the TCP connection.
 //!
 //! Reconnection is the caller's responsibility - one-shot per design.
 //! After the session task exits, call [`connect`](Initiator::connect) to
@@ -28,9 +28,12 @@ use tokio::{
 use tracing::{Instrument, info, info_span};
 
 use crate::{
-    application::{ApplicationFactory, SessionContext},
+    application::{SessionContext, SessionHandler},
     engine::{SessionEngine, supports_seq_num_reset, validate_gap_fill_fits},
-    io::{ControlMsg, InputStream, SessionOpening, sender, session_loop, time::TimerBackend},
+    io::{
+        ControlMsg, InputStream, SessionOpening, initialize_handler, sender, session_loop,
+        time::TimerBackend,
+    },
     messages_storage::MessagesStorage,
     session_id::SessionId,
     settings::SessionSettings,
@@ -54,9 +57,12 @@ pub(crate) enum SessionStart {
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Errors returned by [`Initiator`] methods.
+/// Errors from initiator operations and session startup.
 #[derive(Debug, thiserror::Error)]
 pub enum InitiatorError {
+    /// The session handler could not be initialized.
+    #[error("Handler initialization failed: {0}")]
+    HandlerInit(#[source] Box<dyn StdError + 'static>),
     /// Opening or resetting the storage backend failed.
     #[error("Storage error: {0}")]
     Storage(#[source] Box<dyn StdError + 'static>),
@@ -64,8 +70,8 @@ pub enum InitiatorError {
     /// required by the reset acceptance setting or requested operation.
     #[error("Logon does not support ResetSeqNumFlag(141)")]
     ResetSeqNumFlagNotSupportedInLogon,
-    /// A session is already running. Wait for it to exit before
-    /// restarting it.
+    /// A connection attempt or session is already active. Wait for it to end
+    /// before starting another.
     #[error("Session active")]
     SessionActive,
     /// No session is currently active.
@@ -87,17 +93,16 @@ pub enum InitiatorError {
 /// Shared state between the [`Initiator`] public API and the spawned
 /// session task. Wrapped in an [`Rc`] so the task can access it after
 /// the call site returns the `JoinHandle`.
-struct InitiatorInner<M, S, A>
+struct InitiatorInner<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     session_id: SessionId,
     session_settings: SessionSettings,
     timer_backend: TimerBackend,
     // Probe once at construction; reconnects and reset operations reuse it.
     supports_seq_num_reset: bool,
-    app_factory: A,
+    make_handler: F,
     /// Per-session storage. `Some` when no session task is running,
     /// `None` while a task owns it.
     storage: RefCell<Option<S>>,
@@ -113,23 +118,32 @@ where
 // ---------------------------------------------------------------------------
 
 /// FIX initiator (client) - manages a single outbound session.
-pub struct Initiator<M, S, A>
+pub struct Initiator<M, S, F>
 where
     M: SessionMessage,
     S: MessagesStorage,
-    A: ApplicationFactory<M>,
 {
-    inner: Rc<InitiatorInner<M, S, A>>,
+    inner: Rc<InitiatorInner<M, S, F>>,
 }
 
-impl<M, S, A> Initiator<M, S, A>
+impl<M, S, F, H> Initiator<M, S, F>
 where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M> + 'static,
-    A::App: 'static,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>> + 'static,
+    H: SessionHandler<M> + 'static,
 {
     /// Create a new `Initiator` for the session identified by `session_id`.
+    ///
+    /// `make_handler` asynchronously creates a [`SessionHandler`] from the
+    /// [`SessionContext`] of each connection, including reconnects.
+    /// Neither the closure nor the handler needs to be `Send` or `Sync`.
+    /// Errors are reported in the session task's result; see
+    /// [`connect`](Self::connect).
+    ///
+    /// Initialization must tolerate cancellation. Failure or cancellation
+    /// produces no handler callbacks. No initialization timeout is imposed;
+    /// enforce any required deadline inside the closure.
     ///
     /// `build_storage` is called with the [`SessionId`] and the
     /// `max_message_size` from the supplied [`SessionSettings`].
@@ -143,19 +157,19 @@ where
     /// `accept_reset_on_connect` does not apply to an initiator.
     /// Returns [`InitiatorError::Storage`] if `build_storage` fails. The factory
     /// must load and validate the backend's counters before returning success.
-    pub fn new<F>(
+    pub fn new<B>(
         session_id: SessionId,
         session_settings: SessionSettings,
-        app_factory: A,
-        build_storage: F,
+        make_handler: F,
+        build_storage: B,
     ) -> Result<Self, InitiatorError>
     where
-        F: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
+        B: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
     {
         Self::with_timer_backend(
             session_id,
             session_settings,
-            app_factory,
+            make_handler,
             build_storage,
             TimerBackend::Tokio,
         )
@@ -167,33 +181,33 @@ where
     /// executor polling until their deadlines elapse. Arguments and errors
     /// are the same as for [`new`](Self::new).
     #[doc(hidden)]
-    pub fn with_busywait_timers<F>(
+    pub fn with_busywait_timers<B>(
         session_id: SessionId,
         session_settings: SessionSettings,
-        app_factory: A,
-        build_storage: F,
+        make_handler: F,
+        build_storage: B,
     ) -> Result<Self, InitiatorError>
     where
-        F: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
+        B: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
     {
         Self::with_timer_backend(
             session_id,
             session_settings,
-            app_factory,
+            make_handler,
             build_storage,
             TimerBackend::Busywait,
         )
     }
 
-    fn with_timer_backend<F>(
+    fn with_timer_backend<B>(
         session_id: SessionId,
         session_settings: SessionSettings,
-        app_factory: A,
-        build_storage: F,
+        make_handler: F,
+        build_storage: B,
         timer_backend: TimerBackend,
     ) -> Result<Self, InitiatorError>
     where
-        F: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
+        B: FnOnce(&SessionId, usize) -> Result<S, S::Error>,
     {
         let max_message_size = usize::from(session_settings.max_message_size.get());
         if let Err(required) = validate_gap_fill_fits::<M>(
@@ -218,7 +232,7 @@ where
                 session_settings,
                 timer_backend,
                 supports_seq_num_reset,
-                app_factory,
+                make_handler,
                 storage: RefCell::new(Some(storage)),
                 current_session: RefCell::new(None),
                 closed: Notify::new(),
@@ -232,12 +246,11 @@ where
         self.inner.session_id.clone()
     }
 
-    /// Whether a session task currently owns the session.
+    /// Whether a connection attempt or session is active.
     ///
-    /// Active from creation of a [`session_task`](Self::session_task) until
-    /// it completes or is dropped, including before its first poll. This
-    /// does not mean the Logon handshake has completed. A pending TCP
-    /// connection attempt alone does not make the session active.
+    /// Active immediately after starting a task, including before its first
+    /// poll, until it completes or is dropped. This does not mean the Logon
+    /// handshake has completed.
     pub fn is_session_active(&self) -> bool {
         self.inner.storage.borrow().is_none()
     }
@@ -264,24 +277,25 @@ where
 
     /// Connect to the remote FIX peer via TCP and start the session.
     ///
-    /// Opens a `TcpStream` to `addr` with `TCP_NODELAY` enabled and
-    /// spawns the session task. Returns the task's [`JoinHandle`].
+    /// Reserves the session immediately and spawns a task that connects with
+    /// `TCP_NODELAY` enabled. The address must be owned or `'static`.
     ///
-    /// Returns [`InitiatorError::SessionActive`] if a session is still
-    /// running, or [`InitiatorError::Io`] on TCP failure.
+    /// The task returns [`InitiatorError::SessionActive`] if already active,
+    /// [`InitiatorError::Io`] on TCP failure, or [`InitiatorError::HandlerInit`]
+    /// on handler initialization failure. Otherwise it returns `Ok(())`,
+    /// including when logout or disconnect cancels connection setup.
+    /// Session outcomes after initialization are reported to the handler.
     ///
     /// Reconnection is the caller's responsibility - after the returned
     /// `JoinHandle` resolves you may call `connect` again. Uses the stored
     /// sequence numbers and resend history. To request a new FIX session,
     /// use [`connect_with_reset`](Self::connect_with_reset).
-    /// A pending connection attempt is not an active session and is not
-    /// cancelled by [`close`](Self::close). Cancel pending attempts and stop
-    /// reconnecting before closing the session for a scheduled break.
-    pub async fn connect(
+    /// [`close`](Self::close) also cancels a pending connection attempt.
+    pub fn connect(
         &self,
-        addr: impl ToSocketAddrs,
-    ) -> Result<JoinHandle<()>, InitiatorError> {
-        self.connect_impl(addr, SessionStart::Resume).await
+        addr: impl ToSocketAddrs + 'static,
+    ) -> JoinHandle<Result<(), InitiatorError>> {
+        self.connect_impl(addr, SessionStart::Resume)
     }
 
     /// Connect via TCP and start a new FIX session by requesting a sequence
@@ -294,46 +308,70 @@ where
     /// See [session resets](crate::session_reset) for configuration and
     /// recovery after failure.
     ///
-    /// Returns the same errors as [`connect`](Self::connect). Without local
-    /// tag 141 support, returns
+    /// The task reports the same errors as [`connect`](Self::connect).
+    /// Without local tag 141 support, it returns
     /// [`InitiatorError::ResetSeqNumFlagNotSupportedInLogon`] before opening
     /// TCP or changing storage.
-    pub async fn connect_with_reset(
+    pub fn connect_with_reset(
         &self,
-        addr: impl ToSocketAddrs,
-    ) -> Result<JoinHandle<()>, InitiatorError> {
-        self.connect_impl(addr, SessionStart::Reset).await
+        addr: impl ToSocketAddrs + 'static,
+    ) -> JoinHandle<Result<(), InitiatorError>> {
+        self.connect_impl(addr, SessionStart::Reset)
     }
 
-    async fn connect_impl(
+    fn connect_impl(
         &self,
-        addr: impl ToSocketAddrs,
+        addr: impl ToSocketAddrs + 'static,
         start: SessionStart,
-    ) -> Result<JoinHandle<()>, InitiatorError> {
-        self.check_session_start(start)?;
-        let tcp = TcpStream::connect(addr).await?;
-        tcp.set_nodelay(true)?;
-        // Resolved before the split so the session's `SessionContext` can
-        // report the address actually connected to (`ToSocketAddrs` may
-        // resolve to several candidates). A failure here means the peer is
-        // already gone (the connection was reset between `connect` returning
-        // and this call), so fail the connect rather than start a session on
-        // a dead socket - and keep `peer_addr` unconditional for this path.
-        let peer_addr = tcp.peer_addr()?;
-        let (reader, writer) = tcp.into_split();
-        self.run_session_impl(reader, writer, Some(peer_addr), start)
+    ) -> JoinHandle<Result<(), InitiatorError>> {
+        let reserved = self.reserve_session(start);
+        let inner = self.inner.clone();
+        spawn_local(async move {
+            let ReservedSession {
+                storage_guard,
+                mut control_rx,
+            } = reserved?;
+            let connecting = TcpStream::connect(addr);
+            tokio::pin!(connecting);
+            let tcp = loop {
+                tokio::select! {
+                    biased;
+                    control = control_rx.recv() => match control {
+                        Some(ControlMsg::ResetRunningSession) => {}
+                        Some(ControlMsg::Logout { .. } | ControlMsg::Disconnect) | None => {
+                            return Ok(());
+                        }
+                    },
+                    result = &mut connecting => break result?,
+                }
+            };
+            tcp.set_nodelay(true)?;
+            let peer_addr = tcp.peer_addr()?;
+            let (reader, writer) = tcp.into_split();
+            session_future(
+                inner,
+                reader,
+                writer,
+                storage_guard,
+                Some(peer_addr),
+                start,
+                control_rx,
+            )
+            .await
+        })
     }
 
     /// Run a session on an already-established connection (custom
     /// transport, test harness, etc.). Spawns a session task and
     /// returns its [`JoinHandle`].
+    /// The task's result has the same meaning as in [`connect`](Self::connect).
     ///
     /// `peer_addr` is reported to the application through
     /// [`SessionContext::peer_addr`]; pass the remote address when the
     /// transport has one (e.g. the `TcpStream` underlying a TLS session) and
     /// `None` when it does not.
     ///
-    /// Returns [`InitiatorError::SessionActive`] if a previous
+    /// The task returns [`InitiatorError::SessionActive`] if a previous
     /// session task is still running. Uses the stored sequence numbers and
     /// resend history. To request a new FIX session, use
     /// [`run_session_with_reset`](Self::run_session_with_reset).
@@ -344,7 +382,7 @@ where
         reader: R,
         writer: W,
         peer_addr: Option<SocketAddr>,
-    ) -> Result<JoinHandle<()>, InitiatorError>
+    ) -> JoinHandle<Result<(), InitiatorError>>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
@@ -357,16 +395,16 @@ where
     /// Requires the acceptor's agreement; the reset applies only to this task.
     ///
     /// Transport arguments and the returned handle have the same meaning as
-    /// in [`run_session`](Self::run_session). Returns
+    /// in [`run_session`](Self::run_session). The task returns
     /// [`InitiatorError::SessionActive`] if a previous task is still running,
     /// or [`InitiatorError::ResetSeqNumFlagNotSupportedInLogon`] without local
-    /// tag 141 support, before changing storage or starting a task.
+    /// tag 141 support, before changing storage.
     pub fn run_session_with_reset<R, W>(
         &self,
         reader: R,
         writer: W,
         peer_addr: Option<SocketAddr>,
-    ) -> Result<JoinHandle<()>, InitiatorError>
+    ) -> JoinHandle<Result<(), InitiatorError>>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
@@ -380,14 +418,12 @@ where
         writer: W,
         peer_addr: Option<SocketAddr>,
         start: SessionStart,
-    ) -> Result<JoinHandle<()>, InitiatorError>
+    ) -> JoinHandle<Result<(), InitiatorError>>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
     {
-        Ok(spawn_local(
-            self.session_task_impl(reader, writer, peer_addr, start)?,
-        ))
+        spawn_local(self.session_task_impl(reader, writer, peer_addr, start))
     }
 
     /// Build - but do not spawn - the session task future for an
@@ -401,19 +437,23 @@ where
     /// executor where tokio's `spawn_local` / `JoinHandle` are not
     /// available. `peer_addr` carries the same meaning as there.
     ///
-    /// Returns [`InitiatorError::SessionActive`] if a previous session
-    /// is still running. Uses the stored sequence numbers and resend history.
+    /// The future returns [`InitiatorError::SessionActive`] if already active.
+    /// Uses the stored sequence numbers and resend history.
     /// To request a new FIX session, use
     /// [`session_task_with_reset`](Self::session_task_with_reset).
     /// The session becomes active and accepts control requests immediately.
     /// The caller must poll or drop the future for the session to close;
     /// awaiting [`close`](Self::close) does not drive this future.
+    ///
+    /// The future's output has the same meaning as the task result in
+    /// [`connect`](Self::connect). Dropping the future cancels the session
+    /// without producing a result.
     pub fn session_task<R, W>(
         &self,
         reader: R,
         writer: W,
         peer_addr: Option<SocketAddr>,
-    ) -> Result<impl Future<Output = ()> + use<M, S, A, R, W>, InitiatorError>
+    ) -> impl Future<Output = Result<(), InitiatorError>> + use<M, S, F, H, R, W>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
@@ -430,16 +470,15 @@ where
     /// no transport IO and does not reset storage; the reset runs when the
     /// future is polled.
     ///
-    /// Returns [`InitiatorError::SessionActive`] if a previous task is still
-    /// running, or [`InitiatorError::ResetSeqNumFlagNotSupportedInLogon`]
-    /// without local tag 141 support, before changing storage or building
-    /// the future.
+    /// The future returns [`InitiatorError::SessionActive`] if already active,
+    /// or [`InitiatorError::ResetSeqNumFlagNotSupportedInLogon`] without local
+    /// tag 141 support, before changing storage.
     pub fn session_task_with_reset<R, W>(
         &self,
         reader: R,
         writer: W,
         peer_addr: Option<SocketAddr>,
-    ) -> Result<impl Future<Output = ()> + use<M, S, A, R, W>, InitiatorError>
+    ) -> impl Future<Output = Result<(), InitiatorError>> + use<M, S, F, H, R, W>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
@@ -453,11 +492,35 @@ where
         writer: W,
         peer_addr: Option<SocketAddr>,
         start: SessionStart,
-    ) -> Result<impl Future<Output = ()> + use<M, S, A, R, W>, InitiatorError>
+    ) -> impl Future<Output = Result<(), InitiatorError>> + use<M, S, F, H, R, W>
     where
         R: AsyncRead + Unpin + 'static,
         W: AsyncWrite + Unpin + 'static,
     {
+        let reserved = self.reserve_session(start);
+        let inner = self.inner.clone();
+        async move {
+            let ReservedSession {
+                storage_guard,
+                control_rx,
+            } = reserved?;
+            session_future(
+                inner,
+                reader,
+                writer,
+                storage_guard,
+                peer_addr,
+                start,
+                control_rx,
+            )
+            .await
+        }
+    }
+
+    fn reserve_session(
+        &self,
+        start: SessionStart,
+    ) -> Result<ReservedSession<M, S, F>, InitiatorError> {
         self.check_session_start(start)?;
         let storage = self
             .inner
@@ -477,15 +540,10 @@ where
         let (control_tx, control_rx) = mpsc::channel::<ControlMsg>(4);
         *self.inner.current_session.borrow_mut() = Some(control_tx);
 
-        Ok(session_future(
-            self.inner.clone(),
-            reader,
-            writer,
+        Ok(ReservedSession {
             storage_guard,
-            peer_addr,
-            start,
             control_rx,
-        ))
+        })
     }
 
     fn check_session_start(&self, start: SessionStart) -> Result<(), InitiatorError> {
@@ -505,6 +563,7 @@ where
     /// true it ends the wait; otherwise the original deadline is unchanged.
     /// Closure without waiting reports
     /// [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
+    /// Cancels pending TCP connection or handler initialization without callbacks.
     pub async fn logout(
         &self,
         session_status: Option<SessionStatusField>,
@@ -560,6 +619,7 @@ where
     /// `Ok(())` if no session is active. Does not wait for closure; use
     /// [`close`](Self::close) to disconnect and wait.
     /// Reports [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
+    /// Cancels pending TCP connection or handler initialization without callbacks.
     pub async fn disconnect(&self) -> Result<(), InitiatorError> {
         let tx = self.inner.current_session.borrow().clone();
         if let Some(tx) = tx {
@@ -573,8 +633,8 @@ where
     /// Resolves immediately if no session is active.
     ///
     /// Observes whether the session is currently inactive, not the end of a
-    /// particular connection. Stop reconnecting and cancel pending TCP
-    /// connection attempts first to prevent a new task from taking its place.
+    /// particular connection. Stop reconnecting first to prevent a new task
+    /// from taking its place.
     ///
     /// Must be awaited on the same single-threaded executor that drives the
     /// session, outside its own application callbacks. Awaiting from one of
@@ -598,8 +658,8 @@ where
     ///
     /// For a graceful logout, call [`logout`](Self::logout) followed by
     /// [`await_session_closed`](Self::await_session_closed) instead. The
-    /// latter's callback and reconnect caveats also apply here. This does not
-    /// prevent later connections or cancel a pending TCP connection attempt.
+    /// latter's callback and reconnect caveats also apply here. Cancels a
+    /// pending TCP connection attempt, but does not prevent later connections.
     pub async fn close(&self) -> Result<(), InitiatorError> {
         self.disconnect().await?;
         self.await_session_closed().await;
@@ -611,6 +671,11 @@ where
 // Session task
 // ---------------------------------------------------------------------------
 
+struct ReservedSession<M: SessionMessage, S, F> {
+    storage_guard: StorageReturn<M, S, F>,
+    control_rx: mpsc::Receiver<ControlMsg>,
+}
+
 /// RAII return of the storage taken out of [`InitiatorInner`], plus the
 /// teardown of the control handle. Mirrors the acceptor's guard of the same
 /// name.
@@ -621,31 +686,26 @@ where
 /// for resend, which would leave every later `connect()` returning
 /// [`InitiatorError::SessionActive`] with no session running.
 //
-// Built in `session_task`, before the future exists, and handed to it as an
-// argument. That covers the second leak too: an `async fn` future owns the
-// arguments it was called with, so dropping a returned-but-never-polled
-// `session_task()` future drops this guard and gives the storage back.
+// Created by `reserve_session` and captured before the task's first poll,
+// so dropping an unpolled task also releases the reservation.
 //
 // The acceptor takes its storage inside the future instead, because it
 // cannot know which session a connection belongs to until the first Logon
-// is parsed. The initiator names its session up front, which is what lets
-// `session_task` report `SessionActive` synchronously - hence the earlier
-// take. Different constraints, not an inconsistency.
-struct StorageReturn<M, S, A>
+// is parsed. The initiator reserves its known session immediately so control
+// requests also reach tasks that have not been polled yet.
+struct StorageReturn<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
-    inner: Rc<InitiatorInner<M, S, A>>,
+    inner: Rc<InitiatorInner<M, S, F>>,
     /// `Some` for the whole life of the guard; `Option` only so `Drop` can
     /// move the storage back out. Borrow it through [`Self::storage`].
     storage: Option<S>,
 }
 
-impl<M, S, A> StorageReturn<M, S, A>
+impl<M, S, F> StorageReturn<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     /// The guarded storage.
     fn storage(&mut self) -> &mut S {
@@ -658,10 +718,9 @@ where
     }
 }
 
-impl<M, S, A> Drop for StorageReturn<M, S, A>
+impl<M, S, F> Drop for StorageReturn<M, S, F>
 where
     M: SessionMessage,
-    A: ApplicationFactory<M>,
 {
     fn drop(&mut self) {
         *self.inner.current_session.borrow_mut() = None;
@@ -679,20 +738,20 @@ where
 /// The caller must have already taken the storage out of the `Initiator` and
 /// wrapped it in a [`StorageReturn`], which hands it back when the future
 /// ends or is dropped.
-fn session_future<M, S, A, R, W>(
-    inner: Rc<InitiatorInner<M, S, A>>,
+fn session_future<M, S, F, H, R, W>(
+    inner: Rc<InitiatorInner<M, S, F>>,
     reader: R,
     writer: W,
-    storage_guard: StorageReturn<M, S, A>,
+    storage_guard: StorageReturn<M, S, F>,
     peer_addr: Option<SocketAddr>,
     start: SessionStart,
     control_rx: mpsc::Receiver<ControlMsg>,
-) -> impl Future<Output = ()> + 'static
+) -> impl Future<Output = Result<(), InitiatorError>> + 'static
 where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M> + 'static,
-    A::App: 'static,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>> + 'static,
+    H: SessionHandler<M> + 'static,
     R: AsyncRead + Unpin + 'static,
     W: AsyncWrite + Unpin + 'static,
 {
@@ -712,18 +771,20 @@ where
     .instrument(span)
 }
 
-async fn initiator_session_task<M, S, A, R, W>(
-    inner: Rc<InitiatorInner<M, S, A>>,
+async fn initiator_session_task<M, S, F, H, R, W>(
+    inner: Rc<InitiatorInner<M, S, F>>,
     reader: R,
     writer: W,
-    mut storage_guard: StorageReturn<M, S, A>,
+    mut storage_guard: StorageReturn<M, S, F>,
     peer_addr: Option<SocketAddr>,
     start: SessionStart,
-    control_rx: mpsc::Receiver<ControlMsg>,
-) where
+    mut control_rx: mpsc::Receiver<ControlMsg>,
+) -> Result<(), InitiatorError>
+where
     M: SessionMessage + 'static,
     S: MessagesStorage + 'static,
-    A: ApplicationFactory<M>,
+    F: AsyncFn(&SessionContext<'_>) -> Result<H, Box<dyn StdError + 'static>>,
+    H: SessionHandler<M>,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
@@ -734,9 +795,16 @@ async fn initiator_session_task<M, S, A, R, W>(
 
     let session_id = &inner.session_id;
     let time_precision = inner.session_settings.time_precision;
-    let app = inner
-        .app_factory
-        .create(&SessionContext::new(session_id, peer_addr, time_precision));
+    let context = SessionContext::new(session_id, peer_addr, time_precision);
+    let initialized = initialize_handler((inner.make_handler)(&context), &mut control_rx).await;
+    let handler = match initialized {
+        Ok(Some(handler)) => handler,
+        result => {
+            drop(reader);
+            drop(writer);
+            return result.map(|_| ()).map_err(InitiatorError::HandlerInit);
+        }
+    };
     let engine = SessionEngine::<M>::new(
         session_id.clone(),
         inner.session_settings.clone(),
@@ -752,7 +820,7 @@ async fn initiator_session_task<M, S, A, R, W>(
         writer,
         engine,
         storage_guard.storage(),
-        app,
+        handler,
         sender_tx,
         app_rx,
         control_rx,
@@ -763,6 +831,7 @@ async fn initiator_session_task<M, S, A, R, W>(
     // `StorageReturn::drop`, which runs on this path and on every failure
     // path alike.
     info!("session task finished");
+    Ok(())
 }
 
 #[cfg(test)]

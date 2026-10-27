@@ -25,7 +25,7 @@ use tokio::{
 
 use super::wire::{build_peer_logon, wire_bytes};
 use crate::{
-    application::{Application, DisconnectReason, InputAction},
+    application::{DisconnectReason, InputAction, SessionHandler},
     initiator::SessionStart,
     io::{
         ControlMsg, InputStream, SessionOpening, drain_and_flush_admin_output,
@@ -41,7 +41,7 @@ use crate::{
 };
 
 #[derive(Default)]
-struct AppTrace {
+struct HandlerTrace {
     ready: usize,
     ended: Vec<DisconnectReason>,
     app_out: usize,
@@ -52,8 +52,8 @@ struct AppTrace {
     gap_fill_calls: usize,
 }
 
-struct RecordingApp {
-    trace: Rc<RefCell<AppTrace>>,
+struct RecordingHandler {
+    trace: Rc<RefCell<HandlerTrace>>,
     #[expect(
         clippy::vec_box,
         reason = "staged messages use the Sender API's owned boxes"
@@ -63,8 +63,8 @@ struct RecordingApp {
     gap_fill: bool,
 }
 
-impl RecordingApp {
-    fn new(trace: Rc<RefCell<AppTrace>>) -> Self {
+impl RecordingHandler {
+    fn new(trace: Rc<RefCell<HandlerTrace>>) -> Self {
         Self {
             trace,
             staged: Vec::new(),
@@ -74,7 +74,7 @@ impl RecordingApp {
     }
 }
 
-impl Application<Message> for RecordingApp {
+impl SessionHandler<Message> for RecordingHandler {
     fn on_output_error(&mut self, _: Box<Message>, _: &SerializeError) {
         self.trace.borrow_mut().serialize_errors += 1;
     }
@@ -137,13 +137,13 @@ async fn fatal_storage_failures_close_transport_sender_and_notify_once() {
                     let mut storage = FailingStorage::new();
                     storage.fail_on(op, nth, timing);
                     let storage_trace = storage.trace.clone();
-                    let trace = Rc::new(RefCell::new(AppTrace::default()));
-                    let mut app = RecordingApp::new(trace.clone());
-                    app.staged = (0..4)
+                    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+                    let mut handler = RecordingHandler::new(trace.clone());
+                    handler.staged = (0..4)
                         .map(|_| test_helpers::new_order_single_with_empty_header())
                         .collect();
                     let (release, gate) = oneshot::channel();
-                    app.end_gate = Some(gate);
+                    handler.end_gate = Some(gate);
                     let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
                     let live_sender = sender.clone();
                     let (_control, control_rx) = mpsc::channel(4);
@@ -156,7 +156,7 @@ async fn fatal_storage_failures_close_transport_sender_and_notify_once() {
                             writer,
                             engine,
                             &mut storage,
-                            app,
+                            handler,
                             sender,
                             app_rx,
                             control_rx,
@@ -204,16 +204,16 @@ async fn producer_number_collision_preserves_original_and_ends_task() {
         .run_until(async {
             let (engine, _) = EngineBuilder::new().build();
             let mut storage = FailingStorage::new();
-            let trace = Rc::new(RefCell::new(AppTrace::default()));
-            let mut app = RecordingApp::new(trace.clone());
+            let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+            let mut handler = RecordingHandler::new(trace.clone());
             let mut collision = test_helpers::new_order_single_with_empty_header();
             collision.set_msg_seq_num(1);
-            app.staged = vec![
+            handler.staged = vec![
                 collision,
                 test_helpers::new_order_single_with_empty_header(),
             ];
             let (release, gate) = oneshot::channel();
-            app.end_gate = Some(gate);
+            handler.end_gate = Some(gate);
             let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
             let live_sender = sender.clone();
             let (_control, control_rx) = mpsc::channel(4);
@@ -226,7 +226,7 @@ async fn producer_number_collision_preserves_original_and_ends_task() {
                     writer,
                     engine,
                     &mut storage,
-                    app,
+                    handler,
                     sender,
                     app_rx,
                     control_rx,
@@ -270,20 +270,26 @@ async fn no_history_sends_admin_and_app_but_never_calls_message_storage() {
             if !persist_messages {
                 storage.fail_on(StorageOp::Store, 1, FailureTiming::Before);
             }
-            let trace = Rc::new(RefCell::new(AppTrace::default()));
-            let mut app = RecordingApp::new(trace.clone());
+            let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+            let mut handler = RecordingHandler::new(trace.clone());
             let (mut writer, reader) = io::duplex(65536);
             engine.send_heartbeat(None);
-            drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut app)
+            drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
                 .await
                 .unwrap();
             let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
             tx.send(test_helpers::new_order_single_with_empty_header())
                 .unwrap();
             tx.send(test_helpers::heartbeat(0, None)).unwrap();
-            drain_and_flush_app_sends(&mut writer, &mut storage, &mut engine, &mut app, &mut rx)
-                .await
-                .unwrap();
+            drain_and_flush_app_sends(
+                &mut writer,
+                &mut storage,
+                &mut engine,
+                &mut handler,
+                &mut rx,
+            )
+            .await
+            .unwrap();
             let bytes = wire_bytes(writer, reader).await;
             let text = String::from_utf8(bytes).unwrap();
             assert_eq!(
@@ -319,16 +325,22 @@ async fn new_message_serialization_errors_call_application_and_rollback_in_both_
             .build();
         let mut storage = FailingStorage::new();
         storage.max_message_size = 64;
-        let trace = Rc::new(RefCell::new(AppTrace::default()));
-        let mut app = RecordingApp::new(trace.clone());
+        let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+        let mut handler = RecordingHandler::new(trace.clone());
         let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
         tx.send(test_helpers::new_order_single_with_empty_header())
             .unwrap();
         let (mut writer, reader) = io::duplex(1024);
         assert!(
-            !drain_and_flush_app_sends(&mut writer, &mut storage, &mut engine, &mut app, &mut rx)
-                .await
-                .unwrap()
+            !drain_and_flush_app_sends(
+                &mut writer,
+                &mut storage,
+                &mut engine,
+                &mut handler,
+                &mut rx
+            )
+            .await
+            .unwrap()
         );
         assert_eq!(trace.borrow().serialize_errors, 1);
         assert_eq!(trace.borrow().app_out, 1);
@@ -351,11 +363,11 @@ async fn no_history_resend_ignores_even_existing_records_and_app_policy() {
         b"invalid archive that must not be parsed".to_vec(),
     );
     storage.fail_on(StorageOp::Fetch, 1, FailureTiming::Before);
-    let trace = Rc::new(RefCell::new(AppTrace::default()));
-    let mut app = RecordingApp::new(trace.clone());
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
     let mut range = Some(1..=3);
     let (mut writer, reader) = io::duplex(65536);
-    while process_one_resend(&mut range, &mut storage, &mut engine, &mut app)
+    while process_one_resend(&mut range, &mut storage, &mut engine, &mut handler)
         .await
         .unwrap()
     {
@@ -383,15 +395,15 @@ async fn finalization_without_history_releases_backlog_without_numbering_or_hook
         .persist_messages(false)
         .build();
     let mut storage = FailingStorage::new();
-    let trace = Rc::new(RefCell::new(AppTrace::default()));
-    let mut app = RecordingApp::new(trace.clone());
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
     let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
     for _ in 0..4 {
         tx.send(test_helpers::new_order_single_with_empty_header())
             .unwrap();
     }
-    finish_staged_sends(&mut engine, &mut storage, &mut app, &mut rx);
-    finalize_session(&engine, &mut app).await;
+    finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut rx);
+    finalize_session(&engine, &mut handler).await;
     assert_eq!(tx.backlog_len(), 0);
     assert_eq!(trace.borrow().app_out, 0);
     assert!(storage.trace.borrow().calls.is_empty());
@@ -425,10 +437,10 @@ async fn failure_during_final_drain_stops_and_closes_transport_before_callback()
                 let (engine, _) = EngineBuilder::new().build();
                 let mut storage = FailingStorage::new();
                 storage.fail_on(StorageOp::Store, 4, timing);
-                let trace = Rc::new(RefCell::new(AppTrace::default()));
-                let mut app = RecordingApp::new(trace.clone());
+                let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+                let mut handler = RecordingHandler::new(trace.clone());
                 let (release, gate) = oneshot::channel();
-                app.end_gate = Some(gate);
+                handler.end_gate = Some(gate);
                 let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
                 for _ in 0..5 {
                     sender
@@ -447,7 +459,7 @@ async fn failure_during_final_drain_stops_and_closes_transport_before_callback()
                         BrokenWriter,
                         engine,
                         &mut storage,
-                        app,
+                        handler,
                         sender,
                         app_rx,
                         control_rx,
@@ -553,14 +565,14 @@ async fn gap_fill_policy_and_retransmission_preserve_original_record() {
         .unwrap();
     assert_eq!(wire_bytes(writer, reader).await, original_bytes);
 
-    let trace = Rc::new(RefCell::new(AppTrace::default()));
-    let mut app = RecordingApp::new(trace.clone());
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
     for gap_fill in [true, false] {
-        app.gap_fill = gap_fill;
+        handler.gap_fill = gap_fill;
         let mut range = Some(1..=1);
         let (mut writer, reader) = io::duplex(65536);
         assert!(
-            process_one_resend(&mut range, &mut storage, &mut engine, &mut app)
+            process_one_resend(&mut range, &mut storage, &mut engine, &mut handler)
                 .await
                 .unwrap()
         );
@@ -595,8 +607,8 @@ async fn no_history_logon_recovery_resend_request_and_reconnect_keep_counters() 
         storage.fail_on(StorageOp::Fetch, 1, FailureTiming::Before);
         for connection in 0..2 {
             let (engine, _) = EngineBuilder::new().persist_messages(false).enable_next_expected_msg_seq_num().build();
-            let trace = Rc::new(RefCell::new(AppTrace::default()));
-            let app = RecordingApp::new(trace.clone());
+            let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+            let handler = RecordingHandler::new(trace.clone());
             let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
             let live_sender = sender.clone();
             let (control, control_rx) = mpsc::channel(4);
@@ -609,7 +621,7 @@ async fn no_history_logon_recovery_resend_request_and_reconnect_keep_counters() 
             let task = task::spawn_local(async move {
                 session_loop(SessionOpening::FirstMessage(Ok(logon)),
                     InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE), writer,
-                    engine, &mut storage, app, sender, app_rx, control_rx).await;
+                    engine, &mut storage, handler, sender, app_rx, control_rx).await;
                 storage
             });
             let mut buffer = Vec::new();
@@ -654,15 +666,15 @@ async fn failures_after_incoming_callback_and_during_replay_stop_live_tasks() {
                     if replay { 5 } else { 2 },
                     FailureTiming::After,
                 );
-                let trace = Rc::new(RefCell::new(AppTrace::default()));
-                let mut app = RecordingApp::new(trace.clone());
+                let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+                let mut handler = RecordingHandler::new(trace.clone());
                 if replay {
-                    app.staged = (0..2)
+                    handler.staged = (0..2)
                         .map(|_| test_helpers::new_order_single_with_empty_header())
                         .collect();
                 }
                 let (release, gate) = oneshot::channel();
-                app.end_gate = Some(gate);
+                handler.end_gate = Some(gate);
                 let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
                 let live_sender = sender.clone();
                 let (_control, control_rx) = mpsc::channel(4);
@@ -675,7 +687,7 @@ async fn failures_after_incoming_callback_and_during_replay_stop_live_tasks() {
                         writer,
                         engine,
                         &mut storage,
-                        app,
+                        handler,
                         sender,
                         app_rx,
                         control_rx,
@@ -741,10 +753,10 @@ async fn reset_storage_failures_finalize_even_with_unconfirmed_local_reset() {
                         storage.sender = nz_seq(20);
                         storage.target = nz_seq(30);
                         storage.fail_on(fail_op, 1, timing);
-                        let trace = Rc::new(RefCell::new(AppTrace::default()));
-                        let mut app = RecordingApp::new(trace.clone());
+                        let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+                        let mut handler = RecordingHandler::new(trace.clone());
                         let (release, gate) = oneshot::channel();
-                        app.end_gate = Some(gate);
+                        handler.end_gate = Some(gate);
                         let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
                         sender
                             .send(test_helpers::new_order_single_with_empty_header())
@@ -772,7 +784,7 @@ async fn reset_storage_failures_finalize_even_with_unconfirmed_local_reset() {
                                 writer,
                                 engine,
                                 &mut storage,
-                                app,
+                                handler,
                                 sender,
                                 app_rx,
                                 control_rx,

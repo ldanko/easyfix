@@ -6,9 +6,9 @@
 //! via `Sender` for the message to reach the wire.
 //!
 //! These tests use a raw peer (manual FIX byte construction) driving one side
-//! and an Acceptor with a custom `ManagedAdminApp` on the other.
+//! and an Acceptor with a custom `ManagedAdminHandler` on the other.
 
-use std::{cell::RefCell, collections::HashSet, fmt, time::Duration};
+use std::{cell::RefCell, collections::HashSet, error::Error as StdError, fmt, time::Duration};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
@@ -18,9 +18,8 @@ use easyfix_core::{
     version::Version,
 };
 use easyfix_session::{
-    Acceptor, Application, ApplicationFactory, DisconnectReason, InMemoryStorage,
-    InMemoryStorageError, InputAction, MessagesStorage, Sender, SerializeError, SessionContext,
-    SessionId,
+    Acceptor, DisconnectReason, InMemoryStorage, InMemoryStorageError, InputAction,
+    MessagesStorage, Sender, SerializeError, SessionContext, SessionHandler, SessionId,
 };
 use easyfix_test_messages::{Body, Message};
 use tokio::{
@@ -105,7 +104,7 @@ async fn has_data_on_wire<R: AsyncRead + Unpin>(reader: &mut R, buf: &mut Vec<u8
 // ManagedEvent - what the test harness observes from the app
 // ---------------------------------------------------------------------------
 
-/// Events emitted by `ManagedAdminApp` for the test harness to observe.
+/// Events emitted by `ManagedAdminHandler` for the test harness to observe.
 enum ManagedEvent {
     SessionReady(SessionId, Sender<Message>),
     SessionEnd(SessionId, DisconnectReason),
@@ -189,7 +188,7 @@ async fn wait_for_intercepted(rx: &mut mpsc::UnboundedReceiver<ManagedEvent>) ->
 /// the second `on_admin_msg_out` pass is a no-op.
 ///
 /// The seq num goes out on `confirm_tx` before the send - this is how the
-/// test harness communicates the "bus confirmation" to the `ManagedAdminApp`
+/// test harness communicates the "bus confirmation" to the `ManagedAdminHandler`
 /// instance. Since we can't reach into the app directly (it's inside the
 /// session task), we use a channel for the confirmation set updates.
 fn reissue_intercepted(
@@ -203,7 +202,7 @@ fn reissue_intercepted(
 }
 
 // ---------------------------------------------------------------------------
-// ManagedAdminApp - intercepts engine-produced admin messages
+// ManagedAdminHandler - intercepts engine-produced admin messages
 // ---------------------------------------------------------------------------
 
 /// Application that intercepts engine-produced admin messages.
@@ -212,14 +211,14 @@ fn reissue_intercepted(
 /// which seq nums the test harness has already re-sent. First-pass messages
 /// (not yet confirmed) are cloned and forwarded to the test harness via
 /// `events_tx`. Second-pass messages (confirmed) are silently accepted.
-struct ManagedAdminApp {
+struct ManagedAdminHandler {
     session_id: SessionId,
     events_tx: mpsc::UnboundedSender<ManagedEvent>,
     confirm_rx: mpsc::UnboundedReceiver<SeqNum>,
     confirmed: HashSet<SeqNum>,
 }
 
-impl ManagedAdminApp {
+impl ManagedAdminHandler {
     /// Drain any pending confirmations from the channel into the set.
     fn drain_confirmations(&mut self) {
         while let Ok(seq) = self.confirm_rx.try_recv() {
@@ -228,7 +227,7 @@ impl ManagedAdminApp {
     }
 }
 
-impl Application<Message> for ManagedAdminApp {
+impl SessionHandler<Message> for ManagedAdminHandler {
     fn on_output_error(&mut self, _msg: Box<Message>, _error: &SerializeError) {}
 
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {
@@ -264,26 +263,21 @@ impl Application<Message> for ManagedAdminApp {
     }
 }
 
-struct ManagedAdminAppFactory {
+fn managed_handler(
     events_tx: mpsc::UnboundedSender<ManagedEvent>,
     confirm_rx_slot: RefCell<Option<mpsc::UnboundedReceiver<SeqNum>>>,
-}
-
-impl ApplicationFactory<Message> for ManagedAdminAppFactory {
-    type App = ManagedAdminApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> ManagedAdminApp {
-        let confirm_rx = self
-            .confirm_rx_slot
+) -> impl AsyncFn(&SessionContext<'_>) -> Result<ManagedAdminHandler, Box<dyn StdError>> {
+    async move |ctx: &SessionContext<'_>| {
+        let confirm_rx = confirm_rx_slot
             .borrow_mut()
             .take()
-            .expect("ManagedAdminAppFactory::create called more than once");
-        ManagedAdminApp {
+            .expect("make_handler called more than once");
+        Ok(ManagedAdminHandler {
             session_id: ctx.session_id().clone(),
-            events_tx: self.events_tx.clone(),
+            events_tx: events_tx.clone(),
             confirm_rx,
             confirmed: HashSet::new(),
-        }
+        })
     }
 }
 
@@ -291,31 +285,34 @@ impl ApplicationFactory<Message> for ManagedAdminAppFactory {
 // Test setup helper
 // ---------------------------------------------------------------------------
 
-struct TestHarness {
-    acceptor: Acceptor<Message, InMemoryStorage, ManagedAdminAppFactory>,
+struct TestHarness<F> {
+    acceptor: Acceptor<Message, InMemoryStorage, F>,
     events_rx: mpsc::UnboundedReceiver<ManagedEvent>,
     confirm_tx: mpsc::UnboundedSender<SeqNum>,
 }
 
-fn build_harness(heartbeat_secs: u16) -> TestHarness {
+fn build_harness(
+    heartbeat_secs: u16,
+) -> TestHarness<impl AsyncFn(&SessionContext<'_>) -> Result<ManagedAdminHandler, Box<dyn StdError>>>
+{
     build_harness_with_storage(heartbeat_secs, |_, max_message_size| {
         Ok(InMemoryStorage::new(max_message_size))
     })
 }
 
-fn build_harness_with_storage<F>(heartbeat_secs: u16, build_storage: F) -> TestHarness
+fn build_harness_with_storage<F>(
+    heartbeat_secs: u16,
+    build_storage: F,
+) -> TestHarness<impl AsyncFn(&SessionContext<'_>) -> Result<ManagedAdminHandler, Box<dyn StdError>>>
 where
     F: FnOnce(&SessionId, usize) -> Result<InMemoryStorage, InMemoryStorageError> + 'static,
 {
     let (events_tx, events_rx) = mpsc::unbounded_channel();
     let (confirm_tx, confirm_rx) = mpsc::unbounded_channel();
 
-    let factory = ManagedAdminAppFactory {
-        events_tx,
-        confirm_rx_slot: RefCell::new(Some(confirm_rx)),
-    };
+    let make_handler = managed_handler(events_tx, RefCell::new(Some(confirm_rx)));
 
-    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(factory);
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
     // These tests are specifically about `manages_admin_output = true`; flip it
     // here so the flag-under-test stays visible at the call site.
     let mut settings = build_session_settings(heartbeat_secs);

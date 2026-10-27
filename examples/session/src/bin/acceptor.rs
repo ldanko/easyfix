@@ -17,8 +17,8 @@
 use std::{borrow::Cow, cell::Cell, net::SocketAddr, rc::Rc};
 
 use easyfix_session::{
-    Acceptor, Application, ApplicationFactory, DisconnectReason, InMemoryStorage, InputAction,
-    Sender, SerializeError, SessionContext, SessionId, SessionMessage, ShutdownMode, TcpConnection,
+    Acceptor, DisconnectReason, InMemoryStorage, InputAction, Sender, SerializeError,
+    SessionContext, SessionHandler, SessionId, SessionMessage, ShutdownMode, TcpConnection,
     basic_types::FixStr, fix_str,
 };
 use session_example::{
@@ -30,14 +30,14 @@ use tracing::{error, info, warn};
 
 const ACCEPTOR_COMP_ID: &FixStr = fix_str!("easyfix_test_server");
 
-// ---- Application ---------------------------------------------------------
+// ---- Session handler -----------------------------------------------------
 
 /// Per-session handler: acknowledges every `NewOrderSingle` with a filled
 /// `ExecutionReport`.
 ///
 /// One instance per accepted connection, so the session's own [`Sender`] is
 /// simply a field - no `SessionId` -> `Sender` map, no event channel.
-struct EchoApp {
+struct EchoHandler {
     session_id: SessionId,
     /// `Some` between `on_session_ready` and `on_session_end`.
     sender: Option<Sender<Message>>,
@@ -47,7 +47,7 @@ struct EchoApp {
     next_exec_id: Rc<Cell<u64>>,
 }
 
-impl EchoApp {
+impl EchoHandler {
     /// Enqueue a reply on this session's [`Sender`].
     ///
     /// The message is staged here and sequenced, stamped and transmitted after
@@ -68,7 +68,7 @@ impl EchoApp {
     }
 }
 
-impl Application<Message> for EchoApp {
+impl SessionHandler<Message> for EchoHandler {
     async fn on_session_ready(&mut self, session_id: &SessionId, sender: Sender<Message>) {
         info!(%session_id, "session ready");
         self.sender = Some(sender);
@@ -135,37 +135,20 @@ impl Application<Message> for EchoApp {
     }
 }
 
-/// Builds one [`EchoApp`] per accepted connection. State that is genuinely
-/// venue-wide - here the `ExecID` counter - is held by the factory and shared
-/// with every handler it creates.
-struct EchoAppFactory {
-    next_exec_id: Rc<Cell<u64>>,
-}
-
-impl EchoAppFactory {
-    fn new() -> Self {
-        EchoAppFactory {
-            next_exec_id: Rc::new(Cell::new(1)),
-        }
-    }
-}
-
-impl ApplicationFactory<Message> for EchoAppFactory {
-    type App = EchoApp;
-
-    fn create(&self, ctx: &SessionContext<'_>) -> EchoApp {
-        EchoApp {
-            session_id: ctx.session_id().clone(),
-            sender: None,
-            next_exec_id: Rc::clone(&self.next_exec_id),
-        }
-    }
-}
-
 // ---- Setup ---------------------------------------------------------------
 
 async fn run_acceptor() {
-    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(EchoAppFactory::new());
+    // Every connection gets a fresh handler; the ExecID counter is shared
+    // across the whole venue, including reconnects.
+    let next_exec_id = Rc::new(Cell::new(1));
+    let acceptor =
+        Acceptor::<Message, InMemoryStorage, _>::new(async move |ctx: &SessionContext<'_>| {
+            Ok(EchoHandler {
+                session_id: ctx.session_id().clone(),
+                sender: None,
+                next_exec_id: Rc::clone(&next_exec_id),
+            })
+        });
 
     // Register three sessions.
     for target in [
