@@ -1,12 +1,4 @@
-use std::{
-    assert_matches,
-    cell::Cell,
-    io::ErrorKind,
-    pin::Pin,
-    rc::Rc,
-    task::{Context, Poll},
-    time::Duration,
-};
+use std::{assert_matches, cell::Cell, io::ErrorKind, rc::Rc, time::Duration};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
@@ -16,7 +8,7 @@ use easyfix_core::{
 use easyfix_test_messages::{Body, Message};
 use tokio::{
     io,
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf},
+    io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc,
     task,
     task::LocalSet,
@@ -24,17 +16,17 @@ use tokio::{
 };
 
 use super::{
-    harness::{TestEvent, build_harness_with_settings},
+    harness::{FaultReader, TestEvent, build_harness_with_settings},
     reset_peer::{running_reset_peer, running_reset_transport},
     reset_transport::{GateWriter, WriteController, gated_reset_peer},
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, IoOperation, SessionEndReason},
     initiator::SessionStart,
     io::{ControlMsg, InputStream, SessionOpening, session_loop},
     messages_storage::MessagesStorage,
     test_helpers,
-    test_helpers::{DEFAULT_MAX_MESSAGE_SIZE, nz_seq},
+    test_helpers::{DEFAULT_MAX_MESSAGE_SIZE, SessionEndSnapshot, TerminationSnapshot, nz_seq},
 };
 
 #[tokio::test(start_paused = true)]
@@ -89,7 +81,15 @@ async fn failed_reset_logon_writes_keep_the_committed_reset_and_failure_reason()
                 assert_matches!(pending.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
                 if write_timeout { time::advance(Duration::from_secs(5)).await; }
                 else { gate.release.send(Err(ErrorKind::BrokenPipe)).unwrap(); }
-                assert_matches!(events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::SeqNumResetFailed));
+                let expected = SessionEndSnapshot {
+                    context: if at_connect { EndContext::Logon } else { EndContext::Reset },
+                    termination: TerminationSnapshot::IoError {
+                        operation: IoOperation::Write,
+                        kind: if write_timeout { ErrorKind::TimedOut } else { ErrorKind::BrokenPipe },
+                    },
+                    reset_unconfirmed: true,
+                };
+                assert_matches!(events.recv().await.unwrap(), TestEvent::SessionEnd(end) if end == expected);
                 let mut storage = task.await.unwrap();
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 2); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
                 assert_eq!(storage.fetch(nz_seq(1), nz_seq(1)).await, Ok(pending_bytes.as_slice()));
@@ -122,7 +122,7 @@ async fn count_cap_still_wakes_after_logout_during_an_unconfirmed_reset() {
         assert!(!peer.task.is_finished()); peer.assert_silent();
         peer.sender.send(test_helpers::new_order_single_with_empty_header()).unwrap();
         let ended = time::timeout(Duration::from_secs(1), peer.events.recv()).await.expect("count cap must wake without any session timer").unwrap();
-        assert_matches!(ended, TestEvent::SessionEnd(DisconnectReason::SeqNumResetFailed));
+        assert_matches!(ended, TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::SlowConsumer), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
         let mut storage = peer.task.await.unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 5); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
         assert_eq!(storage.fetch(nz_seq(1), nz_seq(1)).await, Ok(test_helpers::serialize_message(&logon).as_slice()));
@@ -158,7 +158,11 @@ async fn reset_send_gates_preserve_disconnect_storage_and_the_count_cap() {
             if !count_cap { peer.control.send(ControlMsg::Disconnect).await.unwrap(); }
             assert_matches!(
                 peer.events.recv().await.unwrap(),
-                TestEvent::SessionEnd(reason) if reason == if sent { DisconnectReason::SeqNumResetFailed } else { DisconnectReason::SlowConsumer }
+                TestEvent::SessionEnd(reason) if reason == SessionEndSnapshot {
+                    context: EndContext::Closing(if count_cap { SessionEndReason::SlowConsumer } else { SessionEndReason::ApplicationForcedDisconnect }),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: sent,
+                }
             );
             let mut storage = peer.task.await.unwrap();
             let first = if sent { 2 } else { 3 };
@@ -199,7 +203,14 @@ async fn eof_and_read_failure_after_reset_logon_preserve_unconfirmed_history() {
             assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat));
             assert_eq!(peer.sender.backlog_len(), 0);
             if fail_read { fault.send(ErrorKind::ConnectionReset).unwrap(); } else { peer.wire.shutdown().await.unwrap(); }
-            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::SeqNumResetFailed));
+            let expected = SessionEndSnapshot {
+                context: EndContext::Reset,
+                termination: if fail_read {
+                    TerminationSnapshot::IoError { operation: IoOperation::Read, kind: ErrorKind::ConnectionReset }
+                } else { TerminationSnapshot::PeerClose },
+                reset_unconfirmed: true,
+            };
+            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(end) if end == expected);
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), 2); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
             assert_eq!(storage.fetch(nz_seq(1), nz_seq(1)).await, Ok(test_helpers::serialize_message(&logon).as_slice()));
@@ -257,7 +268,7 @@ async fn running_session_reset_holds_app_sends_and_gap_fills_the_ack_range() {
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(kind) if kind == expected);
             }
             peer.control.send(ControlMsg::Disconnect).await.unwrap();
-            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
+            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
             assert_eq!(storage.next_target_msg_seq_num().get(), 2);
@@ -265,22 +276,4 @@ async fn running_session_reset_holds_app_sends_and_gap_fills_the_ack_range() {
             assert!(storage.fetch(nz_seq(3), nz_seq(3)).await.is_err());
         }
     }).await;
-}
-
-struct FaultReader<R> {
-    inner: R,
-    error: mpsc::UnboundedReceiver<ErrorKind>,
-}
-
-impl<R: AsyncRead + Unpin> AsyncRead for FaultReader<R> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        if let Poll::Ready(Some(error)) = self.error.poll_recv(cx) {
-            return Poll::Ready(Err(error.into()));
-        }
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
 }

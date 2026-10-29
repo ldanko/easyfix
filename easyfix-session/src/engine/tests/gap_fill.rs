@@ -12,7 +12,7 @@ use easyfix_test_messages::Message;
 
 use super::{resend_support::assert_resend_request, support::assert_msg_type};
 use crate::{
-    application::{DisconnectReason, ValidationError},
+    application::{EndContext, SessionEndReason, ValidationError},
     engine::InputResult,
     messages_storage::MessagesStorage,
     test_helpers,
@@ -291,8 +291,8 @@ fn on_sequence_reset_gap_fill_too_low_without_poss_dup_logs_out() {
 
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::MsgSeqNumTooLow)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
     );
     let logout = take_admin(&mut engine);
     assert_msg_type(&logout, MsgTypeBase::Logout);

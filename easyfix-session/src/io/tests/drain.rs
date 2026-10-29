@@ -10,14 +10,14 @@ use super::{
     wire::{build_peer_logon, logon_handshake, read_lone_message, wire_bytes},
 };
 use crate::{
-    application::{DisconnectReason, InputAction, SessionHandler},
+    application::{EndContext, InputAction, SessionEnd, SessionEndReason, SessionHandler},
     io::{
         ControlMsg, drain_and_flush_admin_output, drain_and_flush_app_sends, sender,
         time::TimerBackend,
     },
     session_id::SessionId,
     test_helpers,
-    test_helpers::EngineBuilder,
+    test_helpers::{EngineBuilder, SessionEndSnapshot, TerminationSnapshot},
 };
 
 /// With history disabled every commit must be flushed before the next
@@ -145,7 +145,7 @@ impl SessionHandler<Message> for InvalidLogoutHandler {
 
     async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
 
-    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {}
+    async fn on_session_end(&mut self, _: &SessionId, _: SessionEnd) {}
 
     async fn on_app_msg_in(&mut self, _: Box<Message>) -> InputAction {
         InputAction::Accept
@@ -183,7 +183,7 @@ impl SessionHandler<Message> for RestagingHandler {
 
     async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
 
-    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {}
+    async fn on_session_end(&mut self, _: &SessionId, _: SessionEnd) {}
 
     async fn on_app_msg_in(&mut self, _: Box<Message>) -> InputAction {
         InputAction::Accept
@@ -277,7 +277,11 @@ async fn sending_time_is_stamped_at_transmission_not_at_staging() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
         })

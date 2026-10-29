@@ -7,7 +7,7 @@ use easyfix_core::{
 
 use super::support::assert_msg_type;
 use crate::{
-    application::{DisconnectReason, InputAction, ValidationError},
+    application::{EndContext, InputAction, SessionEndReason, ValidationError},
     engine::InputResult,
     messages_storage::MessagesStorage,
     test_helpers,
@@ -50,8 +50,8 @@ fn target_counter_failures_stop_admin_processing_and_future_dispatch() {
             );
             assert!(engine.has_fatal_error());
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::StorageError)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::StorageError))
             );
             assert!(!engine.has_admin_output());
             assert!(engine.next_queued_message(&mut storage).is_err());
@@ -88,8 +88,8 @@ fn target_counter_failure_stops_application_action_before_reply() {
             assert!(!engine.has_admin_output());
             assert!(engine.has_fatal_error());
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::StorageError)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::StorageError))
             );
         }
     }
@@ -138,8 +138,8 @@ fn on_input_before_logon() {
         .process_validation_failure(msg, failure, &mut storage)
         .unwrap();
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     // Scenario 2S: the InvalidLogonState abort disconnects *without*
     // emitting a Logout or Reject - nothing precedes the bare disconnect.
@@ -221,8 +221,10 @@ fn process_app_input_logout_with_disconnect() {
     assert!(engine.should_disconnect());
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::ApplicationForcedDisconnect)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::ApplicationForcedDisconnect
+        ))
     );
     // The refused message was still received: a reconnecting peer carries on
     // from 2, and expecting 1 again would draw a resend of what the
@@ -265,8 +267,8 @@ fn process_app_input_logout_without_disconnect() {
     let response = accept_input(&mut engine, test_helpers::logout(2), &mut storage);
     assert_matches!(response, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::LocalRequestedLogout)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::LocalLogout)
     );
     assert!(
         engine.take_admin_output().is_none(),
@@ -291,8 +293,10 @@ fn process_app_input_disconnect() {
     assert!(engine.should_disconnect());
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::ApplicationForcedDisconnect)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::ApplicationForcedDisconnect
+        ))
     );
     assert!(engine.take_admin_output().is_none());
     assert_eq!(storage.next_target_msg_seq_num().get(), 2);

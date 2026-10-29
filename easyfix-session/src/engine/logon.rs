@@ -17,7 +17,7 @@ use super::{
     validation::SequenceAction,
 };
 use crate::{
-    application::{DisconnectReason, ValidationError, invalid_heart_bt_int_text},
+    application::{TimeoutKind, ValidationError, invalid_heart_bt_int_text},
     initiator::SessionStart,
     messages_storage::MessagesStorage,
     settings::SessionSettings,
@@ -676,6 +676,6 @@ impl<M: SessionMessage> SessionEngine<M> {
     // end and nobody has agreed to read anything we number. The acceptor drops
     // an unusable handshake the same way (Session Layer §4.3.1).
     pub(crate) fn on_logon_timeout(&mut self) {
-        self.begin_disconnect(DisconnectReason::LogonTimeout);
+        self.end_timeout(TimeoutKind::Logon);
     }
 }

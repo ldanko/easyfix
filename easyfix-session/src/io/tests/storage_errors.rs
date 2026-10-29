@@ -25,7 +25,9 @@ use tokio::{
 
 use super::wire::{build_peer_logon, wire_bytes};
 use crate::{
-    application::{DisconnectReason, InputAction, SessionHandler},
+    application::{
+        EndContext, InputAction, IoOperation, SessionEnd, SessionEndReason, SessionHandler,
+    },
     initiator::SessionStart,
     io::{
         ControlMsg, InputStream, SessionOpening, drain_and_flush_admin_output,
@@ -35,15 +37,15 @@ use crate::{
     messages_storage::MessagesStorage,
     session_id::SessionId,
     test_helpers::{
-        self, DEFAULT_MAX_MESSAGE_SIZE, EngineBuilder, FailingStorage, FailureTiming, StorageOp,
-        commit_heartbeat, nz_seq,
+        self, DEFAULT_MAX_MESSAGE_SIZE, EngineBuilder, FailingStorage, FailureTiming,
+        SessionEndSnapshot, StorageOp, TerminationSnapshot, commit_heartbeat, nz_seq,
     },
 };
 
 #[derive(Default)]
 struct HandlerTrace {
     ready: usize,
-    ended: Vec<DisconnectReason>,
+    ended: Vec<SessionEndSnapshot>,
     app_out: usize,
     admin_out: usize,
     app_in: usize,
@@ -86,7 +88,8 @@ impl SessionHandler<Message> for RecordingHandler {
         }
     }
 
-    async fn on_session_end(&mut self, _: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         self.trace.borrow_mut().ended.push(reason);
         if let Some(gate) = self.end_gate.take() {
             gate.await.unwrap();
@@ -175,7 +178,14 @@ async fn fatal_storage_failures_close_transport_sender_and_notify_once() {
                         live_sender.send(test_helpers::new_order_single_with_empty_header()),
                         Err(sender::SendError::Closed(_))
                     );
-                    assert_eq!(trace.borrow().ended, [DisconnectReason::StorageError]);
+                    assert_eq!(
+                        trace.borrow().ended,
+                        [SessionEndSnapshot {
+                            context: EndContext::Closing(SessionEndReason::StorageError),
+                            termination: TerminationSnapshot::LocalClose,
+                            reset_unconfirmed: false
+                        }]
+                    );
                     assert_eq!(trace.borrow().serialize_errors, 0);
                     assert_eq!(trace.borrow().app_out, if nth == 3 { 2 } else { 0 });
                     if op == StorageOp::SetSender && nth == 1 {
@@ -246,7 +256,14 @@ async fn producer_number_collision_preserves_original_and_ends_task() {
             assert_eq!(storage.sender.get(), 2);
             assert_eq!(trace.borrow().app_out, 1);
             assert_eq!(trace.borrow().serialize_errors, 0);
-            assert_eq!(trace.borrow().ended, [DisconnectReason::StorageError]);
+            assert_eq!(
+                trace.borrow().ended,
+                [SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::StorageError),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }]
+            );
             assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
             assert_eq!(live_sender.backlog_len(), 0);
             assert_matches!(
@@ -403,7 +420,7 @@ async fn finalization_without_history_releases_backlog_without_numbering_or_hook
             .unwrap();
     }
     finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut rx);
-    finalize_session(&engine, &mut handler).await;
+    finalize_session(&mut engine, &mut handler).await;
     assert_eq!(tx.backlog_len(), 0);
     assert_eq!(trace.borrow().app_out, 0);
     assert!(storage.trace.borrow().calls.is_empty());
@@ -473,7 +490,17 @@ async fn failure_during_final_drain_stops_and_closes_transport_before_callback()
                     .unwrap()
                     .unwrap();
                 assert!(bytes.is_empty());
-                assert_eq!(trace.borrow().ended, [DisconnectReason::IoError]);
+                assert_eq!(
+                    trace.borrow().ended,
+                    [SessionEndSnapshot {
+                        context: EndContext::Logon,
+                        termination: TerminationSnapshot::IoError {
+                            operation: IoOperation::Write,
+                            kind: ErrorKind::BrokenPipe
+                        },
+                        reset_unconfirmed: false
+                    }]
+                );
                 assert_eq!(live_sender.backlog_len(), 0);
                 assert_matches!(
                     live_sender.send(test_helpers::new_order_single_with_empty_header()),
@@ -639,7 +666,7 @@ async fn no_history_logon_recovery_resend_request_and_reconnect_keep_counters() 
             }
             control.send(ControlMsg::Disconnect).await.unwrap();
             storage = task.await.unwrap();
-            assert_eq!(trace.borrow().ended, [DisconnectReason::ApplicationForcedDisconnect]);
+            assert_eq!(trace.borrow().ended, [SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }]);
             assert_eq!(trace.borrow().gap_fill_calls, 0);
             assert_eq!(live_sender.backlog_len(), 0);
             assert_eq!(storage.sender.get(), 6 + connection);
@@ -725,7 +752,14 @@ async fn failures_after_incoming_callback_and_during_replay_stop_live_tasks() {
                     assert!(buffer.is_empty());
                     assert_eq!(trace.borrow().app_in, 1);
                 }
-                assert_eq!(trace.borrow().ended, [DisconnectReason::StorageError]);
+                assert_eq!(
+                    trace.borrow().ended,
+                    [SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::StorageError),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }]
+                );
                 assert_eq!(live_sender.backlog_len(), 0);
                 assert_matches!(
                     live_sender.send(test_helpers::new_order_single_with_empty_header()),
@@ -798,10 +832,9 @@ async fn reset_storage_failures_finalize_even_with_unconfirmed_local_reset() {
                             .unwrap()
                             .unwrap();
                         assert!(bytes.is_empty());
-                        let expected = if !peer_reset && fail_op == StorageOp::Store {
-                            DisconnectReason::SeqNumResetFailed
-                        } else {
-                            DisconnectReason::StorageError
+                        let expected = SessionEndSnapshot {
+                            reset_unconfirmed: !peer_reset && fail_op == StorageOp::Store,
+                            ..SessionEndSnapshot::closing(SessionEndReason::StorageError)
                         };
                         assert_eq!(trace.borrow().ended, [expected]);
                         assert_eq!(live_sender.backlog_len(), 0);

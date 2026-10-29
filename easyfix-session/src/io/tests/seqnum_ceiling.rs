@@ -18,11 +18,11 @@ use super::{
     wire::{build_peer_logon, logon_handshake, read_lone_message},
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     io::ControlMsg,
     messages_storage::MessagesStorage,
     test_helpers,
-    test_helpers::{nz_seq, read_one_message},
+    test_helpers::{SessionEndSnapshot, TerminationSnapshot, nz_seq, read_one_message},
 };
 
 /// Spawn an acceptor with its counters seeded at `sender_seq` /
@@ -61,7 +61,7 @@ fn spawn_acceptor_at(
 /// timeout: a missing reaction does not fail an assertion, it hangs.
 async fn expect_session_end(
     events_rx: &mut mpsc::UnboundedReceiver<TestEvent>,
-    reason: DisconnectReason,
+    reason: SessionEndSnapshot,
 ) {
     let end = time::timeout(Duration::from_secs(5), events_rx.recv())
         .await
@@ -110,7 +110,15 @@ async fn main_loop_input_closing_incoming_numbering_ends_the_session() {
                 let logout = read_one_message(&mut client_io, &mut buf).await;
                 assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
 
-                expect_session_end(&mut events_rx, DisconnectReason::SeqNumExhausted).await;
+                expect_session_end(
+                    &mut events_rx,
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false,
+                    },
+                )
+                .await;
                 session_task.await.unwrap();
             })
             .await;
@@ -141,7 +149,15 @@ async fn preloop_logon_closing_incoming_numbering_ends_the_session() {
             let logout = read_one_message(&mut client_io, &mut buf).await;
             assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
 
-            expect_session_end(&mut events_rx, DisconnectReason::SeqNumExhausted).await;
+            expect_session_end(
+                &mut events_rx,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                },
+            )
+            .await;
             session_task.await.unwrap();
         })
         .await;
@@ -184,7 +200,15 @@ async fn queued_message_closing_incoming_numbering_ends_the_session() {
                 TestEvent::AdminMsgIn(MsgTypeBase::SequenceReset)
             );
 
-            expect_session_end(&mut events_rx, DisconnectReason::SeqNumExhausted).await;
+            expect_session_end(
+                &mut events_rx,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                },
+            )
+            .await;
             session_task.await.unwrap();
         })
         .await;
@@ -234,7 +258,15 @@ async fn sequence_reset_to_max_logs_out_without_dispatching_queued_input() {
 
                 let logout = read_one_message(&mut client_io, &mut buf).await;
                 assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
-                expect_session_end(&mut events_rx, DisconnectReason::SeqNumExhausted).await;
+                expect_session_end(
+                    &mut events_rx,
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false,
+                    },
+                )
+                .await;
                 session_task.await.unwrap();
                 assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
 
@@ -267,7 +299,15 @@ async fn preloop_logon_ack_closing_outgoing_numbering_ends_the_session() {
             assert_eq!(SessionMessage::msg_type(&*ack), MsgTypeBase::Logon);
             assert_eq!(ack.msg_seq_num(), SeqNum::MAX - 1);
 
-            expect_session_end(&mut events_rx, DisconnectReason::SeqNumExhausted).await;
+            expect_session_end(
+                &mut events_rx,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                },
+            )
+            .await;
             // Never announced as ready, and no Logout - there is no number
             // left to stamp one with.
             assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
@@ -297,7 +337,15 @@ async fn initiator_with_exhausted_outgoing_numbering_never_announces_the_session
                 harness.spawn_initiator(server_reader, server_writer);
 
             // SessionReady must not precede it.
-            expect_session_end(&mut events_rx, DisconnectReason::SeqNumExhausted).await;
+            expect_session_end(
+                &mut events_rx,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                },
+            )
+            .await;
 
             let mut buf = Vec::new();
             client_io.read_to_end(&mut buf).await.unwrap();
@@ -358,7 +406,15 @@ async fn farewell_before_the_logon_ack_does_not_release_staged_app_messages() {
             assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
 
             // The invalid acknowledgement never reaches on_admin_msg_in.
-            expect_session_end(&mut events_rx, DisconnectReason::InvalidLogonState).await;
+            expect_session_end(
+                &mut events_rx,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                },
+            )
+            .await;
             session_task.await.unwrap();
 
             let mut rest = Vec::new();

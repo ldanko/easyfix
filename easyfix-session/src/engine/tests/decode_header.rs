@@ -7,7 +7,7 @@ use easyfix_core::{
 
 use super::support::assert_msg_type;
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::InputResult,
     messages_storage::MessagesStorage,
     test_helpers,
@@ -40,8 +40,8 @@ fn on_deserialize_error_with_header_too_low_logs_out_and_disconnects() {
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
     assert_matches!(result, InputResult::Error(_));
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::MsgSeqNumTooLow)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
     );
     assert!(engine.should_disconnect());
     let logout = take_admin(&mut engine);
@@ -255,8 +255,8 @@ fn on_deserialize_error_with_header_comp_id_mismatch_escalates() {
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
     assert_matches!(result, InputResult::Error(_));
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidCompId)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidCompId))
     );
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
@@ -290,8 +290,8 @@ fn on_deserialize_error_with_header_wrong_logon_state_disconnects_silently() {
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
     assert_matches!(result, InputResult::Error(_));
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
     assert!(engine.take_admin_output().is_none(), "silent disconnect");
@@ -316,8 +316,8 @@ fn on_deserialize_error_with_header_logon_when_established_disconnects() {
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
     assert_matches!(result, InputResult::Error(_));
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
     assert!(engine.take_admin_output().is_none(), "silent disconnect");
@@ -341,8 +341,8 @@ fn on_deserialize_error_with_header_invalid_logon_escalates_when_idle() {
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
     assert_matches!(result, InputResult::Error(error) if error.header.is_some());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     let reject_msg = take_admin(&mut engine);
     assert_matches!(as_admin(&reject_msg), AdminBase::Reject(reject)

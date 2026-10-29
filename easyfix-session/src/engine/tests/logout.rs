@@ -11,7 +11,7 @@ use tokio::time::{Duration, advance};
 
 use super::{resend_support::assert_resend_request, support::assert_msg_type};
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason, Termination, TimeoutKind},
     engine::InputResult,
     io::ControlMsg,
     messages_storage::MessagesStorage,
@@ -105,17 +105,21 @@ fn on_logout_request() {
 }
 
 /// The wait for the peer's close ran out: Scenario 13(b) has the session
-/// disconnect and report an error condition, and the reason names it.
+/// disconnect and report an error condition, preserving the Logout context.
 #[test]
-fn on_peer_close_timeout_ends_with_the_remote_logout_timeout() {
+fn on_peer_close_timeout_preserves_remote_logout_context() {
     let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
     accept_input(&mut engine, test_helpers::logout(1), &mut storage);
 
     engine.on_peer_close_timeout();
 
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::RemoteRequestedLogoutTimeout)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::RemoteLogout)
+    );
+    assert_matches!(
+        engine.session_end().unwrap().termination,
+        Termination::Timeout(TimeoutKind::PeerClose)
     );
 }
 
@@ -198,8 +202,8 @@ fn on_logout_response() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::LocalRequestedLogout)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::LocalLogout)
     );
     assert!(engine.should_disconnect());
 
@@ -273,8 +277,10 @@ fn on_control_disconnect_sets_disconnect_no_messages() {
     engine.on_control(ControlMsg::Disconnect);
 
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::ApplicationForcedDisconnect)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::ApplicationForcedDisconnect
+        ))
     );
     assert!(engine.take_admin_output().is_none());
 }

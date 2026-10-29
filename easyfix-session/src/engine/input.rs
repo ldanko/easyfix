@@ -16,7 +16,7 @@ use super::{
     ValidationResult, VerifyError, logout::unexpected_reset_logout_text, output::text_field,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{InputAction, SessionEndReason},
     messages_storage::MessagesStorage,
 };
 
@@ -93,7 +93,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 .into_bytes(),
         );
         self.push_logout(None, Some(Cow::Owned(text)));
-        self.begin_disconnect(DisconnectReason::MessageTooLarge);
+        self.begin_disconnect(SessionEndReason::MessageTooLarge);
     }
 
     /// Process an incoming deserialized message. Top-level dispatcher.
@@ -273,7 +273,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                     ))),
                 );
             }
-            self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
+            self.begin_disconnect(SessionEndReason::ApplicationForcedDisconnect);
         }
         Ok(result)
     }
@@ -365,7 +365,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 }
                 if disconnect {
                     self.push_logout(session_status, text);
-                    self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
+                    self.begin_disconnect(SessionEndReason::ApplicationForcedDisconnect);
                 } else {
                     self.send_logout(session_status, text);
                 }
@@ -375,7 +375,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 if !preserve_logon_seq_num {
                     self.consume_seq_num(ref_msg_type, ref_seq_num, storage)?;
                 }
-                self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
+                self.begin_disconnect(SessionEndReason::ApplicationForcedDisconnect);
                 InputResult::Handled
             }
         })
@@ -406,11 +406,11 @@ impl<M: SessionMessage> SessionEngine<M> {
                 let (text, disconnect_reason) = match reason {
                     LogoutReason::MsgSeqNumMissing => (
                         fix_str!("MsgSeqNum(34) not found"),
-                        DisconnectReason::MsgSeqNumNotFound,
+                        SessionEndReason::MsgSeqNumNotFound,
                     ),
                     LogoutReason::BeginStringMismatch => (
                         fix_str!("Invalid BeginString(8)"),
-                        DisconnectReason::InvalidBeginString,
+                        SessionEndReason::InvalidBeginString,
                     ),
                 };
                 self.push_logout(None, Some(Cow::Borrowed(text)));
@@ -469,7 +469,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                                 Some(Cow::Owned(unexpected_reset_logout_text(msg_type))),
                             );
                         }
-                        self.begin_disconnect(DisconnectReason::InvalidLogonState);
+                        self.begin_disconnect(SessionEndReason::InvalidLogonState);
                         return Ok(InputResult::Error(error));
                     }
                 }
@@ -498,7 +498,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                         ))
                 {
                     self.push_logout(None, Some(text));
-                    self.begin_disconnect(DisconnectReason::InvalidLogonState);
+                    self.begin_disconnect(SessionEndReason::InvalidLogonState);
                 }
             }
         }

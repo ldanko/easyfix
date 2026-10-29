@@ -49,12 +49,13 @@ pub mod session_reset {}
 mod test_helpers;
 
 pub use acceptor::{
-    Acceptor, AcceptorError, Connection, ConnectionDropReason, ConnectionObserver, ShutdownMode,
-    TcpConnection,
+    Acceptor, AcceptorError, Connection, ConnectionDropReason, ConnectionEnd, ConnectionEndContext,
+    ConnectionObserver, ShutdownMode, TcpConnection,
 };
 pub use application::{
-    DisconnectReason, InputAction, InputError, SessionContext, SessionHandler, ValidationError,
-    invalid_heart_bt_int_range_text, invalid_heart_bt_int_text, max_message_size_exceeded_text,
+    EndContext, InputAction, InputError, IoOperation, SessionContext, SessionEnd, SessionEndReason,
+    SessionHandler, Termination, TimeoutKind, ValidationError, invalid_heart_bt_int_range_text,
+    invalid_heart_bt_int_text, max_message_size_exceeded_text,
 };
 pub use easyfix_core::{
     basic_types,

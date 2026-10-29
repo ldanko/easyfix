@@ -11,7 +11,7 @@ use tokio::time::Duration;
 
 use super::support::{assert_msg_type, verify_test};
 use crate::{
-    application::{DisconnectReason, ValidationError},
+    application::{EndContext, SessionEndReason, ValidationError},
     engine::{InputResult, VerifyError},
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -32,7 +32,7 @@ fn header_validation_returns_original_message_before_refusal_side_effects() {
             },
             Some((SessionRejectReasonBase::CompIdProblem, 49)),
             fix_str!("SenderCompID does not match"),
-            Some(DisconnectReason::InvalidCompId),
+            Some(EndContext::Closing(SessionEndReason::InvalidCompId)),
         ),
         (
             ValidationError::CompIdMismatch {
@@ -41,7 +41,7 @@ fn header_validation_returns_original_message_before_refusal_side_effects() {
             },
             Some((SessionRejectReasonBase::CompIdProblem, 56)),
             fix_str!("TargetCompID does not match"),
-            Some(DisconnectReason::InvalidCompId),
+            Some(EndContext::Closing(SessionEndReason::InvalidCompId)),
         ),
         (
             ValidationError::MissingOrigSendingTime,
@@ -53,13 +53,15 @@ fn header_validation_returns_original_message_before_refusal_side_effects() {
             ValidationError::OrigSendingTimeAfterSendingTime,
             Some((SessionRejectReasonBase::SendingTimeAccuracyProblem, 122)),
             fix_str!("OrigSendingTime(122) after SendingTime(52)"),
-            Some(DisconnectReason::InvalidOrigSendingTime),
+            Some(EndContext::Closing(
+                SessionEndReason::InvalidOrigSendingTime,
+            )),
         ),
         (
             ValidationError::MsgSeqNumTooLow { expected: 2 },
             None,
             fix_str!("MsgSeqNum too low, expected 2, got 1"),
-            Some(DisconnectReason::MsgSeqNumTooLow),
+            Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow)),
         ),
     ] {
         let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
@@ -112,7 +114,11 @@ fn header_validation_returns_original_message_before_refusal_side_effects() {
             assert_matches!(as_admin(&reply), AdminBase::Logout(ref logout)
                 if logout.text.as_deref() == Some(text));
         }
-        assert_eq!(engine.disconnect_reason(), disconnect, "{expected:?}");
+        assert_eq!(
+            engine.session_end().map(|end| end.context),
+            disconnect,
+            "{expected:?}"
+        );
         assert_eq!(storage.next_target_msg_seq_num().get(), 2, "{expected:?}");
         assert!(!engine.has_admin_output(), "{expected:?}");
     }
@@ -273,8 +279,10 @@ fn poss_dup_in_sequence_orig_time_after_sending_rejects_and_advances() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidOrigSendingTime)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::InvalidOrigSendingTime
+        ))
     );
 
     let reject = take_admin(&mut engine);
@@ -323,8 +331,8 @@ fn too_low_no_poss_dup_logs_out_and_disconnects() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::MsgSeqNumTooLow)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
     );
     assert!(engine.should_disconnect());
 
@@ -426,8 +434,8 @@ fn wrong_comp_id_rejects_then_logs_out_and_disconnects() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidCompId)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidCompId))
     );
     assert!(engine.should_disconnect());
 
@@ -507,8 +515,10 @@ fn stale_sending_time_rejects_then_logs_out_and_disconnects() {
         .process_validation_failure(msg, failure, &mut storage)
         .unwrap();
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SendingTimeAccuracyProblem)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::SendingTimeAccuracyProblem
+        ))
     );
     assert!(engine.should_disconnect());
     // The rejected in-sequence message still advances NextNumIn.
@@ -612,8 +622,8 @@ fn pre_logon_gate_exempts_no_message_type() {
                 "{msg_type} (logon_sent={logon_sent})"
             );
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::InvalidLogonState),
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState)),
                 "{msg_type} (logon_sent={logon_sent})"
             );
             assert_eq!(storage.next_target_msg_seq_num().get(), 1);
@@ -668,8 +678,8 @@ fn on_logon_while_logout_in_flight_disconnects() {
         InputResult::Handled
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
     assert!(engine.take_admin_output().is_none());
@@ -698,8 +708,8 @@ fn on_logon_second_logon_without_reset_flag_disconnects_silently() {
     );
 
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.take_admin_output().is_none(), "silent disconnect");
     assert_eq!(storage.next_target_msg_seq_num().get(), 5);
@@ -737,8 +747,8 @@ fn msg_seq_num_zero_is_too_low() {
         );
 
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::MsgSeqNumTooLow),
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow)),
             "logged_on={logged_on}"
         );
         let logout = take_admin(&mut engine);

@@ -13,7 +13,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::{InputResult, LogonState, SessionEngine},
     io::ControlMsg,
     messages_storage::{InMemoryStorage, MessagesStorage},
@@ -46,8 +46,8 @@ async fn peer_reset_with_invalid_tag_789_preserves_storage() {
                 Ok(InputResult::Handled)
             );
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::InvalidLogonState)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
             assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
             assert_eq!(storage.next_target_msg_seq_num().get(), 40);
@@ -134,7 +134,7 @@ async fn peer_reset_tag_789_validation_preserves_accepted_forms() {
                     accept_input(&mut engine, msg, &mut storage),
                     InputResult::Handled
                 );
-                assert!(engine.disconnect_reason().is_none());
+                assert!(engine.session_end().map(|end| end.context).is_none());
                 assert!(engine.is_logged_on());
                 assert_eq!(engine.state.logon_state, LogonState::Established);
                 assert_eq!(engine.reset_phase(), None);
@@ -197,7 +197,7 @@ async fn retransmitted_reset_logon_only_processes_sequence_numbers() {
         history.as_slice()
     );
     assert!(engine.take_admin_output().is_none());
-    assert!(engine.disconnect_reason().is_none());
+    assert!(engine.session_end().map(|end| end.context).is_none());
 
     // A replay at the expected number on an unopened session only consumes it.
     let (mut engine, mut storage, history) = reset_test_session(false);
@@ -225,7 +225,7 @@ async fn retransmitted_reset_logon_only_processes_sequence_numbers() {
     );
     assert_matches!(engine.state.logon_state, LogonState::Idle);
     assert!(engine.take_admin_output().is_none());
-    assert!(engine.disconnect_reason().is_none());
+    assert!(engine.session_end().map(|end| end.context).is_none());
 
     // A replay behind a gap is queued, then drained without executing its body.
     let (mut engine, mut storage, history) = reset_test_session(true);
@@ -267,7 +267,7 @@ async fn retransmitted_reset_logon_only_processes_sequence_numbers() {
     );
     assert!(engine.state.queue.is_empty());
     assert!(engine.take_admin_output().is_none());
-    assert!(engine.disconnect_reason().is_none());
+    assert!(engine.session_end().map(|end| end.context).is_none());
 }
 
 fn peer_reset_test_session(

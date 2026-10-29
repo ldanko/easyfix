@@ -46,7 +46,7 @@ precision. It can await initialization and returns
 
 ```rust
 use easyfix_session::{
-    DisconnectReason, InputAction, Sender, SerializeError, SessionContext,
+    InputAction, Sender, SerializeError, SessionContext, SessionEnd,
     SessionHandler, SessionId,
 };
 
@@ -59,8 +59,9 @@ impl SessionHandler<Message> for MyHandler {
         self.sender = Some(sender);
     }
 
-    async fn on_session_end(&mut self, _id: &SessionId, _reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _id: &SessionId, end: SessionEnd) {
         self.sender = None;
+        tracing::info!(?end, "session connection ended");
     }
 
     async fn on_app_msg_in(&mut self, msg: Box<Message>) -> InputAction {
@@ -164,20 +165,21 @@ connection attempt.
 
 ### Rejected connections
 
-Use an optional `ConnectionObserver` to observe connections dropped before a
-session starts, such as unknown identities, duplicate connections, timeouts,
-or handler initialization failures (`HandlerInitFailed { session_id, error }`):
+Use an optional `ConnectionObserver` to observe connections dropped before
+session handling starts, such as unknown identities, duplicate connections,
+timeouts, or handler initialization failures. Once session handling starts,
+its connection's end is reported through `SessionHandler::on_session_end`.
 
 ```rust
 use std::{net::SocketAddr, rc::Rc};
 
-use easyfix_session::{ConnectionDropReason, ConnectionObserver};
+use easyfix_session::{ConnectionEnd, ConnectionObserver};
 
 struct MyObserver;
 
 impl ConnectionObserver for MyObserver {
-    fn on_connection_dropped(&self, peer_addr: SocketAddr, reason: ConnectionDropReason<'_>) {
-        tracing::warn!(%peer_addr, ?reason, "connection dropped before session start");
+    fn on_connection_dropped(&self, peer_addr: SocketAddr, end: ConnectionEnd<'_>) {
+        tracing::warn!(%peer_addr, ?end, "connection dropped before session start");
     }
 }
 

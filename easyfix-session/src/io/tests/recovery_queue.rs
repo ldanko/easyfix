@@ -20,7 +20,10 @@ use super::{
     wire::{build_peer_logon, logon_handshake},
 };
 use crate::{
-    application::DisconnectReason, io::ControlMsg, test_helpers, test_helpers::read_one_message,
+    application::{EndContext, SessionEndReason, TimeoutKind},
+    io::ControlMsg,
+    test_helpers,
+    test_helpers::{SessionEndSnapshot, TerminationSnapshot, read_one_message},
 };
 
 /// A Logout that arrives with a too-high `MsgSeqNum(34)` is parked in the
@@ -85,7 +88,11 @@ async fn queued_logout_response_reaches_peer() {
             client_io.shutdown().await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::RemoteRequestedLogout)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -271,10 +278,20 @@ async fn logout_ack_budget_starts_after_replay_and_the_logout_write() {
                         peer.events.recv().await.expect("Logout callback"),
                         TestEvent::AdminMsgIn(MsgTypeBase::Logout)
                     );
-                    DisconnectReason::LocalRequestedLogout
+                    SessionEndSnapshot {
+                        context: EndContext::LocalLogout,
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false,
+                    }
                 } else {
                     time::advance(Duration::from_secs(1)).await;
-                    DisconnectReason::LocalRequestedLogoutTimeout
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::Timeout(
+                            TimeoutKind::LogoutResponse,
+                        )),
+                        termination: TerminationSnapshot::Timeout(TimeoutKind::LogoutResponse),
+                        reset_unconfirmed: false,
+                    }
                 };
                 assert_matches!(
                     peer.events.recv().await.expect("session end"),
@@ -517,7 +534,11 @@ async fn queued_input_waits_for_the_replay_started_by_the_gap_closing_message() 
             session_task.await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
         })
@@ -679,7 +700,11 @@ async fn app_message_staged_from_queued_drain_reaches_peer_first() {
             assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -751,7 +776,11 @@ async fn queued_drain_stops_at_the_message_that_ends_the_session() {
             client_io.shutdown().await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::RemoteRequestedLogout),
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }),
                 "seq 4 must stay parked once seq 3 ended the session"
             );
             session_task.await.unwrap();
@@ -875,7 +904,11 @@ async fn resend_request_during_a_replay_is_served_after_it() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
         })

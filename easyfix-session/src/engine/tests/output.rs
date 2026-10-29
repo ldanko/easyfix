@@ -1,4 +1,4 @@
-use std::{assert_matches, borrow::Cow};
+use std::{assert_matches, borrow::Cow, io};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -12,7 +12,7 @@ use easyfix_test_messages::Message;
 
 use super::support::{assert_msg_type, limit};
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, IoOperation, SessionEndReason, Termination},
     engine::{PendingOutput, SendFailure, output::text_field},
     messages_storage::MessagesStorage,
     test_helpers,
@@ -361,8 +361,8 @@ fn commit_failure_at_the_ceiling_restores_the_last_usable_number() {
     assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX - 1);
     assert_eq!(failure.msg.msg_seq_num(), 0);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
 }
 
@@ -430,8 +430,8 @@ fn sender_counter_failure_stops_before_serialization() {
         assert!(engine.fill_header(&mut msg, &mut storage).is_err());
         assert!(engine.has_fatal_error());
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::StorageError)
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::StorageError))
         );
         assert_eq!(storage.trace.borrow().serialized, 0);
         assert!(engine.take_pending().is_none());
@@ -512,17 +512,23 @@ fn disabled_history_serializes_first_send_to_scratch_and_releases_failed_number(
 fn fatal_latch_survives_earlier_disconnect_reason() {
     let (mut engine, _) = EngineBuilder::new().build();
     let mut storage = FailingStorage::new();
-    engine.begin_disconnect(DisconnectReason::IoError);
+    engine.end_transport(Termination::IoError {
+        operation: IoOperation::Read,
+        error: io::ErrorKind::ConnectionReset.into(),
+    });
     storage.fail_on(StorageOp::SetSender, 1, FailureTiming::Before);
     let mut msg = test_helpers::heartbeat_with_empty_header();
     assert!(engine.fill_header(&mut msg, &mut storage).is_err());
-    assert_eq!(engine.disconnect_reason(), Some(DisconnectReason::IoError));
+    let end = engine.session_end().unwrap();
+    assert_eq!(end.context, EndContext::Logon);
+    assert_matches!(&end.termination, Termination::IoError { operation: IoOperation::Read, error }
+        if error.kind() == io::ErrorKind::ConnectionReset);
     assert!(engine.has_fatal_error());
     engine.end_session_if_target_numbering_exhausted(&storage);
 }
 
 #[test]
-fn fatal_latch_survives_unconfirmed_reset_reason_normalization() {
+fn fatal_latch_records_storage_error_alongside_unconfirmed_reset() {
     let (mut engine, _) = EngineBuilder::new().build();
     let mut storage = FailingStorage::new();
     engine.state.local_reset_unconfirmed = true;
@@ -530,9 +536,10 @@ fn fatal_latch_survives_unconfirmed_reset_reason_normalization() {
     let mut msg = test_helpers::heartbeat_with_empty_header();
     assert!(engine.fill_header(&mut msg, &mut storage).is_err());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumResetFailed)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::StorageError))
     );
+    assert!(engine.session_end().unwrap().reset_unconfirmed);
     assert!(engine.has_fatal_error());
     assert!(engine.next_queued_message(&mut storage).is_err());
 }

@@ -13,7 +13,10 @@ use tracing::{info, warn};
 use super::{
     FatalError, HandlerResult, LogonState, SessionEngine, ValidationResult, output::text_field,
 };
-use crate::{application::DisconnectReason, messages_storage::MessagesStorage};
+use crate::{
+    application::{Termination, TimeoutKind},
+    messages_storage::MessagesStorage,
+};
 
 /// Describe a message that cannot acknowledge or refuse the pending reset.
 pub(super) fn unexpected_reset_logout_text(msg_type: MsgTypeField) -> FixString {
@@ -139,7 +142,8 @@ impl<M: SessionMessage> SessionEngine<M> {
         Ok(match self.state.logon_state {
             LogonState::LogoutSent { .. } => {
                 info!("Received logout response");
-                HandlerResult::Disconnect(DisconnectReason::LocalRequestedLogout)
+                self.end_transport(Termination::LocalClose);
+                HandlerResult::Handled
             }
             // The peer's request: acknowledge it, then leave the connection
             // to the peer. The Logout initiator is the one who terminates
@@ -163,7 +167,7 @@ impl<M: SessionMessage> SessionEngine<M> {
 
     /// Logout response not received in time.
     pub(crate) fn on_logout_timeout(&mut self) {
-        self.begin_disconnect(DisconnectReason::LocalRequestedLogoutTimeout);
+        self.end_timeout(TimeoutKind::LogoutResponse);
     }
 
     /// The peer did not close the connection after its Logout was
@@ -171,6 +175,6 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// an error condition.
     pub(crate) fn on_peer_close_timeout(&mut self) {
         warn!("peer did not close the connection after its Logout was acknowledged");
-        self.begin_disconnect(DisconnectReason::RemoteRequestedLogoutTimeout);
+        self.end_timeout(TimeoutKind::PeerClose);
     }
 }

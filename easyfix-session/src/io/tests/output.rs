@@ -4,10 +4,12 @@ use tokio::io;
 
 use super::wire::wire_bytes;
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::PendingOutput,
     io::{OutputError, flush_output},
-    test_helpers::{EngineBuilder, commit_heartbeat, nz_seq},
+    test_helpers::{
+        EngineBuilder, SessionEndSnapshot, TerminationSnapshot, commit_heartbeat, nz_seq,
+    },
 };
 
 #[tokio::test]
@@ -90,8 +92,12 @@ async fn missing_stored_message_is_fatal_without_gap_fill() {
         Err(OutputError::Fatal(_))
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::StorageError)
+        engine.session_end().map(SessionEndSnapshot::from),
+        Some(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::StorageError),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })
     );
     assert!(wire_bytes(writer, reader).await.is_empty());
 }

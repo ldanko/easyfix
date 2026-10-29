@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    io,
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU64},
     time::Duration,
@@ -172,7 +173,7 @@ pub enum InputAction {
     Accept,
     /// Reject with session-level `Reject<3>`.
     /// On an acknowledgement of our reset, also send Logout (unless already
-    /// sent) and end the connection with [`DisconnectReason::ApplicationForcedDisconnect`].
+    /// sent) and end the connection with [`SessionEndReason::ApplicationForcedDisconnect`].
     Reject {
         /// Sent as `SessionRejectReason(373)`.
         reason: SessionRejectReasonField,
@@ -261,34 +262,89 @@ pub fn max_message_size_exceeded_text(announced: Length, supported: Length) -> F
     )
 }
 
-/// Why a session ended.
-///
-/// Passed to [`SessionHandler::on_session_end`] as the `reason`; covers orderly
-/// logout completions as well as protocol violations and transport failures.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DisconnectReason {
-    /// The connection ended after a locally initiated sequence-number reset
-    /// whose execution by the peer was not confirmed. Coordinate numbering
-    /// with the peer before resuming; see the
+/// The context and outcome of one session connection.
+#[derive(Debug)]
+pub struct SessionEnd {
+    /// The procedure in progress, or the first decision to end the session.
+    pub context: EndContext,
+    /// The event that finally ended the connection.
+    pub termination: Termination,
+    /// A local sequence-number reset was not confirmed by the peer.
+    /// Coordinate numbering before resuming; see the
     /// [recovery instructions](crate::session_reset#recovery-after-an-unconfirmed-reset).
-    SeqNumResetFailed,
-    /// Preparation for an in-band reset did not complete within
-    /// [`running_session_reset_timeout`](crate::SessionSettings::running_session_reset_timeout).
-    /// The local counters and history were not reset; normal resumption from
-    /// storage is available.
-    ResetPreparationTimeout,
-    /// Locally requested logout completed - the peer's `Logout<5>` response
-    /// was received.
-    LocalRequestedLogout,
-    /// Logout requested remotely. The session confirms with its own
-    /// `Logout<5>` (`SessionStatus(1409)=4`), then waits for the peer to
-    /// close the connection (FIX Session Layer §4.6, Test Cases Scenario
-    /// 13(b)); this is the reason once it does.
-    RemoteRequestedLogout,
-    /// Logout requested remotely and acknowledged, but the peer did not close
-    /// the connection within `auto_disconnect_after_no_logout`; the session
-    /// drops it (Test Cases Scenario 13(b)).
-    RemoteRequestedLogoutTimeout,
+    pub reset_unconfirmed: bool,
+}
+
+/// Session context preserved when its connection ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndContext {
+    /// The initial Logon handshake was in progress.
+    Logon,
+    /// The session was exchanging ordinary traffic.
+    Established,
+    /// A running reset was requested but local numbering had not been reset.
+    ResetPreparation,
+    /// A running reset Logon was awaiting acknowledgement.
+    Reset,
+    /// A locally requested Logout was queued or awaiting acknowledgement.
+    /// `Termination::LocalClose` means its acknowledgement was received.
+    LocalLogout,
+    /// The peer requested Logout. This includes sending the acknowledgement
+    /// and waiting for the peer to close the connection, including expiry of
+    /// that wait with `Termination::Timeout(TimeoutKind::PeerClose)`.
+    RemoteLogout,
+    /// The session had decided to end for this reason. A subsequent failure
+    /// during teardown does not replace it.
+    Closing(SessionEndReason),
+}
+
+/// The event that ended a connection, independently of its session context.
+#[derive(Debug)]
+pub enum Termination {
+    /// This side closed the connection after completing its local work.
+    LocalClose,
+    /// Reading the peer's connection reached EOF.
+    PeerClose,
+    /// Reading or writing failed. Includes a write exceeding `write_timeout`,
+    /// represented by an error with kind `io::ErrorKind::TimedOut`.
+    IoError {
+        /// The failed operation.
+        operation: IoOperation,
+        /// The original transport error, including its source when available.
+        error: io::Error,
+    },
+    /// A protocol wait exceeded its configured time budget.
+    Timeout(TimeoutKind),
+    /// The Logout could not be serialized, so its exchange could not finish.
+    SerializeError(SerializeError),
+}
+
+/// The transport operation that failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoOperation {
+    Read,
+    Write,
+}
+
+/// The protocol wait whose budget expired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeoutKind {
+    /// Waiting for the first inbound message or for a Logon acknowledgement.
+    Logon,
+    /// Waiting for an acknowledgement of our Logout.
+    LogoutResponse,
+    /// Waiting for the peer to close after we acknowledged its Logout.
+    PeerClose,
+    /// Waiting for recovery and probes before a running reset.
+    ResetPreparation,
+}
+
+/// Why the session decided to end its connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionEndReason {
+    /// A protocol wait expired. The cause remains visible if flushing the
+    /// final output fails after that decision.
+    Timeout(TimeoutKind),
     /// The application forced closure without waiting for a Logout response,
     /// with or without sending a farewell Logout. Applies to inbound-message
     /// callbacks and requests through the acceptor or initiator API,
@@ -324,12 +380,6 @@ pub enum DisconnectReason {
     /// (`SessionRejectReason(373)=10`) followed by `Logout<5>` and
     /// disconnects (FIX Session Layer §4.2.3).
     SendingTimeAccuracyProblem,
-    /// The remote side closed the connection, or the session ended without a
-    /// more specific reason.
-    Disconnected,
-    /// A TCP read or write failed; the session ends without a `Logout<5>`
-    /// exchange.
-    IoError,
     /// A storage operation or replay of a stored message failed. The
     /// connection closes without further storage access or a Logout exchange.
     /// The operation and source are logged. Restore consistent backend state
@@ -340,14 +390,6 @@ pub enum DisconnectReason {
     /// sends `Logout<5>` (`Text(58)="Heartbeat timeout"`) and disconnects
     /// (FIX Session Layer §4.5.5).
     HeartbeatTimeout,
-    /// The peer did not acknowledge this side's `Logout<5>` within
-    /// `auto_disconnect_after_no_logout`; the connection is dropped
-    /// (FIX Session Layer §4.6.2).
-    LocalRequestedLogoutTimeout,
-    /// The Logon handshake did not complete within
-    /// [`auto_disconnect_after_no_logon_response`](crate::SessionSettings::auto_disconnect_after_no_logon_response).
-    /// The connection is dropped without a Logout exchange.
-    LogonTimeout,
     /// A logged-on peer fell behind: its outbound staging queue exceeded
     /// `max_outbound_queued_messages` or its head-of-queue age exceeded
     /// `max_outbound_lag`. With history enabled and healthy storage, the
@@ -411,7 +453,7 @@ pub trait SessionHandler<M: SessionMessage> {
     /// The transport has been released and the sender is closed. Unsent
     /// messages have been offered to storage when history is enabled and
     /// storage is healthy; any remaining messages have been discarded.
-    /// See [`DisconnectReason`] for the outcome.
+    /// See [`SessionEnd`] for the context, transport outcome, and reset status.
     ///
     /// This can be the first and only callback a connection's `SessionHandler`
     /// receives. [`on_session_ready`](Self::on_session_ready) is skipped when
@@ -424,7 +466,7 @@ pub trait SessionHandler<M: SessionMessage> {
     ///   [`InputAction::Logout`] or [`InputAction::Disconnect`];
     /// - writing the opening `Logon<A>` request or response failed;
     /// - the outgoing sequence numbers were already exhausted when the
-    ///   connection started ([`DisconnectReason::SeqNumExhausted`]).
+    ///   connection started ([`SessionEndReason::SeqNumExhausted`]).
     ///
     /// No [`Sender`] was handed over in those cases. An implementation that
     /// pairs the two callbacks must tolerate the missing first half.
@@ -438,7 +480,7 @@ pub trait SessionHandler<M: SessionMessage> {
     /// and receives a fresh `Sender` through a new `on_session_ready` call.
     ///
     /// [`SendError::Closed`]: crate::SendError::Closed
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason);
+    async fn on_session_end(&mut self, session_id: &SessionId, end: SessionEnd);
 
     /// Inbound application message that passed session validation.
     ///

@@ -13,7 +13,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, ValidationError},
+    application::{EndContext, SessionEndReason, Termination, ValidationError},
     engine::{InputResult, LogonState},
     messages_storage::MessagesStorage,
     test_helpers,
@@ -65,9 +65,10 @@ async fn malformed_reset_ack_is_refused_without_another_logout() {
                     .process_validation_failure(msg, failure, &mut storage)
                     .unwrap();
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
+                assert!(engine.session_end().unwrap().reset_unconfirmed);
                 assert!(engine.state.local_reset_unconfirmed);
                 assert_eq!(storage.next_sender_msg_seq_num().get(), initial_sender);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 1);
@@ -149,9 +150,10 @@ fn retransmitted_logon_cannot_acknowledge_a_local_reset() {
                     .unwrap();
                 assert!(engine.state.local_reset_unconfirmed);
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
+                assert!(engine.session_end().unwrap().reset_unconfirmed);
                 assert_eq!(
                     storage.next_target_msg_seq_num().get(),
                     if seq == 1 { 2 } else { 1 }
@@ -196,16 +198,17 @@ async fn refusing_logout_is_accepted_without_sequence_checks() {
                 assert!(engine.state.queue.is_empty());
                 if logout_sent {
                     assert_eq!(
-                        engine.disconnect_reason(),
-                        Some(DisconnectReason::SeqNumResetFailed)
+                        engine.session_end().map(|end| end.context),
+                        Some(EndContext::LocalLogout)
                     );
+                    assert!(engine.session_end().unwrap().reset_unconfirmed);
                     assert!(!engine.has_admin_output());
                 } else {
                     assert_matches!(
                         engine.state.logon_state,
                         LogonState::LogoutAcknowledged { .. }
                     );
-                    assert!(engine.disconnect_reason().is_none());
+                    assert!(engine.session_end().map(|end| end.context).is_none());
                     assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
                     let mut logout = take_admin(&mut engine);
                     assert_msg_type(&logout, MsgTypeBase::Logout);
@@ -219,12 +222,13 @@ async fn refusing_logout_is_accepted_without_sequence_checks() {
                         logout_bytes.as_slice()
                     );
                     engine.end_session_if_reset_ack_number_consumed(&storage);
-                    assert!(engine.disconnect_reason().is_none());
-                    engine.begin_disconnect(DisconnectReason::RemoteRequestedLogout);
+                    assert!(engine.session_end().map(|end| end.context).is_none());
+                    engine.end_transport(Termination::PeerClose);
                     assert_eq!(
-                        engine.disconnect_reason(),
-                        Some(DisconnectReason::SeqNumResetFailed)
+                        engine.session_end().map(|end| end.context),
+                        Some(EndContext::RemoteLogout)
                     );
+                    assert!(engine.session_end().unwrap().reset_unconfirmed);
                 }
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 2);
@@ -258,9 +262,14 @@ fn reset_refusal_still_validates_headers_when_logout_verification_is_disabled() 
                     InputResult::Handled
                 );
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(if wrong_comp_id {
+                        SessionEndReason::InvalidCompId
+                    } else {
+                        SessionEndReason::InvalidLogonState
+                    }))
                 );
+                assert!(engine.session_end().unwrap().reset_unconfirmed);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                 assert!(engine.state.local_reset_unconfirmed);
                 assert_matches!(as_admin(&take_admin(&mut engine)), AdminBase::Reject(reject)
@@ -300,9 +309,10 @@ async fn undecodable_reset_response_is_terminal_with_or_without_a_header() {
                             )
                             .unwrap();
                         assert_eq!(
-                            engine.disconnect_reason(),
-                            Some(DisconnectReason::SeqNumResetFailed)
+                            engine.session_end().map(|end| end.context),
+                            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                         );
+                        assert!(engine.session_end().unwrap().reset_unconfirmed);
                         assert_eq!(
                             storage.next_target_msg_seq_num().get(),
                             if seq == 1 { 2 } else { 1 }
@@ -366,9 +376,10 @@ fn unknown_wire_message_type_preserves_its_decoder_reject_during_reset() {
             && *reason == SessionRejectReasonBase::InvalidMsgType && *seq_num == 1);
             engine.on_deserialize_error(error, &mut storage).unwrap();
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::SeqNumResetFailed)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
+            assert!(engine.session_end().unwrap().reset_unconfirmed);
             assert_eq!(storage.next_target_msg_seq_num().get(), 2);
             assert_matches!(as_admin(&take_admin(&mut engine)), AdminBase::Reject(reject)
             if reject.session_reject_reason == Some(SessionRejectReasonBase::InvalidMsgType.into()));
@@ -444,9 +455,10 @@ async fn known_wire_type_without_a_header_preserves_the_reset_state_verdict() {
                         InputResult::Error(_)
                     );
                     assert_eq!(
-                        engine.disconnect_reason(),
-                        Some(DisconnectReason::SeqNumResetFailed)
+                        engine.session_end().map(|end| end.context),
+                        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                     );
+                    assert!(engine.session_end().unwrap().reset_unconfirmed);
                     assert!(engine.state.local_reset_unconfirmed);
                     assert_eq!(engine.state.logon_state, initial_state);
                     assert_eq!(storage.next_sender_msg_seq_num().get(), initial_sender);
@@ -509,9 +521,14 @@ fn header_reject_with_broken_reset_response_body_is_terminal() {
                     }
                     engine.on_deserialize_error(error, &mut storage).unwrap();
                     assert_eq!(
-                        engine.disconnect_reason(),
-                        Some(DisconnectReason::SeqNumResetFailed)
+                        engine.session_end().map(|end| end.context),
+                        Some(EndContext::Closing(if wrong_comp_id {
+                            SessionEndReason::InvalidCompId
+                        } else {
+                            SessionEndReason::InvalidLogonState
+                        }))
                     );
+                    assert!(engine.session_end().unwrap().reset_unconfirmed);
                     assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                     let reject = take_admin(&mut engine);
                     assert_matches!(as_admin(&reject), AdminBase::Reject(reject)

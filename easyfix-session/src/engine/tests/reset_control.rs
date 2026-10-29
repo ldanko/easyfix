@@ -16,7 +16,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason, Termination},
     engine::{InputResult, LogonState, ResetPhase},
     io::{ControlMsg, time::TimerBackend},
     messages_storage::MessagesStorage,
@@ -89,8 +89,8 @@ async fn running_reset_peer_logon_abandons_preparation_only_when_accepted() {
                 }
             } else {
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::InvalidLogonState)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
                 assert_eq!(storage.next_target_msg_seq_num().get(), 40);
                 assert_eq!(storage.next_sender_msg_seq_num().get(), sender);
@@ -261,9 +261,10 @@ fn running_reset_sent_rejects_unexpected_traffic_before_sequence_recovery() {
                 InputResult::Handled
             );
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::SeqNumResetFailed)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
+            assert!(engine.session_end().unwrap().reset_unconfirmed);
             assert_eq!(storage.next_target_msg_seq_num().get(), 1);
             assert!(!engine.has_pending_resends());
             assert!(engine.state.queue.is_empty());
@@ -282,9 +283,10 @@ fn running_reset_sent_rejects_unexpected_traffic_before_sequence_recovery() {
         }
         engine.on_deserialize_error(error, &mut storage).unwrap();
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::SeqNumResetFailed)
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
         );
+        assert!(engine.session_end().unwrap().reset_unconfirmed);
         assert_eq!(storage.next_target_msg_seq_num().get(), 1);
         assert!(engine.state.queue.is_empty());
         assert!(engine.state.resend_range.is_none());
@@ -318,7 +320,7 @@ fn running_reset_control_is_ignored_when_disconnected_or_not_established() {
         let (mut engine, storage) = EngineBuilder::new().build();
         engine.state.logon_state = state;
         if state == LogonState::Established {
-            engine.begin_disconnect(DisconnectReason::Disconnected);
+            engine.end_transport(Termination::PeerClose);
         }
         engine.state.reset_probe_id = Some(fix_str!("EXISTING").to_owned());
         engine
@@ -328,13 +330,13 @@ fn running_reset_control_is_ignored_when_disconnected_or_not_established() {
         engine.state.probe_stale = true;
         let id = engine.state.reset_probe_id.clone();
         let barrier = engine.state.reset_barrier_ids.clone();
-        let reason = engine.disconnect_reason();
+        let reason = engine.session_end().map(|end| end.context);
         engine.on_control(ControlMsg::ResetRunningSession);
         assert_eq!(engine.state.logon_state, state);
         assert_eq!(engine.state.reset_probe_id, id);
         assert_eq!(engine.state.reset_barrier_ids, barrier);
         assert!(engine.state.probe_stale);
-        assert_eq!(engine.disconnect_reason(), reason);
+        assert_eq!(engine.session_end().map(|end| end.context), reason);
         assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
         assert_eq!(storage.next_target_msg_seq_num().get(), 1);
         assert!(!engine.has_admin_output());

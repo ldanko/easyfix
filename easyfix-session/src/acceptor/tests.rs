@@ -24,12 +24,13 @@ use tokio::{
 };
 
 use super::{
-    Acceptor, AcceptorError, AcceptorInner, Connection, ConnectionDropReason, ConnectionObserver,
-    RegisteredSession, ShutdownMode, TaskGuard, acceptor_session_task,
+    Acceptor, AcceptorError, AcceptorInner, Connection, ConnectionDropReason, ConnectionEnd,
+    ConnectionEndContext, ConnectionObserver, RegisteredSession, ShutdownMode, TaskGuard,
+    acceptor_session_task,
 };
 use crate::{
     Sender, SerializeError,
-    application::{DisconnectReason, InputAction, SessionContext, SessionHandler},
+    application::{InputAction, SessionContext, SessionEnd, SessionHandler, Termination},
     io::time::TimerBackend,
     messages_storage::{InMemoryStorage, MessagesStorage},
     session_id::SessionId,
@@ -170,7 +171,7 @@ impl SessionHandler<Message> for InitHandler {
         self.0.set(self.0.get() + 1);
     }
 
-    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {
+    async fn on_session_end(&mut self, _: &SessionId, _: SessionEnd) {
         self.0.set(self.0.get() + 1);
     }
 
@@ -200,10 +201,15 @@ struct InitErrorObserver {
 }
 
 impl ConnectionObserver for InitErrorObserver {
-    fn on_connection_dropped(&self, peer: SocketAddr, reason: ConnectionDropReason<'_>) {
+    fn on_connection_dropped(&self, peer: SocketAddr, end: ConnectionEnd<'_>) {
         assert_eq!(peer, test_helpers::TEST_PEER_ADDR);
-        let ConnectionDropReason::HandlerInitFailed { session_id, error } = reason else {
-            panic!("unexpected connection drop: {reason:?}");
+        assert_matches!(end.termination, Termination::LocalClose);
+        let ConnectionEndContext::AdmissionRejected(ConnectionDropReason::HandlerInitFailed {
+            session_id,
+            error,
+        }) = end.context
+        else {
+            panic!("unexpected connection drop: {end:?}");
         };
         assert_eq!(session_id, &self.id);
         let original = error.downcast_ref::<InitError>().unwrap();
@@ -1302,7 +1308,7 @@ async fn silent_peer_is_reported_as_closed_before_first_message() {
 /// a close: the connection is still open when the acceptor gives up on it.
 /// The paused clock jumps straight to the deadline, so the default 10 s
 /// budget costs nothing; the peer end is held open for the whole test, since
-/// an EOF would turn the verdict into `ClosedBeforeFirstMessage`.
+/// an EOF would turn the termination into `PeerClose`.
 #[tokio::test(start_paused = true)]
 async fn silent_peer_is_reported_as_a_logon_timeout() {
     let local = LocalSet::new();
@@ -1382,8 +1388,7 @@ async fn acceptors_keep_independent_clocks_before_session_identification() {
 }
 
 /// A transport that fails before the first message is complete is reported
-/// as an I/O error - the one drop reason that says nothing about the peer's
-/// behaviour, so a policy counting hostile connections can leave it out.
+/// with the first-message context and the original I/O error details.
 #[tokio::test]
 async fn read_failure_before_first_message_is_reported_as_io_error() {
     let local = LocalSet::new();
@@ -1407,7 +1412,10 @@ async fn read_failure_before_first_message_is_reported_as_io_error() {
             .await
             .expect("session task");
 
-            assert_eq!(observer.summaries(), vec!["io_error".to_owned()]);
+            assert_eq!(
+                observer.summaries(),
+                vec!["io_error:ConnectionReset:connection reset".to_owned()]
+            );
         })
         .await;
 }
@@ -1461,7 +1469,7 @@ struct ReentrantObserver {
 }
 
 impl ConnectionObserver for ReentrantObserver {
-    fn on_connection_dropped(&self, _: SocketAddr, _: ConnectionDropReason<'_>) {
+    fn on_connection_dropped(&self, _: SocketAddr, _: ConnectionEnd<'_>) {
         let acceptor = self.acceptor.borrow().clone().expect("acceptor set");
         // Re-enters `inner.sessions`. If the drop were reported while the
         // registry lookup still held its `borrow_mut`, this panics.

@@ -13,7 +13,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{EndContext, InputAction, SessionEndReason},
     engine::InputResult,
     io::ControlMsg,
     messages_storage::MessagesStorage,
@@ -41,8 +41,8 @@ async fn invalid_ack_body_values_do_not_send_a_second_logout() {
             );
             assert!(!engine.state.local_reset_unconfirmed);
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::InvalidLogonState)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
             assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
             assert_eq!(
@@ -75,8 +75,8 @@ async fn invalid_ack_body_values_do_not_send_a_second_logout() {
                 Ok(InputResult::Handled)
             );
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::InvalidLogonState)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
             assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
             assert_eq!(storage.next_target_msg_seq_num().get(), 40);
@@ -116,7 +116,7 @@ fn logout_sent_error_paths_keep_the_first_logout_only() {
                                 &mut storage,
                             )
                             .unwrap();
-                        DisconnectReason::MsgSeqNumNotFound
+                        EndContext::Closing(SessionEndReason::MsgSeqNumNotFound)
                     }
                     1 => {
                         engine
@@ -126,21 +126,15 @@ fn logout_sent_error_paths_keep_the_first_logout_only() {
                                 &mut storage,
                             )
                             .unwrap();
-                        DisconnectReason::InvalidBeginString
+                        EndContext::Closing(SessionEndReason::InvalidBeginString)
                     }
                     _ => {
                         engine.on_oversized_message(10_000);
-                        DisconnectReason::MessageTooLarge
+                        EndContext::Closing(SessionEndReason::MessageTooLarge)
                     }
                 };
-                assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(if unconfirmed {
-                        DisconnectReason::SeqNumResetFailed
-                    } else {
-                        reason
-                    })
-                );
+                assert_eq!(engine.session_end().map(|end| end.context), Some(reason));
+                assert_eq!(engine.session_end().unwrap().reset_unconfirmed, unconfirmed);
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 1);
                 assert!(!engine.has_admin_output());
@@ -267,8 +261,10 @@ fn suppressing_logout_preserves_the_application_action() {
             assert_eq!(storage.next_target_msg_seq_num().get(), 2);
             assert!(!engine.has_admin_output());
             assert_eq!(
-                engine.disconnect_reason(),
-                disconnect.then_some(DisconnectReason::ApplicationForcedDisconnect)
+                engine.session_end().map(|end| end.context),
+                disconnect.then_some(EndContext::Closing(
+                    SessionEndReason::ApplicationForcedDisconnect
+                ))
             );
         }
     }

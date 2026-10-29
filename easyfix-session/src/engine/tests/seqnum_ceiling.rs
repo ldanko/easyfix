@@ -11,7 +11,7 @@ use easyfix_test_messages::Message;
 
 use super::support::{assert_msg_type, verify_test};
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::{InputResult, PendingOutput, VerifyError},
     initiator::SessionStart,
     io::ControlMsg,
@@ -64,8 +64,8 @@ fn sequence_reset_to_max_applies_then_exhausts_incoming_numbering() {
         engine.end_session_if_target_numbering_exhausted(&storage);
 
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::SeqNumExhausted)
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
         );
         assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
         assert!(engine.take_admin_output().is_none());
@@ -150,8 +150,8 @@ fn exhausted_incoming_numbering_ends_the_session_with_one_logout_in_every_state(
         engine.end_session_if_target_numbering_exhausted(&storage);
 
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::SeqNumExhausted),
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::SeqNumExhausted)),
             "{state:?}"
         );
         let logout = engine
@@ -201,8 +201,10 @@ fn exhausted_incoming_numbering_leaves_an_already_decided_disconnect_alone() {
     engine.end_session_if_target_numbering_exhausted(&storage);
 
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::ApplicationForcedDisconnect)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::ApplicationForcedDisconnect
+        ))
     );
     assert!(engine.take_admin_output().is_none());
 }
@@ -223,8 +225,8 @@ fn reconnect_on_exhausted_incoming_numbering_logs_out() {
 
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
     let msg = take_admin(&mut engine);
     assert!(engine.take_admin_output().is_none());
@@ -355,8 +357,8 @@ fn fill_header_stamps_last_usable_number_then_ends_the_session() {
     assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
     assert!(engine.should_disconnect());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
 }
 
@@ -372,8 +374,8 @@ fn fill_header_refuses_a_pre_numbered_message_once_outgoing_numbering_is_exhaust
     assert!(!engine.fill_header(&mut msg, &mut storage).unwrap());
 
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
     assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
 }
@@ -388,8 +390,8 @@ fn fill_header_refuses_pre_numbered_max_with_unexhausted_counter() {
 
     assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
 }
 
@@ -414,8 +416,8 @@ fn fill_header_refuses_to_stamp_once_outgoing_numbering_is_exhausted() {
     assert_eq!(msg.target_comp_id(), fix_str!("TARGET"));
     assert!(engine.should_disconnect());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
 }
 
@@ -531,8 +533,8 @@ fn exhaustion_while_stamping_a_farewell_does_not_displace_the_real_reason() {
     engine.on_input_timeout();
     engine.on_input_timeout();
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::HeartbeatTimeout)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::HeartbeatTimeout))
     );
 
     // Stamping that Logout consumes the last sequence number.
@@ -547,8 +549,8 @@ fn exhaustion_while_stamping_a_farewell_does_not_displace_the_real_reason() {
     assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
 
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::HeartbeatTimeout),
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::HeartbeatTimeout)),
         "the heartbeat timeout ended this session, not the ceiling"
     );
 }
@@ -570,16 +572,16 @@ fn a_peer_logout_after_exhaustion_does_not_displace_the_real_reason() {
     assert!(engine.fill_header(&mut heartbeat, &mut storage).unwrap());
     assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
 
     let result = accept_input(&mut engine, test_helpers::logout(1), &mut storage);
 
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted),
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted)),
         "the ceiling ended this session before the peer's Logout was seen"
     );
     // The answering Logout is staged, but there is no number left for it.

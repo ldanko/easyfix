@@ -15,8 +15,8 @@
 //! outside the session.
 
 use easyfix_session::{
-    DisconnectReason, InMemoryStorage, Initiator, InputAction, Sender, SerializeError,
-    SessionContext, SessionHandler, SessionId, SessionMessage,
+    InMemoryStorage, Initiator, InputAction, Sender, SerializeError, SessionContext, SessionEnd,
+    SessionHandler, SessionId, SessionMessage,
     basic_types::{FixStr, TimePrecision},
     fix_str,
 };
@@ -55,8 +55,8 @@ impl SessionHandler<Message> for OrderHandler {
         // here. Keep it in a field (as the acceptor does) to send later.
     }
 
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason) {
-        info!(%session_id, ?reason, "session end");
+    async fn on_session_end(&mut self, session_id: &SessionId, end: SessionEnd) {
+        info!(%session_id, ?end, "session end");
     }
 
     async fn on_app_msg_in(&mut self, msg: Box<Message>) -> InputAction {

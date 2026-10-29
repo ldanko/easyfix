@@ -13,7 +13,10 @@ use super::{
     wire::{build_peer_logon, logon_handshake, read_lone_message},
 };
 use crate::{
-    application::DisconnectReason, io::ControlMsg, test_helpers, test_helpers::read_one_message,
+    application::{EndContext, SessionEndReason},
+    io::ControlMsg,
+    test_helpers,
+    test_helpers::{SessionEndSnapshot, TerminationSnapshot, read_one_message},
 };
 
 #[tokio::test(start_paused = true)]
@@ -46,7 +49,11 @@ async fn heartbeat_timeout_sends_heartbeat() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -124,7 +131,11 @@ async fn garbled_input_does_not_reset_input_deadline() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
         })
@@ -178,7 +189,11 @@ async fn absurd_heart_bt_int_does_not_panic_the_loop() {
             client_io.shutdown().await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::RemoteRequestedLogout)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -259,7 +274,14 @@ async fn non_matching_heartbeats_do_not_defeat_test_request_escalation() {
                 "session must escalate to Logout+disconnect despite \
                      non-matching heartbeats",
             );
-            assert_eq!(reason, DisconnectReason::HeartbeatTimeout);
+            assert_eq!(
+                reason,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::HeartbeatTimeout),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
             // Probe at 1.2s, grace deadline one input timeout later.
             assert_eq!(start.elapsed(), Duration::from_millis(2400));
 
@@ -324,7 +346,11 @@ async fn heart_bt_int_zero_keeps_the_wire_silent_and_the_session_up() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
         })

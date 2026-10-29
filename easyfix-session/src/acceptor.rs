@@ -33,7 +33,7 @@ use tokio::{
 use tracing::{Instrument, error, info, info_span, warn};
 
 use crate::{
-    application::{SessionContext, SessionHandler},
+    application::{IoOperation, SessionContext, SessionHandler, Termination, TimeoutKind},
     engine::{SessionEngine, supports_seq_num_reset, validate_gap_fill_fits},
     io::{
         ControlMsg, FirstMessageEvent, InputStream, SessionOpening, initialize_handler, sender,
@@ -103,12 +103,28 @@ pub enum ShutdownMode {
     },
 }
 
-/// Why an inbound connection ended before it became a FIX session.
+/// An inbound connection that ended before session handling began.
 ///
-/// Reported through [`ConnectionObserver::on_connection_dropped`]. Distinct
-/// from [`DisconnectReason`](crate::DisconnectReason), which describes the end
-/// of an *established* session: here no session ever came into being, so no
-/// `SessionHandler` exists and nothing was sent on the wire.
+/// Reported through [`ConnectionObserver::on_connection_dropped`], including
+/// connections whose identity was known but whose admission was refused.
+#[derive(Debug)]
+pub struct ConnectionEnd<'a> {
+    /// Admission stage or reason for refusing the connection.
+    pub context: ConnectionEndContext<'a>,
+    /// How the connection ended, including the original transport error.
+    pub termination: Termination,
+}
+
+/// Admission context when an inbound connection ended.
+#[derive(Debug)]
+pub enum ConnectionEndContext<'a> {
+    /// Reading the first message had not completed.
+    AwaitingFirstMessage,
+    /// The connection was refused before session handling began.
+    AdmissionRejected(ConnectionDropReason<'a>),
+}
+
+/// Why an inbound connection was refused before session handling began.
 ///
 /// The variants carrying a [`SessionId`] are those where the peer's identity
 /// was already derived from its `Logon<A>`; the rest occur before any identity
@@ -119,12 +135,6 @@ pub enum ConnectionDropReason<'a> {
     /// connection was dropped before anything was read from it - no identity
     /// is known.
     AcceptorSuspended,
-    /// The peer closed the connection without sending anything.
-    ClosedBeforeFirstMessage,
-    /// No message arrived within `auto_disconnect_after_no_logon_received`.
-    LogonTimeout,
-    /// A transport read failed before the first message was complete.
-    FirstMessageIoError(&'a io::Error),
     /// The first message could not be decoded and carried no usable identity
     /// to answer to, so it was dropped silently (FIX Session Layer
     /// Test Cases Scenario 2(d)/2S).
@@ -183,8 +193,9 @@ pub enum ConnectionDropReason<'a> {
 /// `Acceptor`, but should return promptly - a slow observer delays the
 /// connection's teardown.
 pub trait ConnectionObserver {
-    /// An inbound connection from `peer_addr` was dropped for `reason`.
-    fn on_connection_dropped(&self, peer_addr: SocketAddr, reason: ConnectionDropReason<'_>);
+    /// An inbound connection from `peer_addr` ended before session handling
+    /// began. An already active session with the same identity is unaffected.
+    fn on_connection_dropped(&self, peer_addr: SocketAddr, end: ConnectionEnd<'_>);
 }
 
 /// Abstraction over a listening connection source.
@@ -367,11 +378,21 @@ where
     // The handle is cloned out before the call so no `RefCell` borrow is live
     // while user code runs - the observer is documented as free to call back
     // into the `Acceptor`.
-    fn notify_connection_dropped(&self, peer_addr: SocketAddr, reason: ConnectionDropReason<'_>) {
+    fn notify_connection_dropped(&self, peer_addr: SocketAddr, end: ConnectionEnd<'_>) {
         let observer = self.connection_observer.borrow().clone();
         if let Some(observer) = observer {
-            observer.on_connection_dropped(peer_addr, reason);
+            observer.on_connection_dropped(peer_addr, end);
         }
+    }
+
+    fn reject_connection(&self, peer_addr: SocketAddr, reason: ConnectionDropReason<'_>) {
+        self.notify_connection_dropped(
+            peer_addr,
+            ConnectionEnd {
+                context: ConnectionEndContext::AdmissionRejected(reason),
+                termination: Termination::LocalClose,
+            },
+        );
     }
 }
 
@@ -856,7 +877,7 @@ where
     /// Repeating the request sends no additional Logout. With `disconnect`
     /// true it ends the wait; otherwise the original deadline is unchanged.
     /// Closure without waiting reports
-    /// [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
+    /// [`ApplicationForcedDisconnect`](crate::SessionEndReason::ApplicationForcedDisconnect).
     /// Cancels pending handler initialization and closes the connection
     /// without sending Logout or running session callbacks.
     pub async fn logout(
@@ -923,7 +944,7 @@ where
     /// `Ok(())` if the session is already disconnected and
     /// [`AcceptorError::UnknownSession`] if no matching session has
     /// been registered.
-    /// Reports [`ApplicationForcedDisconnect`](crate::DisconnectReason::ApplicationForcedDisconnect).
+    /// Reports [`ApplicationForcedDisconnect`](crate::SessionEndReason::ApplicationForcedDisconnect).
     /// Cancels pending handler initialization and closes the connection
     /// without running session callbacks.
     pub async fn disconnect(&self, session_id: &SessionId) -> Result<(), AcceptorError> {
@@ -1265,7 +1286,7 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
     // which is worth knowing about.
     if inner.suspended.get() {
         warn!("acceptor suspended, dropping connection before first message");
-        inner.notify_connection_dropped(peer_addr, ConnectionDropReason::AcceptorSuspended);
+        inner.reject_connection(peer_addr, ConnectionDropReason::AcceptorSuspended);
         return;
     }
 
@@ -1317,7 +1338,7 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
         // `SessionAlreadyActive` for as long as this connection lives.
         Ok(Some(FirstMessageEvent::Message(msg))) if msg.msg_type() != MsgTypeBase::Logon => {
             error!(msg_type = ?msg.msg_type(), "first message not a logon");
-            inner.notify_connection_dropped(peer_addr, ConnectionDropReason::FirstMessageNotLogon);
+            inner.reject_connection(peer_addr, ConnectionDropReason::FirstMessageNotLogon);
             return;
         }
         Ok(Some(FirstMessageEvent::Message(msg))) => {
@@ -1348,7 +1369,7 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
             invalid_logon_identity: None,
         })) => {
             error!(%error, "failed to deserialize first message");
-            inner.notify_connection_dropped(
+            inner.reject_connection(
                 peer_addr,
                 ConnectionDropReason::FirstMessageUndecodable(&error),
             );
@@ -1360,14 +1381,20 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
                 limit = first_message_limit,
                 "first message exceeds max first message size, dropping connection"
             );
-            inner.notify_connection_dropped(peer_addr, ConnectionDropReason::FirstMessageTooLarge);
+            inner.reject_connection(peer_addr, ConnectionDropReason::FirstMessageTooLarge);
             return;
         }
         Ok(Some(FirstMessageEvent::IoError(err))) => {
             error!(%err, "I/O error reading first message");
             inner.notify_connection_dropped(
                 peer_addr,
-                ConnectionDropReason::FirstMessageIoError(&err),
+                ConnectionEnd {
+                    context: ConnectionEndContext::AwaitingFirstMessage,
+                    termination: Termination::IoError {
+                        operation: IoOperation::Read,
+                        error: err,
+                    },
+                },
             );
             return;
         }
@@ -1375,13 +1402,22 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
             info!("connection closed before first message");
             inner.notify_connection_dropped(
                 peer_addr,
-                ConnectionDropReason::ClosedBeforeFirstMessage,
+                ConnectionEnd {
+                    context: ConnectionEndContext::AwaitingFirstMessage,
+                    termination: Termination::PeerClose,
+                },
             );
             return;
         }
         Err(_) => {
             warn!("logon timeout - no message received");
-            inner.notify_connection_dropped(peer_addr, ConnectionDropReason::LogonTimeout);
+            inner.notify_connection_dropped(
+                peer_addr,
+                ConnectionEnd {
+                    context: ConnectionEndContext::AwaitingFirstMessage,
+                    termination: Termination::Timeout(TimeoutKind::Logon),
+                },
+            );
             return;
         }
     };
@@ -1430,7 +1466,7 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
                     "session already active - dropping duplicate connection"
                 ),
             }
-            inner.notify_connection_dropped(peer_addr, reason);
+            inner.reject_connection(peer_addr, reason);
             return;
         }
     };
@@ -1479,7 +1515,7 @@ async fn acceptor_session_task<M, S, F, H, R, W>(
             drop(writer);
             drop(storage_guard);
             error!(%session_id, %error, "failed to initialize session handler");
-            inner.notify_connection_dropped(
+            inner.reject_connection(
                 peer_addr,
                 ConnectionDropReason::HandlerInitFailed {
                     session_id: &session_id,

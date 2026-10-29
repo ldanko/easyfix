@@ -11,7 +11,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, InputAction, ValidationError},
+    application::{EndContext, InputAction, SessionEndReason, ValidationError},
     engine::InputResult,
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -113,8 +113,8 @@ fn on_resend_request_too_low_logs_out_and_disconnects() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::MsgSeqNumTooLow)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
     );
     assert!(engine.should_disconnect());
     let logout = take_admin(&mut engine);

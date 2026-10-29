@@ -10,6 +10,7 @@
 
 use std::{cell::RefCell, collections::HashSet, error::Error as StdError, fmt, time::Duration};
 
+use common::{SessionEndSnapshot, TerminationSnapshot};
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
     basic_types::{FixStr, Int, NonZeroSeqNum, SeqNum},
@@ -18,8 +19,9 @@ use easyfix_core::{
     version::Version,
 };
 use easyfix_session::{
-    Acceptor, DisconnectReason, InMemoryStorage, InMemoryStorageError, InputAction,
-    MessagesStorage, Sender, SerializeError, SessionContext, SessionHandler, SessionId,
+    Acceptor, EndContext, InMemoryStorage, InMemoryStorageError, InputAction, MessagesStorage,
+    Sender, SerializeError, SessionContext, SessionEnd, SessionEndReason, SessionHandler,
+    SessionId,
 };
 use easyfix_test_messages::{Body, Message};
 use tokio::{
@@ -107,7 +109,7 @@ async fn has_data_on_wire<R: AsyncRead + Unpin>(reader: &mut R, buf: &mut Vec<u8
 /// Events emitted by `ManagedAdminHandler` for the test harness to observe.
 enum ManagedEvent {
     SessionReady(SessionId, Sender<Message>),
-    SessionEnd(SessionId, DisconnectReason),
+    SessionEnd(SessionId, SessionEndSnapshot),
     AppMsgIn(SessionId, Box<Message>),
     /// An engine-produced admin message was intercepted in `on_admin_msg_out`.
     /// The clone is ready to be re-sent via `Sender` by the test harness.
@@ -168,7 +170,9 @@ async fn wait_for_session_ready(rx: &mut mpsc::UnboundedReceiver<ManagedEvent>) 
     }
 }
 
-async fn wait_for_session_end(rx: &mut mpsc::UnboundedReceiver<ManagedEvent>) -> DisconnectReason {
+async fn wait_for_session_end(
+    rx: &mut mpsc::UnboundedReceiver<ManagedEvent>,
+) -> SessionEndSnapshot {
     match wait_until(rx, |e| matches!(e, ManagedEvent::SessionEnd(..))).await {
         ManagedEvent::SessionEnd(_, reason) => reason,
         _ => unreachable!(),
@@ -236,7 +240,8 @@ impl SessionHandler<Message> for ManagedAdminHandler {
             .send(ManagedEvent::SessionReady(session_id.clone(), sender));
     }
 
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, session_id: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         let _ = self
             .events_tx
             .send(ManagedEvent::SessionEnd(session_id.clone(), reason));
@@ -486,7 +491,14 @@ async fn logon_and_logout() {
 
             // Session should end cleanly.
             let reason = wait_for_session_end(&mut events_rx).await;
-            assert_eq!(reason, DisconnectReason::LocalRequestedLogout);
+            assert_eq!(
+                reason,
+                SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
 
             acc_handle.await.expect("acceptor task");
         })
@@ -596,7 +608,11 @@ async fn heartbeat_response_to_test_request() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -682,7 +698,11 @@ async fn outbound_heartbeat_on_idle() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -768,7 +788,11 @@ async fn resend_request_on_sequence_gap_is_intercepted() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -842,7 +866,11 @@ async fn app_messages_unaffected() {
                 .expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_handle.await.expect("acceptor task");
         })
@@ -887,7 +915,14 @@ async fn exhausted_outgoing_numbering_drops_the_admin_message_before_interceptio
             let end = timeout(TEST_TIMEOUT, wait_for_session_end(&mut events_rx))
                 .await
                 .expect("session must end when nothing can be stamped");
-            assert_eq!(end, DisconnectReason::SeqNumExhausted);
+            assert_eq!(
+                end,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
 
             assert!(
                 !has_data_on_wire(&mut peer_r, &mut peer_buf).await,

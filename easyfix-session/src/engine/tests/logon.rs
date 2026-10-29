@@ -17,7 +17,7 @@ use super::{
     support::{assert_msg_type, limit},
 };
 use crate::{
-    application::{DisconnectReason, InputAction, ValidationError},
+    application::{EndContext, InputAction, SessionEndReason, ValidationError},
     engine::InputResult,
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -65,8 +65,8 @@ fn unsupported_encrypt_method_logs_out_before_application_input() {
                 .process_validation_failure(msg, failure, &mut storage)
                 .unwrap();
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::InvalidLogonState),
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState)),
                 "{method}"
             );
             assert!(!engine.is_logged_on());
@@ -105,8 +105,8 @@ fn invalid_encrypt_method_keeps_parser_reasons() {
         assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
         assert!(engine.take_admin_output().is_none());
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::InvalidLogonState)
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
         );
         assert_eq!(storage.next_target_msg_seq_num().get(), 2);
     }
@@ -235,8 +235,8 @@ fn invalid_encrypt_method_does_not_override_header_verdict() {
             }
         }
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::MsgSeqNumTooLow)
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
         );
         assert_eq!(storage.next_target_msg_seq_num().get(), 5);
         assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
@@ -271,8 +271,8 @@ async fn unsupported_encrypt_method_reset_preserves_history() {
                 }
             }
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::InvalidLogonState)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
             assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
             assert_eq!(
@@ -317,13 +317,10 @@ fn unsupported_encrypt_method_respects_reset_acknowledgement_boundary() {
         let confirmed = method == "1";
         assert_eq!(engine.state.local_reset_unconfirmed, !confirmed);
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(if confirmed {
-                DisconnectReason::InvalidLogonState
-            } else {
-                DisconnectReason::SeqNumResetFailed
-            })
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
         );
+        assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
         assert_eq!(storage.next_target_msg_seq_num().get(), 2);
         if !confirmed {
             let reject = take_admin(&mut engine);
@@ -372,13 +369,10 @@ fn reset_ack_validation_preserves_error_precedence_across_confirmation() {
             .process_validation_failure(msg, failure, &mut storage)
             .unwrap();
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(if confirmed {
-                DisconnectReason::InvalidLogonState
-            } else {
-                DisconnectReason::SeqNumResetFailed
-            })
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
         );
+        assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
         assert_eq!(
             storage.next_target_msg_seq_num().get(),
             if confirmed { 2 } else { 1 }
@@ -601,8 +595,8 @@ fn on_logon_acceptor_negative_heart_bt_int_rejected() {
         Ok(InputResult::Handled)
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
 
@@ -764,8 +758,8 @@ fn on_logon_initiator_refuses_an_ack_that_does_not_echo_its_heart_bt_int() {
     );
     assert!(!engine.is_logged_on());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     let logout = take_admin(&mut engine);
     assert_matches!(as_admin(&logout), AdminBase::Logout(logout)
@@ -789,8 +783,8 @@ fn on_logon_wrong_comp_id() {
         .unwrap();
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidCompId)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidCompId))
     );
     assert!(engine.should_disconnect());
 }
@@ -829,8 +823,8 @@ fn on_logon_too_low_logs_out_and_disconnects() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::MsgSeqNumTooLow)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
     );
     assert!(engine.should_disconnect());
     let logout = take_admin(&mut engine);
@@ -849,8 +843,8 @@ fn on_logon_comp_id_mismatch_rejects_increments_and_disconnects() {
     let result = accept_input(&mut engine, msg, &mut storage);
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidCompId)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidCompId))
     );
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
@@ -943,8 +937,10 @@ async fn refused_logons_can_preserve_incoming_sequence_and_history() {
                         InputResult::Handled
                     );
                     assert_eq!(
-                        engine.disconnect_reason(),
-                        Some(DisconnectReason::ApplicationForcedDisconnect)
+                        engine.session_end().map(|end| end.context),
+                        Some(EndContext::Closing(
+                            SessionEndReason::ApplicationForcedDisconnect
+                        ))
                     );
                     assert!(!engine.is_logged_on());
                     if send_logout {
@@ -1028,8 +1024,10 @@ fn logon_refusal_consumes_only_the_expected_incoming_sequence_by_default() {
                     }
                 );
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::ApplicationForcedDisconnect)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(
+                        SessionEndReason::ApplicationForcedDisconnect
+                    ))
                 );
                 assert!(!engine.is_logged_on());
             }
@@ -1076,8 +1074,8 @@ fn nonterminal_logon_refusals_consume_sequence_regardless_of_policy() {
                 accept_input(&mut engine, test_helpers::logout(2), &mut storage);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 3);
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::LocalRequestedLogout)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::LocalLogout)
                 );
             }
             assert!(engine.take_admin_output().is_none());
@@ -1133,8 +1131,8 @@ async fn on_logon_invalid_heart_bt_int_preserves_history_and_consumes_sequence()
         Ok(InputResult::Handled)
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Reject);
     assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
@@ -1200,8 +1198,8 @@ fn on_logon_tag_789_too_high_logs_out_and_disconnects() {
         Ok(InputResult::Handled)
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
 
@@ -1239,8 +1237,8 @@ fn on_logon_tag_789_zero_logs_out_and_disconnects() {
         Ok(InputResult::Handled)
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
 

@@ -17,22 +17,27 @@ use easyfix_test_messages::{Body, Message};
 use tokio::{
     io,
     io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::mpsc::error::TryRecvError,
+    sync::mpsc::{self, error::TryRecvError},
     task,
     task::LocalSet,
     time,
 };
 
 use super::{
-    harness::{TestEvent, build_harness, build_harness_with_settings},
+    harness::{FaultReader, TestEvent, build_harness, build_harness_with_settings},
+    reset_peer::running_reset_transport,
     reset_transport::gated_reset_peer,
     wire::{build_peer_logon, logon_handshake, read_lone_message},
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, IoOperation, SessionEndReason, Termination, TimeoutKind},
+    initiator::SessionStart,
     io::{ControlMsg, InputStream, SessionOpening, session_loop},
     test_helpers,
-    test_helpers::{DEFAULT_MAX_MESSAGE_SIZE, as_admin, read_one_message},
+    test_helpers::{
+        DEFAULT_MAX_MESSAGE_SIZE, SessionEndSnapshot, TerminationSnapshot, as_admin,
+        read_one_message,
+    },
 };
 
 #[tokio::test(start_paused = true)]
@@ -82,7 +87,7 @@ async fn refused_encrypt_method_flushes_output_before_disconnect() {
                     assert!(session_end.replace(reason).is_none());
                 }
             }
-            assert_eq!(session_end, Some(DisconnectReason::InvalidLogonState));
+            assert_eq!(session_end, Some(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
         }
     }).await;
 }
@@ -147,6 +152,134 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for FailAfterPrefix<W> {
     }
 }
 
+#[tokio::test]
+async fn first_logon_write_failure_retains_logon_context_and_original_error() {
+    LocalSet::new()
+        .run_until(async {
+            for initiator in [false, true] {
+                let mut harness = build_harness();
+                harness.handler.inspect_end = Some(|end| {
+                    let Termination::IoError { operation, error } = &end.termination else {
+                        panic!("expected original write error: {end:?}");
+                    };
+                    assert_eq!(*operation, IoOperation::Write);
+                    assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+                    assert_eq!(error.to_string(), "injected failure");
+                });
+                let (server, mut peer) = io::duplex(8192);
+                let (reader, writer) = io::split(server);
+                let writer = FailAfterPrefix {
+                    inner: writer,
+                    armed: Rc::new(Cell::new(true)),
+                    stall_for: None,
+                    failure: None,
+                };
+                let mut events = harness.events_rx;
+                let task = task::spawn_local(async move {
+                    let mut storage = harness.storage;
+                    session_loop(
+                        if initiator {
+                            SessionOpening::SendLogon(SessionStart::Resume)
+                        } else {
+                            SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30)))
+                        },
+                        InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
+                        writer,
+                        harness.engine,
+                        &mut storage,
+                        harness.handler,
+                        harness.sender,
+                        harness.app_rx,
+                        harness.control_rx,
+                    )
+                    .await;
+                });
+                if !initiator {
+                    assert_matches!(
+                        events.recv().await.unwrap(),
+                        TestEvent::AdminMsgIn(MsgTypeBase::Logon)
+                    );
+                }
+                assert_matches!(
+                    events.recv().await.unwrap(),
+                    TestEvent::SessionEnd(SessionEndSnapshot {
+                        context: EndContext::Logon,
+                        termination: TerminationSnapshot::IoError {
+                            operation: IoOperation::Write,
+                            kind: ErrorKind::BrokenPipe
+                        },
+                        reset_unconfirmed: false,
+                    })
+                );
+                task.await.unwrap();
+                let mut bytes = Vec::new();
+                peer.read_to_end(&mut bytes).await.unwrap();
+                assert_eq!(bytes.len(), 1);
+                assert_matches!(events.try_recv(), Err(TryRecvError::Disconnected));
+            }
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn local_logout_retains_context_when_peer_closes_or_read_fails() {
+    LocalSet::new().run_until(async {
+        for fail_read in [false, true] {
+            let harness = build_harness();
+            let (server, wire) = io::duplex(8192);
+            let (reader, writer) = io::split(server);
+            let (fault, error) = mpsc::unbounded_channel();
+            let mut peer = running_reset_transport(harness, wire, FaultReader { inner: reader, error }, writer).await;
+            peer.control.send(ControlMsg::Logout { session_status: None, text: None, disconnect: false }).await.unwrap();
+            assert_matches!(peer.read().await.try_as_admin(), Some(AdminBase::Logout(_)));
+            if fail_read { fault.send(ErrorKind::ConnectionReset).unwrap(); }
+            else { peer.wire.shutdown().await.unwrap(); }
+            let expected = SessionEndSnapshot::ended(EndContext::LocalLogout, if fail_read {
+                TerminationSnapshot::IoError { operation: IoOperation::Read, kind: ErrorKind::ConnectionReset }
+            } else { TerminationSnapshot::PeerClose });
+            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(end) if end == expected);
+            peer.task.await.unwrap();
+        }
+    }).await;
+}
+
+#[tokio::test]
+async fn local_logout_write_failure_retains_context() {
+    LocalSet::new()
+        .run_until(async {
+            let (mut peer, mut gate) =
+                gated_reset_peer(test_helpers::default_session_settings()).await;
+            gate.armed.set(true);
+            peer.control
+                .send(ControlMsg::Logout {
+                    session_status: None,
+                    text: None,
+                    disconnect: false,
+                })
+                .await
+                .unwrap();
+            let pending = gate.entered.recv().await.unwrap();
+            assert_matches!(
+                Message::from_bytes(&pending).unwrap().try_as_admin(),
+                Some(AdminBase::Logout(_))
+            );
+            gate.release.send(Err(ErrorKind::BrokenPipe)).unwrap();
+            assert_matches!(
+                peer.events.recv().await.unwrap(),
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::IoError {
+                        operation: IoOperation::Write,
+                        kind: ErrorKind::BrokenPipe
+                    },
+                    reset_unconfirmed: false,
+                })
+            );
+            peer.task.await.unwrap();
+        })
+        .await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn terminating_write_failure_stops_output_and_skips_peer_close_wait() {
     LocalSet::new()
@@ -190,11 +323,21 @@ async fn terminating_write_failure_stops_output_and_skips_peer_close_wait() {
                             TestEvent::AdminMsgIn(MsgTypeBase::Logout)
                         );
                     }
-                    let expected_reason = if app_logout {
-                        DisconnectReason::ApplicationForcedDisconnect
-                    } else {
-                        DisconnectReason::IoError
-                    };
+                    let expected_reason = SessionEndSnapshot::ended(
+                        if app_logout {
+                            EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect)
+                        } else {
+                            EndContext::RemoteLogout
+                        },
+                        TerminationSnapshot::IoError {
+                            operation: IoOperation::Write,
+                            kind: if write_timeout {
+                                ErrorKind::TimedOut
+                            } else {
+                                ErrorKind::BrokenPipe
+                            },
+                        },
+                    );
                     assert_matches!(
                         events.recv().await.unwrap(),
                         TestEvent::SessionEnd(reason) if reason == expected_reason
@@ -254,7 +397,11 @@ async fn acceptor_logon_handshake() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -304,7 +451,11 @@ async fn initiator_logon_handshake() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -316,7 +467,7 @@ async fn initiator_logon_handshake() {
 
 /// A peer's Logout is acknowledged, and then the connection is the
 /// peer's to close: the session stays up until the peer's EOF and ends
-/// with `RemoteRequestedLogout` only then (FIX Session Layer Section 4.6,
+/// with `RemoteLogout` and `PeerClose` only then (FIX Session Layer Section 4.6,
 /// Figure 9; Test Cases Scenario 13(b)). Whatever the peer sends in the
 /// meantime is not read as FIX - the exchange is complete.
 #[tokio::test]
@@ -368,7 +519,11 @@ async fn peer_logout_closes_session_gracefully() {
             client_io.shutdown().await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::RemoteRequestedLogout)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -416,7 +571,11 @@ async fn peer_logout_without_close_ends_with_the_remote_logout_timeout() {
             // to the only armed timer, the close deadline.
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::RemoteRequestedLogoutTimeout)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::Timeout(TimeoutKind::PeerClose),
+                    reset_unconfirmed: false
+                })
             );
             assert_eq!(acknowledged_at.elapsed(), budget);
             session_task.await.unwrap();
@@ -483,7 +642,11 @@ async fn app_message_staged_before_logout_reaches_peer_first() {
             assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -495,7 +658,7 @@ async fn app_message_staged_before_logout_reaches_peer_first() {
 
 /// Scenario 12 starts the reply budget after Logout is sent, even when its
 /// write takes longer than that budget. No reply ends the session at the
-/// deadline with `LocalRequestedLogoutTimeout` (Session Layer Section 4.6.2).
+/// deadline with a `LogoutResponse` timeout (Session Layer Section 4.6.2).
 #[tokio::test(start_paused = true)]
 async fn logout_without_response_ends_with_logout_timeout() {
     let local = LocalSet::new();
@@ -536,7 +699,13 @@ async fn logout_without_response_ends_with_logout_timeout() {
 
             assert_matches!(
                 peer.events.recv().await.expect("session end"),
-                TestEvent::SessionEnd(DisconnectReason::LocalRequestedLogoutTimeout)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::Timeout(
+                        TimeoutKind::LogoutResponse
+                    )),
+                    termination: TerminationSnapshot::Timeout(TimeoutKind::LogoutResponse),
+                    reset_unconfirmed: false
+                })
             );
 
             peer.task.await.expect("session task completes");
@@ -595,7 +764,14 @@ async fn acceptor_gives_up_when_the_rejected_handshake_stalls() {
                 .await
                 .expect("session task parked with no deadline armed")
                 .unwrap();
-            assert_matches!(end, TestEvent::SessionEnd(DisconnectReason::LogonTimeout));
+            assert_matches!(
+                end,
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
+                    termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
+                    reset_unconfirmed: false
+                })
+            );
 
             session_task.await.unwrap();
         })
@@ -633,7 +809,11 @@ async fn refused_first_logon_ends_without_session_ready() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::InvalidLogonState)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
         })

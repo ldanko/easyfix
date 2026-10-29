@@ -33,7 +33,7 @@ use tokio::{
 };
 
 use crate::{
-    application::{DisconnectReason, InputAction, SessionContext, SessionHandler},
+    application::{InputAction, SessionContext, SessionEnd, SessionHandler},
     engine::{InputResult, SessionEngine},
     io::{sender::Sender, time::TimerBackend},
     messages_storage::{InMemoryStorage, MessagesStorage, StoreError},
@@ -47,8 +47,8 @@ use crate::{
 mod fixtures;
 pub(crate) use fixtures::{
     DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_MAX_MESSAGE_SIZE_BYTES, ObservedStorage, RecordingObserver,
-    TEST_PEER_ADDR, build_session_settings, new_order_single_with_empty_header, read_one_message,
-    serialize_message,
+    SessionEndSnapshot, TEST_PEER_ADDR, TerminationSnapshot, build_session_settings,
+    new_order_single_with_empty_header, read_one_message, serialize_message,
 };
 
 // ---------------------------------------------------------------------------
@@ -705,7 +705,7 @@ pub(crate) fn as_admin(msg: &Message) -> AdminBase<'_> {
 /// Drive an inbound message through the standard "validate -> callback ->
 /// accept" flow used by the IO loop, including validation refusal reactions.
 /// The caller inspects the returned `InputResult` and a session-ending
-/// verdict through `engine.disconnect_reason()`.
+/// verdict through `engine.session_end()`.
 pub(crate) fn accept_input(
     engine: &mut SessionEngine<Message>,
     msg: Box<Message>,
@@ -778,7 +778,7 @@ impl<M: SessionMessage> SessionHandler<M> for StubHandler {
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<M>) {}
 
-    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {}
+    async fn on_session_end(&mut self, _: &SessionId, _: SessionEnd) {}
 
     async fn on_app_msg_in(&mut self, _: Box<M>) -> InputAction {
         InputAction::Accept
@@ -804,7 +804,7 @@ impl SessionHandler<Message> for GatedSessionEnd {
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {}
 
-    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {
+    async fn on_session_end(&mut self, _: &SessionId, _: SessionEnd) {
         self.entered.notify_one();
         self.release.notified().await;
     }
@@ -823,7 +823,7 @@ impl SessionHandler<Message> for PanicHandler {
 
     async fn on_session_ready(&mut self, _: &SessionId, _: Sender<Message>) {}
 
-    async fn on_session_end(&mut self, _: &SessionId, _: DisconnectReason) {}
+    async fn on_session_end(&mut self, _: &SessionId, _: SessionEnd) {}
 
     async fn on_app_msg_in(&mut self, _: Box<Message>) -> InputAction {
         InputAction::Accept

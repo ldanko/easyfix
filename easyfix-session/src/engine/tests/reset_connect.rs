@@ -12,7 +12,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{EndContext, InputAction, SessionEndReason},
     engine::{InputResult, LogonState, supports_seq_num_reset},
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -51,8 +51,8 @@ fn failed_initial_reset_preserves_engine_state_and_emits_no_logon() {
         assert!(!engine.has_admin_output());
         assert!(engine.has_fatal_error());
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(DisconnectReason::StorageError)
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::StorageError))
         );
     }
 }
@@ -214,10 +214,14 @@ fn reset_ack_tag_789_uses_the_current_sender_counter_when_enabled() {
             );
             let refused = enabled && next_expected.is_some_and(|seq| seq > 2);
             assert_eq!(
-                engine.disconnect_reason(),
-                refused.then_some(DisconnectReason::SeqNumResetFailed)
+                engine.session_end().map(|end| end.context),
+                refused.then_some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
             assert_eq!(engine.state.local_reset_unconfirmed, refused);
+            assert_eq!(
+                engine.session_end().map(|end| end.reset_unconfirmed),
+                refused.then_some(true)
+            );
             assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
             assert_eq!(
                 storage.next_target_msg_seq_num().get(),

@@ -1,4 +1,4 @@
-use std::{assert_matches, str, time::Duration};
+use std::{assert_matches, io::ErrorKind, str, time::Duration};
 
 use chrono::Utc;
 use easyfix_core::{
@@ -23,10 +23,12 @@ use super::{
     },
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, IoOperation, SessionEndReason},
     io::{ControlMsg, InputStream, SessionOpening, session_loop},
     test_helpers,
-    test_helpers::{DEFAULT_MAX_MESSAGE_SIZE, read_one_message},
+    test_helpers::{
+        DEFAULT_MAX_MESSAGE_SIZE, SessionEndSnapshot, TerminationSnapshot, read_one_message,
+    },
 };
 
 /// Rewrite the `BodyLength(9)` of a framed message by `delta`, leaving
@@ -112,7 +114,11 @@ async fn invalid_recovery_messages_do_not_reach_admin_callback() {
                 session_task.await.unwrap();
                 assert_matches!(
                     events_rx.recv().await.unwrap(),
-                    TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect),
+                    TestEvent::SessionEnd(SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }),
                     "{name}"
                 );
                 assert_matches!(
@@ -173,8 +179,7 @@ async fn reject_without_text_reaches_peer_as_a_reject() {
 
 /// A well-framed message without `MsgSeqNum(34)` is answered with
 /// `Logout<5>` and the session ends with the dedicated
-/// `MsgSeqNumNotFound` reason (FIX Session Layer Section 4.5.3) - not with the
-/// catch-all `Disconnected`.
+/// `MsgSeqNumNotFound` reason and local closure (FIX Session Layer Section 4.5.3).
 #[tokio::test]
 async fn missing_msg_seq_num_ends_with_dedicated_reason() {
     let local = LocalSet::new();
@@ -200,7 +205,11 @@ async fn missing_msg_seq_num_ends_with_dedicated_reason() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::MsgSeqNumNotFound)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::MsgSeqNumNotFound),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -245,7 +254,14 @@ async fn input_io_error_ends_with_io_error() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::IoError)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Established,
+                    termination: TerminationSnapshot::IoError {
+                        operation: IoOperation::Read,
+                        kind: ErrorKind::ConnectionReset
+                    },
+                    reset_unconfirmed: false
+                })
             );
 
             session_task.await.unwrap();
@@ -296,7 +312,11 @@ async fn oversized_inbound_message_logs_out_before_it_is_read() {
             );
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::MessageTooLarge)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::MessageTooLarge),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
         })
@@ -370,7 +390,11 @@ async fn reject_flood_does_not_kill_the_session() {
             control_tx.send(ControlMsg::Disconnect).await.unwrap();
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
         })
@@ -471,7 +495,11 @@ async fn garbled_frames_are_skipped_without_consuming_a_sequence_number() {
                 control_tx.send(ControlMsg::Disconnect).await.unwrap();
                 assert_matches!(
                     events_rx.recv().await.unwrap(),
-                    TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect),
+                    TestEvent::SessionEnd(SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }),
                     "{shape}"
                 );
                 session_task.await.unwrap();
@@ -483,8 +511,7 @@ async fn garbled_frames_are_skipped_without_consuming_a_sequence_number() {
 /// The peer's transport dies in the middle of a frame - here inside the
 /// `CheckSum(10)` field, the last bytes of a message. A cut-off frame is
 /// never a message, so nothing is answered, and the EOF behind it ends
-/// the session as a plain `Disconnected` - not `IoError`, the read
-/// succeeded and the peer is simply gone - with no farewell of our own: a
+/// the session with `PeerClose`, since the read succeeded, with no farewell: a
 /// Logout to a closed socket would only consume a `MsgSeqNum`.
 #[tokio::test]
 async fn peer_closing_mid_frame_ends_the_session_as_disconnected() {
@@ -509,7 +536,11 @@ async fn peer_closing_mid_frame_ends_the_session_as_disconnected() {
 
             assert_matches!(
                 events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(DisconnectReason::Disconnected)
+                TestEvent::SessionEnd(SessionEndSnapshot {
+                    context: EndContext::Established,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                })
             );
             session_task.await.unwrap();
 

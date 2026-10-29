@@ -8,7 +8,7 @@ use easyfix_core::{
 
 use super::support::assert_msg_type;
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::InputResult,
     messages_storage::MessagesStorage,
     test_helpers,
@@ -223,8 +223,8 @@ fn on_logon_second_logon_without_reset_flag_fails_state_before_sequence() {
         InputResult::Handled
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.take_admin_output().is_none(), "silent disconnect");
     assert_eq!(storage.next_target_msg_seq_num().get(), 40);
@@ -254,8 +254,8 @@ fn on_logon_peer_reset_keeps_tag_789_checkable() {
         InputResult::Handled
     );
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
 }

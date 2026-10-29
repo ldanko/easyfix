@@ -12,11 +12,11 @@ use super::{
     reset_peer::running_reset_harness,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{EndContext, InputAction, SessionEndReason, TimeoutKind},
     io::ControlMsg,
     messages_storage::MessagesStorage,
     test_helpers,
-    test_helpers::nz_seq,
+    test_helpers::{SessionEndSnapshot, TerminationSnapshot, nz_seq},
 };
 
 #[tokio::test(start_paused = true)]
@@ -50,23 +50,23 @@ async fn confirmed_ack_callback_finishes_before_its_expired_budget_is_considered
             let reason = match decision {
                 0 => {
                     task::yield_now().await; peer.assert_silent(); assert!(!peer.task.is_finished());
-                    peer.control.send(ControlMsg::Disconnect).await.unwrap(); DisconnectReason::ApplicationForcedDisconnect
+                    peer.control.send(ControlMsg::Disconnect).await.unwrap(); SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
                 }
-                1 => DisconnectReason::ApplicationForcedDisconnect,
+                1 => SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false },
                 2 | 3 => {
                     let logout = peer.read().await; assert_eq!(logout.msg_seq_num(), 2); assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(_))); sender = 3;
                     if decision == 3 {
                         assert!(!peer.task.is_finished()); peer.assert_silent();
                         peer.send(&test_helpers::logout(2)).await;
-                        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logout)); target = 3; DisconnectReason::LocalRequestedLogout
-                    } else { DisconnectReason::ApplicationForcedDisconnect }
+                        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logout)); target = 3; SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
+                    } else { SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false } }
                 }
                 _ => {
                     let reject = peer.read().await; assert_eq!(reject.msg_seq_num(), 2);
                     assert_matches!(reject.try_as_admin(), Some(AdminBase::Reject(r)) if r.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
                     let logout = peer.read().await; assert_eq!(logout.msg_seq_num(), 3);
                     assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Reset Logon acknowledgement rejected by application")));
-                    sender = 4; DisconnectReason::ApplicationForcedDisconnect
+                    sender = 4; SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
                 }
             };
             assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(actual) if actual == reason);
@@ -113,7 +113,7 @@ async fn reset_probe_callback_finishes_before_the_new_ack_budget_is_checked() {
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
             } else {
                 time::advance(Duration::from_secs(9)).await;
                 task::yield_now().await;
@@ -124,7 +124,7 @@ async fn reset_probe_callback_finishes_before_the_new_ack_budget_is_checked() {
                 assert_eq!(sent_at.elapsed(), Duration::from_secs(10));
                 assert_eq!(logout.msg_seq_num(), 2);
                 assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::SeqNumResetFailed));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)), termination: TerminationSnapshot::Timeout(TimeoutKind::Logon), reset_unconfirmed: true }));
             }
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), if acknowledge { 2 } else { 3 });
@@ -184,7 +184,7 @@ async fn reset_probe_callback_outcomes_precede_the_expired_preparation_budget() 
                 peer.send(&test_helpers::logout(3)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logout));
             }
-            let expected = match outcome { 0 | 1 => DisconnectReason::ApplicationForcedDisconnect, 2 => DisconnectReason::LocalRequestedLogout, _ => DisconnectReason::ResetPreparationTimeout };
+            let expected = match outcome { 0 | 1 => SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }, 2 => SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }, _ => SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::ResetPreparation)), termination: TerminationSnapshot::Timeout(TimeoutKind::ResetPreparation), reset_unconfirmed: false } };
             assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(reason) if reason == expected);
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), match outcome { 0 => 3, 3 => 5, _ => 4 });

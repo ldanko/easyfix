@@ -20,7 +20,7 @@ use thiserror::Error;
 use tracing::{error, info, warn};
 
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEnd, SessionEndReason, Termination, TimeoutKind},
     io::{ControlMsg, time::TimerBackend},
     messages_storage::MessagesStorage,
     session_id::SessionId,
@@ -54,7 +54,7 @@ enum HandlerResult {
     /// for the gap.
     Enqueue,
     /// End the session by latching the reason via [`SessionEngine::begin_disconnect`].
-    Disconnect(DisconnectReason),
+    Disconnect(SessionEndReason),
 }
 
 /// Output entry produced by engine methods.
@@ -175,6 +175,9 @@ struct SessionState<M> {
     /// Logon-protocol lifecycle position. See [`LogonState`] for the
     /// per-variant semantics.
     logon_state: LogonState,
+    /// The opening output was delivered. An acceptor enters Established
+    /// before flushing its acknowledgement, which can still fail as Logon.
+    opening_complete: bool,
     /// A locally initiated reset has not yet been confirmed by the peer.
     /// Cleared only by validation of a fresh, correctly formed reset ACK.
     local_reset_unconfirmed: bool,
@@ -189,9 +192,9 @@ struct SessionState<M> {
     /// the TCP socket isn't actually closed until the loop breaks and the
     /// writer is dropped. First writer wins - see
     /// [`SessionEngine::begin_disconnect`].
-    disconnect: Option<DisconnectReason>,
-    // The public reason may already name an earlier cause or an unconfirmed
-    // reset. This latch independently forbids further storage work and output.
+    disconnect: Option<SessionEnd>,
+    // An earlier cause may already be recorded. This latch independently
+    // forbids further storage work and output.
     fatal_error: bool,
     /// TestReqIDs of outstanding grace period TestRequests.
     grace_period_test_req_ids: HashSet<FixString>,
@@ -233,6 +236,7 @@ impl<M> SessionState<M> {
     fn new(started_at: Instant) -> Self {
         SessionState {
             logon_state: LogonState::Idle,
+            opening_complete: false,
             local_reset_unconfirmed: false,
             reset_probe_id: None,
             reset_barrier_ids: HashSet::new(),
@@ -366,7 +370,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
         let Some(count) = self.state.reset_probe_count.checked_add(1) else {
             error!("reset probe identifiers exhausted");
-            self.begin_disconnect(DisconnectReason::InvalidLogonState);
+            self.begin_disconnect(SessionEndReason::InvalidLogonState);
             return;
         };
         self.state.reset_probe_count = count;
@@ -384,8 +388,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
     }
 
-    /// Whether the session has decided to end the connection; the reason is
-    /// in [`Self::disconnect_reason`].
+    /// Whether the session has recorded an ending decision or transport loss.
     pub(crate) fn should_disconnect(&self) -> bool {
         self.state.disconnect.is_some()
     }
@@ -398,38 +401,72 @@ impl<M: SessionMessage> SessionEngine<M> {
         self.should_disconnect() || self.awaiting_peer_close().is_some()
     }
 
-    /// Why the session is ending - `None` while it is not.
-    pub(crate) fn disconnect_reason(&self) -> Option<DisconnectReason> {
-        self.state.disconnect
+    /// The recorded session ending, if one has been decided.
+    #[cfg(test)]
+    pub(crate) fn session_end(&self) -> Option<&SessionEnd> {
+        self.state.disconnect.as_ref()
     }
 
-    /// Decide to end the connection, recording why. A reason already recorded
-    /// stands: the first call is what starts the teardown, and later ones
-    /// describe consequences of it. While our local reset is unconfirmed,
-    /// the first reason becomes `SeqNumResetFailed`.
-    //
-    // First writer wins because a later caller is describing a consequence,
-    // not a cause, and saying so would mislead: a grace-period timeout stages
-    // its farewell `Logout<5>` and latches `HeartbeatTimeout`, and if stamping
-    // that Logout happens to consume the last sequence number,
-    // `SeqNumExhausted` would displace the timeout that actually ended the
-    // session. Likewise a write failure while flushing an application's
-    // farewell Logout does not turn `ApplicationForcedDisconnect` into `IoError`.
-    // The caller's specific cause remains in the log when an unconfirmed
-    // local reset normalizes the public reason; callers need the recovery
-    // obligation more than another transport or protocol symptom.
-    pub(crate) fn begin_disconnect(&mut self, reason: DisconnectReason) {
+    fn end_context(&self) -> EndContext {
+        match self.state.logon_state {
+            LogonState::Idle | LogonState::LogonSent => EndContext::Logon,
+            LogonState::Established if self.state.opening_complete => EndContext::Established,
+            LogonState::Established => EndContext::Logon,
+            LogonState::ResetPending | LogonState::ResetProbe => EndContext::ResetPreparation,
+            LogonState::ResetSent => EndContext::Reset,
+            LogonState::LogoutSent { .. } => EndContext::LocalLogout,
+            LogonState::LogoutAcknowledged { .. } => EndContext::RemoteLogout,
+        }
+    }
+
+    fn record_end(&mut self, context: EndContext, termination: Termination) {
         if self.state.disconnect.is_none() {
-            self.state.disconnect = Some(if self.state.local_reset_unconfirmed {
-                error!(
-                    ?reason,
-                    "connection ended before the peer confirmed our sequence number reset"
-                );
-                DisconnectReason::SeqNumResetFailed
-            } else {
-                reason
+            self.state.disconnect = Some(SessionEnd {
+                context,
+                termination,
+                reset_unconfirmed: self.state.local_reset_unconfirmed,
             });
         }
+    }
+
+    /// Decide to close locally. The first decision remains the context even
+    /// if flushing its farewell message later fails.
+    pub(crate) fn begin_disconnect(&mut self, reason: SessionEndReason) {
+        self.record_end(EndContext::Closing(reason), Termination::LocalClose);
+    }
+
+    /// Record a transport outcome without replacing an earlier session cause.
+    pub(crate) fn end_transport(&mut self, termination: Termination) {
+        if let Some(end) = &mut self.state.disconnect {
+            end.termination = termination;
+        } else {
+            self.record_end(self.end_context(), termination);
+        }
+    }
+
+    /// End a protocol wait without replacing an earlier ending decision.
+    pub(crate) fn end_timeout(&mut self, kind: TimeoutKind) {
+        // The peer-close wait follows the completed Logout exchange; no
+        // farewell output remains whose failure could obscure this timeout.
+        let context = match kind {
+            TimeoutKind::PeerClose => EndContext::RemoteLogout,
+            _ => EndContext::Closing(SessionEndReason::Timeout(kind)),
+        };
+        self.record_end(context, Termination::Timeout(kind));
+    }
+
+    /// Consume the report after releasing the transport and finishing sends.
+    pub(crate) fn take_session_end(&mut self) -> SessionEnd {
+        self.state.disconnect.take().unwrap_or_else(|| SessionEnd {
+            context: self.end_context(),
+            termination: Termination::LocalClose,
+            reset_unconfirmed: self.state.local_reset_unconfirmed,
+        })
+    }
+
+    /// Mark the initial output as delivered before announcing readiness.
+    pub(crate) fn mark_opening_complete(&mut self) {
+        self.state.opening_complete = true;
     }
 
     /// Set the engine into a logged-on state. Used by test helpers to
@@ -437,6 +474,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     #[cfg(test)]
     pub(crate) fn set_logged_on(&mut self) {
         self.state.logon_state = LogonState::Established;
+        self.mark_opening_complete();
     }
 
     /// Mutable access to session settings. Used by tests to adjust timeouts.
@@ -466,7 +504,7 @@ impl<M: SessionMessage> SessionEngine<M> {
     ) -> FatalError {
         error!(operation, %error, "Fatal storage or replay failure");
         self.state.fatal_error = true;
-        self.begin_disconnect(DisconnectReason::StorageError);
+        self.begin_disconnect(SessionEndReason::StorageError);
         FatalError
     }
 
@@ -510,11 +548,9 @@ impl<M: SessionMessage> SessionEngine<M> {
 
     /// End a running reset whose current phase exceeded its time budget.
     pub(crate) fn on_reset_timeout(&mut self) {
-        let reason = match self.reset_phase() {
-            Some(ResetPhase::Pending | ResetPhase::Probe) => {
-                DisconnectReason::ResetPreparationTimeout
-            }
-            Some(ResetPhase::Sent) => DisconnectReason::LogonTimeout,
+        let kind = match self.reset_phase() {
+            Some(ResetPhase::Pending | ResetPhase::Probe) => TimeoutKind::ResetPreparation,
+            Some(ResetPhase::Sent) => TimeoutKind::Logon,
             None => return,
         };
         self.push_logout(
@@ -523,7 +559,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 "Sequence number reset not acknowledged"
             ))),
         );
-        self.begin_disconnect(reason);
+        self.end_timeout(kind);
     }
 
     pub(crate) fn on_control(&mut self, msg: ControlMsg) {
@@ -544,7 +580,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             } => {
                 if disconnect {
                     self.push_logout(session_status, text);
-                    self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
+                    self.begin_disconnect(SessionEndReason::ApplicationForcedDisconnect);
                 } else if matches!(
                     self.state.logon_state,
                     LogonState::LogoutSent { .. } | LogonState::LogoutAcknowledged { .. }
@@ -556,7 +592,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 }
             }
             ControlMsg::Disconnect => {
-                self.begin_disconnect(DisconnectReason::ApplicationForcedDisconnect);
+                self.begin_disconnect(SessionEndReason::ApplicationForcedDisconnect);
             }
         }
     }
@@ -623,7 +659,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 ))),
             );
         }
-        self.begin_disconnect(DisconnectReason::SeqNumExhausted);
+        self.begin_disconnect(SessionEndReason::SeqNumExhausted);
     }
 
     /// Stop an unconfirmed reset if a completed input used up the number
@@ -655,6 +691,6 @@ impl<M: SessionMessage> SessionEngine<M> {
                 ))),
             );
         }
-        self.begin_disconnect(DisconnectReason::InvalidLogonState);
+        self.begin_disconnect(SessionEndReason::InvalidLogonState);
     }
 }

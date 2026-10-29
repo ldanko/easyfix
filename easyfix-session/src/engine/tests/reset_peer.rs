@@ -11,7 +11,7 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{EndContext, InputAction, SessionEndReason},
     engine::InputResult,
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -150,7 +150,7 @@ fn on_logon_reset_acceptance_permissions_are_independent() {
             InputResult::Handled
         );
         assert!(engine.is_logged_on());
-        assert!(engine.disconnect_reason().is_none());
+        assert!(engine.session_end().map(|end| end.context).is_none());
         assert_eq!(storage.next_target_msg_seq_num().get(), 2);
         assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logon);
     }
@@ -201,7 +201,7 @@ async fn on_logon_reset_in_session_with_heartbeats_disabled_refuses_nonzero() {
             InputResult::Handled
         );
         if heartbeat == 0 {
-            assert!(engine.disconnect_reason().is_none());
+            assert!(engine.session_end().map(|end| end.context).is_none());
             let ack = take_admin(&mut engine);
             assert_matches!(as_admin(&ack), AdminBase::Logon(logon) if logon.heart_bt_int == 0);
         } else {
@@ -332,8 +332,8 @@ fn on_logon_acceptor_reset_disallowed() {
         .unwrap();
     assert_matches!(result, InputResult::Handled);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert!(engine.should_disconnect());
 

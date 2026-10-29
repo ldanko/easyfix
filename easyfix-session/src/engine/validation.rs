@@ -19,7 +19,7 @@ use super::{
     FatalError, HandlerResult, LogonState, SessionEngine, logout::unexpected_reset_logout_text,
 };
 use crate::{
-    application::{DisconnectReason, ValidationError},
+    application::{SessionEndReason, ValidationError},
     messages_storage::MessagesStorage,
 };
 
@@ -60,11 +60,11 @@ pub(super) enum SequenceAction {
 enum ValidationReaction {
     Reply {
         text: Option<Cow<'static, FixStr>>,
-        disconnect: Option<DisconnectReason>,
+        disconnect: Option<SessionEndReason>,
         sequence: SequenceAction,
         session_status: Option<SessionStatusField>,
     },
-    Disconnect(DisconnectReason),
+    Disconnect(SessionEndReason),
 }
 
 /// Failure of header verification.
@@ -540,24 +540,24 @@ impl<M: SessionMessage> SessionEngine<M> {
         session_status: Option<SessionStatusField>,
     ) -> ValidationFailure {
         let disconnect = match &error {
-            ValidationError::CompIdMismatch { .. } => Some(DisconnectReason::InvalidCompId),
+            ValidationError::CompIdMismatch { .. } => Some(SessionEndReason::InvalidCompId),
             ValidationError::SendingTimeAccuracy { .. } => {
-                Some(DisconnectReason::SendingTimeAccuracyProblem)
+                Some(SessionEndReason::SendingTimeAccuracyProblem)
             }
             ValidationError::OrigSendingTimeAfterSendingTime => {
-                Some(DisconnectReason::InvalidOrigSendingTime)
+                Some(SessionEndReason::InvalidOrigSendingTime)
             }
             // Rejecting the reset ACK number cannot leave it waiting for reuse.
             ValidationError::MissingOrigSendingTime => self
                 .state
                 .local_reset_unconfirmed
-                .then_some(DisconnectReason::InvalidLogonState),
+                .then_some(SessionEndReason::InvalidLogonState),
             ValidationError::InvalidNewSeqNo { .. } | ValidationError::InvalidResendRange => None,
-            ValidationError::MsgSeqNumTooLow { .. } => Some(DisconnectReason::MsgSeqNumTooLow),
+            ValidationError::MsgSeqNumTooLow { .. } => Some(SessionEndReason::MsgSeqNumTooLow),
             ValidationError::UnexpectedMessage => {
                 return ValidationFailure {
                     error,
-                    reaction: ValidationReaction::Disconnect(DisconnectReason::InvalidLogonState),
+                    reaction: ValidationReaction::Disconnect(SessionEndReason::InvalidLogonState),
                 };
             }
             ValidationError::UnexpectedMessageDuringReset
@@ -571,7 +571,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             | ValidationError::InvalidHeartBtInt
             | ValidationError::HeartBtIntMismatch { .. }
             | ValidationError::InvalidNextExpectedMsgSeqNum { .. } => {
-                Some(DisconnectReason::InvalidLogonState)
+                Some(SessionEndReason::InvalidLogonState)
             }
         };
         ValidationFailure {

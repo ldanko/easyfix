@@ -1,4 +1,4 @@
-use std::{assert_matches, num::NonZeroU64};
+use std::{assert_matches, io, num::NonZeroU64};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -15,7 +15,9 @@ use super::{
     support::assert_msg_type,
 };
 use crate::{
-    application::{DisconnectReason, InputAction},
+    application::{
+        EndContext, InputAction, IoOperation, SessionEndReason, Termination, TimeoutKind,
+    },
     engine::{InputResult, LogonState},
     io::ControlMsg,
     messages_storage::MessagesStorage,
@@ -75,8 +77,8 @@ fn running_reset_ack_uses_the_effective_heartbeat_and_current_sender_counter() {
                 );
             } else {
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::InvalidLogonState)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
                 assert_eq!(engine.state.logon_state, before);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 1);
@@ -99,10 +101,14 @@ fn running_reset_ack_uses_the_effective_heartbeat_and_current_sender_counter() {
                 accept_input(&mut engine, reset_ack(1, Some(true), offered), &mut storage);
                 let refused = enabled && offered.is_some_and(|n| n > sender);
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    refused.then_some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    refused.then_some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
                 assert_eq!(engine.state.local_reset_unconfirmed, refused);
+                assert_eq!(
+                    engine.session_end().map(|end| end.reset_unconfirmed),
+                    refused.then_some(true)
+                );
                 assert_eq!(
                     storage.next_target_msg_seq_num().get(),
                     if refused { 1 } else { 2 }
@@ -158,8 +164,10 @@ async fn rejected_reset_ack_disconnects_after_reject_and_logout() {
             assert!(!engine.state.local_reset_unconfirmed);
             assert!(engine.should_disconnect());
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::ApplicationForcedDisconnect)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(
+                    SessionEndReason::ApplicationForcedDisconnect
+                ))
             );
             assert_eq!(storage.next_target_msg_seq_num().get(), 2);
             let reject = commit_reset_admin(&mut engine, &mut storage);
@@ -193,27 +201,31 @@ fn reset_timeout_outside_a_reset_has_no_effect() {
 }
 
 #[test]
-fn begin_disconnect_normalises_to_seq_num_reset_failed_while_a_local_reset_is_unconfirmed() {
+fn disconnect_preserves_the_cause_and_records_unconfirmed_reset_separately() {
     for reason in [
-        DisconnectReason::IoError,
-        DisconnectReason::Disconnected,
-        DisconnectReason::LocalRequestedLogout,
-        DisconnectReason::ApplicationForcedDisconnect,
-        DisconnectReason::InvalidLogonState,
+        SessionEndReason::ApplicationForcedDisconnect,
+        SessionEndReason::InvalidLogonState,
     ] {
         for unconfirmed in [false, true] {
             let (mut engine, _) = reset_waiting_engine(false);
             engine.state.local_reset_unconfirmed = unconfirmed;
             engine.begin_disconnect(reason);
-            let expected = if unconfirmed {
-                DisconnectReason::SeqNumResetFailed
-            } else {
-                reason
-            };
-            assert_eq!(engine.disconnect_reason(), Some(expected));
+            let expected = EndContext::Closing(reason);
+            assert_eq!(engine.session_end().map(|end| end.context), Some(expected));
+            assert_eq!(engine.session_end().unwrap().reset_unconfirmed, unconfirmed);
             engine.state.local_reset_unconfirmed = !unconfirmed;
-            engine.begin_disconnect(DisconnectReason::Disconnected);
-            assert_eq!(engine.disconnect_reason(), Some(expected));
+            engine.begin_disconnect(SessionEndReason::StorageError);
+            assert_eq!(engine.session_end().map(|end| end.context), Some(expected));
+            assert_eq!(engine.session_end().unwrap().reset_unconfirmed, unconfirmed);
+            engine.end_transport(Termination::IoError {
+                operation: IoOperation::Write,
+                error: io::Error::new(io::ErrorKind::BrokenPipe, "farewell failed"),
+            });
+            let end = engine.session_end().unwrap();
+            assert_eq!(end.context, expected);
+            assert_eq!(end.reset_unconfirmed, unconfirmed);
+            assert_matches!(&end.termination, Termination::IoError { operation: IoOperation::Write, error }
+                if error.kind() == io::ErrorKind::BrokenPipe && error.to_string() == "farewell failed");
         }
     }
 }
@@ -229,14 +241,18 @@ fn reset_waiting_timeouts_report_whether_the_reset_was_confirmed() {
             } else {
                 engine.on_logon_timeout();
             }
-            let expected = if unconfirmed {
-                DisconnectReason::SeqNumResetFailed
-            } else if logout_sent {
-                DisconnectReason::LocalRequestedLogoutTimeout
+            let expected = if logout_sent {
+                TimeoutKind::LogoutResponse
             } else {
-                DisconnectReason::LogonTimeout
+                TimeoutKind::Logon
             };
-            assert_eq!(engine.disconnect_reason(), Some(expected));
+            let end = engine.session_end().unwrap();
+            assert_eq!(
+                end.context,
+                EndContext::Closing(SessionEndReason::Timeout(expected))
+            );
+            assert_eq!(end.reset_unconfirmed, unconfirmed);
+            assert_matches!(end.termination, Termination::Timeout(kind) if kind == expected);
             assert!(!engine.has_admin_output());
         }
     }
@@ -245,9 +261,16 @@ fn reset_waiting_timeouts_report_whether_the_reset_was_confirmed() {
     assert!(!engine.state.local_reset_unconfirmed);
     engine.on_logout_timeout();
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::LocalRequestedLogoutTimeout)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::Timeout(
+            TimeoutKind::LogoutResponse
+        )))
     );
+    assert_matches!(
+        engine.session_end().unwrap().termination,
+        Termination::Timeout(TimeoutKind::LogoutResponse)
+    );
+    assert!(!engine.session_end().unwrap().reset_unconfirmed);
     assert!(!engine.has_admin_output());
     for confirmed in [false, true] {
         let (mut engine, mut storage) = reset_waiting_engine_with_origin(true, true);
@@ -258,19 +281,79 @@ fn reset_waiting_timeouts_report_whether_the_reset_was_confirmed() {
         }
         engine.on_logout_timeout();
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(if confirmed {
-                DisconnectReason::LocalRequestedLogoutTimeout
-            } else {
-                DisconnectReason::SeqNumResetFailed
-            })
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::Timeout(
+                TimeoutKind::LogoutResponse
+            )))
         );
+        assert_matches!(
+            engine.session_end().unwrap().termination,
+            Termination::Timeout(TimeoutKind::LogoutResponse)
+        );
+        assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
         assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
         assert_eq!(
             storage.next_target_msg_seq_num().get(),
             if confirmed { 2 } else { 1 }
         );
         assert!(!engine.has_admin_output());
+    }
+}
+
+#[test]
+fn transport_failure_keeps_the_session_phase_and_reset_recovery_state() {
+    for (state, context) in [
+        (LogonState::Idle, EndContext::Logon),
+        (LogonState::LogonSent, EndContext::Logon),
+        (LogonState::Established, EndContext::Established),
+        (LogonState::ResetPending, EndContext::ResetPreparation),
+        (LogonState::ResetProbe, EndContext::ResetPreparation),
+        (LogonState::ResetSent, EndContext::Reset),
+        (
+            LogonState::LogoutSent { sent_at: None },
+            EndContext::LocalLogout,
+        ),
+    ] {
+        for unconfirmed in [false, true] {
+            let (mut engine, _) = EngineBuilder::new().build();
+            engine.state.logon_state = state;
+            if !matches!(state, LogonState::Idle | LogonState::LogonSent) {
+                engine.mark_opening_complete();
+            }
+            engine.state.local_reset_unconfirmed = unconfirmed;
+            engine.end_transport(Termination::IoError {
+                operation: IoOperation::Read,
+                error: io::Error::new(io::ErrorKind::ConnectionReset, "peer reset"),
+            });
+            let end = engine.session_end().unwrap();
+            assert_eq!(end.context, context);
+            assert_eq!(end.reset_unconfirmed, unconfirmed);
+            assert_matches!(&end.termination, Termination::IoError { operation: IoOperation::Read, error }
+                if error.kind() == io::ErrorKind::ConnectionReset && error.to_string() == "peer reset");
+        }
+    }
+}
+
+#[test]
+fn farewell_write_failure_preserves_the_timeout_that_started_teardown() {
+    for timeout in [
+        TimeoutKind::Logon,
+        TimeoutKind::LogoutResponse,
+        TimeoutKind::ResetPreparation,
+    ] {
+        let (mut engine, _) = EngineBuilder::new().build();
+        engine.end_timeout(timeout);
+        engine.end_transport(Termination::IoError {
+            operation: IoOperation::Write,
+            error: io::Error::new(io::ErrorKind::BrokenPipe, "farewell failed"),
+        });
+        let end = engine.session_end().unwrap();
+        assert_eq!(
+            end.context,
+            EndContext::Closing(SessionEndReason::Timeout(timeout))
+        );
+        assert_matches!(&end.termination, Termination::IoError { operation: IoOperation::Write, error }
+            if error.kind() == io::ErrorKind::BrokenPipe && error.to_string() == "farewell failed");
     }
 }
 
@@ -292,9 +375,14 @@ fn application_cannot_keep_reset_ack_open_after_consuming_its_number() {
                     .unwrap();
                 engine.end_session_if_reset_ack_number_consumed(&storage);
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(if action >= 2 {
+                        SessionEndReason::ApplicationForcedDisconnect
+                    } else {
+                        SessionEndReason::InvalidLogonState
+                    }))
                 );
+                assert!(engine.session_end().unwrap().reset_unconfirmed);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                 assert!(engine.state.local_reset_unconfirmed);
                 let expected: &[MsgTypeBase] = match (logout_sent, action) {
@@ -342,8 +430,9 @@ fn reset_ack_number_guard_preserves_completed_input_outcomes() {
                     )
                     .unwrap();
                 let ended = matches!(action, 0 | 2 | 3);
-                let expected_reason =
-                    ended.then_some(DisconnectReason::ApplicationForcedDisconnect);
+                let expected_reason = ended.then_some(EndContext::Closing(
+                    SessionEndReason::ApplicationForcedDisconnect,
+                ));
                 let expected_replies: &[MsgTypeBase] = match (logout_sent, action) {
                     (false, 0) => &[MsgTypeBase::Reject, MsgTypeBase::Logout],
                     (true, 0) => &[MsgTypeBase::Reject],
@@ -356,7 +445,7 @@ fn reset_ack_number_guard_preserves_completed_input_outcomes() {
                     if after_guard {
                         engine.end_session_if_reset_ack_number_consumed(&storage);
                     }
-                    assert_eq!(engine.disconnect_reason(), expected_reason);
+                    assert_eq!(engine.session_end().map(|end| end.context), expected_reason);
                     assert_eq!(engine.should_disconnect(), ended);
                     assert_eq!(engine.admin_output.len(), expected_replies.len());
                     for (reply, expected_type) in engine.admin_output.iter().zip(expected_replies) {
@@ -401,8 +490,8 @@ fn reset_ack_number_guard_preserves_completed_input_outcomes() {
                     accept_input(&mut engine, test_helpers::logout(2), &mut storage);
                     assert_eq!(storage.next_target_msg_seq_num().get(), 3);
                     assert_eq!(
-                        engine.disconnect_reason(),
-                        Some(DisconnectReason::LocalRequestedLogout)
+                        engine.session_end().map(|end| end.context),
+                        Some(EndContext::LocalLogout)
                     );
                     assert!(!engine.has_admin_output());
                 }
@@ -430,9 +519,14 @@ fn header_rejected_ack_fails_the_reset() {
                     InputResult::Handled
                 );
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(if wrong_comp_id {
+                        SessionEndReason::InvalidCompId
+                    } else {
+                        SessionEndReason::InvalidLogonState
+                    }))
                 );
+                assert!(engine.session_end().unwrap().reset_unconfirmed);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 2);
                 let (expected_reason, expected_text) = if wrong_comp_id {
                     (
@@ -472,7 +566,7 @@ fn garbled_reset_response_leaves_confirmation_and_numbering_unchanged() {
                 .unwrap();
             engine.end_session_if_reset_ack_number_consumed(&storage);
             assert!(engine.state.local_reset_unconfirmed);
-            assert!(engine.disconnect_reason().is_none());
+            assert!(engine.session_end().map(|end| end.context).is_none());
             assert_eq!(storage.next_target_msg_seq_num().get(), 1);
             assert!(!engine.has_admin_output());
             if running {
@@ -486,9 +580,10 @@ fn garbled_reset_response_leaves_confirmation_and_numbering_unchanged() {
                     InputResult::Handled
                 );
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::SeqNumResetFailed)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
+                assert!(engine.session_end().unwrap().reset_unconfirmed);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 1);
                 if !logout_sent {
                     let logout = commit_reset_admin(&mut engine, &mut storage);
@@ -527,15 +622,15 @@ fn reset_ack_during_logout_preserves_the_deadline_and_clears_negotiation() {
                     InputResult::Handled
                 );
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::InvalidLogonState)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
                 );
                 assert_eq!(storage.next_target_msg_seq_num().get(), 2);
             } else {
                 accept_input(&mut engine, test_helpers::logout(2), &mut storage);
                 assert_eq!(
-                    engine.disconnect_reason(),
-                    Some(DisconnectReason::LocalRequestedLogout)
+                    engine.session_end().map(|end| end.context),
+                    Some(EndContext::LocalLogout)
                 );
                 assert_eq!(storage.next_target_msg_seq_num().get(), 3);
             }
@@ -569,9 +664,10 @@ fn non_ack_traffic_during_logout_cannot_consume_the_reset_ack_number() {
                     .unwrap();
             }
             assert_eq!(
-                engine.disconnect_reason(),
-                Some(DisconnectReason::SeqNumResetFailed)
+                engine.session_end().map(|end| end.context),
+                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
             );
+            assert!(engine.session_end().unwrap().reset_unconfirmed);
             assert!(engine.state.local_reset_unconfirmed);
             assert_eq!(storage.next_target_msg_seq_num().get(), 1);
             assert_eq!(storage.next_sender_msg_seq_num().get(), 3);

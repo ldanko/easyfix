@@ -10,7 +10,7 @@ use super::{
     },
 };
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason, Termination, TimeoutKind},
     engine::{LogonState, PendingOutput, ResetPhase},
     io::ControlMsg,
     messages_storage::MessagesStorage,
@@ -186,8 +186,8 @@ async fn running_reset_probe_answer_at_the_ceiling_does_not_reset() {
     assert_eq!(storage.next_target_msg_seq_num().get(), SeqNum::MAX);
     assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
     );
     assert!(!engine.state.local_reset_unconfirmed);
     assert_eq!(
@@ -227,8 +227,8 @@ fn running_reset_logout_holds_sends_until_the_ack_and_keeps_its_deadline() {
     assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
     assert_eq!(storage.next_target_msg_seq_num().get(), 3);
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::LocalRequestedLogout)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::LocalLogout)
     );
     assert!(!engine.has_admin_output());
 }
@@ -255,13 +255,22 @@ async fn running_reset_timeout_distinguishes_preparation_and_confirmation() {
         }
         engine.on_reset_timeout();
         assert_eq!(
-            engine.disconnect_reason(),
-            Some(if phase == ResetPhase::Sent {
-                DisconnectReason::SeqNumResetFailed
-            } else {
-                DisconnectReason::ResetPreparationTimeout
-            })
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(SessionEndReason::Timeout(
+                if phase == ResetPhase::Sent {
+                    TimeoutKind::Logon
+                } else {
+                    TimeoutKind::ResetPreparation
+                }
+            )))
         );
+        let end = engine.session_end().unwrap();
+        assert_eq!(end.reset_unconfirmed, phase == ResetPhase::Sent);
+        assert_matches!(end.termination, Termination::Timeout(kind) if kind == if phase == ResetPhase::Sent {
+            TimeoutKind::Logon
+        } else {
+            TimeoutKind::ResetPreparation
+        });
         assert_eq!(storage.next_sender_msg_seq_num().get(), sender);
         assert_eq!(storage.next_target_msg_seq_num().get(), target);
         assert_eq!(

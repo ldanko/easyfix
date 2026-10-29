@@ -27,7 +27,7 @@ use tokio::{
 use tracing::{Instrument, error, info, info_span, warn};
 
 use crate::{
-    application::{DisconnectReason, InputError, SessionHandler},
+    application::{InputError, IoOperation, SessionEndReason, SessionHandler, Termination},
     engine::{FatalError, InputResult, PendingOutput, SendFailure, SessionEngine},
     initiator::SessionStart,
     io::{
@@ -93,9 +93,12 @@ enum OutputError {
 }
 
 impl OutputError {
-    fn disconnect<M: SessionMessage>(&self, engine: &mut SessionEngine<M>) {
-        if matches!(self, Self::Io(_)) {
-            engine.begin_disconnect(DisconnectReason::IoError);
+    fn disconnect<M: SessionMessage>(self, engine: &mut SessionEngine<M>) {
+        if let Self::Io(error) = self {
+            engine.end_transport(Termination::IoError {
+                operation: IoOperation::Write,
+                error,
+            });
         }
     }
 }
@@ -189,7 +192,7 @@ where
                         if is_logout {
                             // No reply can arrive for an unsent Logout, and
                             // its unarmed ACK timer cannot end the session.
-                            engine.begin_disconnect(DisconnectReason::Disconnected);
+                            engine.end_transport(Termination::SerializeError(failure.error));
                             return Ok(false);
                         }
                     }
@@ -349,19 +352,15 @@ fn finish_staged_sends<M, S, H>(
     }
 }
 
-/// Notify the application of the final disconnect reason.
+/// Deliver the complete session-end report to the application.
 /// Call after finishing staged sends and releasing both transport halves.
-async fn finalize_session<M, H>(engine: &SessionEngine<M>, handler: &mut H)
+async fn finalize_session<M, H>(engine: &mut SessionEngine<M>, handler: &mut H)
 where
     M: SessionMessage,
     H: SessionHandler<M>,
 {
-    let disconnect_reason = engine
-        .disconnect_reason()
-        .unwrap_or(DisconnectReason::Disconnected);
-    handler
-        .on_session_end(engine.session_id(), disconnect_reason)
-        .await;
+    let end = engine.take_session_end();
+    handler.on_session_end(engine.session_id(), end).await;
 }
 
 /// Deliver a validated input result to the application and apply its response.
@@ -617,9 +616,10 @@ pub(crate) async fn session_loop<M, R, W, S, H>(
         finish_staged_sends(&mut engine, storage, &mut handler, &mut app_rx);
         drop(input);
         drop(writer);
-        return finalize_session(&engine, &mut handler).await;
+        return finalize_session(&mut engine, &mut handler).await;
     }
 
+    engine.mark_opening_complete();
     handler.on_session_ready(engine.session_id(), sender).await;
 
     // --- Main loop ---
@@ -650,23 +650,20 @@ pub(crate) async fn session_loop<M, R, W, S, H>(
     finish_staged_sends(&mut engine, storage, &mut handler, &mut app_rx);
     drop(input);
     drop(writer);
-    finalize_session(&engine, &mut handler).await;
+    finalize_session(&mut engine, &mut handler).await;
 }
 
-/// Wait for the peer to close the connection after its Logout was
-/// acknowledged, and name the reason from what ends the wait: the close
-/// itself is `RemoteRequestedLogout`, the deadline the matching timeout, and a
-/// control command whatever the engine makes of it.
+/// Wait for the peer to close after its Logout was acknowledged. Preserve
+/// the Logout context alongside EOF or a read failure, or record the timeout
+/// or control decision that ended the wait.
 ///
 /// Nothing the peer sends in the meantime is read as FIX - the exchange is
 /// complete (FIX Session Layer §4.6), so the bytes are discarded on the way
 /// to the EOF. `NextNumIn` is untouched by construction: a message the peer
 /// should not have sent leaves a gap it recovers on reconnect.
 //
-// A read error is the close by other means: the exchange is what makes this
-// a logout, and a transport fault after our acknowledgement does not turn it
-// into `IoError`. A write failure on the acknowledgement itself latches a
-// disconnect before this wait is entered.
+// A write failure on the acknowledgement records the same Logout context
+// but stops the session before this wait is entered.
 async fn await_peer_close<M, R>(
     input: &mut InputStream<R, M>,
     engine: &mut SessionEngine<M>,
@@ -680,11 +677,17 @@ async fn await_peer_close<M, R>(
     loop {
         tokio::select! {
             closed = input.discard_until_closed() => {
-                match closed {
-                    Ok(()) => info!("peer closed the connection after its logout"),
-                    Err(err) => warn!(%err, "connection failed while awaiting the peer's close"),
-                }
-                engine.begin_disconnect(DisconnectReason::RemoteRequestedLogout);
+                let termination = match closed {
+                    Ok(()) => {
+                        info!("peer closed the connection after its logout");
+                        Termination::PeerClose
+                    }
+                    Err(error) => {
+                        warn!(%error, "connection failed while awaiting the peer's close");
+                        Termination::IoError { operation: IoOperation::Read, error }
+                    }
+                };
+                engine.end_transport(termination);
                 return;
             }
             () = &mut close_deadline => {
@@ -867,7 +870,7 @@ async fn run_session_loop<M, R, W, S, H>(
                     .zip(app_rx.head_age())
                     .is_some_and(|(max, age)| age > max);
             if over_count || over_lag {
-                engine.begin_disconnect(DisconnectReason::SlowConsumer);
+                engine.begin_disconnect(SessionEndReason::SlowConsumer);
                 break 'session;
             }
         }
@@ -1108,12 +1111,15 @@ async fn run_session_loop<M, R, W, S, H>(
                     }
                     Some(InputEvent::IoError(err)) => {
                         error!(%err, "input I/O error");
-                        engine.begin_disconnect(DisconnectReason::IoError);
+                        engine.end_transport(Termination::IoError {
+                            operation: IoOperation::Read,
+                            error: err,
+                        });
                         break 'session;
                     }
                     None => {
                         info!("input stream closed");
-                        engine.begin_disconnect(DisconnectReason::Disconnected);
+                        engine.end_transport(Termination::PeerClose);
                         break 'session;
                     }
                 }

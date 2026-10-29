@@ -24,6 +24,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     collections::BTreeMap,
+    io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     num::{NonZeroU8, NonZeroU16, NonZeroUsize},
     rc::Rc,
@@ -43,11 +44,81 @@ use easyfix_core::{
     message::SessionMessage,
 };
 use easyfix_session::{
-    ConnectionDropReason, ConnectionObserver, InMemoryStorage, InMemoryStorageError,
-    MessagesStorage, SerializeError, SessionId, SessionSettings, StoreError,
+    ConnectionDropReason, ConnectionEnd, ConnectionEndContext, ConnectionObserver, EndContext,
+    InMemoryStorage, InMemoryStorageError, IoOperation, MessagesStorage, SerializeError,
+    SessionEnd, SessionEndReason, SessionId, SessionSettings, StoreError, Termination, TimeoutKind,
 };
 use easyfix_test_messages::{Body, Header, Message, NewOrderSingle, Trailer};
 use tokio::io::{AsyncRead, AsyncReadExt};
+
+/// Comparable copy of the session-end report for event assertions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionEndSnapshot {
+    pub context: EndContext,
+    pub termination: TerminationSnapshot,
+    pub reset_unconfirmed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminationSnapshot {
+    LocalClose,
+    PeerClose,
+    IoError {
+        operation: IoOperation,
+        kind: ErrorKind,
+    },
+    Timeout(TimeoutKind),
+    SerializeError(SerializeErrorSnapshot),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerializeErrorSnapshot {
+    MaxMessageSizeExceeded,
+    EmptyValue,
+    InvalidValue,
+}
+
+impl SessionEndSnapshot {
+    pub const fn ended(context: EndContext, termination: TerminationSnapshot) -> Self {
+        Self {
+            context,
+            termination,
+            reset_unconfirmed: false,
+        }
+    }
+
+    pub const fn closing(reason: SessionEndReason) -> Self {
+        Self::ended(EndContext::Closing(reason), TerminationSnapshot::LocalClose)
+    }
+}
+
+impl From<&SessionEnd> for SessionEndSnapshot {
+    fn from(end: &SessionEnd) -> Self {
+        let termination = match &end.termination {
+            Termination::LocalClose => TerminationSnapshot::LocalClose,
+            Termination::PeerClose => TerminationSnapshot::PeerClose,
+            Termination::IoError { operation, error } => TerminationSnapshot::IoError {
+                operation: *operation,
+                kind: error.kind(),
+            },
+            Termination::Timeout(kind) => TerminationSnapshot::Timeout(*kind),
+            Termination::SerializeError(error) => {
+                TerminationSnapshot::SerializeError(match error {
+                    SerializeError::MaxMessageSizeExceeded => {
+                        SerializeErrorSnapshot::MaxMessageSizeExceeded
+                    }
+                    SerializeError::EmptyValue => SerializeErrorSnapshot::EmptyValue,
+                    SerializeError::InvalidValue => SerializeErrorSnapshot::InvalidValue,
+                })
+            }
+        };
+        Self {
+            context: end.context,
+            termination,
+            reset_unconfirmed: end.reset_unconfirmed,
+        }
+    }
+}
 
 /// Max message size shared by the test harnesses.
 pub const DEFAULT_MAX_MESSAGE_SIZE: NonZeroLength = const { NonZeroLength::new(4096).unwrap() };
@@ -196,7 +267,7 @@ pub fn peer_logout_bytes(peer_sid: &SessionId, seq: SeqNum) -> Vec<u8> {
 }
 
 /// [`ConnectionObserver`] that records every drop it is told about.
-/// `ConnectionDropReason` borrows from the session task, so each event is
+/// `ConnectionEnd` borrows from the session task, so each event is
 /// flattened into an owned summary, with the identity-carrying reasons
 /// rendered as `<kind>:<session id>`.
 #[derive(Default)]
@@ -220,12 +291,26 @@ impl RecordingObserver {
     }
 }
 
-pub fn summarize(reason: ConnectionDropReason<'_>) -> String {
+pub fn summarize(end: ConnectionEnd<'_>) -> String {
+    let reason = match (end.context, end.termination) {
+        (ConnectionEndContext::AwaitingFirstMessage, Termination::PeerClose) => {
+            return "closed".to_owned();
+        }
+        (ConnectionEndContext::AwaitingFirstMessage, Termination::Timeout(TimeoutKind::Logon)) => {
+            return "timeout".to_owned();
+        }
+        (
+            ConnectionEndContext::AwaitingFirstMessage,
+            Termination::IoError {
+                operation: IoOperation::Read,
+                error,
+            },
+        ) => return format!("io_error:{:?}:{error}", error.kind()),
+        (ConnectionEndContext::AdmissionRejected(reason), Termination::LocalClose) => reason,
+        unexpected => panic!("unexpected connection end: {unexpected:?}"),
+    };
     match reason {
         ConnectionDropReason::AcceptorSuspended => "acceptor_suspended".to_owned(),
-        ConnectionDropReason::ClosedBeforeFirstMessage => "closed".to_owned(),
-        ConnectionDropReason::LogonTimeout => "timeout".to_owned(),
-        ConnectionDropReason::FirstMessageIoError(_) => "io_error".to_owned(),
         ConnectionDropReason::FirstMessageUndecodable(_) => "undecodable".to_owned(),
         ConnectionDropReason::FirstMessageTooLarge => "too_large".to_owned(),
         ConnectionDropReason::FirstMessageNotLogon => "not_logon".to_owned(),
@@ -239,8 +324,8 @@ pub fn summarize(reason: ConnectionDropReason<'_>) -> String {
 }
 
 impl ConnectionObserver for RecordingObserver {
-    fn on_connection_dropped(&self, peer_addr: SocketAddr, reason: ConnectionDropReason<'_>) {
-        self.seen.borrow_mut().push((peer_addr, summarize(reason)));
+    fn on_connection_dropped(&self, peer_addr: SocketAddr, end: ConnectionEnd<'_>) {
+        self.seen.borrow_mut().push((peer_addr, summarize(end)));
     }
 }
 

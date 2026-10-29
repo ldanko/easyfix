@@ -11,7 +11,7 @@ use easyfix_test_messages::{Body, Message};
 
 use super::support::{assert_msg_type, limit};
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::{PendingOutput, SessionEngine, validate_gap_fill_fits},
     messages_storage::MessagesStorage,
     test_helpers,
@@ -74,8 +74,8 @@ fn corrupt_history_is_fatal_without_gap_fill() {
     assert!(engine.process_resend_message(1, b"corrupt record").is_err());
     assert!(engine.has_fatal_error());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::StorageError)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::StorageError))
     );
     assert!(!engine.has_accumulated_resend_gap());
     assert!(engine.take_pending().is_none());
@@ -92,8 +92,8 @@ fn replay_serialization_failure_is_fatal_without_gap_fill() {
     assert!(engine.process_resend_message(1, &bytes).is_err());
     assert!(engine.has_fatal_error());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::StorageError)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::StorageError))
     );
     assert!(!engine.has_accumulated_resend_gap());
     assert!(engine.take_pending().is_none());

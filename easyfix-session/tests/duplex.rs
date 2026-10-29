@@ -8,12 +8,15 @@ use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
     error::Error as StdError,
-    fmt, mem,
+    fmt,
+    io::ErrorKind,
+    mem,
     num::NonZeroUsize,
     rc::Rc,
     time::Duration,
 };
 
+use common::{SessionEndSnapshot, TerminationSnapshot};
 use easyfix_core::{
     base_messages::{
         AdminBase, EncryptMethodBase, HeartbeatBase, LogonBase, MsgTypeBase, ResendRequestBase,
@@ -25,9 +28,9 @@ use easyfix_core::{
     version::Version,
 };
 use easyfix_session::{
-    Acceptor, AcceptorError, DisconnectReason, InMemoryStorage, Initiator, InitiatorError,
-    InputAction, MessagesStorage, SendError, Sender, SerializeError, SessionContext,
-    SessionHandler, SessionId, SessionSettings, ShutdownMode,
+    Acceptor, AcceptorError, EndContext, InMemoryStorage, Initiator, InitiatorError, InputAction,
+    IoOperation, MessagesStorage, SendError, Sender, SerializeError, SessionContext, SessionEnd,
+    SessionEndReason, SessionHandler, SessionId, SessionSettings, ShutdownMode, TimeoutKind,
 };
 use easyfix_test_messages::{Body, Message};
 use futures_util::FutureExt;
@@ -67,7 +70,7 @@ impl SessionHandler<Message> for ResetHandler {
         self.inner.on_session_ready(id, sender).await;
     }
 
-    async fn on_session_end(&mut self, id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, id: &SessionId, reason: SessionEnd) {
         self.inner.on_session_end(id, reason).await;
     }
 
@@ -271,13 +274,13 @@ async fn graceful_shutdown_during_a_reset_leaves_both_sides_consistent() {
         assert_eq!(logout_ack.msg_seq_num(), 2); assert_matches!(logout_ack.try_as_admin(), Some(AdminBase::Logout(_)));
         acc.send(&logout_ack).await;
         expect_admin(&mut pair.acc_events, MsgTypeBase::Logout).await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::LocalRequestedLogout));
+        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
         shutdown.await.unwrap(); acc_task.await.unwrap();
         ini.close_input().await;
         expect_admin(&mut pair.ini_events, MsgTypeBase::TestRequest).await;
         expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
         expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::RemoteRequestedLogout));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
         ini_task.await.unwrap().unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert_snapshot_counts(&pair.acc_storage, 3, 3); assert_snapshot_counts(&pair.ini_storage, 3, 3);
         for (snapshot, first, second) in [(&pair.acc_storage, &logon, &logout), (&pair.ini_storage, &ack, &logout_ack)] {
@@ -300,9 +303,9 @@ async fn graceful_shutdown_during_a_reset_leaves_both_sides_consistent() {
         let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 3).await;
         assert_snapshot_counts(&pair.acc_storage, 4, 4); assert_snapshot_counts(&pair.ini_storage, 4, 4);
         pair.initiator.disconnect().await.unwrap();
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
         ini_task.await.unwrap().unwrap(); acc.close_input().await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
+        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
         acc_task.await.unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert!(pair.acc_events.try_recv().is_err()); assert!(pair.ini_events.try_recv().is_err());
     }).await;
@@ -329,13 +332,13 @@ async fn in_session_reset_refused_by_peer() {
         assert_eq!(logout_ack.msg_seq_num(), 2); assert_matches!(logout_ack.try_as_admin(), Some(AdminBase::Logout(_)));
         expect_admin(&mut pair.acc_events, MsgTypeBase::TestRequest).await;
         expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
+        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
         expect_admin(&mut pair.ini_events, MsgTypeBase::Heartbeat).await;
         let callback = expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
         assert_eq!(serialize_message(&callback), serialize_message(&refusal));
         assert!(!ini_task.is_finished());
         ini.close_input().await;
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::SeqNumResetFailed));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: true }));
         acc_task.await.unwrap(); ini_task.await.unwrap().unwrap();
         acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert_snapshot_counts(&pair.ini_storage, 3, 2); assert_snapshot_counts(&pair.acc_storage, 4, 3);
@@ -349,7 +352,7 @@ async fn in_session_reset_refused_by_peer() {
 /// One intentional collision interleaving: the first reset request is held
 /// while the other engine sends its own probe, and its ACK is written before
 /// the failed requester's close is delivered. Other IO ordering can make
-/// the answering engine observe IoError instead of RemoteRequestedLogout.
+/// the answering engine observe a transport error while answering the Logout.
 #[tokio::test(start_paused = true)]
 async fn an_initiator_collision_can_end_with_an_unconfirmed_reset_failure() {
     LocalSet::new().run_until(async {
@@ -383,9 +386,9 @@ async fn an_initiator_collision_can_end_with_an_unconfirmed_reset_failure() {
         assert_eq!(serialize_message(&ack_callback), serialize_message(&logon_b));
         expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
         expect_admin(&mut pair.acc_events, MsgTypeBase::Heartbeat).await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::SeqNumResetFailed));
+        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
         assert!(!ini_task.is_finished()); ini.close_input().await;
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::RemoteRequestedLogout));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
         acc_task.await.unwrap(); ini_task.await.unwrap().unwrap();
         acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
         assert_snapshot_counts(&pair.acc_storage, 3, 1); assert_snapshot_counts(&pair.ini_storage, 3, 3);
@@ -436,8 +439,8 @@ async fn in_session_reset_converges_both_engines() {
             assert_snapshot_counts(&pair.acc_storage, 3, 3); assert_snapshot_counts(&pair.ini_storage, 3, 3);
         }
         pair.initiator.disconnect().await.unwrap();
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect));
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, DisconnectReason::Disconnected));
+        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
+        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
         ini_task.await.unwrap().unwrap(); acc_task.await.unwrap();
         for snapshot in [&pair.acc_storage, &pair.ini_storage] {
             let state = snapshot.borrow(); assert_eq!(state.messages.len(), 2);
@@ -493,7 +496,7 @@ async fn unexpected_application_or_peer_timer_heartbeat_ends_the_reset_window() 
             let expected = if heartbeat { fix_str!("Unexpected Heartbeat(0) during sequence number reset") } else { fix_str!("Unexpected MsgType(D) during sequence number reset") };
             assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(expected));
             assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(h)) if h.test_req_id.is_some()));
-            assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, DisconnectReason::SeqNumResetFailed));
+            assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
             assert!(peer.read_to_close().await.is_empty()); peer.handle.await.unwrap();
             let mut storage = acceptor.remove_session(&sid).unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), 3); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
@@ -523,7 +526,7 @@ async fn acceptor_disconnect_shutdown_stores_sends_held_by_an_unconfirmed_reset(
         assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(_))));
         sender.send(new_order_single_with_empty_header()).unwrap();
         acceptor.shutdown(ShutdownMode::Disconnect).await;
-        assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, DisconnectReason::SeqNumResetFailed));
+        assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
         assert!(peer.read_to_close().await.is_empty()); peer.handle.await.unwrap();
         let mut storage = acceptor.remove_session(&sid).unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 3); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
@@ -561,7 +564,7 @@ async fn a_peer_without_matching_probe_ids_cannot_finish_a_reset() {
         let logout = peer.read().await;
         assert_eq!(logout.msg_seq_num(), 3);
         assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-        assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, DisconnectReason::ResetPreparationTimeout));
+        assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::ResetPreparation)), termination: TerminationSnapshot::Timeout(TimeoutKind::ResetPreparation), reset_unconfirmed: false }));
         assert!(peer.read_to_close().await.is_empty()); peer.handle.await.unwrap();
         let mut storage = acceptor.remove_session(&sid).unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 4); assert_eq!(storage.next_target_msg_seq_num().get(), 4);
@@ -613,7 +616,7 @@ fn is_new_order_single(msg: &Message) -> bool {
 
 enum TestEvent {
     SessionReady(SessionId, Sender<Message>),
-    SessionEnd(SessionId, DisconnectReason),
+    SessionEnd(SessionId, SessionEndSnapshot),
     AppMsgIn(SessionId, Box<Message>),
     /// The admin message as the application saw it, so a test can assert on
     /// its fields (a Reject's reason, a Logout's Text) and not just its type.
@@ -662,7 +665,8 @@ impl SessionHandler<Message> for TestHandler {
             .send(TestEvent::SessionReady(session_id.clone(), sender));
     }
 
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, session_id: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         let _ = self
             .events_tx
             .send(TestEvent::SessionEnd(session_id.clone(), reason));
@@ -713,7 +717,7 @@ impl SessionHandler<Message> for PanicOnceHandler {
         self.inner.on_session_ready(session_id, sender).await;
     }
 
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, session_id: &SessionId, reason: SessionEnd) {
         self.inner.on_session_end(session_id, reason).await;
     }
 
@@ -772,7 +776,7 @@ async fn wait_for_session_ready(rx: &mut mpsc::UnboundedReceiver<TestEvent>) -> 
     }
 }
 
-async fn wait_for_session_end(rx: &mut mpsc::UnboundedReceiver<TestEvent>) -> DisconnectReason {
+async fn wait_for_session_end(rx: &mut mpsc::UnboundedReceiver<TestEvent>) -> SessionEndSnapshot {
     match wait_until(rx, |e| matches!(e, TestEvent::SessionEnd(..))).await {
         TestEvent::SessionEnd(_, reason) => reason,
         _ => unreachable!(),
@@ -798,7 +802,7 @@ async fn wait_for_session_ready_of(
 async fn wait_for_session_end_of(
     rx: &mut mpsc::UnboundedReceiver<TestEvent>,
     expected: &SessionId,
-) -> DisconnectReason {
+) -> SessionEndSnapshot {
     loop {
         let event = recv_event(rx).await;
         if let TestEvent::SessionEnd(sid, reason) = event
@@ -874,8 +878,22 @@ async fn logon_message_exchange_logout() {
             let ini_reason = wait_for_session_end(&mut ini_events_rx).await;
             let acc_reason = wait_for_session_end(&mut acc_events_rx).await;
 
-            assert_eq!(ini_reason, DisconnectReason::LocalRequestedLogout);
-            assert_eq!(acc_reason, DisconnectReason::RemoteRequestedLogout);
+            assert_eq!(
+                ini_reason,
+                SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
+            assert_eq!(
+                acc_reason,
+                SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }
+            );
 
             // Both tasks should complete cleanly (no panic).
             acc_handle.await.expect("acceptor task");
@@ -942,7 +960,7 @@ async fn acceptor_rejected_first_logon_sends_logout_before_disconnect() {
 
             // Then the session ends with the logon-rejection reason.
             let acc_reason = wait_for_session_end(&mut acc_events_rx).await;
-            assert_eq!(acc_reason, DisconnectReason::InvalidLogonState);
+            assert_eq!(acc_reason, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false });
             peer.handle.await.expect("acceptor task");
         })
         .await;
@@ -1260,7 +1278,11 @@ async fn acceptor_logout_disconnect_closes_without_peer_response() {
                 assert!(peer.read_to_close().await.is_empty());
                 assert_eq!(
                     wait_for_session_end(&mut events_rx).await,
-                    DisconnectReason::ApplicationForcedDisconnect
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
                 );
                 timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
                 assert_eq!(started.elapsed(), Duration::ZERO);
@@ -1306,7 +1328,11 @@ async fn initiator_logout_disconnect_closes_without_peer_response() {
                 assert!(rest.is_empty());
                 assert_eq!(
                     wait_for_session_end(&mut peer.events_rx).await,
-                    DisconnectReason::ApplicationForcedDisconnect
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
                 );
                 timeout(TEST_TIMEOUT, peer.handle)
                     .await
@@ -1429,7 +1455,11 @@ async fn resend_request_large_gap() {
             initiator.disconnect().await.expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             ini_handle
                 .await
@@ -1547,7 +1577,11 @@ async fn resend_range_ending_on_gap_fill_flushes_trailing_gap() {
                 initiator.disconnect().await.expect("disconnect");
                 assert_eq!(
                     wait_for_session_end(&mut ini_events_rx).await,
-                    DisconnectReason::ApplicationForcedDisconnect
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
                 );
                 ini_handle
                     .await
@@ -1644,7 +1678,11 @@ async fn sequence_reset_advances_target_seq_num() {
                 .expect("acceptor disconnect");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             peer.handle.await.expect("acceptor task");
         })
@@ -1707,7 +1745,14 @@ async fn heartbeat_timeout_sends_test_request_and_disconnects() {
 
             // Session should terminate on its own - no teardown call needed.
             let reason = wait_for_session_end(&mut acc_events_rx).await;
-            assert_eq!(reason, DisconnectReason::HeartbeatTimeout);
+            assert_eq!(
+                reason,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::HeartbeatTimeout),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
             peer.handle.await.expect("acceptor task");
         })
         .await;
@@ -1806,11 +1851,19 @@ async fn multiple_sessions_isolated() {
             // side by decision, the other on the transport going away.
             assert_eq!(
                 wait_for_session_end(&mut ini_a_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             assert_eq!(
                 wait_for_session_end_of(&mut acc_rx, &sid_a_acc).await,
-                DisconnectReason::Disconnected
+                SessionEndSnapshot {
+                    context: EndContext::Established,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_a_handle.await.expect("acceptor A task");
             ini_a_handle
@@ -1836,11 +1889,19 @@ async fn multiple_sessions_isolated() {
             initiator_b.disconnect().await.expect("disconnect B");
             assert_eq!(
                 wait_for_session_end(&mut ini_b_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             assert_eq!(
                 wait_for_session_end_of(&mut acc_rx, &sid_b_acc).await,
-                DisconnectReason::Disconnected
+                SessionEndSnapshot {
+                    context: EndContext::Established,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_b_handle.await.expect("acceptor B task");
             ini_b_handle
@@ -1931,7 +1992,11 @@ async fn nonblocking_send_preserves_order_under_write_backpressure() {
             initiator.disconnect().await.expect("disconnect");
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             ini_handle
                 .await
@@ -1946,7 +2011,7 @@ async fn nonblocking_send_preserves_order_under_write_backpressure() {
 // ---------------------------------------------------------------------------
 
 /// When the outbound staging queue exceeds `max_outbound_queued_messages`, the
-/// session is hard-disconnected with `DisconnectReason::SlowConsumer`. `send`
+/// session is hard-disconnected with `SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::SlowConsumer), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }`. `send`
 /// is non-blocking, so the application can stage well past the cap in one
 /// burst; the cap check - run after each flush & admin drain, once logged on -
 /// then trips and evicts. The still-queued messages are drained to storage for
@@ -1985,7 +2050,14 @@ async fn count_cap_evicts_slow_consumer() {
 
             // The session must hard-disconnect as a slow consumer.
             let reason = wait_for_session_end(&mut ini_events_rx).await;
-            assert_eq!(reason, DisconnectReason::SlowConsumer);
+            assert_eq!(
+                reason,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SlowConsumer),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
 
             ini_handle
                 .await
@@ -2054,7 +2126,14 @@ async fn lag_cap_evicts_slow_consumer() {
             let _ = read_one_message(&mut peer_r, &mut peer_buf).await;
 
             let reason = wait_for_session_end(&mut ini_events_rx).await;
-            assert_eq!(reason, DisconnectReason::SlowConsumer);
+            assert_eq!(
+                reason,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::SlowConsumer),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            );
 
             ini_handle
                 .await
@@ -2108,7 +2187,14 @@ async fn slow_consumer_eviction_recovers_backlog_on_reconnect() {
                 }
 
                 let reason = wait_for_session_end(&mut acc_events_rx).await;
-                assert_eq!(reason, DisconnectReason::SlowConsumer);
+                assert_eq!(
+                    reason,
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::SlowConsumer),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
+                );
                 peer.handle.await.expect("acceptor task #1");
                 // Storage (seq 2..=K+1 stored, next_sender = K+2) is returned to
                 // the registry when the task exits.
@@ -2152,7 +2238,11 @@ async fn slow_consumer_eviction_recovers_backlog_on_reconnect() {
                     .expect("acceptor disconnect");
                 assert_eq!(
                     wait_for_session_end(&mut acc_events_rx).await,
-                    DisconnectReason::ApplicationForcedDisconnect
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
                 );
                 peer.handle.await.expect("acceptor task #2");
             }
@@ -2197,7 +2287,14 @@ async fn write_timeout_releases_session_for_reconnect_and_resend() {
             // The write stalls before heartbeat escalation can be processed.
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::IoError
+                SessionEndSnapshot {
+                    context: EndContext::Established,
+                    termination: TerminationSnapshot::IoError {
+                        operation: IoOperation::Write,
+                        kind: ErrorKind::TimedOut
+                    },
+                    reset_unconfirmed: false
+                }
             );
             timeout(TEST_TIMEOUT, acceptor.await_session_closed(&sid))
                 .await
@@ -2244,7 +2341,11 @@ async fn write_timeout_releases_session_for_reconnect_and_resend() {
             acceptor.disconnect(&sid).await.unwrap();
             assert_eq!(
                 wait_for_session_end(&mut events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             timeout(TEST_TIMEOUT, peer.handle)
                 .await
@@ -2359,7 +2460,11 @@ async fn lag_cap_suspended_during_resend_and_grace_window() {
                 .expect("acceptor disconnect");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                },
                 "healthy peer must not be evicted during/after a resend"
             );
             peer.handle.await.expect("acceptor task");
@@ -2487,11 +2592,19 @@ async fn remove_session_refused_while_active_then_recoverable_after_close() {
 
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::Disconnected
+                SessionEndSnapshot {
+                    context: EndContext::Established,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_handle.await.expect("acceptor task");
             ini_handle
@@ -2552,7 +2665,7 @@ async fn peer_resynchronizes_after_losing_its_session_state() {
             peer.peer_w.shutdown().await.expect("peer close");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::Disconnected
+                SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }
             );
             peer.handle.await.expect("acceptor task 1");
 
@@ -2612,7 +2725,7 @@ async fn peer_resynchronizes_after_losing_its_session_state() {
                 .expect("acceptor disconnect");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
             );
             peer.handle.await.expect("acceptor task 2");
         })
@@ -2679,7 +2792,7 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
             // The initiator saw the transport go away.
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::Disconnected
+                SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }
             );
             ini_handle.await.expect("initiator task").expect("handler initialization");
 
@@ -2707,11 +2820,11 @@ async fn panicked_session_task_releases_the_session_for_reconnect() {
                 .expect("logout");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::LocalRequestedLogout
+                SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
             );
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::RemoteRequestedLogout
+                SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }
             );
             acc_handle.await.expect("acceptor task");
             ini_handle.await.expect("initiator task").expect("handler initialization");
@@ -2746,7 +2859,11 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
             acceptor.close(&acceptor_session_id()).await.expect("close");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             conn1.acc_handle.await.expect("acceptor task 1");
             conn1
@@ -2793,7 +2910,11 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
             acceptor.close(&acceptor_session_id()).await.expect("close");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::ApplicationForcedDisconnect
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             conn3.acc_handle.await.expect("acceptor task 3");
             conn3
@@ -2840,7 +2961,14 @@ async fn initiator_gives_up_on_an_unanswered_logon() {
             assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
 
             let reason = wait_for_session_end(&mut p.events_rx).await;
-            assert_eq!(reason, DisconnectReason::LogonTimeout);
+            assert_eq!(
+                reason,
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
+                    termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
+                    reset_unconfirmed: false
+                }
+            );
 
             // Nothing follows the Logon on the wire: an unestablished session
             // has no Logout to send, and no TestRequest or Heartbeat may
@@ -2904,7 +3032,11 @@ async fn no_keep_alive_traffic_before_the_logon_response() {
             );
             assert_eq!(
                 wait_for_session_end(&mut p.events_rx).await,
-                DisconnectReason::LogonTimeout
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
+                    termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
+                    reset_unconfirmed: false
+                }
             );
 
             p.handle
@@ -3012,11 +3144,19 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
                 .expect("logout");
             assert_eq!(
                 wait_for_session_end(&mut acc_events_rx).await,
-                DisconnectReason::LocalRequestedLogout
+                SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             assert_eq!(
                 wait_for_session_end(&mut ini_events_rx).await,
-                DisconnectReason::RemoteRequestedLogout
+                SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }
             );
             acc_handle.await.expect("acceptor task");
             ini_handle
@@ -3035,7 +3175,7 @@ async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_i
 async fn collect_session_ends(
     rx: &mut mpsc::UnboundedReceiver<TestEvent>,
     count: usize,
-) -> Vec<(SessionId, DisconnectReason)> {
+) -> Vec<(SessionId, SessionEndSnapshot)> {
     let mut ends = Vec::new();
     while ends.len() < count {
         if let TestEvent::SessionEnd(sid, reason) = recv_event(rx).await {
@@ -3079,8 +3219,26 @@ async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
             assert_eq!(
                 ends,
                 vec![
-                    (a.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
-                    (b.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
+                    (
+                        a.sid.clone(),
+                        SessionEndSnapshot {
+                            context: EndContext::Closing(
+                                SessionEndReason::ApplicationForcedDisconnect
+                            ),
+                            termination: TerminationSnapshot::LocalClose,
+                            reset_unconfirmed: false
+                        }
+                    ),
+                    (
+                        b.sid.clone(),
+                        SessionEndSnapshot {
+                            context: EndContext::Closing(
+                                SessionEndReason::ApplicationForcedDisconnect
+                            ),
+                            termination: TerminationSnapshot::LocalClose,
+                            reset_unconfirmed: false
+                        }
+                    ),
                 ]
             );
 
@@ -3149,8 +3307,26 @@ async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting
             assert_eq!(
                 ends,
                 vec![
-                    (a.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
-                    (b.sid.clone(), DisconnectReason::ApplicationForcedDisconnect),
+                    (
+                        a.sid.clone(),
+                        SessionEndSnapshot {
+                            context: EndContext::Closing(
+                                SessionEndReason::ApplicationForcedDisconnect
+                            ),
+                            termination: TerminationSnapshot::LocalClose,
+                            reset_unconfirmed: false
+                        }
+                    ),
+                    (
+                        b.sid.clone(),
+                        SessionEndSnapshot {
+                            context: EndContext::Closing(
+                                SessionEndReason::ApplicationForcedDisconnect
+                            ),
+                            termination: TerminationSnapshot::LocalClose,
+                            reset_unconfirmed: false
+                        }
+                    ),
                 ]
             );
             a.handle.await.expect("session task A");
@@ -3163,7 +3339,7 @@ async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting
 /// session at once (Session Layer §4.6): a Logout goes out to each peer and
 /// `shutdown` stays pending until each has answered - it is still waiting
 /// with one response in and one outstanding - after which the sessions end
-/// as `LocalRequestedLogout`, the exchange having completed on our request.
+/// with `LocalLogout` and `LocalClose`, after completing our requested exchange.
 #[tokio::test]
 async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
     let local = LocalSet::new();
@@ -3215,7 +3391,11 @@ async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
                 .expect("write logout response A");
             assert_eq!(
                 wait_for_session_end_of(&mut acc_events_rx, &a.sid).await,
-                DisconnectReason::LocalRequestedLogout
+                SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             for _ in 0..4 {
                 yield_now().await;
@@ -3232,7 +3412,11 @@ async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
                 .expect("write logout response B");
             assert_eq!(
                 wait_for_session_end_of(&mut acc_events_rx, &b.sid).await,
-                DisconnectReason::LocalRequestedLogout
+                SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             timeout(TEST_TIMEOUT, shutdown)
                 .await
@@ -3287,7 +3471,7 @@ impl SessionHandler<Message> for ActionHandler {
         self.inner.on_session_ready(session_id, sender).await;
     }
 
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, session_id: &SessionId, reason: SessionEnd) {
         self.inner.on_session_end(session_id, reason).await;
     }
 
@@ -3411,11 +3595,25 @@ async fn application_disconnect_drops_the_transport_without_a_farewell() {
             );
             assert_matches!(
                 recv_event(&mut p.acc_events_rx).await,
-                TestEvent::SessionEnd(_, DisconnectReason::ApplicationForcedDisconnect)
+                TestEvent::SessionEnd(
+                    _,
+                    SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
+                )
             );
             assert_matches!(
                 recv_event(&mut p.ini_events_rx).await,
-                TestEvent::SessionEnd(_, DisconnectReason::Disconnected),
+                TestEvent::SessionEnd(
+                    _,
+                    SessionEndSnapshot {
+                        context: EndContext::Established,
+                        termination: TerminationSnapshot::PeerClose,
+                        reset_unconfirmed: false
+                    }
+                ),
                 "the peer must see the transport close, with no Logout before it"
             );
             p.acc_handle.await.expect("acceptor task");
@@ -3451,7 +3649,14 @@ async fn application_logout_without_disconnect_completes_the_logout_exchange() {
             assert!(is_admin_msg_in(&event, MsgTypeBase::Logout), "{event:?}");
             assert_matches!(
                 recv_event(&mut p.ini_events_rx).await,
-                TestEvent::SessionEnd(_, DisconnectReason::RemoteRequestedLogout)
+                TestEvent::SessionEnd(
+                    _,
+                    SessionEndSnapshot {
+                        context: EndContext::RemoteLogout,
+                        termination: TerminationSnapshot::PeerClose,
+                        reset_unconfirmed: false
+                    }
+                )
             );
             // The peer's response is in sequence - the refused order's
             // number was consumed - so it reaches the application as the
@@ -3460,7 +3665,14 @@ async fn application_logout_without_disconnect_completes_the_logout_exchange() {
             assert!(is_admin_msg_in(&event, MsgTypeBase::Logout), "{event:?}");
             assert_matches!(
                 recv_event(&mut p.acc_events_rx).await,
-                TestEvent::SessionEnd(_, DisconnectReason::LocalRequestedLogout)
+                TestEvent::SessionEnd(
+                    _,
+                    SessionEndSnapshot {
+                        context: EndContext::LocalLogout,
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    }
+                )
             );
             p.acc_handle.await.expect("acceptor task");
             p.ini_handle
@@ -3510,11 +3722,19 @@ async fn initiator_application_reject_reaches_the_acceptor() {
                 .expect("logout");
             assert_eq!(
                 wait_for_session_end(&mut p.acc_events_rx).await,
-                DisconnectReason::LocalRequestedLogout
+                SessionEndSnapshot {
+                    context: EndContext::LocalLogout,
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
             );
             assert_eq!(
                 wait_for_session_end(&mut p.ini_events_rx).await,
-                DisconnectReason::RemoteRequestedLogout
+                SessionEndSnapshot {
+                    context: EndContext::RemoteLogout,
+                    termination: TerminationSnapshot::PeerClose,
+                    reset_unconfirmed: false
+                }
             );
             p.acc_handle.await.expect("acceptor task");
             p.ini_handle

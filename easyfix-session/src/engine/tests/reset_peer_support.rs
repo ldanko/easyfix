@@ -2,7 +2,7 @@ use easyfix_core::base_messages::AdminBase;
 use easyfix_test_messages::Message;
 
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::SessionEngine,
     messages_storage::{InMemoryStorage, MessagesStorage},
     test_helpers,
@@ -32,8 +32,8 @@ pub(super) async fn assert_reset_refused(
     text: &str,
 ) {
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::InvalidLogonState)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
     );
     assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
     assert_eq!(storage.next_target_msg_seq_num().get(), 40);

@@ -1,3 +1,9 @@
+use std::{
+    io::ErrorKind,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
     message::SessionMessage,
@@ -5,14 +11,14 @@ use easyfix_core::{
 };
 use easyfix_test_messages::Message;
 use tokio::{
-    io::{AsyncWrite, DuplexStream, ReadHalf, WriteHalf},
+    io::{self, AsyncRead, AsyncWrite, DuplexStream, ReadBuf, ReadHalf, WriteHalf},
     sync::mpsc,
     task,
     task::JoinHandle,
 };
 
 use crate::{
-    application::{DisconnectReason, InputAction, SessionHandler},
+    application::{InputAction, SessionEnd, SessionHandler},
     engine::SessionEngine,
     initiator::SessionStart,
     io::{
@@ -25,13 +31,13 @@ use crate::{
     session_id::SessionId,
     settings::SessionSettings,
     test_helpers,
-    test_helpers::{DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_MAX_MESSAGE_SIZE_BYTES},
+    test_helpers::{DEFAULT_MAX_MESSAGE_SIZE, DEFAULT_MAX_MESSAGE_SIZE_BYTES, SessionEndSnapshot},
 };
 
 #[derive(Debug)]
 pub(super) enum TestEvent {
     SessionReady,
-    SessionEnd(DisconnectReason),
+    SessionEnd(SessionEndSnapshot),
     AppMsgIn,
     AdminMsgIn(MsgTypeBase),
 }
@@ -54,6 +60,7 @@ pub(super) struct TestHandler {
     /// through it.
     pub(super) sender: Option<Sender<Message>>,
     pub(super) admin_gate: Option<AdminGate>,
+    pub(super) inspect_end: Option<fn(&SessionEnd)>,
 }
 
 pub(super) struct AdminGate {
@@ -71,7 +78,11 @@ impl SessionHandler<Message> for TestHandler {
         self.events_tx.send(TestEvent::SessionReady).unwrap();
     }
 
-    async fn on_session_end(&mut self, _id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _id: &SessionId, reason: SessionEnd) {
+        if let Some(inspect) = self.inspect_end {
+            inspect(&reason);
+        }
+        let reason = SessionEndSnapshot::from(&reason);
         self.events_tx.send(TestEvent::SessionEnd(reason)).unwrap();
     }
 
@@ -173,6 +184,7 @@ pub(super) fn build_harness_with_settings(settings: SessionSettings) -> TestHarn
         reject_admin: false,
         sender: None,
         admin_gate: None,
+        inspect_end: None,
     };
     let (sender, app_rx) = sender::channel::<Message>(engine.timer_backend());
     let (control_tx, control_rx) = mpsc::channel(4);
@@ -185,6 +197,24 @@ pub(super) fn build_harness_with_settings(settings: SessionSettings) -> TestHarn
         control_tx,
         control_rx,
         events_rx,
+    }
+}
+
+pub(super) struct FaultReader<R> {
+    pub(super) inner: R,
+    pub(super) error: mpsc::UnboundedReceiver<ErrorKind>,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for FaultReader<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if let Poll::Ready(Some(error)) = self.error.poll_recv(cx) {
+            return Poll::Ready(Err(error.into()));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
 

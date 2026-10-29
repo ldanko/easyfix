@@ -72,7 +72,8 @@ Section 4.3.4).
 
 The probe reduces collision risk but cannot guarantee that the peer stops
 sending. Traffic racing with the reset Logon can end the connection with
-`SeqNumResetFailed`, without implying a protocol violation by the peer.
+`SessionEnd::reset_unconfirmed` set to `true`, without implying a protocol
+violation by the peer.
 
 ## Outgoing messages
 
@@ -99,14 +100,20 @@ storage access or sending.
 Preparation uses `running_session_reset_timeout` (30 seconds by default),
 starting when the session accepts the request. Recovery and repeated probes
 share that budget; repeated requests do not extend it. Expiry sends Logout
-and ends the connection with `ResetPreparationTimeout`, before the local
-reset has occurred. Ordinary processing and finalization may still advance
-counters and store messages. Normal resumption from storage is available.
+and records `SessionEndReason::Timeout(TimeoutKind::ResetPreparation)`, before
+the local reset has occurred. Ordinary processing and finalization may still
+advance counters and store messages. Normal resumption from storage is
+available.
 
 Acknowledgement uses `auto_disconnect_after_no_logon_response`, starting
 when the reset Logon is queued. Writing the Logon spends that budget. If
 the peer has not confirmed the reset when it expires, the connection ends
-with `SeqNumResetFailed`. Preparation does not consume this separate budget.
+for `SessionEndReason::Timeout(TimeoutKind::Logon)` with
+`reset_unconfirmed = true`. Preparation does not consume this separate budget.
+
+Both timeouts use `EndContext::Closing` with the timeout reason. The
+termination is normally the matching `Termination::Timeout`; a failure to
+send the farewell Logout is reported separately without replacing that cause.
 
 A duration the clock cannot represent, such as `Duration::MAX`, removes the
 corresponding limit. Deadline checks do not interrupt an ongoing write,
@@ -138,11 +145,12 @@ but must not change them.
 
 ## Recovery after an unconfirmed reset
 
-`SeqNumResetFailed` means the local counters were reset but execution by the
-peer was not confirmed. Examples include a refusing Logout, invalid
-acknowledgement, timeout, transport failure or an explicit disconnect before
-confirmation. This reason takes precedence over the immediate cause because
-the peers may now use incompatible numbering.
+`SessionEnd::reset_unconfirmed` means the local counters were reset but
+execution by the peer was not confirmed. Examples include a refusing Logout,
+invalid acknowledgement, timeout, transport failure or an explicit disconnect
+before confirmation. The report preserves its context and termination
+alongside this flag: the immediate cause remains visible, while the flag warns
+that the peers may now use incompatible numbering.
 
 After the connection has fully ended, choose an agreed recovery method:
 
@@ -156,8 +164,8 @@ After the connection has fully ended, choose an agreed recovery method:
 
 Resetting only one side offline does not repair an unconfirmed exchange.
 Coordinate both sides before resuming (Session Layer Section 4.1; Session
-Test Cases Scenario 9). A `ResetPreparationTimeout` needs no such recovery:
-the local reset did not happen. An application refusing a valid reset
+Test Cases Scenario 9). A `TimeoutKind::ResetPreparation` needs no such
+recovery: the local reset did not happen. An application refusing a valid reset
 acknowledgement also does not make the peer's numbering unconfirmed.
 
 ## Storage failures
@@ -172,5 +180,5 @@ The backend/application must restore consistent state before reuse after an
 uncertain mutation. Returning the storage object to its owner does not repair
 or validate it, and reconnect is not automatically blocked. The session does
 not retry, roll back a backend failure, or reset automatically. An earlier
-disconnect reason remains authoritative; an unconfirmed local reset still
-uses `SeqNumResetFailed` even if storage failure ends the connection.
+decision to end remains the report's context. An unconfirmed local reset is
+still recorded in `reset_unconfirmed` if a storage failure ends the connection.

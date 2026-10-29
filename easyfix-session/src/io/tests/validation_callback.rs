@@ -20,17 +20,20 @@ use super::{
 };
 use crate::{
     InputError, ValidationError,
-    application::{DisconnectReason, InputAction, SessionHandler},
+    application::{EndContext, InputAction, SessionEnd, SessionEndReason, SessionHandler},
     io::{ControlMsg, InputStream, SessionOpening, sender::Sender, session_loop},
     messages_storage::MessagesStorage,
     session_id::SessionId,
-    test_helpers::{self, DEFAULT_MAX_MESSAGE_SIZE, FailingStorage, FailureTiming, StorageOp},
+    test_helpers::{
+        self, DEFAULT_MAX_MESSAGE_SIZE, FailingStorage, FailureTiming, SessionEndSnapshot,
+        StorageOp, TerminationSnapshot,
+    },
 };
 
 #[derive(Debug, PartialEq, Eq)]
 enum Event {
     Ready,
-    End(DisconnectReason),
+    End(SessionEndSnapshot),
     AdminIn(MsgTypeField, SeqNum),
     AppIn(SeqNum),
     AdminOut(MsgTypeField),
@@ -45,7 +48,8 @@ impl SessionHandler<Message> for RecordingHandler {
         self.0.send(Event::Ready).unwrap();
     }
 
-    async fn on_session_end(&mut self, _: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         self.0.send(Event::End(reason)).unwrap();
     }
 
@@ -150,7 +154,7 @@ impl Session {
         test_helpers::read_one_message(&mut self.wire, &mut self.buffer).await
     }
 
-    async fn finish(mut self, reason: DisconnectReason) {
+    async fn finish(mut self, reason: SessionEndSnapshot) {
         assert_eq!(self.events.recv().await.unwrap(), Event::End(reason));
         self.task.await.unwrap();
         assert_matches!(self.events.try_recv(), Err(TryRecvError::Disconnected));
@@ -158,8 +162,12 @@ impl Session {
 
     async fn stop(self) {
         self.control.send(ControlMsg::Disconnect).await.unwrap();
-        self.finish(DisconnectReason::ApplicationForcedDisconnect)
-            .await;
+        self.finish(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false,
+        })
+        .await;
     }
 }
 
@@ -230,7 +238,13 @@ async fn invalid_first_logon_reports_error_before_logout_without_ready() {
                 SessionMessage::msg_type(&*session.read().await),
                 MsgTypeBase::Logout
             );
-            session.finish(DisconnectReason::InvalidLogonState).await;
+            session
+                .finish(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                })
+                .await;
         })
         .await;
 }
@@ -393,7 +407,13 @@ async fn validation_error_is_reported_even_when_reaction_fails_in_storage() {
                     ValidationError::MissingOrigSendingTime
                 )
             );
-            session.finish(DisconnectReason::StorageError).await;
+            session
+                .finish(SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::StorageError),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false,
+                })
+                .await;
             assert!(trace.borrow().failed);
         })
         .await;

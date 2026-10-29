@@ -1,5 +1,5 @@
 use std::{
-    assert_matches, borrow::Cow, cell::Cell, error::Error as StdError, fmt, future,
+    assert_matches, borrow::Cow, cell::Cell, error::Error as StdError, fmt, future, io::ErrorKind,
     net::SocketAddr, rc::Rc,
 };
 
@@ -24,12 +24,16 @@ use tokio::{
 use super::{Initiator, InitiatorError, SessionStart};
 use crate::{
     Acceptor, AcceptorError, SendError, Sender, SessionId,
-    application::{DisconnectReason, InputAction, SessionContext, SessionHandler},
+    application::{
+        EndContext, InputAction, IoOperation, SessionContext, SessionEnd, SessionEndReason,
+        SessionHandler,
+    },
     messages_storage::{InMemoryStorage, MessagesStorage},
     settings::SessionSettings,
     test_helpers::{
         self, CountedResetMessage, FailingStorage, FailureTiming, InjectedStorageError,
-        ObservedStorage, StorageOp, nz_seq, reset_support_probe_count,
+        ObservedStorage, SessionEndSnapshot, StorageOp, TerminationSnapshot, nz_seq,
+        reset_support_probe_count,
     },
 };
 
@@ -478,14 +482,14 @@ enum StartEvent {
     Ready(Sender<Message>),
     Admin(Box<Message>),
     App(Box<Message>),
-    End(DisconnectReason),
+    End(SessionEndSnapshot),
 }
 
 enum CapabilityEvent {
     Ready(Sender<CountedResetMessage>),
     Logon(SeqNum, Option<bool>),
     App(SeqNum),
-    End(DisconnectReason),
+    End(SessionEndSnapshot),
 }
 
 impl fmt::Debug for CapabilityEvent {
@@ -510,7 +514,8 @@ impl SessionHandler<CountedResetMessage> for CapabilityHandler {
         self.0.send(CapabilityEvent::Ready(sender)).unwrap();
     }
 
-    async fn on_session_end(&mut self, _: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         self.0.send(CapabilityEvent::End(reason)).unwrap();
     }
 
@@ -601,8 +606,8 @@ async fn unsupported_running_reset_preserves_both_sessions_and_reuses_registrati
             assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::App(seq) if seq == opening_seq + 1);
             assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::App(seq) if seq == opening_seq + 1);
             initiator.disconnect().await.unwrap();
-            assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::ApplicationForcedDisconnect));
-            assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::End(DisconnectReason::Disconnected));
+            assert_matches!(ini_events.recv().await.unwrap(), CapabilityEvent::End(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
+            assert_matches!(acc_events.recv().await.unwrap(), CapabilityEvent::End(SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
             ini_task.await.unwrap().unwrap(); acc_task.await.unwrap();
             for snapshot in [&ini_snapshot, &acc_snapshot] {
                 let snapshot = snapshot.borrow();
@@ -674,7 +679,8 @@ impl SessionHandler<Message> for StartHandler {
         self.events.send(StartEvent::Ready(sender)).unwrap();
     }
 
-    async fn on_session_end(&mut self, _id: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _id: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         self.events.send(StartEvent::End(reason)).unwrap();
     }
 
@@ -763,7 +769,11 @@ async fn initiator_storage_failure_returns_backend_and_clears_active_handle() {
                 };
                 assert!(matches!(
                     start_event(&mut received).await,
-                    StartEvent::End(DisconnectReason::StorageError)
+                    StartEvent::End(SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::StorageError),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    })
                 ));
                 timeout(Duration::from_secs(5), task)
                     .await
@@ -849,7 +859,11 @@ async fn acceptor_storage_failure_returns_backend_and_releases_registration() {
                 };
                 assert!(matches!(
                     start_event(&mut received).await,
-                    StartEvent::End(DisconnectReason::StorageError)
+                    StartEvent::End(SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::StorageError),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    })
                 ));
                 timeout(Duration::from_secs(5), task)
                     .await
@@ -1037,7 +1051,12 @@ async fn consumed_reset_ack_number_stops_the_next_input() {
                     let StartEvent::Admin(logout) = start_event(&mut events).await else { panic!("expected refusal callback") };
                     assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
                 }
-                assert!(matches!(start_event(&mut events).await, StartEvent::End(DisconnectReason::SeqNumResetFailed)));
+                let StartEvent::End(end) = start_event(&mut events).await else { panic!("expected session end") };
+                assert_eq!(end, SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: true,
+                });
                 assert!(events.try_recv().is_err());
                 let saved = initiator.inner.storage.borrow();
                 let storage = saved.as_ref().unwrap();
@@ -1064,7 +1083,7 @@ async fn unsolicited_reset_flag_in_ack_is_refused() {
         let logout = test_helpers::read_one_message(&mut peer, &mut buf).await;
         assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
             if logout.text.as_deref() == Some(fix_str!("Unsolicited ResetSeqNumFlag=Y in Logon response")));
-        assert!(matches!(start_event(&mut events).await, StartEvent::End(DisconnectReason::InvalidLogonState)));
+        assert!(matches!(start_event(&mut events).await, StartEvent::End(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false })));
         task.await.unwrap().unwrap();
         assert_eq!(initiator.inner.storage.borrow().as_ref().unwrap().next_target_msg_seq_num().get(), 1);
         assert!(events.try_recv().is_err());
@@ -1094,7 +1113,11 @@ async fn accepted_reset_refusal_waits_for_eof_and_ignores_a_buffered_ack() {
                 peer.shutdown().await.unwrap();
                 assert!(matches!(
                     start_event(&mut events).await,
-                    StartEvent::End(DisconnectReason::SeqNumResetFailed)
+                    StartEvent::End(SessionEndSnapshot {
+                        context: EndContext::RemoteLogout,
+                        termination: TerminationSnapshot::PeerClose,
+                        reset_unconfirmed: true
+                    })
                 ));
                 task.await.unwrap().unwrap();
                 assert!(events.try_recv().is_err());
@@ -1138,20 +1161,20 @@ async fn confirmed_reset_ack_preserves_application_decisions_in_the_io_loop() {
                     next_out += 1;
                 }
                 let reason = match decision {
-                    1 | 3 | 4 => DisconnectReason::ApplicationForcedDisconnect,
+                    1 | 3 | 4 => SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false },
                     2 => {
                         assert!(!task.is_finished());
                         assert!(events.try_recv().is_err());
                         peer.write_all(&test_helpers::serialize_message(&test_helpers::logout(2))).await.unwrap();
                         let StartEvent::Admin(logout) = start_event(&mut events).await else { panic!("expected Logout ACK callback") };
                         assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
-                        DisconnectReason::LocalRequestedLogout
+                        SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
                     }
                     _ => {
                         assert!(!task.is_finished());
                         assert!(events.try_recv().is_err());
                         initiator.disconnect().await.unwrap();
-                        DisconnectReason::ApplicationForcedDisconnect
+                        SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
                     }
                 };
                 assert!(matches!(start_event(&mut events).await, StartEvent::End(actual) if actual == reason));
@@ -1238,11 +1261,19 @@ async fn manual_reset_session_then_reconnect() {
                 acc_task.await.unwrap();
                 assert!(matches!(
                     start_event(&mut ini_events).await,
-                    StartEvent::End(DisconnectReason::ApplicationForcedDisconnect)
+                    StartEvent::End(SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false
+                    })
                 ));
                 assert!(matches!(
                     start_event(&mut acc_events).await,
-                    StartEvent::End(DisconnectReason::Disconnected)
+                    StartEvent::End(SessionEndSnapshot {
+                        context: EndContext::Established,
+                        termination: TerminationSnapshot::PeerClose,
+                        reset_unconfirmed: false
+                    })
                 ));
                 let mut storage = initiator.inner.storage.borrow_mut().take().unwrap();
                 assert_eq!(storage.next_sender_msg_seq_num().get(), expected + 1);
@@ -1420,11 +1451,21 @@ async fn reset_then_resume_against_accepting_acceptor() {
                     acc_task.await.unwrap();
                     assert!(matches!(
                         start_event(&mut ini_events).await,
-                        StartEvent::End(DisconnectReason::ApplicationForcedDisconnect)
+                        StartEvent::End(SessionEndSnapshot {
+                            context: EndContext::Closing(
+                                SessionEndReason::ApplicationForcedDisconnect
+                            ),
+                            termination: TerminationSnapshot::LocalClose,
+                            reset_unconfirmed: false
+                        })
                     ));
                     assert!(matches!(
                         start_event(&mut acc_events).await,
-                        StartEvent::End(DisconnectReason::Disconnected)
+                        StartEvent::End(SessionEndSnapshot {
+                            context: EndContext::Established,
+                            termination: TerminationSnapshot::PeerClose,
+                            reset_unconfirmed: false
+                        })
                     ));
                     let mut storage = initiator.inner.storage.borrow_mut().take().unwrap();
                     assert_eq!(
@@ -1504,8 +1545,20 @@ async fn reset_at_connect_refusal(local_logout: bool) {
         assert_eq!(refusal.header.msg_seq_num, 40);
         assert_matches!(refusal.try_as_admin(), Some(AdminBase::Logout(logout))
             if logout.text.as_deref() == Some(fix_str!("Resetting the sequence number upon FIX connection establishment is not supported")));
-        assert!(matches!(start_event(&mut ini_events).await, StartEvent::End(DisconnectReason::SeqNumResetFailed)));
-        assert!(matches!(start_event(&mut acc_events).await, StartEvent::End(DisconnectReason::InvalidLogonState)));
+        let StartEvent::End(end) = start_event(&mut ini_events).await else { panic!("expected session end") };
+        assert!(end.reset_unconfirmed);
+        assert_eq!(end.context, if local_logout { EndContext::LocalLogout } else { EndContext::RemoteLogout });
+        if local_logout {
+            assert_eq!(end.termination, TerminationSnapshot::LocalClose);
+        } else {
+            // TCP can report a reset when the refusing peer closes with our
+            // acknowledgement unread; both retain the remote Logout context.
+            assert_matches!(end.termination,
+                TerminationSnapshot::PeerClose | TerminationSnapshot::IoError {
+                    operation: IoOperation::Read, kind: ErrorKind::ConnectionReset,
+                });
+        }
+        assert!(matches!(start_event(&mut acc_events).await, StartEvent::End(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false })));
         ini_task.await.unwrap().unwrap();
         acc_task.await.unwrap();
         let mut storage = initiator.inner.storage.borrow_mut().take().unwrap();

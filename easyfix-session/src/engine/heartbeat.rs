@@ -12,7 +12,7 @@ use easyfix_core::{
 use tracing::{error, warn};
 
 use super::{FatalError, HandlerResult, LogonState, SessionEngine, ValidationResult};
-use crate::{application::DisconnectReason, messages_storage::MessagesStorage};
+use crate::{application::SessionEndReason, messages_storage::MessagesStorage};
 
 impl<M: SessionMessage> SessionEngine<M> {
     /// Hold new keep-alive TestRequests throughout preparation and ACK wait.
@@ -198,7 +198,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         if self.state.grace_period_test_req_ids.len() >= limit {
             warn!("Grace period is over");
             self.push_logout(None, Some(Cow::Borrowed(fix_str!("Heartbeat timeout"))));
-            self.begin_disconnect(DisconnectReason::HeartbeatTimeout);
+            self.begin_disconnect(SessionEndReason::HeartbeatTimeout);
             return;
         }
 

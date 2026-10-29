@@ -11,7 +11,7 @@ use tracing::{error, warn};
 
 use super::{FatalError, HeaderFill, PendingOutput, SendFailure, SerializeFailure, SessionEngine};
 use crate::{
-    application::DisconnectReason,
+    application::SessionEndReason,
     messages_storage::{MessagesStorage, StoreError},
 };
 
@@ -137,7 +137,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             .checked_add(1)
             .filter(|_| msg.msg_seq_num() < SeqNum::MAX)
         else {
-            self.begin_disconnect(DisconnectReason::SeqNumExhausted);
+            self.begin_disconnect(SessionEndReason::SeqNumExhausted);
             return Ok(false);
         };
         let mut fill = HeaderFill::default();
@@ -151,7 +151,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             })?;
             if next.get() == SeqNum::MAX {
                 error!("Outgoing sequence numbers exhausted; a sequence number reset is required");
-                self.begin_disconnect(DisconnectReason::SeqNumExhausted);
+                self.begin_disconnect(SessionEndReason::SeqNumExhausted);
             }
         }
         // SendingTime - set to now if not pre-set (MIN_UTC means not set)

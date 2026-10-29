@@ -10,7 +10,7 @@ use easyfix_test_messages::Message;
 
 use super::support::assert_msg_type;
 use crate::{
-    application::DisconnectReason,
+    application::{EndContext, SessionEndReason},
     engine::InputResult,
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -51,8 +51,8 @@ fn on_deserialize_error_logout_missing_seq_num() {
     // for the app callback.
     assert_matches!(result, InputResult::Error(_));
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::MsgSeqNumNotFound)
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumNotFound))
     );
     let logout_msg = take_admin(&mut engine);
     assert_msg_type(&logout_msg, MsgTypeBase::Logout);

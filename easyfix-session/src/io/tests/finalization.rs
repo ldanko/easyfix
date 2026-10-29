@@ -11,7 +11,9 @@ use tokio::io;
 
 use super::wire::wire_bytes;
 use crate::{
-    application::{DisconnectReason, InputAction, SessionHandler},
+    application::{
+        EndContext, InputAction, SessionEnd, SessionEndReason, SessionHandler, Termination,
+    },
     engine::PendingOutput,
     io::{
         OutputError, drain_and_flush_admin_output, drain_and_flush_app_sends, finalize_session,
@@ -20,7 +22,7 @@ use crate::{
     messages_storage::MessagesStorage,
     session_id::SessionId,
     test_helpers,
-    test_helpers::{EngineBuilder, nz_seq},
+    test_helpers::{EngineBuilder, SessionEndSnapshot, TerminationSnapshot, nz_seq},
 };
 
 /// Application that records the outgoing callbacks and the session-end reason.
@@ -28,7 +30,7 @@ use crate::{
 struct RecordingHandler {
     app_msg_out: Vec<MsgTypeField>,
     admin_msg_out: Vec<MsgTypeField>,
-    session_end: Option<DisconnectReason>,
+    session_end: Option<SessionEndSnapshot>,
 }
 
 impl SessionHandler<Message> for RecordingHandler {
@@ -36,7 +38,8 @@ impl SessionHandler<Message> for RecordingHandler {
 
     async fn on_session_ready(&mut self, _: &SessionId, _: sender::Sender<Message>) {}
 
-    async fn on_session_end(&mut self, _: &SessionId, reason: DisconnectReason) {
+    async fn on_session_end(&mut self, _: &SessionId, reason: SessionEnd) {
+        let reason = SessionEndSnapshot::from(&reason);
         self.session_end = Some(reason);
     }
 
@@ -68,8 +71,12 @@ async fn missing_record_at_max_blocks_all_pending_output() {
         );
     }
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::StorageError)
+        engine.session_end().map(SessionEndSnapshot::from),
+        Some(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::StorageError),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })
     );
     assert!(wire_bytes(writer, reader).await.is_empty());
 }
@@ -92,13 +99,20 @@ async fn finalize_drain_drops_what_it_cannot_stamp() {
     let mut handler = RecordingHandler::default();
 
     finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut app_rx);
-    finalize_session(&engine, &mut handler).await;
+    finalize_session(&mut engine, &mut handler).await;
 
     assert!(
         handler.app_msg_out.is_empty(),
         "an unstampable message must not reach the outgoing callback"
     );
-    assert_eq!(handler.session_end, Some(DisconnectReason::SeqNumExhausted));
+    assert_eq!(
+        handler.session_end,
+        Some(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })
+    );
 }
 
 /// The reason that started the teardown is the one reported, whichever side
@@ -107,7 +121,14 @@ async fn finalize_drain_drops_what_it_cannot_stamp() {
 /// gives way to the loop's default once it stands.
 #[tokio::test]
 async fn finalize_reports_the_reason_that_started_the_teardown() {
-    for loop_reason in [Some(DisconnectReason::RemoteRequestedLogout), None] {
+    for loop_reason in [
+        Some(SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false,
+        }),
+        None,
+    ] {
         let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
         storage
             .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX - 1))
@@ -115,8 +136,8 @@ async fn finalize_reports_the_reason_that_started_the_teardown() {
         let (mut writer, _reader) = io::duplex(4096);
         let mut handler = RecordingHandler::default();
 
-        if let Some(reason) = loop_reason {
-            engine.begin_disconnect(reason);
+        if loop_reason.is_some() {
+            engine.end_transport(Termination::PeerClose);
         }
         // The last outgoing message consumes the last sequence number, so the
         // engine forms `SeqNumExhausted` on its own.
@@ -128,11 +149,15 @@ async fn finalize_reports_the_reason_that_started_the_teardown() {
 
         let (_tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
         finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut app_rx);
-        finalize_session(&engine, &mut handler).await;
+        finalize_session(&mut engine, &mut handler).await;
 
         assert_eq!(
             handler.session_end,
-            Some(loop_reason.unwrap_or(DisconnectReason::SeqNumExhausted)),
+            Some(loop_reason.unwrap_or(SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            })),
             "loop_reason={loop_reason:?}"
         );
     }
@@ -187,8 +212,12 @@ async fn admin_drain_sends_the_last_usable_message_then_stops() {
     assert_eq!(handler.admin_msg_out, vec![MsgTypeBase::Heartbeat]);
     assert!(engine.should_disconnect());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(SessionEndSnapshot::from),
+        Some(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })
     );
     let buf = wire_bytes(writer, reader).await;
     let wire = from_utf8(&buf).expect("ascii");
@@ -237,8 +266,12 @@ async fn app_send_drain_stops_at_the_message_it_cannot_stamp() {
     );
     assert!(engine.should_disconnect());
     assert_eq!(
-        engine.disconnect_reason(),
-        Some(DisconnectReason::SeqNumExhausted)
+        engine.session_end().map(SessionEndSnapshot::from),
+        Some(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })
     );
     let buf = wire_bytes(writer, reader).await;
     let wire = from_utf8(&buf).expect("ascii");

@@ -29,8 +29,11 @@ use super::{
     wire::build_order_missing_symbol_bytes,
 };
 use crate::{
-    application::DisconnectReason, io::ControlMsg, messages_storage::MessagesStorage, test_helpers,
-    test_helpers::nz_seq,
+    application::{EndContext, SessionEndReason, TimeoutKind},
+    io::ControlMsg,
+    messages_storage::MessagesStorage,
+    test_helpers,
+    test_helpers::{SessionEndSnapshot, TerminationSnapshot, nz_seq},
 };
 
 #[tokio::test(start_paused = true)]
@@ -74,7 +77,7 @@ async fn unrepresentable_reset_budgets_leave_deadlines_unarmed() {
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
             } else {
                 time::advance(Duration::from_secs(9)).await;
                 task::yield_now().await; assert!(!peer.task.is_finished()); peer.assert_silent();
@@ -82,7 +85,7 @@ async fn unrepresentable_reset_budgets_leave_deadlines_unarmed() {
                 let logout = peer.read().await;
                 assert_eq!(logout.msg_seq_num(), 2);
                 assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::SeqNumResetFailed));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)), termination: TerminationSnapshot::Timeout(TimeoutKind::Logon), reset_unconfirmed: true }));
             }
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), if acknowledge { 2 } else { 3 });
@@ -126,7 +129,7 @@ async fn reset_ack_budget_includes_the_logon_write_and_starts_after_preparation(
                 peer.send(&test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None)).await;
                 assert_matches!(peer.events.recv().await.unwrap(), TestEvent::AdminMsgIn(MsgTypeBase::Logon));
                 peer.control.send(ControlMsg::Disconnect).await.unwrap();
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
             } else {
                 let before_deadline = 18 - (9 + write_delay);
                 time::advance(Duration::from_secs(before_deadline)).await;
@@ -136,7 +139,7 @@ async fn reset_ack_budget_includes_the_logon_write_and_starts_after_preparation(
                 assert_eq!(started.elapsed(), Duration::from_secs(19));
                 assert_eq!(logout.msg_seq_num(), 2);
                 assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::SeqNumResetFailed));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)), termination: TerminationSnapshot::Timeout(TimeoutKind::Logon), reset_unconfirmed: true }));
                 if ack_at.is_some() {
                     time::advance(Duration::from_secs(1)).await; assert!(peer.task.is_finished());
                     let late_ack = test_helpers::logon_with_options(1, fix_str!("TARGET"), fix_str!("SENDER"), 0, Some(true), None);
@@ -181,7 +184,7 @@ async fn reset_deadline_after_read_prevents_late_message_and_decode_dispatch() {
                 assert_eq!(completed_late_reads.get(), 1);
                 assert_eq!(logout.msg_seq_num(), 3);
                 assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ResetPreparationTimeout));
+                assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::ResetPreparation)), termination: TerminationSnapshot::Timeout(TimeoutKind::ResetPreparation), reset_unconfirmed: false }));
                 let mut storage = peer.task.await.unwrap();
                 assert_eq!(storage.next_sender_msg_seq_num().get(), 4);
                 assert_eq!(storage.next_target_msg_seq_num().get(), 2);
@@ -224,7 +227,7 @@ async fn delayed_reset_ack_keeps_short_heartbeat_timers_silent() {
         assert_eq!(order.msg_seq_num(), 2);
         assert_matches!(&*order.body, Body::NewOrderSingle(_));
         peer.control.send(ControlMsg::Disconnect).await.unwrap();
-        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(DisconnectReason::ApplicationForcedDisconnect));
+        assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
         let storage = peer.task.await.unwrap();
         assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
         assert_eq!(storage.next_target_msg_seq_num().get(), 2);
@@ -259,7 +262,7 @@ async fn running_session_reset_times_out_without_heartbeat_interval() {
             let logout = peer.read().await;
             assert_eq!(logout.msg_seq_num(), if answer_probe { 2 } else { 3 });
             assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(reason) if reason == if answer_probe { DisconnectReason::SeqNumResetFailed } else { DisconnectReason::ResetPreparationTimeout });
+            assert_matches!(peer.events.recv().await.unwrap(), TestEvent::SessionEnd(reason) if reason == if answer_probe { SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)), termination: TerminationSnapshot::Timeout(TimeoutKind::Logon), reset_unconfirmed: true } } else { SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::ResetPreparation)), termination: TerminationSnapshot::Timeout(TimeoutKind::ResetPreparation), reset_unconfirmed: false } });
             let mut storage = peer.task.await.unwrap();
             assert_eq!(storage.next_sender_msg_seq_num().get(), if answer_probe { 3 } else { 4 });
             assert_eq!(storage.next_target_msg_seq_num().get(), if answer_probe { 1 } else { 2 });

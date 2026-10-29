@@ -17,9 +17,9 @@
 use std::{borrow::Cow, cell::Cell, net::SocketAddr, rc::Rc};
 
 use easyfix_session::{
-    Acceptor, DisconnectReason, InMemoryStorage, InputAction, Sender, SerializeError,
-    SessionContext, SessionHandler, SessionId, SessionMessage, ShutdownMode, TcpConnection,
-    basic_types::FixStr, fix_str,
+    Acceptor, InMemoryStorage, InputAction, Sender, SerializeError, SessionContext, SessionEnd,
+    SessionHandler, SessionId, SessionMessage, ShutdownMode, TcpConnection, basic_types::FixStr,
+    fix_str,
 };
 use session_example::{
     Body, Message, build_business_message_reject_for, build_exec_report_for,
@@ -74,8 +74,8 @@ impl SessionHandler<Message> for EchoHandler {
         self.sender = Some(sender);
     }
 
-    async fn on_session_end(&mut self, session_id: &SessionId, reason: DisconnectReason) {
-        info!(%session_id, ?reason, "session end");
+    async fn on_session_end(&mut self, session_id: &SessionId, end: SessionEnd) {
+        info!(%session_id, ?end, "session end");
         // The Sender is dead once the session ends; a reconnect brings a
         // fresh handler with a fresh one.
         self.sender = None;

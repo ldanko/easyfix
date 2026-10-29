@@ -114,9 +114,11 @@ pub struct SessionSettings {
 
     /// How long a graceful termination may wait on the peer. For a Logout of
     /// ours, the wait for its `Logout<5>` acknowledgement
-    /// ([`DisconnectReason::LocalRequestedLogoutTimeout`] on expiry); for a
+    /// ([`TimeoutKind::LogoutResponse`] on expiry); for a
     /// Logout of the peer's, the wait for it to close the connection after
-    /// our acknowledgement ([`DisconnectReason::RemoteRequestedLogoutTimeout`]).
+    /// our acknowledgement ([`TimeoutKind::PeerClose`]). Expiry records the
+    /// matching [`Termination::Timeout`]. The peer-close timeout retains
+    /// [`EndContext::RemoteLogout`].
     /// Test Cases Scenario 13(b) allows 10 seconds for the latter.
     /// The local Logout reply budget starts after the complete message is
     /// written, excluding queueing and replay time (Test Cases Scenario 12).
@@ -126,14 +128,16 @@ pub struct SessionSettings {
     /// A value too large for the clock to represent (such as
     /// [`Duration::MAX`]) means no limit.
     ///
-    /// [`DisconnectReason::LocalRequestedLogoutTimeout`]: crate::DisconnectReason::LocalRequestedLogoutTimeout
-    /// [`DisconnectReason::RemoteRequestedLogoutTimeout`]: crate::DisconnectReason::RemoteRequestedLogoutTimeout
+    /// [`TimeoutKind::LogoutResponse`]: crate::TimeoutKind::LogoutResponse
+    /// [`TimeoutKind::PeerClose`]: crate::TimeoutKind::PeerClose
+    /// [`EndContext::RemoteLogout`]: crate::EndContext::RemoteLogout
+    /// [`Termination::Timeout`]: crate::Termination::Timeout
     pub auto_disconnect_after_no_logout: Duration,
 
     /// How long the Logon handshake may take, measured from the start of the
     /// session. On expiry the connection is dropped
-    /// ([`DisconnectReason::LogonTimeout`]) with no `Logout<5>` - the handshake
-    /// never completed, so there is no session to end.
+    /// with [`Termination::Timeout`] carrying [`TimeoutKind::Logon`], without
+    /// a `Logout<5>` exchange because the handshake never completed.
     ///
     /// Covers an initiator awaiting the peer's `Logon<A>` acknowledgement and
     /// an acceptor whose handshake stalled - notably when the application
@@ -150,7 +154,8 @@ pub struct SessionSettings {
     /// Also bounds acknowledgement of an in-session reset; see
     /// [reset time limits](crate::session_reset#time-limits).
     ///
-    /// [`DisconnectReason::LogonTimeout`]: crate::DisconnectReason::LogonTimeout
+    /// [`Termination::Timeout`]: crate::Termination::Timeout
+    /// [`TimeoutKind::Logon`]: crate::TimeoutKind::Logon
     /// [`auto_disconnect_after_no_logon_received`]: crate::AcceptorSettings::auto_disconnect_after_no_logon_received
     //
     // Not optional, and not derived from `heartbeat_interval`: with
@@ -179,7 +184,7 @@ pub struct SessionSettings {
     /// dictionary's `Logon<A>` carries that field, and enforced on inbound
     /// messages either way: one declaring more in `BodyLength(9)` is refused
     /// before its body is read, with a `Logout<5>` naming the sizes in
-    /// `Text(58)` and [`DisconnectReason::MessageTooLarge`] (FIX Session
+    /// `Text(58)` and [`SessionEndReason::MessageTooLarge`] (FIX Session
     /// Layer §4.3.6). Before a connection is matched to a session,
     /// [`AcceptorSettings::max_first_message_size`] bounds the first message
     /// instead.
@@ -189,7 +194,7 @@ pub struct SessionSettings {
     /// `SessionHandler::on_admin_msg_in`, which may answer `InputAction::Logout`
     /// to refuse it, as with [`heartbeat_interval`](Self::heartbeat_interval).
     ///
-    /// [`DisconnectReason::MessageTooLarge`]: crate::DisconnectReason::MessageTooLarge
+    /// [`SessionEndReason::MessageTooLarge`]: crate::SessionEndReason::MessageTooLarge
     /// [`AcceptorSettings::max_first_message_size`]: AcceptorSettings::max_first_message_size
     //
     // Because 383 states the *sender's own* receive capacity, a peer
@@ -312,7 +317,7 @@ pub struct SessionSettings {
     /// Maximum number of outbound messages allowed to sit in the per-session
     /// staging queue awaiting transmission. `None` means unlimited.
     /// When the backlog exceeds this, the
-    /// session is hard-disconnected ([`DisconnectReason::SlowConsumer`]) and
+    /// session is hard-disconnected ([`SessionEndReason::SlowConsumer`]) and
     /// the still-queued messages are stored for resend on reconnect when
     /// history is enabled and storage is healthy, otherwise discarded.
     ///
@@ -321,14 +326,14 @@ pub struct SessionSettings {
     /// Producers must yield for the cap to be checked; see
     /// [`max_outbound_lag`](Self::max_outbound_lag).
     ///
-    /// [`DisconnectReason::SlowConsumer`]: crate::DisconnectReason::SlowConsumer
+    /// [`SessionEndReason::SlowConsumer`]: crate::SessionEndReason::SlowConsumer
     //
     // `NonZeroUsize` makes the ">= 1" invariant type-level: a `0` cap would
     // evict at the first staged message.
     pub max_outbound_queued_messages: Option<NonZeroUsize>,
 
     /// Maximum age of the oldest un-transmitted message before the session is
-    /// hard-disconnected ([`DisconnectReason::SlowConsumer`]). `None` =
+    /// hard-disconnected ([`SessionEndReason::SlowConsumer`]). `None` =
     /// disabled. Bounds *staleness* - the trading-relevant knob - directly,
     /// rather than via a sequence-number delta. It is suspended during
     /// a peer resend and for one `max_outbound_lag` grace window afterwards, so
@@ -345,7 +350,7 @@ pub struct SessionSettings {
     /// (one that yields between bursts); source-side load-shedding driven by
     /// [`Sender::backlog_len`] is the real backstop under global overload.
     ///
-    /// [`DisconnectReason::SlowConsumer`]: crate::DisconnectReason::SlowConsumer
+    /// [`SessionEndReason::SlowConsumer`]: crate::SessionEndReason::SlowConsumer
     /// [`Sender::send`]: crate::Sender::send
     /// [`Sender::backlog_len`]: crate::Sender::backlog_len
     pub max_outbound_lag: Option<Duration>,
@@ -370,8 +375,10 @@ pub struct SessionSettings {
 
     /// Maximum preparation time for a requested in-session reset, counted
     /// from acceptance of the request. Defaults to 30 seconds. Expiry ends
-    /// the connection with [`ResetPreparationTimeout`](crate::DisconnectReason::ResetPreparationTimeout)
-    /// before resetting the local counters or history.
+    /// the connection for [`SessionEndReason::Timeout`](crate::SessionEndReason::Timeout)
+    /// carrying [`TimeoutKind::ResetPreparation`](crate::TimeoutKind::ResetPreparation),
+    /// before resetting the local counters or history. A failure sending the
+    /// farewell Logout is reported separately in `SessionEnd::termination`.
     ///
     /// A duration the clock cannot represent means no limit. Ongoing IO and
     /// callbacks are not cancelled. The subsequent Logon acknowledgement has
