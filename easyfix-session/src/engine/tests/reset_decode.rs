@@ -452,7 +452,7 @@ async fn known_wire_type_without_a_header_preserves_the_reset_state_verdict() {
                         && *reason == SessionRejectReasonBase::TagAppearsMoreThanOnce);
                     assert_matches!(
                         engine.on_deserialize_error(error, &mut storage).unwrap(),
-                        InputResult::Error(_)
+                        InputResult::Handled
                     );
                     assert_eq!(
                         engine.session_end().map(|end| end.context),

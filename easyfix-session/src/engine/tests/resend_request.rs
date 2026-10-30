@@ -324,7 +324,7 @@ fn broken_too_high_requests_through_even_with_queued_messages() {
         SessionRejectReasonBase::ValueIsIncorrect,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     assert_resend_request(&mut engine, 5, 9);
 }
 
@@ -350,7 +350,7 @@ fn broken_too_high_after_recovered_gap_requests_resend() {
         SessionRejectReasonBase::ValueIsIncorrect,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     assert_resend_request(&mut engine, 4, 8);
     assert_eq!(storage.next_target_msg_seq_num().get(), 4);
 }

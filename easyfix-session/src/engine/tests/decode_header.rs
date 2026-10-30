@@ -38,7 +38,7 @@ fn on_deserialize_error_with_header_too_low_logs_out_and_disconnects() {
         SessionRejectReasonBase::IncorrectDataFormatForValue,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(_));
+    assert_matches!(result, InputResult::Handled);
     assert_eq!(
         engine.session_end().map(|end| end.context),
         Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
@@ -69,7 +69,8 @@ fn on_deserialize_error_with_header_duplicate_is_ignored() {
     storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
     let mut header = test_helpers::inbound_header(1);
     header.poss_dup_flag = Some(true);
-    header.orig_sending_time = Some(timestamp_offset_secs(-10));
+    header.sending_time = timestamp_offset_secs(-3600);
+    header.orig_sending_time = Some(timestamp_offset_secs(-3610));
     let error = test_helpers::body_reject_error(
         fix_str!("D"),
         header,
@@ -77,7 +78,7 @@ fn on_deserialize_error_with_header_duplicate_is_ignored() {
         SessionRejectReasonBase::IncorrectDataFormatForValue,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     assert!(!engine.should_disconnect());
     assert!(engine.take_admin_output().is_none());
     assert_eq!(storage.next_target_msg_seq_num().get(), 5);
@@ -100,7 +101,7 @@ fn on_deserialize_error_with_header_poss_dup_missing_orig_time_rejects() {
         SessionRejectReasonBase::IncorrectDataFormatForValue,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     let reject_msg = take_admin(&mut engine);
     assert_msg_type(&reject_msg, MsgTypeBase::Reject);
     let AdminBase::Reject(ref reject) = as_admin(&reject_msg) else {
@@ -127,14 +128,16 @@ fn on_deserialize_error_with_header_poss_dup_missing_orig_time_rejects() {
 fn on_deserialize_error_with_header_too_high_requests_resend_through_failed_seq() {
     let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
     storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
+    let mut header = test_helpers::inbound_header(9);
+    header.sending_time = timestamp_offset_secs(-3600);
     let error = test_helpers::body_reject_error(
         fix_str!("D"),
-        test_helpers::inbound_header(9),
+        header,
         Some(44),
         SessionRejectReasonBase::ValueIsIncorrect,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     let rr_msg = take_admin(&mut engine);
     assert_msg_type(&rr_msg, MsgTypeBase::ResendRequest);
     let AdminBase::ResendRequest(ref rr) = as_admin(&rr_msg) else {
@@ -253,7 +256,7 @@ fn on_deserialize_error_with_header_comp_id_mismatch_escalates() {
         SessionRejectReasonBase::ValueIsIncorrect,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(_));
+    assert_matches!(result, InputResult::Handled);
     assert_eq!(
         engine.session_end().map(|end| end.context),
         Some(EndContext::Closing(SessionEndReason::InvalidCompId))
@@ -288,7 +291,7 @@ fn on_deserialize_error_with_header_wrong_logon_state_disconnects_silently() {
         SessionRejectReasonBase::ValueIsIncorrect,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(_));
+    assert_matches!(result, InputResult::Handled);
     assert_eq!(
         engine.session_end().map(|end| end.context),
         Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
@@ -314,7 +317,7 @@ fn on_deserialize_error_with_header_logon_when_established_disconnects() {
         SessionRejectReasonBase::ValueIsIncorrect,
     );
     let result = engine.on_deserialize_error(error, &mut storage).unwrap();
-    assert_matches!(result, InputResult::Error(_));
+    assert_matches!(result, InputResult::Handled);
     assert_eq!(
         engine.session_end().map(|end| end.context),
         Some(EndContext::Closing(SessionEndReason::InvalidLogonState))

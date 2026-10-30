@@ -100,8 +100,8 @@ pub(super) enum VerifyError {
 impl<M: SessionMessage> SessionEngine<M> {
     /// Verify an incoming message's header fields.
     ///
-    /// Checks (in order): logon state, SendingTime accuracy, CompID,
-    /// sequence number too-high/too-low. Pure observation: returns
+    /// Checks (in order): logon state, CompID, sequence numbers and
+    /// duplicate metadata, SendingTime accuracy. Pure observation: returns
     /// `Result<(), VerifyError>`; queueing the message and sending
     /// ResendRequest/Reject/Logout are the caller's responsibility
     /// (via [`SessionEngine::validate`]).
@@ -126,10 +126,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         // 1. Logon state check
         self.check_logon_state(msg_type, reset_pending)?;
 
-        // 2. SendingTime accuracy
-        self.check_sending_time(sending_time)?;
-
-        // 3. CompID validation
+        // 2. CompID validation
         self.check_comp_id(&header.sender_comp_id, &header.target_comp_id)?;
 
         let next_target = storage.next_target_msg_seq_num().get();
@@ -140,19 +137,22 @@ impl<M: SessionMessage> SessionEngine<M> {
             return Err(VerifyError::SeqNumExhausted);
         }
 
-        // 4. Sequence number too high
+        // 3. Sequence number too high
         if check_too_high && !reset_pending && msg_seq_num > next_target {
             warn!("Target MsgSeqNum too high, expected {next_target}, got {msg_seq_num}");
             return Err(VerifyError::TooHigh);
         }
 
-        // 5. PossDupFlag / OrigSendingTime
+        // 4. PossDupFlag / OrigSendingTime
         Self::check_poss_dup(header, msg_type)?;
 
-        // 6. Sequence number too low
+        // 5. Sequence number too low
         if check_too_low && !reset_pending {
             Self::check_seq_num_too_low(header, next_target)?;
         }
+
+        // 6. SendingTime accuracy
+        self.check_sending_time(sending_time)?;
 
         Ok(())
     }

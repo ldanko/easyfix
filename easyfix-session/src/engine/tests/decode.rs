@@ -287,7 +287,7 @@ fn on_deserialize_error_logon_when_established_disconnects() {
     let result = engine
         .on_deserialize_error(error.into(), &mut storage)
         .unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     assert!(engine.should_disconnect());
     assert!(
         engine.take_admin_output().is_none(),
@@ -311,7 +311,7 @@ fn on_deserialize_error_unknown_msg_type_pre_logon_disconnects() {
     let result = engine
         .on_deserialize_error(error.into(), &mut storage)
         .unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     assert!(engine.should_disconnect());
     assert!(engine.take_admin_output().is_none());
     assert_eq!(storage.next_target_msg_seq_num().get(), 1);
@@ -361,7 +361,7 @@ fn on_deserialize_error_non_logon_in_logon_sent_disconnects() {
     let result = engine
         .on_deserialize_error(error.into(), &mut storage)
         .unwrap();
-    assert_matches!(result, InputResult::Error(..));
+    assert_matches!(result, InputResult::Handled);
     assert!(engine.should_disconnect());
     assert!(
         engine.take_admin_output().is_none(),

@@ -1,17 +1,19 @@
-use std::assert_matches;
+use std::{assert_matches, time::Duration};
 
 use easyfix_core::{
-    base_messages::{AdminBase, MsgTypeBase},
+    base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
     basic_types::{Int, MsgTypeField, SeqNum},
+    deserializer::DeserializeErrorKind,
     fix_str,
     message::{HeaderAccess, SessionMessage},
     serializer::SerializeError,
 };
 use easyfix_test_messages::Message;
 use tokio::{
-    io::{self, AsyncWriteExt, DuplexStream},
+    io::{self, AsyncReadExt, AsyncWriteExt, DuplexStream},
     sync::{mpsc, mpsc::error::TryRecvError},
     task::{self, JoinHandle, LocalSet},
+    time::timeout,
 };
 
 use super::{
@@ -349,6 +351,63 @@ async fn invalid_resend_above_gap_reports_once_before_reject_and_recovery_reques
                     if hb.test_req_id.as_deref() == Some(fix_str!("after-gap"))
             );
             session.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn too_low_with_stale_time_sends_only_logout_even_when_body_is_invalid() {
+    LocalSet::new()
+        .run_until(async {
+            for invalid_body in [false, true] {
+                let mut session =
+                    Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
+                session.handshake().await;
+                let ord_type = if invalid_body { "244=97.2" } else { "1" };
+                let bytes = test_helpers::frame_message(
+                    "FIXT.1.1",
+                    &format!(
+                        "35=D|49=TARGET|56=SENDER|34=1|52=20000101-00:00:00.000|\
+                         11=ORD1|55=SYMBOL|54=1|60=20000101-00:00:00.000|38=10|40={ord_type}|"
+                    ),
+                );
+                if invalid_body {
+                    let error = Message::from_bytes(&bytes).unwrap_err();
+                    assert!(error.header.is_some());
+                    assert_matches!(error.kind, DeserializeErrorKind::Reject { tag: Some(40), reason, .. }
+                        if reason == SessionRejectReasonBase::IncorrectDataFormatForValue);
+                } else {
+                    Message::from_bytes(&bytes).unwrap();
+                }
+                session.wire.write_all(&bytes).await.unwrap();
+
+                if !invalid_body {
+                    assert_matches!(
+                        session.events.recv().await.unwrap(),
+                        Event::Validation(_, ValidationError::MsgSeqNumTooLow { expected: 2 })
+                    );
+                }
+                // A body error superseded by the header verdict is not reported.
+                assert_eq!(
+                    session.events.recv().await.unwrap(),
+                    Event::AdminOut(MsgTypeBase::Logout.into())
+                );
+                let reply = session.read().await;
+                assert_matches!(reply.try_as_admin(), Some(AdminBase::Logout(logout))
+                    if logout.session_status == Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into()));
+                timeout(Duration::from_secs(5), session.wire.read_to_end(&mut session.buffer))
+                    .await
+                    .expect("session must close after Logout")
+                    .unwrap();
+                assert!(session.buffer.is_empty(), "no additional protocol response");
+                session
+                    .finish(SessionEndSnapshot {
+                        context: EndContext::Closing(SessionEndReason::MsgSeqNumTooLow),
+                        termination: TerminationSnapshot::LocalClose,
+                        reset_unconfirmed: false,
+                    })
+                    .await;
+            }
         })
         .await;
 }

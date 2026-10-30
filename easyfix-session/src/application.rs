@@ -23,6 +23,8 @@ use crate::{io::sender::Sender, session_id::SessionId};
 #[derive(Debug)]
 pub enum InputError<'a, M> {
     /// Decoding failed. The error includes the parsed header when available.
+    /// Not reported when a header or session-state verdict supersedes the
+    /// decoding failure.
     /// Session state may already have changed when this is reported, but
     /// any resulting protocol response has not yet been sent.
     Deserialize(&'a DeserializeError),

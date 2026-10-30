@@ -445,7 +445,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                             HandlerResult::Handled => {}
                             HandlerResult::Disconnect(reason) => self.begin_disconnect(reason),
                         }
-                        return Ok(InputResult::Error(error));
+                        return Ok(InputResult::Handled);
                     }
                     // Only a validated header gets the normal consumption
                     // rule, including its SequenceReset exception.
@@ -470,7 +470,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                             );
                         }
                         self.begin_disconnect(SessionEndReason::InvalidLogonState);
-                        return Ok(InputResult::Error(error));
+                        return Ok(InputResult::Handled);
                     }
                 }
 
@@ -539,7 +539,8 @@ impl<M: SessionMessage> SessionEngine<M> {
             false,
         );
         // A failed decode has no complete message to deliver. Apply the
-        // same refusal immediately and report only InputError::Deserialize.
+        // same refusal immediately; it supersedes the body error, including
+        // its deserialization-error notification.
         Ok(match result {
             Some(ValidationResult::Failure(failure)) => Some(self.apply_validation_reaction(
                 msg_type,
