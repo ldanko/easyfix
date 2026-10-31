@@ -8,6 +8,7 @@ use easyfix_core::{
     message::{HeaderAccess, SessionMessage},
 };
 use easyfix_test_messages::{Body, Message};
+use rstest::rstest;
 
 use super::support::{assert_msg_type, limit};
 use crate::{
@@ -25,38 +26,27 @@ use crate::{
 /// filled - while "Reject(35=3) and XMLnonFIX(35=n) are the only session
 /// messages which may be retransmitted", so Reject goes out again like an
 /// application message.
-#[test]
-fn resend_as_gap_fill_covers_every_admin_message_but_reject() {
+#[rstest]
+#[case::heartbeat("Heartbeat", test_helpers::heartbeat(1, None), true)]
+#[case::test_request("TestRequest", test_helpers::test_request(1, fix_str!("REQ")), true)]
+#[case::resend_request("ResendRequest", test_helpers::resend_request(1, 1, 5), true)]
+#[case::sequence_reset("SequenceReset", test_helpers::sequence_reset(1, 5, true), true)]
+#[case::logon("Logon", test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER")), true)]
+#[case::logout("Logout", test_helpers::logout(1), true)]
+#[case::reject("Reject", test_helpers::reject(1, 1), false)]
+#[case::new_order_single("NewOrderSingle", test_helpers::new_order_single(1), false)]
+fn resend_as_gap_fill_covers_every_admin_message_but_reject(
+    #[case] name: &'static str,
+    #[case] msg: Box<Message>,
+    #[case] gap_fill: bool,
+) {
     let (engine, _store) = EngineBuilder::new().logged_on().build();
-    let cases: [(&str, Box<Message>, bool); 8] = [
-        ("Heartbeat", test_helpers::heartbeat(1, None), true),
-        (
-            "TestRequest",
-            test_helpers::test_request(1, fix_str!("REQ")),
-            true,
-        ),
-        ("ResendRequest", test_helpers::resend_request(1, 1, 5), true),
-        (
-            "SequenceReset",
-            test_helpers::sequence_reset(1, 5, true),
-            true,
-        ),
-        (
-            "Logon",
-            test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER")),
-            true,
-        ),
-        ("Logout", test_helpers::logout(1), true),
-        ("Reject", test_helpers::reject(1, 1), false),
-        ("NewOrderSingle", test_helpers::new_order_single(1), false),
-    ];
-    for (name, msg, gap_fill) in cases {
-        assert_eq!(
-            engine.resend_as_gap_fill(&msg),
-            gap_fill,
-            "{name}: gap-fill on resend"
-        );
-    }
+
+    assert_eq!(
+        engine.resend_as_gap_fill(&msg),
+        gap_fill,
+        "{name}: gap-fill on resend"
+    );
 }
 
 // --- flush_resend_gap with no accumulated gap ---
@@ -184,25 +174,23 @@ fn process_resend_message_sets_poss_dup_and_orig_sending_time() {
     );
 }
 
-#[test]
-fn process_resend_message_preserves_poss_resend() {
-    // Session Layer Sections 4.8.4 and 4.9: session retransmission keeps
-    // the original sequence number and application-owned PossResend flag.
-    for poss_resend in [None, Some(false), Some(true)] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        let mut original = test_helpers::new_order_single(7);
-        original.header.poss_resend = poss_resend;
-        engine.fill_header(&mut original, &mut storage).unwrap();
-        let bytes = serialize_message(&original);
+#[rstest]
+fn process_resend_message_preserves_poss_resend(
+    #[values(None, Some(false), Some(true))] poss_resend: Option<bool>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    let mut original = test_helpers::new_order_single(7);
+    original.header.poss_resend = poss_resend;
+    engine.fill_header(&mut original, &mut storage).unwrap();
+    let bytes = serialize_message(&original);
 
-        engine.process_resend_message(7, &bytes).unwrap();
-        let resent = drain_transient(&mut engine);
+    engine.process_resend_message(7, &bytes).unwrap();
+    let resent = drain_transient(&mut engine);
 
-        assert_matches!(&*resent.body, Body::NewOrderSingle(_));
-        assert_eq!(resent.msg_seq_num(), 7);
-        assert_eq!(resent.header.poss_resend, poss_resend);
-        assert_eq!(resent.poss_dup_flag(), Some(true));
-    }
+    assert_matches!(&*resent.body, Body::NewOrderSingle(_));
+    assert_eq!(resent.msg_seq_num(), 7);
+    assert_eq!(resent.header.poss_resend, poss_resend);
+    assert_eq!(resent.poss_dup_flag(), Some(true));
 }
 
 // Simulates the IO loop pattern: flush gap -> drain -> process resend -> drain.

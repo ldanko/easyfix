@@ -27,7 +27,6 @@ use easyfix_test_messages::{Body, Message};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, duplex, split},
     sync::mpsc,
-    task::LocalSet,
     time::{advance, timeout},
 };
 
@@ -398,111 +397,106 @@ where
 // Test 1: Logon and Logout intercepted and re-sent
 // ---------------------------------------------------------------------------
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn logon_and_logout() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let TestHarness {
-                acceptor,
-                mut events_rx,
-                confirm_tx,
-            } = build_harness(30);
+    let TestHarness {
+        acceptor,
+        mut events_rx,
+        confirm_tx,
+    } = build_harness(30);
 
-            let (acc_stream, peer_stream) = duplex(8192);
-            let (acc_r, acc_w) = split(acc_stream);
-            let (mut peer_r, mut peer_w) = split(peer_stream);
+    let (acc_stream, peer_stream) = duplex(8192);
+    let (acc_r, acc_w) = split(acc_stream);
+    let (mut peer_r, mut peer_w) = split(peer_stream);
 
-            let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-            let mut peer_buf: Vec<u8> = Vec::new();
+    let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let mut peer_buf: Vec<u8> = Vec::new();
 
-            // --- Logon handshake (managed) ---
+    // --- Logon handshake (managed) ---
 
-            // Peer sends Logon.
-            peer_w
-                .write_all(&peer_logon_bytes(1, 30))
-                .await
-                .expect("write peer logon");
+    // Peer sends Logon.
+    peer_w
+        .write_all(&peer_logon_bytes(1, 30))
+        .await
+        .expect("write peer logon");
 
-            // App intercepts the Logon response.
-            let logon_resp = wait_for_intercepted(&mut events_rx).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*logon_resp),
-                MsgTypeBase::Logon,
-                "first intercepted admin message should be Logon response"
-            );
+    // App intercepts the Logon response.
+    let logon_resp = wait_for_intercepted(&mut events_rx).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*logon_resp),
+        MsgTypeBase::Logon,
+        "first intercepted admin message should be Logon response"
+    );
 
-            // Nothing on the wire yet.
-            assert!(
-                !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
-                "Logon response should NOT appear on wire before re-send"
-            );
+    // Nothing on the wire yet.
+    assert!(
+        !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
+        "Logon response should NOT appear on wire before re-send"
+    );
 
-            // Get the Sender from SessionReady.
-            let sender = wait_for_session_ready(&mut events_rx).await;
+    // Get the Sender from SessionReady.
+    let sender = wait_for_session_ready(&mut events_rx).await;
 
-            // Re-send the intercepted Logon response.
-            reissue_intercepted(&sender, logon_resp, &confirm_tx);
+    // Re-send the intercepted Logon response.
+    reissue_intercepted(&sender, logon_resp, &confirm_tx);
 
-            // Peer reads the Logon response.
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*msg),
-                MsgTypeBase::Logon,
-                "peer should receive Logon response after re-send"
-            );
+    // Peer reads the Logon response.
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*msg),
+        MsgTypeBase::Logon,
+        "peer should receive Logon response after re-send"
+    );
 
-            // --- Initiate Logout via control channel ---
-            acceptor
-                .logout(&acceptor_session_id(), None, None, false)
-                .await
-                .expect("logout");
+    // --- Initiate Logout via control channel ---
+    acceptor
+        .logout(&acceptor_session_id(), None, None, false)
+        .await
+        .expect("logout");
 
-            // App intercepts the Logout message.
-            let logout_msg = wait_for_intercepted(&mut events_rx).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*logout_msg),
-                MsgTypeBase::Logout,
-                "intercepted admin message should be Logout"
-            );
+    // App intercepts the Logout message.
+    let logout_msg = wait_for_intercepted(&mut events_rx).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*logout_msg),
+        MsgTypeBase::Logout,
+        "intercepted admin message should be Logout"
+    );
 
-            // Nothing on the wire yet.
-            assert!(
-                !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
-                "Logout should NOT appear on wire before re-send"
-            );
+    // Nothing on the wire yet.
+    assert!(
+        !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
+        "Logout should NOT appear on wire before re-send"
+    );
 
-            // Re-send the Logout.
-            reissue_intercepted(&sender, logout_msg, &confirm_tx);
+    // Re-send the Logout.
+    reissue_intercepted(&sender, logout_msg, &confirm_tx);
 
-            // Peer reads the Logout.
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*msg),
-                MsgTypeBase::Logout,
-                "peer should receive Logout after re-send"
-            );
+    // Peer reads the Logout.
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*msg),
+        MsgTypeBase::Logout,
+        "peer should receive Logout after re-send"
+    );
 
-            // Peer responds with Logout to complete the handshake.
-            peer_w
-                .write_all(&peer_logout_bytes(2))
-                .await
-                .expect("write peer logout");
+    // Peer responds with Logout to complete the handshake.
+    peer_w
+        .write_all(&peer_logout_bytes(2))
+        .await
+        .expect("write peer logout");
 
-            // Session should end cleanly.
-            let reason = wait_for_session_end(&mut events_rx).await;
-            assert_eq!(
-                reason,
-                SessionEndSnapshot {
-                    context: EndContext::LocalLogout,
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
+    // Session should end cleanly.
+    let reason = wait_for_session_end(&mut events_rx).await;
+    assert_eq!(
+        reason,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
 
-            acc_handle.await.expect("acceptor task");
-        })
-        .await;
+    acc_handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
@@ -510,426 +504,399 @@ async fn logon_and_logout() {
 //         with app messages interleaved
 // ---------------------------------------------------------------------------
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn heartbeat_response_to_test_request() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let TestHarness {
-                acceptor,
-                mut events_rx,
-                confirm_tx,
-            } = build_harness(30);
+    let TestHarness {
+        acceptor,
+        mut events_rx,
+        confirm_tx,
+    } = build_harness(30);
 
-            let (acc_stream, peer_stream) = duplex(8192);
-            let (acc_r, acc_w) = split(acc_stream);
-            let (mut peer_r, mut peer_w) = split(peer_stream);
+    let (acc_stream, peer_stream) = duplex(8192);
+    let (acc_r, acc_w) = split(acc_stream);
+    let (mut peer_r, mut peer_w) = split(peer_stream);
 
-            let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-            let mut peer_buf: Vec<u8> = Vec::new();
+    let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let mut peer_buf: Vec<u8> = Vec::new();
 
-            let sender = do_managed_logon(
-                &mut peer_r,
-                &mut peer_w,
-                &mut peer_buf,
-                &mut events_rx,
-                &confirm_tx,
-                30,
-            )
-            .await;
+    let sender = do_managed_logon(
+        &mut peer_r,
+        &mut peer_w,
+        &mut peer_buf,
+        &mut events_rx,
+        &confirm_tx,
+        30,
+    )
+    .await;
 
-            // --- App message: should go through unaffected ---
-            sender
-                .send(new_order_single_with_empty_header())
-                .expect("send NOS");
+    // --- App message: should go through unaffected ---
+    sender
+        .send(new_order_single_with_empty_header())
+        .expect("send NOS");
 
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert!(
-                is_new_order_single(&msg),
-                "app message should reach wire regardless of manages_admin_output"
-            );
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert!(
+        is_new_order_single(&msg),
+        "app message should reach wire regardless of manages_admin_output"
+    );
 
-            // --- Peer sends TestRequest ---
-            peer_w
-                .write_all(&peer_test_request_bytes(2, fix_str!("TR1")))
-                .await
-                .expect("write test request");
+    // --- Peer sends TestRequest ---
+    peer_w
+        .write_all(&peer_test_request_bytes(2, fix_str!("TR1")))
+        .await
+        .expect("write test request");
 
-            // App intercepts the Heartbeat response.
-            let hb_msg = wait_for_intercepted(&mut events_rx).await;
+    // App intercepts the Heartbeat response.
+    let hb_msg = wait_for_intercepted(&mut events_rx).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*hb_msg),
+        MsgTypeBase::Heartbeat,
+        "intercepted message should be Heartbeat response"
+    );
+    // Verify it carries the TestReqID.
+    match SessionMessage::try_as_admin(&*hb_msg) {
+        Some(AdminBase::Heartbeat(hb)) => {
             assert_eq!(
-                SessionMessage::msg_type(&*hb_msg),
-                MsgTypeBase::Heartbeat,
-                "intercepted message should be Heartbeat response"
+                hb.test_req_id.as_deref(),
+                Some(fix_str!("TR1")),
+                "Heartbeat should echo TestReqID"
             );
-            // Verify it carries the TestReqID.
-            match SessionMessage::try_as_admin(&*hb_msg) {
-                Some(AdminBase::Heartbeat(hb)) => {
-                    assert_eq!(
-                        hb.test_req_id.as_deref(),
-                        Some(fix_str!("TR1")),
-                        "Heartbeat should echo TestReqID"
-                    );
-                }
-                _ => panic!("expected Heartbeat admin base"),
-            }
+        }
+        _ => panic!("expected Heartbeat admin base"),
+    }
 
-            // Nothing on wire yet.
-            assert!(
-                !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
-                "Heartbeat should NOT appear on wire before re-send"
-            );
+    // Nothing on wire yet.
+    assert!(
+        !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
+        "Heartbeat should NOT appear on wire before re-send"
+    );
 
-            // --- Send another app message while Heartbeat is pending ---
-            sender
-                .send(new_order_single_with_empty_header())
-                .expect("send second NOS");
+    // --- Send another app message while Heartbeat is pending ---
+    sender
+        .send(new_order_single_with_empty_header())
+        .expect("send second NOS");
 
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert!(
-                is_new_order_single(&msg),
-                "second app message should reach wire while admin is pending"
-            );
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert!(
+        is_new_order_single(&msg),
+        "second app message should reach wire while admin is pending"
+    );
 
-            // --- Now re-send the Heartbeat ---
-            reissue_intercepted(&sender, hb_msg, &confirm_tx);
+    // --- Now re-send the Heartbeat ---
+    reissue_intercepted(&sender, hb_msg, &confirm_tx);
 
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*msg),
-                MsgTypeBase::Heartbeat,
-                "peer should receive Heartbeat after re-send"
-            );
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*msg),
+        MsgTypeBase::Heartbeat,
+        "peer should receive Heartbeat after re-send"
+    );
 
-            // --- Teardown ---
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_handle.await.expect("acceptor task");
-        })
-        .await;
+    // --- Teardown ---
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
 // Test 3: Outbound Heartbeat on idle (output timeout) intercepted
 // ---------------------------------------------------------------------------
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn outbound_heartbeat_on_idle() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let TestHarness {
-                acceptor,
-                mut events_rx,
-                confirm_tx,
-            } = build_harness(1); // 1-second heartbeat for fast timeout
+    let TestHarness {
+        acceptor,
+        mut events_rx,
+        confirm_tx,
+    } = build_harness(1); // 1-second heartbeat for fast timeout
 
-            let (acc_stream, peer_stream) = duplex(8192);
-            let (acc_r, acc_w) = split(acc_stream);
-            let (mut peer_r, mut peer_w) = split(peer_stream);
+    let (acc_stream, peer_stream) = duplex(8192);
+    let (acc_r, acc_w) = split(acc_stream);
+    let (mut peer_r, mut peer_w) = split(peer_stream);
 
-            let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-            let mut peer_buf: Vec<u8> = Vec::new();
+    let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let mut peer_buf: Vec<u8> = Vec::new();
 
-            let sender = do_managed_logon(
-                &mut peer_r,
-                &mut peer_w,
-                &mut peer_buf,
-                &mut events_rx,
-                &confirm_tx,
-                1,
-            )
-            .await;
+    let sender = do_managed_logon(
+        &mut peer_r,
+        &mut peer_w,
+        &mut peer_buf,
+        &mut events_rx,
+        &confirm_tx,
+        1,
+    )
+    .await;
 
-            // Advance time past the output deadline (1 heartbeat interval).
-            // The engine should produce a Heartbeat via on_output_timeout.
-            advance(Duration::from_millis(1100)).await;
+    // Advance time past the output deadline (1 heartbeat interval).
+    // The engine should produce a Heartbeat via on_output_timeout.
+    advance(Duration::from_millis(1100)).await;
 
-            // The peer must also stay "alive" - send a Heartbeat to prevent
-            // the acceptor's input timeout from firing and producing extra
-            // admin messages (TestRequest).
-            peer_w
-                .write_all(&peer_heartbeat_bytes(2, None))
-                .await
-                .expect("write peer heartbeat");
+    // The peer must also stay "alive" - send a Heartbeat to prevent
+    // the acceptor's input timeout from firing and producing extra
+    // admin messages (TestRequest).
+    peer_w
+        .write_all(&peer_heartbeat_bytes(2, None))
+        .await
+        .expect("write peer heartbeat");
 
-            // App intercepts the outbound Heartbeat.
-            let hb_msg = wait_for_intercepted(&mut events_rx).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*hb_msg),
-                MsgTypeBase::Heartbeat,
-                "intercepted message should be Heartbeat from output timeout"
+    // App intercepts the outbound Heartbeat.
+    let hb_msg = wait_for_intercepted(&mut events_rx).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*hb_msg),
+        MsgTypeBase::Heartbeat,
+        "intercepted message should be Heartbeat from output timeout"
+    );
+    // Idle heartbeat has no TestReqID.
+    match SessionMessage::try_as_admin(&*hb_msg) {
+        Some(AdminBase::Heartbeat(hb)) => {
+            assert!(
+                hb.test_req_id.is_none(),
+                "idle Heartbeat should not carry TestReqID"
             );
-            // Idle heartbeat has no TestReqID.
-            match SessionMessage::try_as_admin(&*hb_msg) {
-                Some(AdminBase::Heartbeat(hb)) => {
-                    assert!(
-                        hb.test_req_id.is_none(),
-                        "idle Heartbeat should not carry TestReqID"
-                    );
-                }
-                _ => panic!("expected Heartbeat admin base"),
-            }
+        }
+        _ => panic!("expected Heartbeat admin base"),
+    }
 
-            // Re-send it.
-            reissue_intercepted(&sender, hb_msg, &confirm_tx);
+    // Re-send it.
+    reissue_intercepted(&sender, hb_msg, &confirm_tx);
 
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*msg),
-                MsgTypeBase::Heartbeat,
-                "peer should receive Heartbeat after re-send"
-            );
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*msg),
+        MsgTypeBase::Heartbeat,
+        "peer should receive Heartbeat after re-send"
+    );
 
-            // --- Teardown ---
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_handle.await.expect("acceptor task");
-        })
-        .await;
+    // --- Teardown ---
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
 // Test 4: ResendRequest on sequence gap intercepted and re-sent
 // ---------------------------------------------------------------------------
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn resend_request_on_sequence_gap_is_intercepted() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let TestHarness {
-                acceptor,
-                mut events_rx,
-                confirm_tx,
-            } = build_harness(30);
+    let TestHarness {
+        acceptor,
+        mut events_rx,
+        confirm_tx,
+    } = build_harness(30);
 
-            let (acc_stream, peer_stream) = duplex(8192);
-            let (acc_r, acc_w) = split(acc_stream);
-            let (mut peer_r, mut peer_w) = split(peer_stream);
+    let (acc_stream, peer_stream) = duplex(8192);
+    let (acc_r, acc_w) = split(acc_stream);
+    let (mut peer_r, mut peer_w) = split(peer_stream);
 
-            let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-            let mut peer_buf: Vec<u8> = Vec::new();
+    let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let mut peer_buf: Vec<u8> = Vec::new();
 
-            let sender = do_managed_logon(
-                &mut peer_r,
-                &mut peer_w,
-                &mut peer_buf,
-                &mut events_rx,
-                &confirm_tx,
-                30,
-            )
-            .await;
+    let sender = do_managed_logon(
+        &mut peer_r,
+        &mut peer_w,
+        &mut peer_buf,
+        &mut events_rx,
+        &confirm_tx,
+        30,
+    )
+    .await;
 
-            // Peer sends a message with seq=5, skipping 2-4.
-            // The engine should detect the gap and produce a ResendRequest.
-            peer_w
-                .write_all(&peer_test_request_bytes(5, fix_str!("GAP1")))
-                .await
-                .expect("write gap message");
+    // Peer sends a message with seq=5, skipping 2-4.
+    // The engine should detect the gap and produce a ResendRequest.
+    peer_w
+        .write_all(&peer_test_request_bytes(5, fix_str!("GAP1")))
+        .await
+        .expect("write gap message");
 
-            // App intercepts the ResendRequest.
-            let rr_msg = wait_for_intercepted(&mut events_rx).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*rr_msg),
-                MsgTypeBase::ResendRequest,
-                "intercepted message should be ResendRequest"
-            );
-            // Verify range covers the gap.
-            match SessionMessage::try_as_admin(&*rr_msg) {
-                Some(AdminBase::ResendRequest(rr)) => {
-                    assert_eq!(rr.begin_seq_no, 2, "ResendRequest should start at seq 2");
-                    assert_eq!(rr.end_seq_no, 4, "ResendRequest should end at seq 4");
-                }
-                _ => panic!("expected ResendRequest admin base"),
-            }
+    // App intercepts the ResendRequest.
+    let rr_msg = wait_for_intercepted(&mut events_rx).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*rr_msg),
+        MsgTypeBase::ResendRequest,
+        "intercepted message should be ResendRequest"
+    );
+    // Verify range covers the gap.
+    match SessionMessage::try_as_admin(&*rr_msg) {
+        Some(AdminBase::ResendRequest(rr)) => {
+            assert_eq!(rr.begin_seq_no, 2, "ResendRequest should start at seq 2");
+            assert_eq!(rr.end_seq_no, 4, "ResendRequest should end at seq 4");
+        }
+        _ => panic!("expected ResendRequest admin base"),
+    }
 
-            // Nothing on wire yet.
-            assert!(
-                !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
-                "ResendRequest should NOT appear on wire before re-send"
-            );
+    // Nothing on wire yet.
+    assert!(
+        !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
+        "ResendRequest should NOT appear on wire before re-send"
+    );
 
-            // Re-send the ResendRequest.
-            reissue_intercepted(&sender, rr_msg, &confirm_tx);
+    // Re-send the ResendRequest.
+    reissue_intercepted(&sender, rr_msg, &confirm_tx);
 
-            // Peer reads the ResendRequest.
-            let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*msg),
-                MsgTypeBase::ResendRequest,
-                "peer should receive ResendRequest after re-send"
-            );
+    // Peer reads the ResendRequest.
+    let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*msg),
+        MsgTypeBase::ResendRequest,
+        "peer should receive ResendRequest after re-send"
+    );
 
-            // --- Teardown ---
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_handle.await.expect("acceptor task");
-        })
-        .await;
+    // --- Teardown ---
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
 // Test 5: App messages are unaffected by manages_admin_output
 // ---------------------------------------------------------------------------
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn app_messages_unaffected() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let TestHarness {
-                acceptor,
-                mut events_rx,
-                confirm_tx,
-            } = build_harness(30);
+    let TestHarness {
+        acceptor,
+        mut events_rx,
+        confirm_tx,
+    } = build_harness(30);
 
-            let (acc_stream, peer_stream) = duplex(8192);
-            let (acc_r, acc_w) = split(acc_stream);
-            let (mut peer_r, mut peer_w) = split(peer_stream);
+    let (acc_stream, peer_stream) = duplex(8192);
+    let (acc_r, acc_w) = split(acc_stream);
+    let (mut peer_r, mut peer_w) = split(peer_stream);
 
-            let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-            let mut peer_buf: Vec<u8> = Vec::new();
+    let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let mut peer_buf: Vec<u8> = Vec::new();
 
-            let sender = do_managed_logon(
-                &mut peer_r,
-                &mut peer_w,
-                &mut peer_buf,
-                &mut events_rx,
-                &confirm_tx,
-                30,
-            )
-            .await;
+    let sender = do_managed_logon(
+        &mut peer_r,
+        &mut peer_w,
+        &mut peer_buf,
+        &mut events_rx,
+        &confirm_tx,
+        30,
+    )
+    .await;
 
-            // Send multiple app messages - all should go directly to TCP.
-            const N: u32 = 5;
-            for _ in 0..N {
-                sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("send NOS");
-            }
+    // Send multiple app messages - all should go directly to TCP.
+    const N: u32 = 5;
+    for _ in 0..N {
+        sender
+            .send(new_order_single_with_empty_header())
+            .expect("send NOS");
+    }
 
-            for i in 0..N {
-                let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert!(
-                    is_new_order_single(&msg),
-                    "message {i} should be NewOrderSingle on the wire"
-                );
-                assert_ne!(
-                    msg.poss_dup_flag(),
-                    Some(true),
-                    "app messages should not have PossDupFlag=Y"
-                );
-            }
+    for i in 0..N {
+        let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+        assert!(
+            is_new_order_single(&msg),
+            "message {i} should be NewOrderSingle on the wire"
+        );
+        assert_ne!(
+            msg.poss_dup_flag(),
+            Some(true),
+            "app messages should not have PossDupFlag=Y"
+        );
+    }
 
-            // Verify no extra data on wire (only app messages, no
-            // leaked admin messages).
-            assert!(
-                !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
-                "no extra data should appear on wire after app messages"
-            );
+    // Verify no extra data on wire (only app messages, no
+    // leaked admin messages).
+    assert!(
+        !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
+        "no extra data should appear on wire after app messages"
+    );
 
-            // --- Teardown ---
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_handle.await.expect("acceptor task");
-        })
-        .await;
+    // --- Teardown ---
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
 }
 
 /// `manages_admin_output` does not change where the sequence number comes
 /// from: the drain stamps the header before the interception callback, so an
 /// exhausted outgoing numbering drops the message on this path too - the app
 /// never sees it, and there is nothing for it to re-send.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn exhausted_outgoing_numbering_drops_the_admin_message_before_interception() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let TestHarness {
-                acceptor,
-                mut events_rx,
-                confirm_tx: _confirm_tx,
-            } = build_harness_with_storage(30, |_id, max_message_size| {
-                let mut storage = InMemoryStorage::new(max_message_size);
-                storage
-                    .set_next_sender_msg_seq_num(
-                        NonZeroSeqNum::new(SeqNum::MAX).expect("MAX is non-zero"),
-                    )
-                    .unwrap();
-                Ok(storage)
-            });
+    let TestHarness {
+        acceptor,
+        mut events_rx,
+        confirm_tx: _confirm_tx,
+    } = build_harness_with_storage(30, |_id, max_message_size| {
+        let mut storage = InMemoryStorage::new(max_message_size);
+        storage
+            .set_next_sender_msg_seq_num(NonZeroSeqNum::new(SeqNum::MAX).expect("MAX is non-zero"))
+            .unwrap();
+        Ok(storage)
+    });
 
-            let (acc_stream, peer_stream) = duplex(8192);
-            let (acc_r, acc_w) = split(acc_stream);
-            let (mut peer_r, mut peer_w) = split(peer_stream);
-            let mut peer_buf: Vec<u8> = Vec::new();
+    let (acc_stream, peer_stream) = duplex(8192);
+    let (acc_r, acc_w) = split(acc_stream);
+    let (mut peer_r, mut peer_w) = split(peer_stream);
+    let mut peer_buf: Vec<u8> = Vec::new();
 
-            let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let acc_handle = acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
 
-            peer_w
-                .write_all(&peer_logon_bytes(1, 30))
-                .await
-                .expect("write peer logon");
+    peer_w
+        .write_all(&peer_logon_bytes(1, 30))
+        .await
+        .expect("write peer logon");
 
-            let end = timeout(TEST_TIMEOUT, wait_for_session_end(&mut events_rx))
-                .await
-                .expect("session must end when nothing can be stamped");
-            assert_eq!(
-                end,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
+    let end = timeout(TEST_TIMEOUT, wait_for_session_end(&mut events_rx))
+        .await
+        .expect("session must end when nothing can be stamped");
+    assert_eq!(
+        end,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
 
-            assert!(
-                !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
-                "nothing may reach the wire"
-            );
+    assert!(
+        !has_data_on_wire(&mut peer_r, &mut peer_buf).await,
+        "nothing may reach the wire"
+    );
 
-            acc_handle.await.expect("session task");
-        })
-        .await;
+    acc_handle.await.expect("session task");
 }

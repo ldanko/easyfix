@@ -7,6 +7,7 @@ use easyfix_core::{
     serializer::SerializeError,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 use tokio::io;
 
 use super::wire::wire_bytes;
@@ -119,48 +120,48 @@ async fn finalize_drain_drops_what_it_cannot_stamp() {
 /// formed it: a `SeqNumExhausted` the engine forms while stamping the last
 /// message neither displaces a logout the loop had already concluded nor
 /// gives way to the loop's default once it stands.
+#[rstest]
+#[case::peer_close(Some(SessionEndSnapshot {
+    context: EndContext::Established,
+    termination: TerminationSnapshot::PeerClose,
+    reset_unconfirmed: false,
+}))]
+#[case::engine_reason(None)]
 #[tokio::test]
-async fn finalize_reports_the_reason_that_started_the_teardown() {
-    for loop_reason in [
-        Some(SessionEndSnapshot {
-            context: EndContext::Established,
-            termination: TerminationSnapshot::PeerClose,
-            reset_unconfirmed: false,
-        }),
-        None,
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        storage
-            .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX - 1))
-            .unwrap();
-        let (mut writer, _reader) = io::duplex(4096);
-        let mut handler = RecordingHandler::default();
+async fn finalize_reports_the_reason_that_started_the_teardown(
+    #[case] loop_reason: Option<SessionEndSnapshot>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage
+        .set_next_sender_msg_seq_num(nz_seq(SeqNum::MAX - 1))
+        .unwrap();
+    let (mut writer, _reader) = io::duplex(4096);
+    let mut handler = RecordingHandler::default();
 
-        if loop_reason.is_some() {
-            engine.end_transport(Termination::PeerClose);
-        }
-        // The last outgoing message consumes the last sequence number, so the
-        // engine forms `SeqNumExhausted` on its own.
-        engine.send_heartbeat(None);
-        drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
-            .await
-            .expect("the last message still fits");
-        assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
-
-        let (_tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
-        finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut app_rx);
-        finalize_session(&mut engine, &mut handler).await;
-
-        assert_eq!(
-            handler.session_end,
-            Some(loop_reason.unwrap_or(SessionEndSnapshot {
-                context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
-                termination: TerminationSnapshot::LocalClose,
-                reset_unconfirmed: false
-            })),
-            "loop_reason={loop_reason:?}"
-        );
+    if loop_reason.is_some() {
+        engine.end_transport(Termination::PeerClose);
     }
+    // The last outgoing message consumes the last sequence number, so the
+    // engine forms `SeqNumExhausted` on its own.
+    engine.send_heartbeat(None);
+    drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
+        .await
+        .expect("the last message still fits");
+    assert_eq!(storage.next_sender_msg_seq_num().get(), SeqNum::MAX);
+
+    let (_tx, mut app_rx) = sender::channel::<Message>(TimerBackend::Tokio);
+    finish_staged_sends(&mut engine, &mut storage, &mut handler, &mut app_rx);
+    finalize_session(&mut engine, &mut handler).await;
+
+    assert_eq!(
+        handler.session_end,
+        Some(loop_reason.unwrap_or(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SeqNumExhausted),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })),
+        "loop_reason={loop_reason:?}"
+    );
 }
 
 /// The admin drain stops at the message it cannot stamp: no callback, no

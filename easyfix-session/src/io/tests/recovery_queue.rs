@@ -6,12 +6,12 @@ use easyfix_core::{
     message::{HeaderAccess, SessionMessage},
 };
 use easyfix_test_messages::Body;
+use rstest::rstest;
 use tokio::{
     io,
     io::{AsyncReadExt, AsyncWriteExt},
     sync::mpsc::error::TryRecvError,
-    task::{self, LocalSet},
-    time,
+    task, time,
 };
 
 use super::{
@@ -36,513 +36,482 @@ use crate::{
 /// The drain runs *after* the top-of-loop flush, so without an explicit
 /// flush on the disconnect path the response dies with the socket and the
 /// peer sees a bare TCP close.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn queued_logout_response_reaches_peer() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let harness = build_harness();
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, _control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
+    let harness = build_harness();
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let first_msg = build_peer_logon(1, 30);
+    let (session_task, mut events_rx, _control_tx) =
+        harness.spawn_acceptor(server_reader, server_writer, first_msg);
 
-            logon_handshake(&mut client_io, &mut events_rx).await;
+    logon_handshake(&mut client_io, &mut events_rx).await;
 
-            // Client sends Logout at seq 3 while seq 2 is still expected -
-            // the engine queues it and asks for the gap to be filled.
-            client_io
-                .write_all(&test_helpers::logout_bytes(3))
-                .await
-                .unwrap();
+    // Client sends Logout at seq 3 while seq 2 is still expected -
+    // the engine queues it and asks for the gap to be filled.
+    client_io
+        .write_all(&test_helpers::logout_bytes(3))
+        .await
+        .unwrap();
 
-            let mut buf = Vec::new();
-            let resend_request = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*resend_request),
-                MsgTypeBase::ResendRequest
-            );
+    let mut buf = Vec::new();
+    let resend_request = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*resend_request),
+        MsgTypeBase::ResendRequest
+    );
 
-            // Client closes the gap; the queued Logout is now due.
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::new_order_single(2),
-                ))
-                .await
-                .unwrap();
+    // Client closes the gap; the queued Logout is now due.
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::new_order_single(2),
+        ))
+        .await
+        .unwrap();
 
-            // The Logout response must be on the wire before the session
-            // settles into waiting for the peer's close.
-            let logout_response = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*logout_response),
-                MsgTypeBase::Logout
-            );
+    // The Logout response must be on the wire before the session
+    // settles into waiting for the peer's close.
+    let logout_response = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*logout_response),
+        MsgTypeBase::Logout
+    );
 
-            assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Logout)
-            );
-            client_io.shutdown().await.unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(SessionEndSnapshot {
-                    context: EndContext::RemoteLogout,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                })
-            );
-
-            session_task.await.unwrap();
-
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
+    assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Logout)
+    );
+    client_io.shutdown().await.unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::RemoteLogout,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
         })
-        .await;
+    );
+
+    session_task.await.unwrap();
+
+    assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
 /// A queued TestRequest is answered under the numbering in effect when
 /// it was received, before a fresh peer Logon resets the session.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn queued_test_request_before_a_peer_reset_logon_keeps_old_numbering() {
-    LocalSet::new()
-        .run_until(async {
-            let settings = test_helpers::default_session_settings();
-            assert_eq!(settings.queued_batch_size.get(), 1);
-            let harness = build_harness_with_settings(settings);
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (reader, writer) = io::split(server_io);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
-            logon_handshake(&mut client_io, &mut events_rx).await;
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::test_request(4, fix_str!("BEFORE-RESET")),
-                ))
-                .await
-                .unwrap();
-            let mut wire = Vec::new();
-            let resend = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(resend.header.msg_seq_num, 2);
-            assert_matches!(test_helpers::as_admin(&resend), AdminBase::ResendRequest(rr)
-            if rr.begin_seq_no == 2 && rr.end_seq_no == 3);
+    let settings = test_helpers::default_session_settings();
+    assert_eq!(settings.queued_batch_size.get(), 1);
+    let harness = build_harness_with_settings(settings);
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (reader, writer) = io::split(server_io);
+    let (session_task, mut events_rx, control_tx) =
+        harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
+    logon_handshake(&mut client_io, &mut events_rx).await;
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::test_request(4, fix_str!("BEFORE-RESET")),
+        ))
+        .await
+        .unwrap();
+    let mut wire = Vec::new();
+    let resend = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(resend.header.msg_seq_num, 2);
+    assert_matches!(test_helpers::as_admin(&resend), AdminBase::ResendRequest(rr)
+        if rr.begin_seq_no == 2 && rr.end_seq_no == 3);
 
-            // One write places the fresh reset behind the gap-closing input
-            // in the session's read buffer when the queued request drains.
-            let mut input = Vec::new();
-            for seq in [2, 3] {
-                let mut replay = test_helpers::heartbeat(seq, None);
-                replay.header.poss_dup_flag = Some(true);
-                replay.header.orig_sending_time = Some(replay.header.sending_time);
-                input.extend(test_helpers::serialize_message(&replay));
-            }
-            input.extend(test_helpers::serialize_message(
-                &test_helpers::logon_with_options(
-                    1,
-                    fix_str!("TARGET"),
-                    fix_str!("SENDER"),
-                    30,
-                    Some(true),
-                    None,
-                ),
-            ));
-            client_io.write_all(&input).await.unwrap();
-            let heartbeat = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(heartbeat.header.msg_seq_num, 3);
-            assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
-            if hb.test_req_id.as_deref() == Some(fix_str!("BEFORE-RESET")));
-            let ack = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(ack.header.msg_seq_num, 1);
-            assert_matches!(test_helpers::as_admin(&ack), AdminBase::Logon(logon)
-            if logon.reset_seq_num_flag == Some(true));
-            control_tx.send(ControlMsg::Disconnect).await.unwrap();
-            session_task.await.unwrap();
-        })
-        .await;
+    // One write places the fresh reset behind the gap-closing input
+    // in the session's read buffer when the queued request drains.
+    let mut input = Vec::new();
+    for seq in [2, 3] {
+        let mut replay = test_helpers::heartbeat(seq, None);
+        replay.header.poss_dup_flag = Some(true);
+        replay.header.orig_sending_time = Some(replay.header.sending_time);
+        input.extend(test_helpers::serialize_message(&replay));
+    }
+    input.extend(test_helpers::serialize_message(
+        &test_helpers::logon_with_options(
+            1,
+            fix_str!("TARGET"),
+            fix_str!("SENDER"),
+            30,
+            Some(true),
+            None,
+        ),
+    ));
+    client_io.write_all(&input).await.unwrap();
+    let heartbeat = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(heartbeat.header.msg_seq_num, 3);
+    assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
+        if hb.test_req_id.as_deref() == Some(fix_str!("BEFORE-RESET")));
+    let ack = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(ack.header.msg_seq_num, 1);
+    assert_matches!(test_helpers::as_admin(&ack), AdminBase::Logon(logon)
+        if logon.reset_seq_num_flag == Some(true));
+    control_tx.send(ControlMsg::Disconnect).await.unwrap();
+    session_task.await.unwrap();
 }
 
 /// A queued admin response is flushed without a new peer message,
 /// application send, control, or timer wakeup.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn admin_reply_from_the_queued_drain_goes_out_without_waiting_for_an_event() {
-    LocalSet::new()
-        .run_until(async {
-            let harness = build_harness();
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (reader, writer) = io::split(server_io);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
-            logon_handshake(&mut client_io, &mut events_rx).await;
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::test_request(4, fix_str!("QUEUED")),
-                ))
-                .await
-                .unwrap();
-            let mut wire = Vec::new();
-            let resend = read_one_message(&mut client_io, &mut wire).await;
-            assert_matches!(test_helpers::as_admin(&resend), AdminBase::ResendRequest(_));
-            let mut input = test_helpers::heartbeat_bytes(2);
-            input.extend(test_helpers::heartbeat_bytes(3));
-            let before = time::Instant::now();
-            client_io.write_all(&input).await.unwrap();
-            let response = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(
-                time::Instant::now(),
-                before,
-                "queued response waited for a timer"
-            );
-            assert_eq!(response.header.msg_seq_num, 3);
-            assert_matches!(test_helpers::as_admin(&response), AdminBase::Heartbeat(hb)
-            if hb.test_req_id.as_deref() == Some(fix_str!("QUEUED")));
-            control_tx.send(ControlMsg::Disconnect).await.unwrap();
-            session_task.await.unwrap();
-        })
-        .await;
+    let harness = build_harness();
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (reader, writer) = io::split(server_io);
+    let (session_task, mut events_rx, control_tx) =
+        harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
+    logon_handshake(&mut client_io, &mut events_rx).await;
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::test_request(4, fix_str!("QUEUED")),
+        ))
+        .await
+        .unwrap();
+    let mut wire = Vec::new();
+    let resend = read_one_message(&mut client_io, &mut wire).await;
+    assert_matches!(test_helpers::as_admin(&resend), AdminBase::ResendRequest(_));
+    let mut input = test_helpers::heartbeat_bytes(2);
+    input.extend(test_helpers::heartbeat_bytes(3));
+    let before = time::Instant::now();
+    client_io.write_all(&input).await.unwrap();
+    let response = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(
+        time::Instant::now(),
+        before,
+        "queued response waited for a timer"
+    );
+    assert_eq!(response.header.msg_seq_num, 3);
+    assert_matches!(test_helpers::as_admin(&response), AdminBase::Heartbeat(hb)
+        if hb.test_req_id.as_deref() == Some(fix_str!("QUEUED")));
+    control_tx.send(ControlMsg::Disconnect).await.unwrap();
+    session_task.await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn logout_ack_budget_starts_after_replay_and_the_logout_write() {
-    LocalSet::new()
-        .run_until(async {
-            for acknowledge in [false, true] {
-                let budget = Duration::from_secs(5);
-                let write_delay = Duration::from_secs(3);
-                let mut settings = test_helpers::default_session_settings();
-                settings.heartbeat_interval = None;
-                settings.auto_disconnect_after_no_logout = budget;
-                settings.write_timeout = Duration::from_secs(10);
-                assert_eq!(settings.resend_batch_size.get(), 1);
-                let (mut peer, mut gate) = gated_reset_peer(settings).await;
+#[rstest]
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn logout_ack_budget_starts_after_replay_and_the_logout_write(
+    #[values(false, true)] acknowledge: bool,
+) {
+    let budget = Duration::from_secs(5);
+    let write_delay = Duration::from_secs(3);
+    let mut settings = test_helpers::default_session_settings();
+    settings.heartbeat_interval = None;
+    settings.auto_disconnect_after_no_logout = budget;
+    settings.write_timeout = Duration::from_secs(10);
+    assert_eq!(settings.resend_batch_size.get(), 1);
+    let (mut peer, mut gate) = gated_reset_peer(settings).await;
 
-                for seq in 2..=4 {
-                    peer.sender
-                        .send(test_helpers::new_order_single_with_empty_header())
-                        .expect("stage order for replay");
-                    let order = peer.read().await;
-                    assert_eq!(order.header.msg_seq_num, seq);
-                }
+    for seq in 2..=4 {
+        peer.sender
+            .send(test_helpers::new_order_single_with_empty_header())
+            .expect("stage order for replay");
+        let order = peer.read().await;
+        assert_eq!(order.header.msg_seq_num, seq);
+    }
 
-                gate.armed.set(true);
-                peer.send(&test_helpers::resend_request(2, 2, 4)).await;
-                assert_matches!(
-                    peer.events.recv().await.expect("resend request callback"),
-                    TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
-                );
-                let requested_at = time::Instant::now();
-                for seq in 2..=4 {
-                    gate.entered.recv().await.expect("replay write entered");
-                    if seq == 2 {
-                        // The loop accepts this control after its current
-                        // replay batch, then defers Logout until replay ends.
-                        peer.control
-                            .send(ControlMsg::Logout {
-                                disconnect: false,
-                                session_status: None,
-                                text: None,
-                            })
-                            .await
-                            .expect("request Logout during replay");
-                    }
-                    time::advance(write_delay).await;
-                    gate.release.send(Ok(())).expect("release replay write");
-                    let replay = peer.read().await;
-                    assert_eq!(replay.header.msg_seq_num, seq);
-                    assert_eq!(replay.header.poss_dup_flag, Some(true));
-                    assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
-                }
-                assert!(time::Instant::now().duration_since(requested_at) > budget);
-
-                // Each individual write stays below write_timeout; the
-                // total replay and the Logout write exceed the ACK budget.
-                gate.entered.recv().await.expect("Logout write entered");
-                time::advance(write_delay).await;
-                gate.release.send(Ok(())).expect("release Logout write");
-                let logout = peer.read().await;
-                assert_eq!(logout.header.msg_seq_num, 5);
-                assert_eq!(logout.header.poss_dup_flag, None);
-                assert_matches!(test_helpers::as_admin(&logout), AdminBase::Logout(_));
-                let sent_at = time::Instant::now();
-
-                time::advance(Duration::from_secs(4)).await;
-                task::yield_now().await;
-                assert!(
-                    !peer.task.is_finished(),
-                    "peer still has time to acknowledge"
-                );
-
-                let reason = if acknowledge {
-                    peer.send(&test_helpers::logout(3)).await;
-                    assert_matches!(
-                        peer.events.recv().await.expect("Logout callback"),
-                        TestEvent::AdminMsgIn(MsgTypeBase::Logout)
-                    );
-                    SessionEndSnapshot {
-                        context: EndContext::LocalLogout,
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false,
-                    }
-                } else {
-                    time::advance(Duration::from_secs(1)).await;
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::Timeout(
-                            TimeoutKind::LogoutResponse,
-                        )),
-                        termination: TerminationSnapshot::Timeout(TimeoutKind::LogoutResponse),
-                        reset_unconfirmed: false,
-                    }
-                };
-                assert_matches!(
-                    peer.events.recv().await.expect("session end"),
-                    TestEvent::SessionEnd(actual) if actual == reason
-                );
-                peer.task.await.expect("session task completes");
-                assert_eq!(
-                    time::Instant::now().duration_since(sent_at),
-                    if acknowledge {
-                        Duration::from_secs(4)
-                    } else {
-                        budget
-                    },
-                    "the ACK budget starts at Logout write completion"
-                );
-                assert!(peer.buffer.is_empty());
-                let mut rest = Vec::new();
-                peer.wire
-                    .read_to_end(&mut rest)
-                    .await
-                    .expect("read closed wire");
-                assert!(rest.is_empty(), "only one Logout is transmitted");
-            }
-        })
-        .await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn reconnect_logon_ack_precedes_implicit_replay() {
-    LocalSet::new()
-        .run_until(async {
-            let mut settings = test_helpers::default_session_settings();
-            settings.enable_next_expected_msg_seq_num = true;
-            let mut harness = build_harness_with_settings(settings);
-            let mut order = test_helpers::new_order_single_with_empty_header();
-            assert!(
-                harness
-                    .engine
-                    .fill_header(&mut order, &mut harness.storage)
-                    .unwrap()
-            );
-            harness
-                .engine
-                .commit_send(order, &mut harness.storage)
-                .expect("store prior order");
-            // Its live send belonged to the previous connection.
-            harness
-                .engine
-                .take_pending()
-                .expect("discard prior connection output");
-            let logon = test_helpers::logon_with_options(
-                1,
-                fix_str!("TARGET"),
-                fix_str!("SENDER"),
-                30,
-                None,
-                Some(1),
-            );
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (reader, writer) = io::split(server_io);
-            let (session_task, _events_rx, control_tx) =
-                harness.spawn_acceptor(reader, writer, logon);
-            let mut wire = Vec::new();
-            // Session Layer Section 4.4.1, Figure 6: acknowledge first.
-            let ack = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(ack.header.msg_seq_num, 2);
-            assert_eq!(ack.header.poss_dup_flag, None);
-            assert_matches!(test_helpers::as_admin(&ack), AdminBase::Logon(logon)
-                if logon.next_expected_msg_seq_num == Some(2));
-            let replay = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(replay.header.msg_seq_num, 1);
-            assert_eq!(replay.header.poss_dup_flag, Some(true));
-            assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
-            control_tx
-                .send(ControlMsg::Disconnect)
-                .await
-                .expect("disconnect");
-            session_task.await.expect("session task completes");
-        })
-        .await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn too_high_resend_request_finishes_replay_before_requesting_the_inbound_gap() {
-    LocalSet::new()
-        .run_until(async {
-            let harness = build_harness();
-            assert_eq!(harness.engine.session_settings().resend_batch_size.get(), 1);
-            let sender = harness.sender.clone();
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (reader, writer) = io::split(server_io);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
-            logon_handshake(&mut client_io, &mut events_rx).await;
-
-            let mut wire = Vec::new();
-            sender
-                .send(test_helpers::new_order_single_with_empty_header())
-                .expect("stage order for retransmission");
-            let order = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(order.header.msg_seq_num, 2);
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::test_request(2, fix_str!("BEFORE-REPLAY")),
-                ))
-                .await
-                .expect("send test request");
-            let heartbeat = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(heartbeat.header.msg_seq_num, 3);
-            assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(_));
-
-            // Section 4.8.8 requires the requested retransmission before
-            // our ResendRequest, including both gap-fills across IO batches.
-            let before = time::Instant::now();
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::resend_request(5, 1, 3),
-                ))
-                .await
-                .expect("send too-high resend request");
-            let first_gap = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(first_gap.header.msg_seq_num, 1);
-            assert_eq!(first_gap.header.poss_dup_flag, Some(true));
-            assert_matches!(test_helpers::as_admin(&first_gap), AdminBase::SequenceReset(sr)
-                if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 2);
-            let replay = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(replay.header.msg_seq_num, 2);
-            assert_eq!(replay.header.poss_dup_flag, Some(true));
-            assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
-            let last_gap = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(last_gap.header.msg_seq_num, 3);
-            assert_eq!(last_gap.header.poss_dup_flag, Some(true));
-            assert_matches!(test_helpers::as_admin(&last_gap), AdminBase::SequenceReset(sr)
-                if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 4);
-            let request = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(request.header.msg_seq_num, 4);
-            assert_eq!(request.header.poss_dup_flag, None);
-            assert_matches!(test_helpers::as_admin(&request), AdminBase::ResendRequest(rr)
-                if rr.begin_seq_no == 3 && rr.end_seq_no == 4);
-            assert_eq!(time::Instant::now(), before);
-
-            // Completing the inbound gap must not replay the parked request
-            // again. The next observable reply answers fresh input at seq 6.
-            let mut input = test_helpers::heartbeat_bytes(3);
-            input.extend(test_helpers::heartbeat_bytes(4));
-            input.extend(test_helpers::serialize_message(
-                &test_helpers::test_request(6, fix_str!("AFTER-REPLAY")),
-            ));
-            client_io
-                .write_all(&input)
-                .await
-                .expect("close inbound gap");
-            let heartbeat = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(heartbeat.header.msg_seq_num, 5);
-            assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
-                if hb.test_req_id.as_deref() == Some(fix_str!("AFTER-REPLAY")));
-            control_tx
-                .send(ControlMsg::Disconnect)
-                .await
-                .expect("disconnect");
-            session_task.await.expect("session task completes");
-        })
-        .await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn queued_input_waits_for_the_replay_started_by_the_gap_closing_message() {
-    LocalSet::new()
-        .run_until(async {
-            let settings = test_helpers::default_session_settings();
-            assert_eq!(settings.resend_batch_size.get(), 1);
-            let harness = build_harness_with_settings(settings);
-            let sender = harness.sender.clone();
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (reader, writer) = io::split(server_io);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
-            logon_handshake(&mut client_io, &mut events_rx).await;
-
-            let mut wire = Vec::new();
-            for seq in 2..=6 {
-                sender
-                    .send(test_helpers::new_order_single_with_empty_header())
-                    .unwrap();
-                let order = read_one_message(&mut client_io, &mut wire).await;
-                assert_eq!(order.header.msg_seq_num, seq);
-                assert_eq!(order.header.poss_dup_flag, None);
-            }
-
-            // Park an input that will produce an observable reply once
-            // dispatched, then close its gap with a replay request.
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::test_request(3, fix_str!("AFTER-REPLAY")),
-                ))
-                .await
-                .unwrap();
-            let request = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(request.header.msg_seq_num, 7);
-            assert_matches!(test_helpers::as_admin(&request), AdminBase::ResendRequest(rr)
-                if rr.begin_seq_no == 2 && rr.end_seq_no == 2);
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Empty));
-            let before = time::Instant::now();
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::resend_request(2, 2, 7),
-                ))
-                .await
-                .unwrap();
-
-            // Recovery includes every requested order and the trailing
-            // session-message gap-fill (Session Layer 4.8.5, Scenario 8).
-            for seq in 2..=6 {
-                let replay = read_one_message(&mut client_io, &mut wire).await;
-                assert_eq!(replay.header.msg_seq_num, seq);
-                assert_eq!(replay.header.poss_dup_flag, Some(true));
-                assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
-            }
-            let gap_fill = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(gap_fill.header.msg_seq_num, 7);
-            assert_eq!(gap_fill.header.poss_dup_flag, Some(true));
-            assert_matches!(test_helpers::as_admin(&gap_fill), AdminBase::SequenceReset(sr)
-                if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 8);
-            let heartbeat = read_one_message(&mut client_io, &mut wire).await;
-            assert_eq!(heartbeat.header.msg_seq_num, 8);
-            assert_eq!(heartbeat.header.poss_dup_flag, None);
-            assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
-                if hb.test_req_id.as_deref() == Some(fix_str!("AFTER-REPLAY")));
-            assert_eq!(time::Instant::now(), before);
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::TestRequest)
-            );
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Empty));
-            control_tx.send(ControlMsg::Disconnect).await.unwrap();
-            session_task.await.unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
+    gate.armed.set(true);
+    peer.send(&test_helpers::resend_request(2, 2, 4)).await;
+    assert_matches!(
+        peer.events.recv().await.expect("resend request callback"),
+        TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
+    );
+    let requested_at = time::Instant::now();
+    for seq in 2..=4 {
+        gate.entered.recv().await.expect("replay write entered");
+        if seq == 2 {
+            // The loop accepts this control after its current
+            // replay batch, then defers Logout until replay ends.
+            peer.control
+                .send(ControlMsg::Logout {
+                    disconnect: false,
+                    session_status: None,
+                    text: None,
                 })
-            );
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
+                .await
+                .expect("request Logout during replay");
+        }
+        time::advance(write_delay).await;
+        gate.release.send(Ok(())).expect("release replay write");
+        let replay = peer.read().await;
+        assert_eq!(replay.header.msg_seq_num, seq);
+        assert_eq!(replay.header.poss_dup_flag, Some(true));
+        assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+    }
+    assert!(time::Instant::now().duration_since(requested_at) > budget);
+
+    // Each individual write stays below write_timeout; the
+    // total replay and the Logout write exceed the ACK budget.
+    gate.entered.recv().await.expect("Logout write entered");
+    time::advance(write_delay).await;
+    gate.release.send(Ok(())).expect("release Logout write");
+    let logout = peer.read().await;
+    assert_eq!(logout.header.msg_seq_num, 5);
+    assert_eq!(logout.header.poss_dup_flag, None);
+    assert_matches!(test_helpers::as_admin(&logout), AdminBase::Logout(_));
+    let sent_at = time::Instant::now();
+
+    time::advance(Duration::from_secs(4)).await;
+    task::yield_now().await;
+    assert!(
+        !peer.task.is_finished(),
+        "peer still has time to acknowledge"
+    );
+
+    let reason = if acknowledge {
+        peer.send(&test_helpers::logout(3)).await;
+        assert_matches!(
+            peer.events.recv().await.expect("Logout callback"),
+            TestEvent::AdminMsgIn(MsgTypeBase::Logout)
+        );
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false,
+        }
+    } else {
+        time::advance(Duration::from_secs(1)).await;
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::LogoutResponse)),
+            termination: TerminationSnapshot::Timeout(TimeoutKind::LogoutResponse),
+            reset_unconfirmed: false,
+        }
+    };
+    assert_matches!(
+        peer.events.recv().await.expect("session end"),
+        TestEvent::SessionEnd(actual) if actual == reason
+    );
+    peer.task.await.expect("session task completes");
+    assert_eq!(
+        time::Instant::now().duration_since(sent_at),
+        if acknowledge {
+            Duration::from_secs(4)
+        } else {
+            budget
+        },
+        "the ACK budget starts at Logout write completion"
+    );
+    assert!(peer.buffer.is_empty());
+    let mut rest = Vec::new();
+    peer.wire
+        .read_to_end(&mut rest)
+        .await
+        .expect("read closed wire");
+    assert!(rest.is_empty(), "only one Logout is transmitted");
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn reconnect_logon_ack_precedes_implicit_replay() {
+    let mut settings = test_helpers::default_session_settings();
+    settings.enable_next_expected_msg_seq_num = true;
+    let mut harness = build_harness_with_settings(settings);
+    let mut order = test_helpers::new_order_single_with_empty_header();
+    assert!(
+        harness
+            .engine
+            .fill_header(&mut order, &mut harness.storage)
+            .unwrap()
+    );
+    harness
+        .engine
+        .commit_send(order, &mut harness.storage)
+        .expect("store prior order");
+    // Its live send belonged to the previous connection.
+    harness
+        .engine
+        .take_pending()
+        .expect("discard prior connection output");
+    let logon = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        None,
+        Some(1),
+    );
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (reader, writer) = io::split(server_io);
+    let (session_task, _events_rx, control_tx) = harness.spawn_acceptor(reader, writer, logon);
+    let mut wire = Vec::new();
+    // Session Layer Section 4.4.1, Figure 6: acknowledge first.
+    let ack = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(ack.header.msg_seq_num, 2);
+    assert_eq!(ack.header.poss_dup_flag, None);
+    assert_matches!(test_helpers::as_admin(&ack), AdminBase::Logon(logon)
+        if logon.next_expected_msg_seq_num == Some(2));
+    let replay = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(replay.header.msg_seq_num, 1);
+    assert_eq!(replay.header.poss_dup_flag, Some(true));
+    assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+    control_tx
+        .send(ControlMsg::Disconnect)
+        .await
+        .expect("disconnect");
+    session_task.await.expect("session task completes");
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn too_high_resend_request_finishes_replay_before_requesting_the_inbound_gap() {
+    let harness = build_harness();
+    assert_eq!(harness.engine.session_settings().resend_batch_size.get(), 1);
+    let sender = harness.sender.clone();
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (reader, writer) = io::split(server_io);
+    let (session_task, mut events_rx, control_tx) =
+        harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
+    logon_handshake(&mut client_io, &mut events_rx).await;
+
+    let mut wire = Vec::new();
+    sender
+        .send(test_helpers::new_order_single_with_empty_header())
+        .expect("stage order for retransmission");
+    let order = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(order.header.msg_seq_num, 2);
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::test_request(2, fix_str!("BEFORE-REPLAY")),
+        ))
+        .await
+        .expect("send test request");
+    let heartbeat = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(heartbeat.header.msg_seq_num, 3);
+    assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(_));
+
+    // Section 4.8.8 requires the requested retransmission before
+    // our ResendRequest, including both gap-fills across IO batches.
+    let before = time::Instant::now();
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::resend_request(5, 1, 3),
+        ))
+        .await
+        .expect("send too-high resend request");
+    let first_gap = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(first_gap.header.msg_seq_num, 1);
+    assert_eq!(first_gap.header.poss_dup_flag, Some(true));
+    assert_matches!(test_helpers::as_admin(&first_gap), AdminBase::SequenceReset(sr)
+        if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 2);
+    let replay = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(replay.header.msg_seq_num, 2);
+    assert_eq!(replay.header.poss_dup_flag, Some(true));
+    assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+    let last_gap = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(last_gap.header.msg_seq_num, 3);
+    assert_eq!(last_gap.header.poss_dup_flag, Some(true));
+    assert_matches!(test_helpers::as_admin(&last_gap), AdminBase::SequenceReset(sr)
+        if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 4);
+    let request = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(request.header.msg_seq_num, 4);
+    assert_eq!(request.header.poss_dup_flag, None);
+    assert_matches!(test_helpers::as_admin(&request), AdminBase::ResendRequest(rr)
+        if rr.begin_seq_no == 3 && rr.end_seq_no == 4);
+    assert_eq!(time::Instant::now(), before);
+
+    // Completing the inbound gap must not replay the parked request
+    // again. The next observable reply answers fresh input at seq 6.
+    let mut input = test_helpers::heartbeat_bytes(3);
+    input.extend(test_helpers::heartbeat_bytes(4));
+    input.extend(test_helpers::serialize_message(
+        &test_helpers::test_request(6, fix_str!("AFTER-REPLAY")),
+    ));
+    client_io
+        .write_all(&input)
+        .await
+        .expect("close inbound gap");
+    let heartbeat = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(heartbeat.header.msg_seq_num, 5);
+    assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
+        if hb.test_req_id.as_deref() == Some(fix_str!("AFTER-REPLAY")));
+    control_tx
+        .send(ControlMsg::Disconnect)
+        .await
+        .expect("disconnect");
+    session_task.await.expect("session task completes");
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn queued_input_waits_for_the_replay_started_by_the_gap_closing_message() {
+    let settings = test_helpers::default_session_settings();
+    assert_eq!(settings.resend_batch_size.get(), 1);
+    let harness = build_harness_with_settings(settings);
+    let sender = harness.sender.clone();
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (reader, writer) = io::split(server_io);
+    let (session_task, mut events_rx, control_tx) =
+        harness.spawn_acceptor(reader, writer, build_peer_logon(1, 30));
+    logon_handshake(&mut client_io, &mut events_rx).await;
+
+    let mut wire = Vec::new();
+    for seq in 2..=6 {
+        sender
+            .send(test_helpers::new_order_single_with_empty_header())
+            .unwrap();
+        let order = read_one_message(&mut client_io, &mut wire).await;
+        assert_eq!(order.header.msg_seq_num, seq);
+        assert_eq!(order.header.poss_dup_flag, None);
+    }
+
+    // Park an input that will produce an observable reply once
+    // dispatched, then close its gap with a replay request.
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::test_request(3, fix_str!("AFTER-REPLAY")),
+        ))
+        .await
+        .unwrap();
+    let request = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(request.header.msg_seq_num, 7);
+    assert_matches!(test_helpers::as_admin(&request), AdminBase::ResendRequest(rr)
+        if rr.begin_seq_no == 2 && rr.end_seq_no == 2);
+    assert_matches!(events_rx.try_recv(), Err(TryRecvError::Empty));
+    let before = time::Instant::now();
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::resend_request(2, 2, 7),
+        ))
+        .await
+        .unwrap();
+
+    // Recovery includes every requested order and the trailing
+    // session-message gap-fill (Session Layer 4.8.5, Scenario 8).
+    for seq in 2..=6 {
+        let replay = read_one_message(&mut client_io, &mut wire).await;
+        assert_eq!(replay.header.msg_seq_num, seq);
+        assert_eq!(replay.header.poss_dup_flag, Some(true));
+        assert_eq!(SessionMessage::msg_type(&*replay).as_bytes(), b"D");
+    }
+    let gap_fill = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(gap_fill.header.msg_seq_num, 7);
+    assert_eq!(gap_fill.header.poss_dup_flag, Some(true));
+    assert_matches!(test_helpers::as_admin(&gap_fill), AdminBase::SequenceReset(sr)
+        if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 8);
+    let heartbeat = read_one_message(&mut client_io, &mut wire).await;
+    assert_eq!(heartbeat.header.msg_seq_num, 8);
+    assert_eq!(heartbeat.header.poss_dup_flag, None);
+    assert_matches!(test_helpers::as_admin(&heartbeat), AdminBase::Heartbeat(hb)
+        if hb.test_req_id.as_deref() == Some(fix_str!("AFTER-REPLAY")));
+    assert_eq!(time::Instant::now(), before);
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::TestRequest)
+    );
+    assert_matches!(events_rx.try_recv(), Err(TryRecvError::Empty));
+    control_tx.send(ControlMsg::Disconnect).await.unwrap();
+    session_task.await.unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
         })
-        .await;
+    );
+    assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
 /// Once a gap closes, the out-of-order queue must drain all the way to the
@@ -556,87 +525,82 @@ async fn queued_input_waits_for_the_replay_started_by_the_gap_closing_message() 
 /// in-sequence message reads as too-high and draws a `ResendRequest` for
 /// messages it has already sent (FIX Session Layer Section 4.8.2, park-and-
 /// request).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn queue_drains_past_batch_size_before_blocking() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            // The default `queued_batch_size` is 1, so two parked messages
-            // need a second drain iteration to clear.
-            let settings = test_helpers::default_session_settings();
-            assert_eq!(settings.queued_batch_size.get(), 1);
-            let harness = build_harness_with_settings(settings);
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, _control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
+    // The default `queued_batch_size` is 1, so two parked messages
+    // need a second drain iteration to clear.
+    let settings = test_helpers::default_session_settings();
+    assert_eq!(settings.queued_batch_size.get(), 1);
+    let harness = build_harness_with_settings(settings);
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let first_msg = build_peer_logon(1, 30);
+    let (session_task, mut events_rx, _control_tx) =
+        harness.spawn_acceptor(server_reader, server_writer, first_msg);
 
-            logon_handshake(&mut client_io, &mut events_rx).await;
+    logon_handshake(&mut client_io, &mut events_rx).await;
 
-            // Two Heartbeats past the expected seq 2 - both park.
-            client_io
-                .write_all(&test_helpers::heartbeat_bytes(3))
-                .await
-                .unwrap();
-            client_io
-                .write_all(&test_helpers::heartbeat_bytes(4))
-                .await
-                .unwrap();
+    // Two Heartbeats past the expected seq 2 - both park.
+    client_io
+        .write_all(&test_helpers::heartbeat_bytes(3))
+        .await
+        .unwrap();
+    client_io
+        .write_all(&test_helpers::heartbeat_bytes(4))
+        .await
+        .unwrap();
 
-            let mut buf = Vec::new();
-            let resend_request = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(
-                SessionMessage::msg_type(&*resend_request),
-                MsgTypeBase::ResendRequest
-            );
+    let mut buf = Vec::new();
+    let resend_request = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(
+        SessionMessage::msg_type(&*resend_request),
+        MsgTypeBase::ResendRequest
+    );
 
-            // Close the gap. Seq 2 is processed live; 3 and 4 must both
-            // drain out of the queue, leaving the session expecting 5.
-            client_io
-                .write_all(&test_helpers::heartbeat_bytes(2))
-                .await
-                .unwrap();
+    // Close the gap. Seq 2 is processed live; 3 and 4 must both
+    // drain out of the queue, leaving the session expecting 5.
+    client_io
+        .write_all(&test_helpers::heartbeat_bytes(2))
+        .await
+        .unwrap();
 
-            // A TestRequest at the next in-sequence number is the probe:
-            // answered with a Heartbeat only if the queue drained fully.
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::test_request(5, fix_str!("TR1")),
-                ))
-                .await
-                .unwrap();
+    // A TestRequest at the next in-sequence number is the probe:
+    // answered with a Heartbeat only if the queue drained fully.
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::test_request(5, fix_str!("TR1")),
+        ))
+        .await
+        .unwrap();
 
-            let response = read_one_message(&mut client_io, &mut buf).await;
-            let admin = test_helpers::as_admin(&response);
-            assert_matches!(
-                admin,
-                AdminBase::Heartbeat(hb) if hb.test_req_id.as_deref() == Some(fix_str!("TR1")),
-                "expected the TestRequest to be in sequence; a ResendRequest here \
-                     means seq 4 was still parked"
-            );
+    let response = read_one_message(&mut client_io, &mut buf).await;
+    let admin = test_helpers::as_admin(&response);
+    assert_matches!(
+        admin,
+        AdminBase::Heartbeat(hb) if hb.test_req_id.as_deref() == Some(fix_str!("TR1")),
+        "expected the TestRequest to be in sequence; a ResendRequest here \
+             means seq 4 was still parked"
+    );
 
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::TestRequest)
-            );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::TestRequest)
+    );
 
-            drop(client_io);
-            session_task.await.unwrap();
-        })
-        .await;
+    drop(client_io);
+    session_task.await.unwrap();
 }
 
 /// The same staging, reached through the out-of-order queue instead of
@@ -649,72 +613,67 @@ async fn queue_drains_past_batch_size_before_blocking() {
 /// is routed to `store_for_resend`, consuming a sequence number for a
 /// message only a `ResendRequest` from the peer we just disconnected
 /// could ever deliver.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn app_message_staged_from_queued_drain_reaches_peer_first() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut harness = build_harness();
-            harness.handler.send_then_logout = true;
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, _control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
+    let mut harness = build_harness();
+    harness.handler.send_then_logout = true;
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let first_msg = build_peer_logon(1, 30);
+    let (session_task, mut events_rx, _control_tx) =
+        harness.spawn_acceptor(server_reader, server_writer, first_msg);
 
-            logon_handshake(&mut client_io, &mut events_rx).await;
+    logon_handshake(&mut client_io, &mut events_rx).await;
 
-            // Seq 3 while 2 is expected: parked in the queue, no
-            // `on_app_msg_in` yet, and a ResendRequest goes out.
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::new_order_single(3),
-                ))
-                .await
-                .unwrap();
-            let mut buf = Vec::new();
-            let rr = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(SessionMessage::msg_type(&*rr), MsgTypeBase::ResendRequest);
+    // Seq 3 while 2 is expected: parked in the queue, no
+    // `on_app_msg_in` yet, and a ResendRequest goes out.
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::new_order_single(3),
+        ))
+        .await
+        .unwrap();
+    let mut buf = Vec::new();
+    let rr = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(SessionMessage::msg_type(&*rr), MsgTypeBase::ResendRequest);
 
-            // Closing the gap lets the queued drain re-dispatch seq 3,
-            // and only then does the application stage its answer.
-            client_io
-                .write_all(&test_helpers::heartbeat_bytes(2))
-                .await
-                .unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
-            );
+    // Closing the gap lets the queued drain re-dispatch seq 3,
+    // and only then does the application stage its answer.
+    client_io
+        .write_all(&test_helpers::heartbeat_bytes(2))
+        .await
+        .unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
+    );
 
-            let staged = read_one_message(&mut client_io, &mut buf).await;
-            assert_matches!(
-                *staged.body,
-                Body::NewOrderSingle(_),
-                "the staged app message must precede the Logout it was staged before"
-            );
+    let staged = read_one_message(&mut client_io, &mut buf).await;
+    assert_matches!(
+        *staged.body,
+        Body::NewOrderSingle(_),
+        "the staged app message must precede the Logout it was staged before"
+    );
 
-            let logout = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
+    let logout = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
 
-            assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                })
-            );
-
-            session_task.await.unwrap();
-
-            // Nothing beyond the one re-dispatched message and the session
-            // end: a second parked message re-dispatched by the queued
-            // drain, or a duplicated `on_session_end`, would show up here.
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
+    assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
         })
-        .await;
+    );
+
+    session_task.await.unwrap();
+
+    // Nothing beyond the one re-dispatched message and the session
+    // end: a second parked message re-dispatched by the queued
+    // drain, or a duplicated `on_session_end`, would show up here.
+    assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
 }
 
 /// Once a re-dispatched message ends the session, the rest of the queue
@@ -726,75 +685,70 @@ async fn app_message_staged_from_queued_drain_reaches_peer_first() {
 /// The session-ending message is a peer `Logout<5>` - a re-dispatch that
 /// advances the target counter past itself, so the message behind it is
 /// genuinely next in line rather than parked behind an unconsumed seq num.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn queued_drain_stops_at_the_message_that_ends_the_session() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut settings = test_helpers::default_session_settings();
-            settings.queued_batch_size = const { NonZeroUsize::new(2).unwrap() };
-            let harness = build_harness_with_settings(settings);
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, _control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
+    let mut settings = test_helpers::default_session_settings();
+    settings.queued_batch_size = const { NonZeroUsize::new(2).unwrap() };
+    let harness = build_harness_with_settings(settings);
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let first_msg = build_peer_logon(1, 30);
+    let (session_task, mut events_rx, _control_tx) =
+        harness.spawn_acceptor(server_reader, server_writer, first_msg);
 
-            logon_handshake(&mut client_io, &mut events_rx).await;
+    logon_handshake(&mut client_io, &mut events_rx).await;
 
-            // Logout at seq 3 and a Heartbeat at seq 4 while 2 is expected:
-            // both park, one batch's worth, and a ResendRequest goes out.
-            client_io
-                .write_all(&test_helpers::logout_bytes(3))
-                .await
-                .unwrap();
-            client_io
-                .write_all(&test_helpers::heartbeat_bytes(4))
-                .await
-                .unwrap();
-            let mut buf = Vec::new();
-            let rr = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(SessionMessage::msg_type(&*rr), MsgTypeBase::ResendRequest);
+    // Logout at seq 3 and a Heartbeat at seq 4 while 2 is expected:
+    // both park, one batch's worth, and a ResendRequest goes out.
+    client_io
+        .write_all(&test_helpers::logout_bytes(3))
+        .await
+        .unwrap();
+    client_io
+        .write_all(&test_helpers::heartbeat_bytes(4))
+        .await
+        .unwrap();
+    let mut buf = Vec::new();
+    let rr = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(SessionMessage::msg_type(&*rr), MsgTypeBase::ResendRequest);
 
-            // Closing the gap re-dispatches the Logout, which ends the
-            // session; the Heartbeat behind it must not follow.
-            client_io
-                .write_all(&test_helpers::heartbeat_bytes(2))
-                .await
-                .unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::Logout)
-            );
-            // The Logout response is on the wire; the peer closes.
-            let logout = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
-            client_io.shutdown().await.unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(SessionEndSnapshot {
-                    context: EndContext::RemoteLogout,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }),
-                "seq 4 must stay parked once seq 3 ended the session"
-            );
-            session_task.await.unwrap();
-            assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
+    // Closing the gap re-dispatches the Logout, which ends the
+    // session; the Heartbeat behind it must not follow.
+    client_io
+        .write_all(&test_helpers::heartbeat_bytes(2))
+        .await
+        .unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::Logout)
+    );
+    // The Logout response is on the wire; the peer closes.
+    let logout = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(SessionMessage::msg_type(&*logout), MsgTypeBase::Logout);
+    client_io.shutdown().await.unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::RemoteLogout,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }),
+        "seq 4 must stay parked once seq 3 ended the session"
+    );
+    session_task.await.unwrap();
+    assert_matches!(events_rx.try_recv(), Err(TryRecvError::Disconnected));
 
-            // Nothing followed the Logout response.
-            let mut rest = Vec::new();
-            client_io.read_to_end(&mut rest).await.unwrap();
-            assert!(
-                rest.is_empty(),
-                "unexpected bytes after the Logout: {rest:?}"
-            );
-        })
-        .await;
+    // Nothing followed the Logout response.
+    let mut rest = Vec::new();
+    client_io.read_to_end(&mut rest).await.unwrap();
+    assert!(
+        rest.is_empty(),
+        "unexpected bytes after the Logout: {rest:?}"
+    );
 }
 
 /// Scenario 20: a `ResendRequest<2>` that arrives while we are still
@@ -802,115 +756,110 @@ async fn queued_drain_stops_at_the_message_that_ends_the_session() {
 /// peer opens in the meantime still draws exactly one `ResendRequest<2>`
 /// of our own. The replay iterations skip the event select, so the peer's
 /// input waits until the first range is exhausted.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn resend_request_during_a_replay_is_served_after_it() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let harness = build_harness();
-            let sender = harness.sender.clone();
-            let (server_io, mut client_io) = io::duplex(65536);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
+    let harness = build_harness();
+    let sender = harness.sender.clone();
+    let (server_io, mut client_io) = io::duplex(65536);
+    let (server_reader, server_writer) = io::split(server_io);
+    let first_msg = build_peer_logon(1, 30);
+    let (session_task, mut events_rx, control_tx) =
+        harness.spawn_acceptor(server_reader, server_writer, first_msg);
 
-            logon_handshake(&mut client_io, &mut events_rx).await;
+    logon_handshake(&mut client_io, &mut events_rx).await;
 
-            // Our seq 2..=6: five orders the peer reads.
-            for _ in 0..5 {
-                sender
-                    .send(test_helpers::new_order_single_with_empty_header())
-                    .expect("stage");
+    // Our seq 2..=6: five orders the peer reads.
+    for _ in 0..5 {
+        sender
+            .send(test_helpers::new_order_single_with_empty_header())
+            .expect("stage");
+    }
+    let mut buf = Vec::new();
+    for seq in 2..=6 {
+        let msg = read_one_message(&mut client_io, &mut buf).await;
+        assert_eq!(msg.msg_seq_num(), seq);
+    }
+
+    // The peer asks for all of it (peer seq 2); the replay starts.
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::resend_request(2, 2, 6),
+        ))
+        .await
+        .unwrap();
+    let first = read_one_message(&mut client_io, &mut buf).await;
+    assert_eq!(first.msg_seq_num(), 2);
+    assert_eq!(first.poss_dup_flag(), Some(true));
+
+    // Mid-replay: a second request for 3..=4 (peer seq 3), then an
+    // order at peer seq 5 - one ahead of the expected 4.
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::resend_request(3, 3, 4),
+        ))
+        .await
+        .unwrap();
+    client_io
+        .write_all(&test_helpers::serialize_message(
+            &test_helpers::new_order_single(5),
+        ))
+        .await
+        .unwrap();
+
+    // The first replay completes untouched.
+    for seq in 3..=6 {
+        let msg = read_one_message(&mut client_io, &mut buf).await;
+        assert_eq!(msg.msg_seq_num(), seq, "first replay out of order");
+        assert_eq!(msg.poss_dup_flag(), Some(true));
+    }
+
+    // Then the second replay (3, 4) and our one ResendRequest for
+    // the gap the order opened - the admin flush runs ahead of the
+    // replay batch, so their relative order is not pinned.
+    let mut replayed = Vec::new();
+    let mut own_requests = Vec::new();
+    for _ in 0..3 {
+        let msg = read_one_message(&mut client_io, &mut buf).await;
+        match SessionMessage::try_as_admin(&*msg) {
+            Some(AdminBase::ResendRequest(rr)) => {
+                own_requests.push((rr.begin_seq_no, rr.end_seq_no));
             }
-            let mut buf = Vec::new();
-            for seq in 2..=6 {
-                let msg = read_one_message(&mut client_io, &mut buf).await;
-                assert_eq!(msg.msg_seq_num(), seq);
-            }
-
-            // The peer asks for all of it (peer seq 2); the replay starts.
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::resend_request(2, 2, 6),
-                ))
-                .await
-                .unwrap();
-            let first = read_one_message(&mut client_io, &mut buf).await;
-            assert_eq!(first.msg_seq_num(), 2);
-            assert_eq!(first.poss_dup_flag(), Some(true));
-
-            // Mid-replay: a second request for 3..=4 (peer seq 3), then an
-            // order at peer seq 5 - one ahead of the expected 4.
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::resend_request(3, 3, 4),
-                ))
-                .await
-                .unwrap();
-            client_io
-                .write_all(&test_helpers::serialize_message(
-                    &test_helpers::new_order_single(5),
-                ))
-                .await
-                .unwrap();
-
-            // The first replay completes untouched.
-            for seq in 3..=6 {
-                let msg = read_one_message(&mut client_io, &mut buf).await;
-                assert_eq!(msg.msg_seq_num(), seq, "first replay out of order");
+            _ => {
                 assert_eq!(msg.poss_dup_flag(), Some(true));
+                replayed.push(msg.msg_seq_num());
             }
+        }
+    }
+    assert_eq!(replayed, vec![3, 4], "second replay, in order");
+    assert_eq!(own_requests, vec![(4, 4)], "one request for the one gap");
 
-            // Then the second replay (3, 4) and our one ResendRequest for
-            // the gap the order opened - the admin flush runs ahead of the
-            // replay batch, so their relative order is not pinned.
-            let mut replayed = Vec::new();
-            let mut own_requests = Vec::new();
-            for _ in 0..3 {
-                let msg = read_one_message(&mut client_io, &mut buf).await;
-                match SessionMessage::try_as_admin(&*msg) {
-                    Some(AdminBase::ResendRequest(rr)) => {
-                        own_requests.push((rr.begin_seq_no, rr.end_seq_no));
-                    }
-                    _ => {
-                        assert_eq!(msg.poss_dup_flag(), Some(true));
-                        replayed.push(msg.msg_seq_num());
-                    }
-                }
-            }
-            assert_eq!(replayed, vec![3, 4], "second replay, in order");
-            assert_eq!(own_requests, vec![(4, 4)], "one request for the one gap");
+    // The peer closes the gap; the parked order is delivered.
+    client_io
+        .write_all(&test_helpers::sequence_reset_bytes(4, 5, true))
+        .await
+        .unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
+    );
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::SequenceReset)
+    );
+    assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
 
-            // The peer closes the gap; the parked order is delivered.
-            client_io
-                .write_all(&test_helpers::sequence_reset_bytes(4, 5, true))
-                .await
-                .unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
-            );
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::AdminMsgIn(MsgTypeBase::SequenceReset)
-            );
-            assert_matches!(events_rx.recv().await.unwrap(), TestEvent::AppMsgIn);
-
-            control_tx.send(ControlMsg::Disconnect).await.unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                })
-            );
-            session_task.await.unwrap();
+    control_tx.send(ControlMsg::Disconnect).await.unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
         })
-        .await;
+    );
+    session_task.await.unwrap();
 }

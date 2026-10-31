@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use super::*;
 use crate::base_messages::MsgTypeBase;
 
@@ -60,20 +62,18 @@ fn exchange_default_has_empty_const_text_views_and_zero_bytes() {
     assert!(Exchange::from_bytes([0; 4]).is_err());
 }
 
-#[test]
-fn exchange_validates_every_byte_position() {
+#[rstest]
+fn exchange_validates_every_byte_position(#[values(0, 1, 2, 3)] position: usize) {
     use std::assert_matches;
 
-    for position in 0..4 {
-        for byte in u8::MIN..=u8::MAX {
-            let mut bytes = *b"XNAS";
-            bytes[position] = byte;
-            let result = Exchange::from_bytes(bytes);
-            if matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9') {
-                assert_eq!(result.unwrap().to_bytes(), bytes);
-            } else {
-                assert_matches!(result, Err(ExchangeError::InvalidChar(invalid)) if invalid == byte);
-            }
+    for byte in u8::MIN..=u8::MAX {
+        let mut bytes = *b"XNAS";
+        bytes[position] = byte;
+        let result = Exchange::from_bytes(bytes);
+        if matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9') {
+            assert_eq!(result.unwrap().to_bytes(), bytes);
+        } else {
+            assert_matches!(result, Err(ExchangeError::InvalidChar(invalid)) if invalid == byte);
         }
     }
 }
@@ -93,8 +93,12 @@ fn exchange_serde_deserializes_validated_strings() {
     assert_eq!(value.to_bytes(), *b"Az09");
     let empty: Exchange = serde_json::from_str("\"\"").unwrap();
     assert_eq!(empty, Exchange::default());
+}
 
-    for json in [
+#[cfg(feature = "serde-deserialize")]
+#[rstest]
+fn exchange_serde_rejects_invalid_values(
+    #[values(
         "\"ABC\"",
         "\"ABCDE\"",
         "\"AB C\"",
@@ -105,10 +109,11 @@ fn exchange_serde_deserializes_validated_strings() {
         "\"AB\\u00e9\"",
         "[65, 66, 67, 68]",
         "1234",
-        "null",
-    ] {
-        assert!(serde_json::from_str::<Exchange>(json).is_err(), "{json}");
-    }
+        "null"
+    )]
+    json: &str,
+) {
+    assert!(serde_json::from_str::<Exchange>(json).is_err(), "{json}");
 }
 
 #[test]
@@ -174,8 +179,12 @@ fn language_serde_deserializes_validated_strings() {
     assert_eq!(value.to_bytes(), *b"pl");
     let empty: Language = serde_json::from_str("\"\"").unwrap();
     assert_eq!(empty, Language::default());
+}
 
-    for json in [
+#[cfg(feature = "serde-deserialize")]
+#[rstest]
+fn language_serde_rejects_invalid_values(
+    #[values(
         "\"zz\"",
         "\"Unspecified\"",
         "\"p\"",
@@ -191,10 +200,11 @@ fn language_serde_deserializes_validated_strings() {
         "\"\\u00e9\"",
         "[112, 108]",
         "1234",
-        "null",
-    ] {
-        assert!(serde_json::from_str::<Language>(json).is_err(), "{json}");
-    }
+        "null"
+    )]
+    json: &str,
+) {
+    assert!(serde_json::from_str::<Language>(json).is_err(), "{json}");
 }
 
 #[test]
@@ -278,21 +288,28 @@ fn country_and_currency_serde_read_codes_and_unspecified() {
         serde_json::from_str::<Currency>("\"\"").unwrap(),
         Currency::Unspecified
     );
-    for json in ["\"Unspecified\"", "\"pl\"", "\"ZZ\"", "\"\\u0000\\u0000\""] {
-        assert!(serde_json::from_str::<Country>(json).is_err(), "{json}");
-    }
-    for json in [
-        "\"Unspecified\"",
-        "\"pln\"",
-        "\"ZZZ\"",
-        "\"\\u0000\\u0000\\u0000\"",
-    ] {
-        assert!(serde_json::from_str::<Currency>(json).is_err(), "{json}");
-    }
 }
 
-#[test]
-fn msg_type_views_are_const_and_exclude_padding() {
+#[cfg(feature = "serde-deserialize")]
+#[rstest]
+fn currency_serde_rejects_invalid_values(
+    #[values("\"Unspecified\"", "\"pln\"", "\"ZZZ\"", "\"\\u0000\\u0000\\u0000\"")] json: &str,
+) {
+    assert!(serde_json::from_str::<Currency>(json).is_err(), "{json}");
+}
+
+#[cfg(feature = "serde-deserialize")]
+#[rstest]
+fn country_serde_rejects_invalid_values(
+    #[values("\"Unspecified\"", "\"pl\"", "\"ZZ\"", "\"\\u0000\\u0000\"")] json: &str,
+) {
+    assert!(serde_json::from_str::<Country>(json).is_err(), "{json}");
+}
+
+#[rstest]
+#[case::single(0)]
+#[case::double(1)]
+fn msg_type_views_are_const_and_exclude_padding(#[case] index: usize) {
     const SINGLE: MsgTypeField = MsgTypeBase::SequenceReset.raw_value();
     const DOUBLE: MsgTypeField = match MsgTypeField::from_bytes(b"AB") {
         Ok(value) => value,
@@ -303,11 +320,12 @@ fn msg_type_views_are_const_and_exclude_padding() {
         (DOUBLE.as_bytes(), DOUBLE.as_str(), DOUBLE.as_fix_str()),
     ];
 
-    for ((bytes, text, fix_text), expected) in VIEWS.into_iter().zip(["4", "AB"]) {
-        assert_eq!(bytes, expected.as_bytes());
-        assert_eq!(text, expected);
-        assert_eq!(fix_text.as_bytes(), expected.as_bytes());
-    }
+    let (bytes, text, fix_text) = VIEWS[index];
+    let expected = ["4", "AB"][index];
+    assert_eq!(bytes, expected.as_bytes());
+    assert_eq!(text, expected);
+    assert_eq!(fix_text.as_bytes(), expected.as_bytes());
+
     assert_eq!(MsgTypeField::from(MsgTypeBase::SequenceReset), SINGLE);
 }
 
@@ -371,20 +389,21 @@ fn fix_string_conversions_accept_printable_ascii() {
     );
 }
 
-#[test]
-fn fix_string_parse_accepts_printable_ascii_and_empty_input() {
-    for input in ["Hello world!~", ""] {
-        assert_eq!(input.parse::<FixString>().unwrap().as_utf8(), input);
-    }
+#[rstest]
+#[case::printable("Hello world!~")]
+#[case::empty("")]
+fn fix_string_parse_accepts_printable_ascii_and_empty_input(#[case] input: &str) {
+    assert_eq!(input.parse::<FixString>().unwrap().as_utf8(), input);
 }
 
-#[test]
-fn fix_string_parse_reports_first_invalid_byte() {
-    for (input, expected_byte) in [("ab\x01", 0x01), ("ab\x7f", 0x7f), ("ab\u{e9}", 0xc3)] {
-        let error = input.parse::<FixString>().unwrap_err();
-        assert_eq!(error.idx(), 2);
-        assert_eq!(error.value(), expected_byte);
-    }
+#[rstest]
+#[case::control("ab\x01", 0x01)]
+#[case::del("ab\x7f", 0x7f)]
+#[case::non_ascii("ab\u{e9}", 0xc3)]
+fn fix_string_parse_reports_first_invalid_byte(#[case] input: &str, #[case] expected_byte: u8) {
+    let error = input.parse::<FixString>().unwrap_err();
+    assert_eq!(error.idx(), 2);
+    assert_eq!(error.value(), expected_byte);
 }
 
 #[test]
@@ -402,17 +421,17 @@ fn fix_string_replacemen_character_on_out_of_range() {
 /// Unlike the clock bounds, the epoch is transmittable - and it renders at
 /// the width the caller asked for, since that width is what reaches the
 /// wire.
-#[test]
-fn unix_epoch_is_transmittable_at_the_requested_width() {
-    for (precision, expected) in [
-        (TimePrecision::Secs, "19700101-00:00:00"),
-        (TimePrecision::Millis, "19700101-00:00:00.000"),
-        (TimePrecision::Nanos, "19700101-00:00:00.000000000"),
-    ] {
-        let epoch = UtcTimestamp::unix_epoch(precision);
-        assert_eq!(epoch.precision(), precision);
-        assert_eq!(epoch.format_precisely().to_string(), expected);
-    }
+#[rstest]
+#[case::seconds(TimePrecision::Secs, "19700101-00:00:00")]
+#[case::millis(TimePrecision::Millis, "19700101-00:00:00.000")]
+#[case::nanos(TimePrecision::Nanos, "19700101-00:00:00.000000000")]
+fn unix_epoch_is_transmittable_at_the_requested_width(
+    #[case] precision: TimePrecision,
+    #[case] expected: &str,
+) {
+    let epoch = UtcTimestamp::unix_epoch(precision);
+    assert_eq!(epoch.precision(), precision);
+    assert_eq!(epoch.format_precisely().to_string(), expected);
 
     // Equality ignores precision, so every width is the same instant.
     assert_eq!(
@@ -426,37 +445,31 @@ fn unix_epoch_is_transmittable_at_the_requested_width() {
     );
 }
 
-#[test]
-fn utc_timestamp_now_keeps_requested_precision() {
-    for precision in [
-        TimePrecision::Secs,
-        TimePrecision::Millis,
-        TimePrecision::Micros,
-        TimePrecision::Nanos,
-    ] {
-        assert_eq!(UtcTimestamp::now(precision).precision(), precision);
-    }
+#[rstest]
+#[case::seconds(TimePrecision::Secs)]
+#[case::millis(TimePrecision::Millis)]
+#[case::micros(TimePrecision::Micros)]
+#[case::nanos(TimePrecision::Nanos)]
+fn utc_timestamp_now_keeps_requested_precision(#[case] precision: TimePrecision) {
+    assert_eq!(UtcTimestamp::now(precision).precision(), precision);
 }
 
-#[test]
-fn appl_ver_id_wire_round_trip() {
-    for (code, id) in [
-        (&b"0"[..], ApplVerId::Fix27),
-        (b"1", ApplVerId::Fix30),
-        (b"2", ApplVerId::Fix40),
-        (b"3", ApplVerId::Fix41),
-        (b"4", ApplVerId::Fix42),
-        (b"5", ApplVerId::Fix43),
-        (b"6", ApplVerId::Fix44),
-        (b"7", ApplVerId::Fix50),
-        (b"8", ApplVerId::Fix50Sp1),
-        (b"9", ApplVerId::Fix50Sp2),
-        (b"10", ApplVerId::FixLatest),
-    ] {
-        assert_eq!(id.as_bytes(), code);
-        assert_eq!(ApplVerId::from_bytes(code), Some(id));
-        assert_eq!(ApplVerId::from_fix_str(id.as_fix_str()).unwrap(), id);
-    }
+#[rstest]
+#[case::fix27(&b"0"[..], ApplVerId::Fix27)]
+#[case::fix30(b"1", ApplVerId::Fix30)]
+#[case::fix40(b"2", ApplVerId::Fix40)]
+#[case::fix41(b"3", ApplVerId::Fix41)]
+#[case::fix42(b"4", ApplVerId::Fix42)]
+#[case::fix43(b"5", ApplVerId::Fix43)]
+#[case::fix44(b"6", ApplVerId::Fix44)]
+#[case::fix50(b"7", ApplVerId::Fix50)]
+#[case::fix50sp1(b"8", ApplVerId::Fix50Sp1)]
+#[case::fix50sp2(b"9", ApplVerId::Fix50Sp2)]
+#[case::latest(b"10", ApplVerId::FixLatest)]
+fn appl_ver_id_wire_round_trip(#[case] code: &[u8], #[case] id: ApplVerId) {
+    assert_eq!(id.as_bytes(), code);
+    assert_eq!(ApplVerId::from_bytes(code), Some(id));
+    assert_eq!(ApplVerId::from_fix_str(id.as_fix_str()).unwrap(), id);
 }
 
 #[test]
@@ -483,6 +496,7 @@ fn appl_ver_id_version_bridge() {
 
 #[cfg(feature = "serde-deserialize")]
 mod utc_timestamp_serde_tests {
+    use rstest::rstest;
     use serde::{
         Deserialize,
         de::value::{Error as DeError, StrDeserializer},
@@ -506,17 +520,14 @@ mod utc_timestamp_serde_tests {
         assert_eq!(parsed.precision(), TimePrecision::Secs);
     }
 
-    #[test]
-    fn fractional_timestamps_round_trip() {
-        for (input, precision) in [
-            ("20240102-03:04:05.123", TimePrecision::Millis),
-            ("20240102-03:04:05.123456", TimePrecision::Micros),
-            ("20240102-03:04:05.123456789", TimePrecision::Nanos),
-        ] {
-            let parsed = de(input).expect("valid timestamp rejected");
-            assert_eq!(parsed.precision(), precision);
-            assert_eq!(parsed.format_precisely().to_string(), input);
-        }
+    #[rstest]
+    #[case::millis("20240102-03:04:05.123", TimePrecision::Millis)]
+    #[case::micros("20240102-03:04:05.123456", TimePrecision::Micros)]
+    #[case::nanos("20240102-03:04:05.123456789", TimePrecision::Nanos)]
+    fn fractional_timestamps_round_trip(#[case] input: &str, #[case] precision: TimePrecision) {
+        let parsed = de(input).expect("valid timestamp rejected");
+        assert_eq!(parsed.precision(), precision);
+        assert_eq!(parsed.format_precisely().to_string(), input);
     }
 
     #[test]
@@ -603,6 +614,7 @@ mod utc_timestamp_serde_ser_tests {
 
 #[cfg(all(feature = "serde-serialize", feature = "serde-deserialize"))]
 mod time_serde_tests {
+    use rstest::rstest;
     use serde::{
         Deserialize,
         de::value::{Error as DeError, StrDeserializer},
@@ -637,23 +649,24 @@ mod time_serde_tests {
         assert_round_trip(UtcTimeOnly::with_nanos(time), "03:04:05.123456789");
     }
 
-    #[test]
-    fn tz_timestamp_round_trips_every_offset_form() {
+    #[rstest]
+    #[case::utc(0, "20060901-07:39:00Z")]
+    #[case::east_hour(3600, "20060901-07:39:00+01")]
+    #[case::west_hour(-3600, "20060901-07:39:00-01")]
+    #[case::east_half_hour(5400, "20060901-07:39:00+01:30")]
+    #[case::west_half_hour(-19_800, "20060901-07:39:00-05:30")]
+    fn tz_timestamp_round_trips_every_offset_form(
+        #[case] offset_secs: i32,
+        #[case] expected: &str,
+    ) {
         let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
             .unwrap()
             .and_hms_opt(7, 39, 0)
             .unwrap();
-        for (offset_secs, expected) in [
-            (0, "20060901-07:39:00Z"),
-            (3600, "20060901-07:39:00+01"),
-            (-3600, "20060901-07:39:00-01"),
-            (5400, "20060901-07:39:00+01:30"),
-            (-19_800, "20060901-07:39:00-05:30"),
-        ] {
-            let offset = FixedOffset::east_opt(offset_secs).unwrap();
-            let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
-            assert_round_trip(value, expected);
-        }
+
+        let offset = FixedOffset::east_opt(offset_secs).unwrap();
+        let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
+        assert_round_trip(value, expected);
     }
 
     #[test]
@@ -748,8 +761,14 @@ mod time_serde_tests {
     /// `TzTimestamp::with_*` used to only tag the precision, leaving the
     /// sub-precision digits in the value - so a value built in-process was not
     /// equal to the same value parsed back from the bytes it produced.
-    #[test]
-    fn tz_timestamp_construction_truncates_to_the_stated_precision() {
+    #[rstest]
+    #[case::secs(TzTimestamp::with_secs)]
+    #[case::millis(TzTimestamp::with_millis)]
+    #[case::micros(TzTimestamp::with_micros)]
+    #[case::nanos(TzTimestamp::with_nanos)]
+    fn tz_timestamp_construction_truncates_to_the_stated_precision(
+        #[case] constructor: fn(DateTime<FixedOffset>) -> TzTimestamp,
+    ) {
         let offset = FixedOffset::east_opt(3600).unwrap();
         let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
             .unwrap()
@@ -771,59 +790,48 @@ mod time_serde_tests {
         );
 
         // What was constructed equals what the wire form parses back to.
-        for value in [
-            TzTimestamp::with_secs(timestamp),
-            TzTimestamp::with_millis(timestamp),
-            TzTimestamp::with_micros(timestamp),
-            TzTimestamp::with_nanos(timestamp),
-        ] {
-            let encoded = serde_json::to_string(&value).unwrap();
-            let parsed: TzTimestamp = serde_json::from_str(&encoded).expect("round trip");
-            assert_eq!(parsed.timestamp(), value.timestamp());
-            assert_eq!(parsed.precision(), value.precision());
-        }
+        let value = constructor(timestamp);
+        let encoded = serde_json::to_string(&value).unwrap();
+        let parsed: TzTimestamp = serde_json::from_str(&encoded).expect("round trip");
+        assert_eq!(parsed.timestamp(), value.timestamp());
+        assert_eq!(parsed.precision(), value.precision());
     }
 
     /// The runtime-precision constructors must truncate exactly like the
     /// fixed-precision ones they stand in for - they are what a caller reaches
     /// for when the width comes from configuration rather than a literal.
-    #[test]
-    fn tz_runtime_precision_constructors_match_the_fixed_ones() {
+    #[rstest]
+    #[case::secs(TimePrecision::Secs, TzTimestamp::with_secs, TzTimeOnly::with_secs)]
+    #[case::millis(
+        TimePrecision::Millis,
+        TzTimestamp::with_millis,
+        TzTimeOnly::with_millis
+    )]
+    #[case::micros(
+        TimePrecision::Micros,
+        TzTimestamp::with_micros,
+        TzTimeOnly::with_micros
+    )]
+    #[case::nanos(TimePrecision::Nanos, TzTimestamp::with_nanos, TzTimeOnly::with_nanos)]
+    fn tz_runtime_precision_constructors_match_the_fixed_ones(
+        #[case] precision: TimePrecision,
+        #[case] timestamp_constructor: fn(DateTime<FixedOffset>) -> TzTimestamp,
+        #[case] time_constructor: fn(NaiveTime, FixedOffset) -> TzTimeOnly,
+    ) {
         let offset = FixedOffset::east_opt(3600).unwrap();
         let time = NaiveTime::from_hms_nano_opt(7, 39, 0, 123_456_789).unwrap();
         let naive = NaiveDate::from_ymd_opt(2006, 9, 1).unwrap().and_time(time);
         let timestamp = offset.from_local_datetime(&naive).unwrap();
 
-        for (precision, fixed_ts, fixed_time_only) in [
-            (
-                TimePrecision::Secs,
-                TzTimestamp::with_secs(timestamp),
-                TzTimeOnly::with_secs(time, offset),
-            ),
-            (
-                TimePrecision::Millis,
-                TzTimestamp::with_millis(timestamp),
-                TzTimeOnly::with_millis(time, offset),
-            ),
-            (
-                TimePrecision::Micros,
-                TzTimestamp::with_micros(timestamp),
-                TzTimeOnly::with_micros(time, offset),
-            ),
-            (
-                TimePrecision::Nanos,
-                TzTimestamp::with_nanos(timestamp),
-                TzTimeOnly::with_nanos(time, offset),
-            ),
-        ] {
-            let runtime_ts = TzTimestamp::with_precision(timestamp, precision);
-            assert_eq!(runtime_ts.timestamp(), fixed_ts.timestamp());
-            assert_eq!(runtime_ts.precision(), fixed_ts.precision());
+        let fixed_ts = timestamp_constructor(timestamp);
+        let fixed_time_only = time_constructor(time, offset);
+        let runtime_ts = TzTimestamp::with_precision(timestamp, precision);
+        assert_eq!(runtime_ts.timestamp(), fixed_ts.timestamp());
+        assert_eq!(runtime_ts.precision(), fixed_ts.precision());
 
-            let runtime_time_only = TzTimeOnly::new(time, offset, precision);
-            assert_eq!(runtime_time_only.timestamp(), fixed_time_only.timestamp());
-            assert_eq!(runtime_time_only.precision(), fixed_time_only.precision());
-        }
+        let runtime_time_only = TzTimeOnly::new(time, offset, precision);
+        assert_eq!(runtime_time_only.timestamp(), fixed_time_only.timestamp());
+        assert_eq!(runtime_time_only.precision(), fixed_time_only.precision());
     }
 
     #[test]
@@ -911,6 +919,7 @@ mod time_serde_tests {
 
 #[cfg(feature = "serde-deserialize")]
 mod tenor_serde_de_tests {
+    use rstest::rstest;
     use serde::{
         Deserialize,
         de::value::{Error as DeError, StrDeserializer},
@@ -922,23 +931,20 @@ mod tenor_serde_de_tests {
         Tenor::deserialize(StrDeserializer::<DeError>::new(input))
     }
 
-    #[test]
-    fn every_unit_round_trips() {
-        for (input, unit, value) in [
-            ("D5", TenorUnit::Days, 5),
-            ("M3", TenorUnit::Months, 3),
-            ("W13", TenorUnit::Weeks, 13),
-            ("Y1", TenorUnit::Years, 1),
-        ] {
-            let parsed = de(input).expect("valid tenor rejected");
-            assert_eq!(
-                parsed,
-                Tenor {
-                    unit,
-                    value: TenorValue::new(value).unwrap()
-                }
-            );
-        }
+    #[rstest]
+    #[case::days("D5", TenorUnit::Days, 5)]
+    #[case::months("M3", TenorUnit::Months, 3)]
+    #[case::weeks("W13", TenorUnit::Weeks, 13)]
+    #[case::years("Y1", TenorUnit::Years, 1)]
+    fn every_unit_round_trips(#[case] input: &str, #[case] unit: TenorUnit, #[case] value: u16) {
+        let parsed = de(input).expect("valid tenor rejected");
+        assert_eq!(
+            parsed,
+            Tenor {
+                unit,
+                value: TenorValue::new(value).unwrap()
+            }
+        );
     }
 
     #[test]
@@ -962,22 +968,25 @@ mod tenor_serde_de_tests {
 
 #[cfg(feature = "serde-serialize")]
 mod tenor_serde_ser_tests {
+    use rstest::rstest;
+
     use super::super::*;
 
-    #[test]
-    fn tenor_serializes_to_wire_string() {
-        for (unit, value, expected) in [
-            (TenorUnit::Days, 5, "\"D5\""),
-            (TenorUnit::Months, 3, "\"M3\""),
-            (TenorUnit::Weeks, 13, "\"W13\""),
-            (TenorUnit::Years, 1, "\"Y1\""),
-        ] {
-            let tenor = Tenor {
-                unit,
-                value: TenorValue::new(value).unwrap(),
-            };
-            assert_eq!(serde_json::to_string(&tenor).unwrap(), expected);
-        }
+    #[rstest]
+    #[case::days(TenorUnit::Days, 5, "\"D5\"")]
+    #[case::months(TenorUnit::Months, 3, "\"M3\"")]
+    #[case::weeks(TenorUnit::Weeks, 13, "\"W13\"")]
+    #[case::years(TenorUnit::Years, 1, "\"Y1\"")]
+    fn tenor_serializes_to_wire_string(
+        #[case] unit: TenorUnit,
+        #[case] value: u16,
+        #[case] expected: &str,
+    ) {
+        let tenor = Tenor {
+            unit,
+            value: TenorValue::new(value).unwrap(),
+        };
+        assert_eq!(serde_json::to_string(&tenor).unwrap(), expected);
     }
 }
 

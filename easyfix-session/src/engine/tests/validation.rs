@@ -2,11 +2,12 @@ use std::{assert_matches, borrow::Cow, ptr};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
-    basic_types::{TimePrecision, UtcTimestamp},
+    basic_types::{FixStr, TimePrecision, UtcTimestamp},
     fix_str,
     message::{HeaderAccess, SessionMessage},
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 use tokio::time::Duration;
 
 use super::support::{assert_msg_type, verify_test};
@@ -22,106 +23,97 @@ use crate::{
     },
 };
 
-#[test]
-fn header_validation_returns_original_message_before_refusal_side_effects() {
-    for (expected, reject, text, disconnect) in [
-        (
-            ValidationError::CompIdMismatch {
-                tag: 49,
-                expected: fix_str!("TARGET").to_owned(),
-            },
-            Some((SessionRejectReasonBase::CompIdProblem, 49)),
-            fix_str!("SenderCompID does not match"),
-            Some(EndContext::Closing(SessionEndReason::InvalidCompId)),
-        ),
-        (
-            ValidationError::CompIdMismatch {
-                tag: 56,
-                expected: fix_str!("SENDER").to_owned(),
-            },
-            Some((SessionRejectReasonBase::CompIdProblem, 56)),
-            fix_str!("TargetCompID does not match"),
-            Some(EndContext::Closing(SessionEndReason::InvalidCompId)),
-        ),
-        (
-            ValidationError::MissingOrigSendingTime,
-            Some((SessionRejectReasonBase::RequiredTagMissing, 122)),
-            fix_str!("Required tag missing: OrigSendingTime(122)"),
-            None,
-        ),
-        (
-            ValidationError::OrigSendingTimeAfterSendingTime,
-            Some((SessionRejectReasonBase::SendingTimeAccuracyProblem, 122)),
-            fix_str!("OrigSendingTime(122) after SendingTime(52)"),
-            Some(EndContext::Closing(
-                SessionEndReason::InvalidOrigSendingTime,
-            )),
-        ),
-        (
-            ValidationError::MsgSeqNumTooLow { expected: 2 },
-            None,
-            fix_str!("MsgSeqNum too low, expected 2, got 1"),
-            Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow)),
-        ),
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        let mut msg = test_helpers::heartbeat(1, None);
-        match &expected {
-            ValidationError::CompIdMismatch { tag: 49, .. } => {
-                msg.header.sender_comp_id = fix_str!("WRONG").to_owned();
-            }
-            ValidationError::CompIdMismatch { .. } => {
-                msg.header.target_comp_id = fix_str!("WRONG").to_owned();
-            }
-            ValidationError::MissingOrigSendingTime => {
-                msg.set_poss_dup_flag(Some(true));
-            }
-            ValidationError::OrigSendingTimeAfterSendingTime => {
-                msg.set_poss_dup_flag(Some(true));
-                msg.set_orig_sending_time(Some(timestamp_offset_secs(10)));
-            }
-            ValidationError::MsgSeqNumTooLow { .. } => {
-                storage.set_next_target_msg_seq_num(nz_seq(2)).unwrap();
-            }
-            other => panic!("unexpected case: {other:?}"),
+#[rstest]
+#[case::sender_comp_id(
+    ValidationError::CompIdMismatch {
+        tag: 49,
+        expected: fix_str!("TARGET").to_owned(),
+    },
+    Some((SessionRejectReasonBase::CompIdProblem, 49)),
+    fix_str!("SenderCompID does not match"),
+    Some(EndContext::Closing(SessionEndReason::InvalidCompId)),
+)]
+#[case::target_comp_id(
+    ValidationError::CompIdMismatch {
+        tag: 56,
+        expected: fix_str!("SENDER").to_owned(),
+    },
+    Some((SessionRejectReasonBase::CompIdProblem, 56)),
+    fix_str!("TargetCompID does not match"),
+    Some(EndContext::Closing(SessionEndReason::InvalidCompId)),
+)]
+#[case::missing_orig_sending_time(ValidationError::MissingOrigSendingTime, Some((SessionRejectReasonBase::RequiredTagMissing, 122)), fix_str!("Required tag missing: OrigSendingTime(122)"), None)]
+#[case::orig_sending_time_after_sending_time(
+    ValidationError::OrigSendingTimeAfterSendingTime,
+    Some((SessionRejectReasonBase::SendingTimeAccuracyProblem, 122)),
+    fix_str!("OrigSendingTime(122) after SendingTime(52)"),
+    Some(EndContext::Closing(
+        SessionEndReason::InvalidOrigSendingTime,
+    )),
+)]
+#[case::sequence_too_low(ValidationError::MsgSeqNumTooLow { expected: 2 }, None, fix_str!("MsgSeqNum too low, expected 2, got 1"), Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow)))]
+fn header_validation_returns_original_message_before_refusal_side_effects(
+    #[case] expected: ValidationError,
+    #[case] reject: Option<(SessionRejectReasonBase, i64)>,
+    #[case] text: &'static FixStr,
+    #[case] disconnect: Option<EndContext>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    let mut msg = test_helpers::heartbeat(1, None);
+    match &expected {
+        ValidationError::CompIdMismatch { tag: 49, .. } => {
+            msg.header.sender_comp_id = fix_str!("WRONG").to_owned();
         }
-        let original = ptr::from_ref(&*msg);
-        let target = storage.next_target_msg_seq_num();
-        let InputResult::ValidationError { msg, failure } =
-            engine.on_input(msg, &mut storage).unwrap()
-        else {
-            panic!("expected validation failure: {expected:?}");
-        };
-        assert_eq!(failure.error, expected);
-        assert!(ptr::eq(&*msg, original));
-        assert!(!engine.has_admin_output());
-        assert!(!engine.should_disconnect());
-        assert_eq!(storage.next_target_msg_seq_num(), target);
-        assert_eq!(engine.queued_count(), 0);
-        engine
-            .process_validation_failure(msg, failure, &mut storage)
-            .unwrap();
-        if let Some((reason, tag)) = reject {
-            let reply = take_admin(&mut engine);
-            assert_matches!(as_admin(&reply), AdminBase::Reject(ref reject)
+        ValidationError::CompIdMismatch { .. } => {
+            msg.header.target_comp_id = fix_str!("WRONG").to_owned();
+        }
+        ValidationError::MissingOrigSendingTime => {
+            msg.set_poss_dup_flag(Some(true));
+        }
+        ValidationError::OrigSendingTimeAfterSendingTime => {
+            msg.set_poss_dup_flag(Some(true));
+            msg.set_orig_sending_time(Some(timestamp_offset_secs(10)));
+        }
+        ValidationError::MsgSeqNumTooLow { .. } => {
+            storage.set_next_target_msg_seq_num(nz_seq(2)).unwrap();
+        }
+        other => panic!("unexpected case: {other:?}"),
+    }
+    let original = ptr::from_ref(&*msg);
+    let target = storage.next_target_msg_seq_num();
+    let InputResult::ValidationError { msg, failure } = engine.on_input(msg, &mut storage).unwrap()
+    else {
+        panic!("expected validation failure: {expected:?}");
+    };
+    assert_eq!(failure.error, expected);
+    assert!(ptr::eq(&*msg, original));
+    assert!(!engine.has_admin_output());
+    assert!(!engine.should_disconnect());
+    assert_eq!(storage.next_target_msg_seq_num(), target);
+    assert_eq!(engine.queued_count(), 0);
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
+    if let Some((reason, tag)) = reject {
+        let reply = take_admin(&mut engine);
+        assert_matches!(as_admin(&reply), AdminBase::Reject(ref reject)
                 if reject.session_reject_reason == Some(reason.into())
                     && reject.ref_tag_id == Some(tag)
                     && reject.ref_seq_num == 1
                     && reject.text.as_deref() == Some(text));
-        }
-        if disconnect.is_some() {
-            let reply = take_admin(&mut engine);
-            assert_matches!(as_admin(&reply), AdminBase::Logout(ref logout)
-                if logout.text.as_deref() == Some(text));
-        }
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            disconnect,
-            "{expected:?}"
-        );
-        assert_eq!(storage.next_target_msg_seq_num().get(), 2, "{expected:?}");
-        assert!(!engine.has_admin_output(), "{expected:?}");
     }
+    if disconnect.is_some() {
+        let reply = take_admin(&mut engine);
+        assert_matches!(as_admin(&reply), AdminBase::Logout(ref logout)
+                if logout.text.as_deref() == Some(text));
+    }
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        disconnect,
+        "{expected:?}"
+    );
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2, "{expected:?}");
+    assert!(!engine.has_admin_output(), "{expected:?}");
 }
 
 #[test]
@@ -584,78 +576,81 @@ fn verify_header_logon_before_logon() {
 /// acceptor's way to refuse the connection, so only `Idle` treats it as a
 /// non-Logon first message.
 ///
-/// The positive controls at the end pin what the gate must keep admitting:
+/// The positive controls below pin what the gate must keep admitting:
 /// in `LogonSent` the peer's Logon acknowledgement and the Logout an acceptor
 /// sends to refuse the connection (Scenario 1B, 1S(d)); in `LogoutSent` the
 /// messages already on the wire, SequenceReset and Reject included.
-#[test]
-fn pre_logon_gate_exempts_no_message_type() {
-    fn gated_inputs(logon_sent: bool) -> impl Iterator<Item = Box<Message>> {
-        [
-            test_helpers::sequence_reset(1, 4_000_000, false),
-            test_helpers::reject(1, 1),
-            test_helpers::heartbeat(1, None),
-            test_helpers::test_request(1, fix_str!("probe")),
-            test_helpers::resend_request(1, 1, 0),
-            test_helpers::new_order_single(1),
-        ]
-        .into_iter()
-        .chain((!logon_sent).then(|| test_helpers::logout(1)))
+#[rstest]
+#[case::idle_sequence_reset(false, test_helpers::sequence_reset(1, 4_000_000, false))]
+#[case::idle_reject(false, test_helpers::reject(1, 1))]
+#[case::idle_heartbeat(false, test_helpers::heartbeat(1, None))]
+#[case::idle_test_request(false, test_helpers::test_request(1, fix_str!("probe")))]
+#[case::idle_resend_request(false, test_helpers::resend_request(1, 1, 0))]
+#[case::idle_application(false, test_helpers::new_order_single(1))]
+#[case::logon_sent_sequence_reset(true, test_helpers::sequence_reset(1, 4_000_000, false))]
+#[case::logon_sent_reject(true, test_helpers::reject(1, 1))]
+#[case::logon_sent_heartbeat(true, test_helpers::heartbeat(1, None))]
+#[case::logon_sent_test_request(true, test_helpers::test_request(1, fix_str!("probe")))]
+#[case::logon_sent_resend_request(true, test_helpers::resend_request(1, 1, 0))]
+#[case::logon_sent_application(true, test_helpers::new_order_single(1))]
+#[case::idle_logout(false, test_helpers::logout(1))]
+fn pre_logon_gate_exempts_no_message_type(#[case] logon_sent: bool, #[case] msg: Box<Message>) {
+    let (mut engine, mut storage) = EngineBuilder::new().build();
+    if logon_sent {
+        engine
+            .send_logon_request(&mut storage, SessionStart::Resume)
+            .unwrap();
+        drain_all_admin(&mut engine);
     }
+    let msg_type = SessionMessage::msg_type(&*msg);
 
-    for logon_sent in [false, true] {
-        for msg in gated_inputs(logon_sent) {
-            let (mut engine, mut storage) = EngineBuilder::new().build();
-            if logon_sent {
-                engine
-                    .send_logon_request(&mut storage, SessionStart::Resume)
-                    .unwrap();
-                drain_all_admin(&mut engine);
-            }
-            let msg_type = SessionMessage::msg_type(&*msg);
+    let result = accept_input(&mut engine, msg, &mut storage);
 
-            let result = accept_input(&mut engine, msg, &mut storage);
+    assert_matches!(
+        result,
+        InputResult::Handled,
+        "{msg_type} (logon_sent={logon_sent})"
+    );
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState)),
+        "{msg_type} (logon_sent={logon_sent})"
+    );
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
+    assert!(
+        engine.take_admin_output().is_none(),
+        "{msg_type} (logon_sent={logon_sent}): nothing goes on the wire"
+    );
+}
 
-            assert_matches!(
-                result,
-                InputResult::Handled,
-                "{msg_type} (logon_sent={logon_sent})"
-            );
-            assert_eq!(
-                engine.session_end().map(|end| end.context),
-                Some(EndContext::Closing(SessionEndReason::InvalidLogonState)),
-                "{msg_type} (logon_sent={logon_sent})"
-            );
-            assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
-            assert!(
-                engine.take_admin_output().is_none(),
-                "{msg_type} (logon_sent={logon_sent}): nothing goes on the wire"
-            );
-        }
-    }
-
+#[rstest]
+fn pre_logon_gate_accepts_logon_response_or_refusal(
+    #[values(test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER")), test_helpers::logout(1))]
+    msg: Box<Message>,
+) {
     let (mut engine, mut storage) = EngineBuilder::new().build();
     engine
         .send_logon_request(&mut storage, SessionStart::Resume)
         .unwrap();
     drain_all_admin(&mut engine);
-    for msg in [
-        test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER")),
-        test_helpers::logout(1),
-    ] {
-        assert_matches!(verify_test(&engine, &msg, &storage, true, true), Ok(()));
-    }
 
+    assert_matches!(verify_test(&engine, &msg, &storage, true, true), Ok(()));
+}
+
+#[rstest]
+fn logout_gate_accepts_inflight_recovery_messages(
+    #[values(
+        test_helpers::sequence_reset(1, 100, false),
+        test_helpers::reject(1, 1)
+    )]
+    msg: Box<Message>,
+) {
     let (mut engine, storage) = EngineBuilder::new().logged_on().build();
     engine.send_logout(None, None);
     drain_all_admin(&mut engine);
-    for msg in [
-        test_helpers::sequence_reset(1, 100, false),
-        test_helpers::reject(1, 1),
-    ] {
-        assert_matches!(verify_test(&engine, &msg, &storage, true, true), Ok(()));
-    }
+
+    assert_matches!(verify_test(&engine, &msg, &storage, true, true), Ok(()));
 }
 
 /// Negative control for the same arm: a `Logon<A>` is not traffic already
@@ -725,48 +720,42 @@ fn on_logon_second_logon_without_reset_flag_disconnects_silently() {
 /// with `NextNumIn` untouched. The same verdict whether the zero arrives
 /// mid-session or on the very first Logon, where Scenario 1S(d) asks for the
 /// same Logout-with-Text farewell.
-#[test]
-fn msg_seq_num_zero_is_too_low() {
-    for (logged_on, msg) in [
-        (true, test_helpers::heartbeat(0, None)),
-        (
-            false,
-            test_helpers::logon(0, fix_str!("TARGET"), fix_str!("SENDER")),
-        ),
-    ] {
-        let mut builder = EngineBuilder::new();
-        if logged_on {
-            builder = builder.logged_on();
-        }
-        let (mut engine, mut storage) = builder.build();
-
-        assert_matches!(
-            accept_input(&mut engine, msg, &mut storage),
-            InputResult::Handled,
-            "logged_on={logged_on}"
-        );
-
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow)),
-            "logged_on={logged_on}"
-        );
-        let logout = take_admin(&mut engine);
-        let AdminBase::Logout(lo) = as_admin(&logout) else {
-            panic!("expected Logout (logged_on={logged_on})");
-        };
-        assert_eq!(
-            lo.session_status,
-            Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into())
-        );
-        assert_eq!(
-            lo.text.as_deref(),
-            Some(fix_str!("MsgSeqNum too low, expected 1, got 0"))
-        );
-        assert!(
-            engine.take_admin_output().is_none(),
-            "no Reject accompanies the Logout (logged_on={logged_on})"
-        );
-        assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+#[rstest]
+#[case(true, test_helpers::heartbeat(0, None))]
+#[case(false, test_helpers::logon(0, fix_str!("TARGET"), fix_str!("SENDER")))]
+fn msg_seq_num_zero_is_too_low(#[case] logged_on: bool, #[case] msg: Box<Message>) {
+    let mut builder = EngineBuilder::new();
+    if logged_on {
+        builder = builder.logged_on();
     }
+    let (mut engine, mut storage) = builder.build();
+
+    assert_matches!(
+        accept_input(&mut engine, msg, &mut storage),
+        InputResult::Handled,
+        "logged_on={logged_on}"
+    );
+
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow)),
+        "logged_on={logged_on}"
+    );
+    let logout = take_admin(&mut engine);
+    let AdminBase::Logout(lo) = as_admin(&logout) else {
+        panic!("expected Logout (logged_on={logged_on})");
+    };
+    assert_eq!(
+        lo.session_status,
+        Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into())
+    );
+    assert_eq!(
+        lo.text.as_deref(),
+        Some(fix_str!("MsgSeqNum too low, expected 1, got 0"))
+    );
+    assert!(
+        engine.take_admin_output().is_none(),
+        "no Reject accompanies the Logout (logged_on={logged_on})"
+    );
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
 }

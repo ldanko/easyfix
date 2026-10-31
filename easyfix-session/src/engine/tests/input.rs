@@ -4,6 +4,8 @@ use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase, SessionStatusBase},
     fix_str,
 };
+use easyfix_test_messages::Message;
+use rstest::rstest;
 
 use super::support::assert_msg_type;
 use crate::{
@@ -29,70 +31,70 @@ fn on_reject_normal() {
     assert!(engine.take_admin_output().is_none());
 }
 
-#[test]
-fn target_counter_failures_stop_admin_processing_and_future_dispatch() {
-    for timing in [FailureTiming::Before, FailureTiming::After] {
-        for msg in [
-            test_helpers::heartbeat(1, None),
-            test_helpers::sequence_reset(1, 5, true),
-            test_helpers::reject(1, 1),
-        ] {
-            let (mut engine, _) = EngineBuilder::new().logged_on().build();
-            let mut storage = FailingStorage::new();
-            storage.fail_on(StorageOp::SetTarget, 1, timing);
-            let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
-                panic!("expected admin")
-            };
-            assert!(
-                engine
-                    .process_admin_input(msg, InputAction::Accept, &mut storage)
-                    .is_err()
-            );
-            assert!(engine.has_fatal_error());
-            assert_eq!(
-                engine.session_end().map(|end| end.context),
-                Some(EndContext::Closing(SessionEndReason::StorageError))
-            );
-            assert!(!engine.has_admin_output());
-            assert!(engine.next_queued_message(&mut storage).is_err());
-            engine.end_session_if_target_numbering_exhausted(&storage);
-            assert!(
-                engine
-                    .on_input(test_helpers::heartbeat(2, None), &mut storage)
-                    .is_err()
-            );
-        }
-    }
+#[rstest]
+fn target_counter_failures_stop_admin_processing_and_future_dispatch(
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+    #[values(
+        test_helpers::heartbeat(1, None),
+        test_helpers::sequence_reset(1, 5, true),
+        test_helpers::reject(1, 1)
+    )]
+    msg: Box<Message>,
+) {
+    let (mut engine, _) = EngineBuilder::new().logged_on().build();
+    let mut storage = FailingStorage::new();
+    storage.fail_on(StorageOp::SetTarget, 1, timing);
+    let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
+        panic!("expected admin")
+    };
+    assert!(
+        engine
+            .process_admin_input(msg, InputAction::Accept, &mut storage)
+            .is_err()
+    );
+    assert!(engine.has_fatal_error());
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::StorageError))
+    );
+    assert!(!engine.has_admin_output());
+    assert!(engine.next_queued_message(&mut storage).is_err());
+    engine.end_session_if_target_numbering_exhausted(&storage);
+    assert!(
+        engine
+            .on_input(test_helpers::heartbeat(2, None), &mut storage)
+            .is_err()
+    );
 }
 
-#[test]
-fn target_counter_failure_stops_application_action_before_reply() {
-    for timing in [FailureTiming::Before, FailureTiming::After] {
-        for action in [
-            InputAction::Accept,
-            InputAction::Disconnect,
-            InputAction::Reject {
-                reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
-                text: None,
-                tag: None,
-            },
-        ] {
-            let (mut engine, _) = EngineBuilder::new().logged_on().build();
-            let mut storage = FailingStorage::new();
-            storage.fail_on(StorageOp::SetTarget, 1, timing);
-            assert!(
-                engine
-                    .process_app_input(1, MsgTypeBase::Heartbeat.into(), action, &mut storage)
-                    .is_err()
-            );
-            assert!(!engine.has_admin_output());
-            assert!(engine.has_fatal_error());
-            assert_eq!(
-                engine.session_end().map(|end| end.context),
-                Some(EndContext::Closing(SessionEndReason::StorageError))
-            );
-        }
-    }
+#[rstest]
+fn target_counter_failure_stops_application_action_before_reply(
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+    #[values(
+        InputAction::Accept,
+        InputAction::Disconnect,
+        InputAction::Reject {
+            reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
+            text: None,
+            tag: None,
+        },
+    )]
+    action: InputAction,
+) {
+    let (mut engine, _) = EngineBuilder::new().logged_on().build();
+    let mut storage = FailingStorage::new();
+    storage.fail_on(StorageOp::SetTarget, 1, timing);
+    assert!(
+        engine
+            .process_app_input(1, MsgTypeBase::Heartbeat.into(), action, &mut storage)
+            .is_err()
+    );
+    assert!(!engine.has_admin_output());
+    assert!(engine.has_fatal_error());
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::StorageError))
+    );
 }
 
 // --- on_input ---

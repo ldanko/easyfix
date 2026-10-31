@@ -3,7 +3,7 @@ use std::{assert_matches, str::from_utf8, thread, time::Duration};
 use chrono::Utc;
 use easyfix_core::{message::HeaderAccess, serializer::SerializeError};
 use easyfix_test_messages::Message;
-use tokio::{io, task::LocalSet};
+use tokio::io;
 
 use super::{
     harness::{TestEvent, build_harness},
@@ -245,45 +245,40 @@ async fn drain_and_flush_app_sends_stops_at_the_backlog_it_entered_with() {
 /// single-threaded, so a blocking sleep between `send` and the read keeps
 /// the session task off the CPU for exactly that long - the stamp on the
 /// wire must postdate the staging by at least that much.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn sending_time_is_stamped_at_transmission_not_at_staging() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let harness = build_harness();
-            let sender = harness.sender.clone();
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let first_msg = build_peer_logon(1, 30);
-            let (session_task, mut events_rx, control_tx) =
-                harness.spawn_acceptor(server_reader, server_writer, first_msg);
+    let harness = build_harness();
+    let sender = harness.sender.clone();
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let first_msg = build_peer_logon(1, 30);
+    let (session_task, mut events_rx, control_tx) =
+        harness.spawn_acceptor(server_reader, server_writer, first_msg);
 
-            logon_handshake(&mut client_io, &mut events_rx).await;
+    logon_handshake(&mut client_io, &mut events_rx).await;
 
-            let staged_at = Utc::now();
-            sender
-                .send(test_helpers::new_order_single_with_empty_header())
-                .expect("stage");
-            thread::sleep(Duration::from_millis(200));
+    let staged_at = Utc::now();
+    sender
+        .send(test_helpers::new_order_single_with_empty_header())
+        .expect("stage");
+    thread::sleep(Duration::from_millis(200));
 
-            let order = read_lone_message(&mut client_io).await;
-            assert_eq!(order.msg_seq_num(), 2);
-            let held = order.sending_time().timestamp() - staged_at;
-            assert!(
-                held.num_milliseconds() >= 190,
-                "SendingTime must be stamped at transmission, {held} after staging"
-            );
+    let order = read_lone_message(&mut client_io).await;
+    assert_eq!(order.msg_seq_num(), 2);
+    let held = order.sending_time().timestamp() - staged_at;
+    assert!(
+        held.num_milliseconds() >= 190,
+        "SendingTime must be stamped at transmission, {held} after staging"
+    );
 
-            control_tx.send(ControlMsg::Disconnect).await.unwrap();
-            assert_matches!(
-                events_rx.recv().await.unwrap(),
-                TestEvent::SessionEnd(SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                })
-            );
-            session_task.await.unwrap();
+    control_tx.send(ControlMsg::Disconnect).await.unwrap();
+    assert_matches!(
+        events_rx.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
         })
-        .await;
+    );
+    session_task.await.unwrap();
 }

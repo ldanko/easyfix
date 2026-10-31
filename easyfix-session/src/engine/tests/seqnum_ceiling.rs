@@ -8,11 +8,12 @@ use easyfix_core::{
     message::{HeaderAccess, SessionMessage},
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 
 use super::support::{assert_msg_type, verify_test};
 use crate::{
     application::{EndContext, SessionEndReason},
-    engine::{InputResult, PendingOutput, VerifyError},
+    engine::{InputResult, LogonState, PendingOutput, VerifyError},
     initiator::SessionStart,
     io::ControlMsg,
     messages_storage::MessagesStorage,
@@ -44,32 +45,35 @@ fn last_usable_seq_num_is_accepted_and_exhausts_incoming_numbering() {
 
 // Test Cases Scenarios 10(b) and 11(a): apply NewSeqNo when valid. Ending
 // at MAX is the engine's limit policy, after the protocol update is applied.
-#[test]
-fn sequence_reset_to_max_applies_then_exhausts_incoming_numbering() {
-    for (seq_num, gap_fill) in [(5, true), (99, false)] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
+#[rstest]
+#[case(5, true)]
+#[case(99, false)]
+fn sequence_reset_to_max_applies_then_exhausts_incoming_numbering(
+    #[case] seq_num: u32,
+    #[case] gap_fill: bool,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
 
-        let result = accept_input(
-            &mut engine,
-            test_helpers::sequence_reset(seq_num, SeqNum::MAX, gap_fill),
-            &mut storage,
-        );
+    let result = accept_input(
+        &mut engine,
+        test_helpers::sequence_reset(seq_num, SeqNum::MAX, gap_fill),
+        &mut storage,
+    );
 
-        assert_matches!(result, InputResult::Handled);
-        assert_eq!(storage.next_target_msg_seq_num().get(), SeqNum::MAX);
-        assert!(!engine.should_disconnect());
-        assert!(engine.take_admin_output().is_none());
+    assert_matches!(result, InputResult::Handled);
+    assert_eq!(storage.next_target_msg_seq_num().get(), SeqNum::MAX);
+    assert!(!engine.should_disconnect());
+    assert!(engine.take_admin_output().is_none());
 
-        engine.end_session_if_target_numbering_exhausted(&storage);
+    engine.end_session_if_target_numbering_exhausted(&storage);
 
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
-        );
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
-        assert!(engine.take_admin_output().is_none());
-    }
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted))
+    );
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    assert!(engine.take_admin_output().is_none());
 }
 
 // Test Cases Scenario 10(a): fill the preceding gap before applying NewSeqNo.
@@ -120,54 +124,48 @@ fn duplicate_gap_fill_to_max_does_not_exhaust_incoming_numbering() {
 /// `LogoutSent` makes `is_logged_on()` true, which is what the IO loop gates
 /// its terminating app-send drain on - and an application message ahead of an
 /// unacknowledged `Logon<A>` violates Session Layer Section 4.3.10.
-#[test]
-fn exhausted_incoming_numbering_ends_the_session_with_one_logout_in_every_state() {
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    enum State {
-        Idle,
-        LogonSent,
-        Established,
-    }
-    for state in [State::Idle, State::LogonSent, State::Established] {
-        let builder = EngineBuilder::new();
-        let (mut engine, mut storage) = if state == State::Established {
-            builder.logged_on().build()
-        } else {
-            builder.build()
-        };
-        storage
-            .set_next_target_msg_seq_num(nz_seq(SeqNum::MAX))
+#[rstest]
+fn exhausted_incoming_numbering_ends_the_session_with_one_logout_in_every_state(
+    #[values(LogonState::Idle, LogonState::LogonSent, LogonState::Established)] state: LogonState,
+) {
+    let builder = EngineBuilder::new();
+    let (mut engine, mut storage) = if state == LogonState::Established {
+        builder.logged_on().build()
+    } else {
+        builder.build()
+    };
+    storage
+        .set_next_target_msg_seq_num(nz_seq(SeqNum::MAX))
+        .unwrap();
+    if state == LogonState::LogonSent {
+        engine
+            .send_logon_request(&mut storage, SessionStart::Resume)
             .unwrap();
-        if state == State::LogonSent {
-            engine
-                .send_logon_request(&mut storage, SessionStart::Resume)
-                .unwrap();
-            drain_all_admin(&mut engine);
-        }
-        let logged_on = state == State::Established;
-        assert_eq!(engine.is_logged_on(), logged_on);
-
-        engine.end_session_if_target_numbering_exhausted(&storage);
-
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::SeqNumExhausted)),
-            "{state:?}"
-        );
-        let logout = engine
-            .take_admin_output()
-            .unwrap_or_else(|| panic!("expected a Logout ({state:?})"));
-        assert_msg_type(&logout, MsgTypeBase::Logout);
-        assert!(
-            engine.take_admin_output().is_none(),
-            "exactly one Logout ({state:?})"
-        );
-        assert_eq!(
-            engine.is_logged_on(),
-            logged_on,
-            "the farewell must not change the logon state ({state:?})"
-        );
+        drain_all_admin(&mut engine);
     }
+    let logged_on = state == LogonState::Established;
+    assert_eq!(engine.is_logged_on(), logged_on);
+
+    engine.end_session_if_target_numbering_exhausted(&storage);
+
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::SeqNumExhausted)),
+        "{state:?}"
+    );
+    let logout = engine
+        .take_admin_output()
+        .unwrap_or_else(|| panic!("expected a Logout ({state:?})"));
+    assert_msg_type(&logout, MsgTypeBase::Logout);
+    assert!(
+        engine.take_admin_output().is_none(),
+        "exactly one Logout ({state:?})"
+    );
+    assert_eq!(
+        engine.is_logged_on(),
+        logged_on,
+        "the farewell must not change the logon state ({state:?})"
+    );
 }
 
 #[test]

@@ -1,28 +1,30 @@
 use std::{assert_matches, str::FromStr};
 
+use rstest::rstest;
+
 use super::{UnknownVersionError, Version};
 
-#[test]
-fn test_version_constants() {
-    let versions = [
-        (Version::FIX27, 2, 7, 0),
-        (Version::FIX30, 3, 0, 0),
-        (Version::FIX40, 4, 0, 0),
-        (Version::FIX41, 4, 1, 0),
-        (Version::FIX42, 4, 2, 0),
-        (Version::FIX43, 4, 3, 0),
-        (Version::FIX44, 4, 4, 0),
-        (Version::FIX50, 5, 0, 0),
-        (Version::FIX50SP1, 5, 0, 1),
-        (Version::FIX50SP2, 5, 0, 2),
-        (Version::FIXT11, 1, 1, 0),
-    ];
-
-    for (version, major, minor, servicepack) in versions {
-        assert_eq!(version.major(), major);
-        assert_eq!(version.minor(), minor);
-        assert_eq!(version.servicepack(), servicepack);
-    }
+#[rstest]
+#[case::fix27(Version::FIX27, 2, 7, 0)]
+#[case::fix30(Version::FIX30, 3, 0, 0)]
+#[case::fix40(Version::FIX40, 4, 0, 0)]
+#[case::fix41(Version::FIX41, 4, 1, 0)]
+#[case::fix42(Version::FIX42, 4, 2, 0)]
+#[case::fix43(Version::FIX43, 4, 3, 0)]
+#[case::fix44(Version::FIX44, 4, 4, 0)]
+#[case::fix50(Version::FIX50, 5, 0, 0)]
+#[case::fix50sp1(Version::FIX50SP1, 5, 0, 1)]
+#[case::fix50sp2(Version::FIX50SP2, 5, 0, 2)]
+#[case::fixt11(Version::FIXT11, 1, 1, 0)]
+fn test_version_constants(
+    #[case] version: Version,
+    #[case] major: u8,
+    #[case] minor: u8,
+    #[case] servicepack: u8,
+) {
+    assert_eq!(version.major(), major);
+    assert_eq!(version.minor(), minor);
+    assert_eq!(version.servicepack(), servicepack);
 }
 
 #[test]
@@ -67,28 +69,21 @@ fn test_version_known_versions() {
     assert_eq!(known_versions.len(), 11);
 }
 
-#[test]
-fn test_version_type_checks() {
-    for version in [
-        Version::FIX27,
-        Version::FIX30,
-        Version::FIX40,
-        Version::FIX41,
-        Version::FIX42,
-        Version::FIX43,
-        Version::FIX44,
-        Version::FIX50,
-        Version::FIX50SP1,
-        Version::FIX50SP2,
-    ]
-    .iter()
-    {
-        assert!(version.is_fix());
-        assert!(!version.is_fixt());
-    }
-
-    assert!(Version::FIXT11.is_fixt());
-    assert!(!Version::FIXT11.is_fix());
+#[rstest]
+#[case::fix27(Version::FIX27, false)]
+#[case::fix30(Version::FIX30, false)]
+#[case::fix40(Version::FIX40, false)]
+#[case::fix41(Version::FIX41, false)]
+#[case::fix42(Version::FIX42, false)]
+#[case::fix43(Version::FIX43, false)]
+#[case::fix44(Version::FIX44, false)]
+#[case::fix50(Version::FIX50, false)]
+#[case::fix50sp1(Version::FIX50SP1, false)]
+#[case::fix50sp2(Version::FIX50SP2, false)]
+#[case::fixt11(Version::FIXT11, true)]
+fn test_version_type_checks(#[case] version: Version, #[case] is_fixt: bool) {
+    assert_eq!(version.is_fix(), !is_fixt);
+    assert_eq!(version.is_fixt(), is_fixt);
 }
 
 #[test]

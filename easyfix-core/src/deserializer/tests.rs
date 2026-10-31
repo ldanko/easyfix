@@ -1,6 +1,7 @@
 use std::{assert_matches, iter, str::FromStr};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
+use rstest::rstest;
 
 use super::{Deserializer, RawMessage, deserialize_tag, frame_len, raw_message};
 use crate::{
@@ -356,65 +357,68 @@ fn field_cursor_reads_lengths_and_bounds_binary_values() {
     assert_eq!(cursor.read_delimited(), Some(b"X".as_slice()));
     assert_eq!(cursor.next_tag(), None);
 
-    for input in [
-        b"".as_slice(),
-        b"\x01",
-        b"0\x01",
-        b"65536\x01",
-        b"3X\x01",
-        b"3",
-    ] {
-        assert_eq!(
-            deserializer(input).field_cursor().read_length(),
-            None,
-            "{input:?}"
-        );
-    }
     assert_eq!(
         deserializer(b"65535\x01").field_cursor().read_length(),
         Some(65535)
     );
-
-    for input in [b"".as_slice(), b"XY", b"XYZ", b"XYZX\x01"] {
-        assert_eq!(
-            deserializer(input).field_cursor().read_data(3),
-            None,
-            "{input:?}"
-        );
-    }
     assert_eq!(
         deserializer(b"\x01").field_cursor().read_data(0),
         Some(b"".as_slice())
     );
 }
 
+#[rstest]
+#[case::empty(b"")]
+#[case::empty_value(b"\x01")]
+#[case::zero(b"0\x01")]
+#[case::overflow(b"65536\x01")]
+#[case::non_digit(b"3X\x01")]
+#[case::unterminated(b"3")]
+fn field_cursor_rejects_invalid_lengths(#[case] input: &[u8]) {
+    assert_eq!(deserializer(input).field_cursor().read_length(), None);
+}
+
+#[rstest]
+#[case::empty(b"")]
+#[case::short(b"XY")]
+#[case::unterminated(b"XYZ")]
+#[case::misplaced_separator(b"XYZX\x01")]
+fn field_cursor_rejects_incomplete_binary_values(#[case] input: &[u8]) {
+    assert_eq!(deserializer(input).field_cursor().read_data(3), None);
+}
+
+#[rstest]
+#[case::minimum("1=X\x01", 1)]
+#[case::maximum("65535=X\x01", 65535)]
+fn deserialize_tag_num_validates_tag_syntax(#[case] bytes: &str, #[case] expected_tag: u16) {
+    let mut parser = deserializer(bytes.as_bytes());
+    assert_eq!(parser.field_cursor().next_tag(), Some(expected_tag));
+    assert_eq!(parser.deserialize_tag_num().unwrap(), Some(expected_tag));
+    assert_eq!(parser.deserialize_str().unwrap(), fix_str!("X"));
+    assert_eq!(parser.deserialize_tag_num().unwrap(), None);
+}
+
+#[rstest]
+#[case::zero("0=X\x01")]
+#[case::leading_zero("01=X\x01")]
+#[case::empty("=X\x01")]
+#[case::overflow("65536=X\x01")]
+#[case::negative("-1=X\x01")]
+#[case::non_digit("1X=X\x01")]
+fn deserialize_tag_num_rejects_invalid_tag_syntax(#[case] bytes: &str) {
+    assert_eq!(
+        deserializer(bytes.as_bytes()).field_cursor().next_tag(),
+        None
+    );
+    assert_matches!(
+        deserializer(bytes.as_bytes()).deserialize_tag_num(),
+        Err(DeserializeErrorKind::Reject { tag: None, reason, .. })
+            if reason == SessionRejectReasonBase::InvalidTagNumber
+    );
+}
+
 #[test]
-fn deserialize_tag_num_validates_tag_syntax() {
-    for (bytes, expected_tag) in [("1=X\x01", 1), ("65535=X\x01", 65535)] {
-        let mut parser = deserializer(bytes.as_bytes());
-        assert_eq!(parser.field_cursor().next_tag(), Some(expected_tag));
-        assert_eq!(parser.deserialize_tag_num().unwrap(), Some(expected_tag));
-        assert_eq!(parser.deserialize_str().unwrap(), fix_str!("X"));
-        assert_eq!(parser.deserialize_tag_num().unwrap(), None);
-    }
-    for bytes in [
-        "0=X\x01",
-        "01=X\x01",
-        "=X\x01",
-        "65536=X\x01",
-        "-1=X\x01",
-        "1X=X\x01",
-    ] {
-        assert_eq!(
-            deserializer(bytes.as_bytes()).field_cursor().next_tag(),
-            None
-        );
-        assert_matches!(
-            deserializer(bytes.as_bytes()).deserialize_tag_num(),
-            Err(DeserializeErrorKind::Reject { tag: None, reason, .. })
-                if reason == SessionRejectReasonBase::InvalidTagNumber
-        );
-    }
+fn deserialize_tag_num_rejects_incomplete_tag() {
     assert_eq!(deserializer(b"52").field_cursor().next_tag(), None);
     assert_matches!(
         deserializer(b"52").deserialize_tag_num(),
@@ -599,42 +603,40 @@ fn deserialize_utc_timestamp_reject_without_seq_num_is_logout() {
     );
 }
 
-#[test]
-fn deserialize_utc_timestamp_truncated_value_is_garbled() {
+#[rstest]
+#[case::year(&b"2024"[..])]
+#[case::minute(b"20240102-03:0")]
+#[case::second(b"20240102-03:04:0")]
+#[case::missing_separator(b"20240102-03:04:05")]
+#[case::fraction_separator(b"20240102-03:04:05.")]
+#[case::short_fraction(b"20240102-03:04:05.12")]
+#[case::fraction_without_separator(b"20240102-03:04:05.123")]
+fn deserialize_utc_timestamp_truncated_value_is_garbled(#[case] input: &[u8]) {
     // Body ends before the value (or its SOH) is complete: incomplete
     // data, regardless of where the cut lands.
-    for input in [
-        &b"2024"[..],
-        b"20240102-03:0",
-        b"20240102-03:04:0",
-        b"20240102-03:04:05",
-        b"20240102-03:04:05.",
-        b"20240102-03:04:05.12",
-        b"20240102-03:04:05.123",
-    ] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_utc_timestamp(),
-            Err(DeserializeErrorKind::Garbled(
-                GarbledReason::IncompleteMessageData
-            )),
-            "input: {input:?}"
-        );
-    }
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_utc_timestamp(),
+        Err(DeserializeErrorKind::Garbled(
+            GarbledReason::IncompleteMessageData
+        )),
+        "input: {input:?}"
+    );
 }
 
-#[test]
-fn deserialize_utc_timeonly_truncated_value_is_garbled() {
-    for input in [&b"12:00:0"[..], b"12:00:00.1", b"12:00:00.123"] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_utc_time_only(),
-            Err(DeserializeErrorKind::Garbled(
-                GarbledReason::IncompleteMessageData
-            )),
-            "input: {input:?}"
-        );
-    }
+#[rstest]
+#[case::second(&b"12:00:0"[..])]
+#[case::short_fraction(b"12:00:00.1")]
+#[case::fraction_without_separator(b"12:00:00.123")]
+fn deserialize_utc_timeonly_truncated_value_is_garbled(#[case] input: &[u8]) {
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_utc_time_only(),
+        Err(DeserializeErrorKind::Garbled(
+            GarbledReason::IncompleteMessageData
+        )),
+        "input: {input:?}"
+    );
 }
 
 #[test]
@@ -724,27 +726,23 @@ fn deserialize_local_mkt_date_ok() {
     assert_eq!(deserializer.buf, b"\x00");
 }
 
-#[test]
-fn deserialize_price_ok() {
-    let values: &[(&[u8], Price)] = &[
-        (b"97\x01\x00", Price::from_str("97").expect("Wrong decimal")),
-        (
-            b"97.\x01\x00",
-            Price::from_str("97.").expect("Wrong decimal"),
-        ),
-        (
-            b"97.0347\x01\x00",
-            Price::from_str("97.0347").expect("Wrong decimal"),
-        ),
-    ];
-    for (input, value) in values {
-        let mut deserializer = deserializer(input);
-        let price = deserializer
-            .deserialize_price()
-            .expect("failed to deserialize price");
-        assert_eq!(price, *value);
-        assert_eq!(deserializer.buf, b"\x00");
-    }
+#[rstest]
+#[case::integer(b"97\x01\x00", Price::from_str("97").expect("Wrong decimal"))]
+#[case::trailing_dot(
+    b"97.\x01\x00",
+    Price::from_str("97.").expect("Wrong decimal"),
+)]
+#[case::fraction(
+    b"97.0347\x01\x00",
+    Price::from_str("97.0347").expect("Wrong decimal"),
+)]
+fn deserialize_price_ok(#[case] input: &[u8], #[case] value: Price) {
+    let mut deserializer = deserializer(input);
+    let price = deserializer
+        .deserialize_price()
+        .expect("failed to deserialize price");
+    assert_eq!(price, value);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 #[test]
@@ -885,17 +883,18 @@ fn deserialize_tenor_empty() {
     );
 }
 
-#[test]
-fn deserialize_tenor_truncated() {
-    for input in [b"D5".as_slice(), b"D".as_slice(), b"".as_slice()] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_tenor(),
-            Err(DeserializeErrorKind::Garbled(
-                GarbledReason::IncompleteMessageData
-            ))
-        );
-    }
+#[rstest]
+#[case::missing_separator(b"D5".as_slice())]
+#[case::unit_only(b"D".as_slice())]
+#[case::empty(b"".as_slice())]
+fn deserialize_tenor_truncated(#[case] input: &[u8]) {
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_tenor(),
+        Err(DeserializeErrorKind::Garbled(
+            GarbledReason::IncompleteMessageData
+        ))
+    );
 }
 
 // --- LocalMktTime tests ---
@@ -903,39 +902,36 @@ fn deserialize_tenor_truncated() {
 /// Every minute value must parse, not just multiples of ten - the grammar is
 /// `MM = 00-59` (TagValue Encoding section 6.2.2). A too-narrow digit range
 /// here turns ordinary values like `09:31:00` into a session-level Reject.
-#[test]
-fn deserialize_local_mkt_time_accepts_every_minute_and_second() {
-    for (input, expected) in [
-        (&b"09:31:00\x01\x00"[..], (9, 31, 0)),
-        (b"14:05:07\x01\x00", (14, 5, 7)),
-        (b"00:00:00\x01\x00", (0, 0, 0)),
-        (b"23:59:59\x01\x00", (23, 59, 59)),
-    ] {
-        let mut deserializer = deserializer(input);
-        let (h, m, s) = expected;
-        assert_eq!(
-            deserializer
-                .deserialize_local_mkt_time()
-                .expect("valid LocalMktTime rejected"),
-            NaiveTime::from_hms_opt(h, m, s).unwrap()
-        );
-    }
+#[rstest]
+#[case::ordinary_minute(&b"09:31:00\x01\x00"[..], (9, 31, 0))]
+#[case::ordinary_second(b"14:05:07\x01\x00", (14, 5, 7))]
+#[case::minimum(b"00:00:00\x01\x00", (0, 0, 0))]
+#[case::maximum(b"23:59:59\x01\x00", (23, 59, 59))]
+fn deserialize_local_mkt_time_accepts_every_minute_and_second(
+    #[case] input: &[u8],
+    #[case] expected: (u32, u32, u32),
+) {
+    let mut deserializer = deserializer(input);
+    let (h, m, s) = expected;
+    assert_eq!(
+        deserializer
+            .deserialize_local_mkt_time()
+            .expect("valid LocalMktTime rejected"),
+        NaiveTime::from_hms_opt(h, m, s).unwrap()
+    );
 }
 
-#[test]
-fn deserialize_local_mkt_time_rejects_out_of_range_components() {
-    for input in [
-        &b"24:00:00\x01\x00"[..],
-        b"09:60:00\x01\x00",
-        // No leap second in this datatype - SS = 00-59.
-        b"23:59:60\x01\x00",
-    ] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_local_mkt_time(),
-            Err(DeserializeErrorKind::Reject { .. })
-        );
-    }
+#[rstest]
+#[case::hour(&b"24:00:00\x01\x00"[..])]
+#[case::minute(b"09:60:00\x01\x00")]
+// No leap second in this datatype - SS = 00-59.
+#[case::second(b"23:59:60\x01\x00")]
+fn deserialize_local_mkt_time_rejects_out_of_range_components(#[case] input: &[u8]) {
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_local_mkt_time(),
+        Err(DeserializeErrorKind::Reject { .. })
+    );
 }
 
 // --- TzTimestamp tests ---
@@ -1338,27 +1334,23 @@ fn textual_values_round_trip_unchanged() {
     );
 }
 
-#[test]
-fn deserialize_negative_float() {
-    let values: &[(&[u8], Price)] = &[
-        (b"-3\x01\x00", Price::from_str("-3").expect("Wrong decimal")),
-        (
-            b"-3.14\x01\x00",
-            Price::from_str("-3.14").expect("Wrong decimal"),
-        ),
-        (
-            b"-97.0347\x01\x00",
-            Price::from_str("-97.0347").expect("Wrong decimal"),
-        ),
-    ];
-    for (input, value) in values {
-        let mut deserializer = deserializer(input);
-        let price = deserializer
-            .deserialize_price()
-            .expect("failed to deserialize negative price");
-        assert_eq!(price, *value);
-        assert_eq!(deserializer.buf, b"\x00");
-    }
+#[rstest]
+#[case::integer(b"-3\x01\x00", Price::from_str("-3").expect("Wrong decimal"))]
+#[case::fraction(
+    b"-3.14\x01\x00",
+    Price::from_str("-3.14").expect("Wrong decimal"),
+)]
+#[case::long_fraction(
+    b"-97.0347\x01\x00",
+    Price::from_str("-97.0347").expect("Wrong decimal"),
+)]
+fn deserialize_negative_float(#[case] input: &[u8], #[case] value: Price) {
+    let mut deserializer = deserializer(input);
+    let price = deserializer
+        .deserialize_price()
+        .expect("failed to deserialize negative price");
+    assert_eq!(price, value);
+    assert_eq!(deserializer.buf, b"\x00");
 }
 
 // ── MultipleCharValue ───────────────────────────────────────
@@ -1698,16 +1690,16 @@ fn deserialize_exchange_high_byte() {
     );
 }
 
-#[test]
-fn deserialize_exchange_rejects_printable_non_alphanumeric() {
-    for input in [b"AB C\x01", b"AB!C\x01"] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_exchange(),
-            Err(DeserializeErrorKind::Reject { reason, .. })
-                if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
-        );
-    }
+#[rstest]
+#[case::space(b"AB C\x01")]
+#[case::punctuation(b"AB!C\x01")]
+fn deserialize_exchange_rejects_printable_non_alphanumeric(#[case] input: &[u8]) {
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_exchange(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
 }
 
 #[test]
@@ -1732,30 +1724,32 @@ fn deserialize_language_ok() {
     assert_eq!(deserializer.buf, b"\x00");
 }
 
-#[test]
-fn deserialize_language_rejects_unknown_codes() {
-    for input in [
-        b"Pl\x01", b"pL\x01", b"p0\x01", b"p \x01", b"p!\x01", b"zz\x01",
-    ] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_language(),
-            Err(DeserializeErrorKind::Reject { reason, .. })
-                if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
-        );
-    }
+#[rstest]
+#[case::uppercase_first(b"Pl\x01")]
+#[case::uppercase_second(b"pL\x01")]
+#[case::digit(b"p0\x01")]
+#[case::space(b"p \x01")]
+#[case::punctuation(b"p!\x01")]
+#[case::unknown(b"zz\x01")]
+fn deserialize_language_rejects_unknown_codes(#[case] input: &[u8]) {
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_language(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
 }
 
-#[test]
-fn deserialize_language_wrong_length() {
-    for input in [b"p\x01".as_slice(), b"pol\x01"] {
-        let mut deserializer = deserializer(input);
-        assert_matches!(
-            deserializer.deserialize_language(),
-            Err(DeserializeErrorKind::Reject { reason, .. })
-                if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
-        );
-    }
+#[rstest]
+#[case::short(b"p\x01".as_slice())]
+#[case::long(b"pol\x01")]
+fn deserialize_language_wrong_length(#[case] input: &[u8]) {
+    let mut deserializer = deserializer(input);
+    assert_matches!(
+        deserializer.deserialize_language(),
+        Err(DeserializeErrorKind::Reject { reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::IncorrectDataFormatForValue)
+    );
 }
 
 #[test]

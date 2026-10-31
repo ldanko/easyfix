@@ -1,6 +1,7 @@
 use std::{assert_matches, num::NonZeroU64};
 
 use easyfix_core::{base_messages::AdminBase, basic_types::SeqNum, fix_str};
+use rstest::rstest;
 
 use super::{
     reset_peer_support::reset_test_session,
@@ -86,53 +87,54 @@ async fn running_reset_probe_resets_and_commits_before_the_ack() {
     assert!(!engine.has_admin_output());
 }
 
+#[rstest]
 #[tokio::test]
-async fn running_reset_requires_matching_probe_ids_and_reprobes_after_stale_work() {
-    for verify in [false, true] {
-        let (mut engine, mut storage) = EngineBuilder::new()
-            .logged_on()
-            .verify_test_request_id(verify)
-            .build();
-        let first = running_reset_probe(&mut engine, &mut storage);
-        let history = storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap().to_vec();
-        for (seq, id) in [(1, None), (2, Some(fix_str!("WRONG")))] {
-            accept_input(
-                &mut engine,
-                test_helpers::heartbeat(seq, id.map(ToOwned::to_owned)),
-                &mut storage,
-            );
-            assert_eq!(engine.reset_phase(), Some(ResetPhase::Probe));
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
-            assert_eq!(storage.next_target_msg_seq_num().get(), seq + 1);
-            assert!(!engine.has_admin_output());
-        }
-        engine.mark_probe_stale();
+async fn running_reset_requires_matching_probe_ids_and_reprobes_after_stale_work(
+    #[values(false, true)] verify: bool,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new()
+        .logged_on()
+        .verify_test_request_id(verify)
+        .build();
+    let first = running_reset_probe(&mut engine, &mut storage);
+    let history = storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap().to_vec();
+    for (seq, id) in [(1, None), (2, Some(fix_str!("WRONG")))] {
         accept_input(
             &mut engine,
-            test_helpers::heartbeat(3, Some(first.clone())),
+            test_helpers::heartbeat(seq, id.map(ToOwned::to_owned)),
             &mut storage,
         );
-        assert_eq!(engine.reset_phase(), Some(ResetPhase::Pending));
-        assert_eq!(storage.next_target_msg_seq_num().get(), 4);
-        assert!(!engine.state.local_reset_unconfirmed);
-        assert!(engine.state.reset_probe_id.is_none());
-        assert!(!engine.state.probe_stale);
+        assert_eq!(engine.reset_phase(), Some(ResetPhase::Probe));
+        assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
+        assert_eq!(storage.next_target_msg_seq_num().get(), seq + 1);
         assert!(!engine.has_admin_output());
-        assert!(engine.reset_ready(true, &storage));
-        assert_eq!(
-            storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-            history.as_slice()
-        );
-        engine.start_reset_probe();
-        let second = committed_reset_probe_id(&mut engine, &mut storage);
-        assert_ne!(first, second);
-        accept_input(
-            &mut engine,
-            test_helpers::heartbeat(4, Some(second)),
-            &mut storage,
-        );
-        assert_eq!(engine.reset_phase(), Some(ResetPhase::Sent));
     }
+    engine.mark_probe_stale();
+    accept_input(
+        &mut engine,
+        test_helpers::heartbeat(3, Some(first.clone())),
+        &mut storage,
+    );
+    assert_eq!(engine.reset_phase(), Some(ResetPhase::Pending));
+    assert_eq!(storage.next_target_msg_seq_num().get(), 4);
+    assert!(!engine.state.local_reset_unconfirmed);
+    assert!(engine.state.reset_probe_id.is_none());
+    assert!(!engine.state.probe_stale);
+    assert!(!engine.has_admin_output());
+    assert!(engine.reset_ready(true, &storage));
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
+    engine.start_reset_probe();
+    let second = committed_reset_probe_id(&mut engine, &mut storage);
+    assert_ne!(first, second);
+    accept_input(
+        &mut engine,
+        test_helpers::heartbeat(4, Some(second)),
+        &mut storage,
+    );
+    assert_eq!(engine.reset_phase(), Some(ResetPhase::Sent));
 }
 
 #[test]
@@ -233,73 +235,74 @@ fn running_reset_logout_holds_sends_until_the_ack_and_keeps_its_deadline() {
     assert!(!engine.has_admin_output());
 }
 
+#[rstest]
 #[tokio::test]
-async fn running_reset_timeout_distinguishes_preparation_and_confirmation() {
-    for phase in [ResetPhase::Pending, ResetPhase::Probe, ResetPhase::Sent] {
-        let (mut engine, mut storage) = if phase == ResetPhase::Sent {
-            running_reset_sent_engine()
+async fn running_reset_timeout_distinguishes_preparation_and_confirmation(
+    #[values(ResetPhase::Pending, ResetPhase::Probe, ResetPhase::Sent)] phase: ResetPhase,
+) {
+    let (mut engine, mut storage) = if phase == ResetPhase::Sent {
+        running_reset_sent_engine()
+    } else {
+        let (mut engine, mut storage, _) = reset_test_session(true);
+        if phase == ResetPhase::Probe {
+            let _ = running_reset_probe(&mut engine, &mut storage);
         } else {
-            let (mut engine, mut storage, _) = reset_test_session(true);
-            if phase == ResetPhase::Probe {
-                let _ = running_reset_probe(&mut engine, &mut storage);
-            } else {
-                engine.on_control(ControlMsg::ResetRunningSession);
-            }
-            (engine, storage)
-        };
-        let sender = storage.next_sender_msg_seq_num().get();
-        let target = storage.next_target_msg_seq_num().get();
-        let history = storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap().to_vec();
-        if phase == ResetPhase::Sent {
-            assert!(storage.fetch(nz_seq(40), nz_seq(40)).await.is_err());
+            engine.on_control(ControlMsg::ResetRunningSession);
         }
-        engine.on_reset_timeout();
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::Timeout(
-                if phase == ResetPhase::Sent {
-                    TimeoutKind::Logon
-                } else {
-                    TimeoutKind::ResetPreparation
-                }
-            )))
-        );
-        let end = engine.session_end().unwrap();
-        assert_eq!(end.reset_unconfirmed, phase == ResetPhase::Sent);
-        assert_matches!(end.termination, Termination::Timeout(kind) if kind == if phase == ResetPhase::Sent {
-            TimeoutKind::Logon
-        } else {
-            TimeoutKind::ResetPreparation
-        });
-        assert_eq!(storage.next_sender_msg_seq_num().get(), sender);
-        assert_eq!(storage.next_target_msg_seq_num().get(), target);
-        assert_eq!(
-            storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-            history.as_slice()
-        );
-        let mut logout = take_admin(&mut engine);
-        assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
-        assert_eq!(storage.next_sender_msg_seq_num().get(), sender + 1);
-        assert_eq!(storage.next_target_msg_seq_num().get(), target);
-        assert!(storage.fetch(nz_seq(sender), nz_seq(sender)).await.is_err());
-        assert_eq!(
-            storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-            history.as_slice()
-        );
-        assert!(engine.commit_send(logout.clone(), &mut storage).is_ok());
-        assert_eq!(logout.header.msg_seq_num, sender);
-        assert_matches!(as_admin(&logout), AdminBase::Logout(l)
-            if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-        assert_eq!(storage.next_sender_msg_seq_num().get(), sender + 1);
-        assert_eq!(storage.next_target_msg_seq_num().get(), target);
-        assert_eq!(
-            storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-            history.as_slice()
-        );
-        assert_eq!(
-            storage.fetch(nz_seq(sender), nz_seq(sender)).await.unwrap(),
-            serialize_message(&logout).as_slice()
-        );
-        assert!(!engine.has_admin_output());
+        (engine, storage)
+    };
+    let sender = storage.next_sender_msg_seq_num().get();
+    let target = storage.next_target_msg_seq_num().get();
+    let history = storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap().to_vec();
+    if phase == ResetPhase::Sent {
+        assert!(storage.fetch(nz_seq(40), nz_seq(40)).await.is_err());
     }
+    engine.on_reset_timeout();
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::Timeout(
+            if phase == ResetPhase::Sent {
+                TimeoutKind::Logon
+            } else {
+                TimeoutKind::ResetPreparation
+            }
+        )))
+    );
+    let end = engine.session_end().unwrap();
+    assert_eq!(end.reset_unconfirmed, phase == ResetPhase::Sent);
+    assert_matches!(end.termination, Termination::Timeout(kind) if kind == if phase == ResetPhase::Sent {
+        TimeoutKind::Logon
+    } else {
+        TimeoutKind::ResetPreparation
+    });
+    assert_eq!(storage.next_sender_msg_seq_num().get(), sender);
+    assert_eq!(storage.next_target_msg_seq_num().get(), target);
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
+    let mut logout = take_admin(&mut engine);
+    assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
+    assert_eq!(storage.next_sender_msg_seq_num().get(), sender + 1);
+    assert_eq!(storage.next_target_msg_seq_num().get(), target);
+    assert!(storage.fetch(nz_seq(sender), nz_seq(sender)).await.is_err());
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
+    assert!(engine.commit_send(logout.clone(), &mut storage).is_ok());
+    assert_eq!(logout.header.msg_seq_num, sender);
+    assert_matches!(as_admin(&logout), AdminBase::Logout(l)
+            if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
+    assert_eq!(storage.next_sender_msg_seq_num().get(), sender + 1);
+    assert_eq!(storage.next_target_msg_seq_num().get(), target);
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
+    assert_eq!(
+        storage.fetch(nz_seq(sender), nz_seq(sender)).await.unwrap(),
+        serialize_message(&logout).as_slice()
+    );
+    assert!(!engine.has_admin_output());
 }

@@ -2,13 +2,14 @@ use std::{assert_matches, borrow::Cow, io};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
-    basic_types::{DateTime, FixString, SeqNum, TimePrecision, Utc, UtcTimestamp},
+    basic_types::{DateTime, FixStr, FixString, SeqNum, TimePrecision, Utc, UtcTimestamp},
     fix_str,
     message::HeaderAccess,
     serializer::SerializeError,
     version::Version,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 
 use super::support::{assert_msg_type, limit};
 use crate::{
@@ -61,162 +62,157 @@ fn send_reject_produces_reject_in_admin_output() {
 /// `SessionRejectReason = 4, Tag specified without a value` for it - so
 /// emitting `58=` would fail serialization and, before the Reject ever got a
 /// seq num on the wire, cost the whole message.
-#[test]
-fn send_reject_omits_empty_text() {
-    for text in [
+#[rstest]
+fn send_reject_omits_empty_text(
+    #[values(None, Some(Cow::Owned(FixString::default())), Some(Cow::Borrowed(fix_str!(""))))] text: Option<Cow<'static, FixStr>>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.send_reject(
         None,
-        Some(Cow::Owned(FixString::default())),
-        Some(Cow::Borrowed(fix_str!(""))),
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        engine.send_reject(
-            None,
-            1,
-            SessionRejectReasonBase::InvalidTagNumber.into(),
-            Some(999),
-            text.clone(),
-        );
-        let mut msg = take_admin(&mut engine);
-        let AdminBase::Reject(reject) = as_admin(&msg) else {
-            panic!("expected Reject");
-        };
-        assert_eq!(
-            reject.text, None,
-            "empty Text(58) must be omitted: {text:?}"
-        );
+        1,
+        SessionRejectReasonBase::InvalidTagNumber.into(),
+        Some(999),
+        text.clone(),
+    );
+    let mut msg = take_admin(&mut engine);
+    let AdminBase::Reject(reject) = as_admin(&msg) else {
+        panic!("expected Reject");
+    };
+    assert_eq!(
+        reject.text, None,
+        "empty Text(58) must be omitted: {text:?}"
+    );
 
-        // The reject must still serialize - that is the whole point.
-        engine.fill_header(&mut msg, &mut storage).unwrap();
-        let bytes = test_helpers::serialize_message(&msg);
-        assert!(
-            !bytes.windows(4).any(|w| w == b"\x0158="),
-            "no Text(58) field may reach the wire: {:?}",
-            String::from_utf8_lossy(&bytes)
-        );
-    }
+    // The reject must still serialize - that is the whole point.
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    let bytes = test_helpers::serialize_message(&msg);
+    assert!(
+        !bytes.windows(4).any(|w| w == b"\x0158="),
+        "no Text(58) field may reach the wire: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
 }
 
-#[test]
-fn text_field_preserves_borrowed_and_owned_storage() {
-    for msg_type in [MsgTypeBase::Reject, MsgTypeBase::Logout] {
-        let literal = fix_str!("Bad tag");
-        let borrowed = text_field(Some(Cow::Borrowed(literal)), msg_type);
-        assert_matches!(borrowed, Some(Cow::Borrowed(text)) if text == literal);
+#[rstest]
+fn text_field_preserves_borrowed_and_owned_storage(
+    #[values(MsgTypeBase::Reject, MsgTypeBase::Logout)] msg_type: MsgTypeBase,
+) {
+    let literal = fix_str!("Bad tag");
+    let borrowed = text_field(Some(Cow::Borrowed(literal)), msg_type);
+    assert_matches!(borrowed, Some(Cow::Borrowed(text)) if text == literal);
 
-        let owned = literal.to_owned();
-        let allocation = owned.as_bytes().as_ptr();
-        let result = text_field(Some(Cow::Owned(owned)), msg_type);
-        assert_matches!(result, Some(Cow::Owned(text))
+    let owned = literal.to_owned();
+    let allocation = owned.as_bytes().as_ptr();
+    let result = text_field(Some(Cow::Owned(owned)), msg_type);
+    assert_matches!(result, Some(Cow::Owned(text))
             if text == literal && text.as_bytes().as_ptr() == allocation);
-    }
 }
 
-fn messages_with_empty_headers() -> [(&'static str, Box<Message>); 2] {
-    [
-        ("Heartbeat", test_helpers::heartbeat_with_empty_header()),
-        (
-            "NewOrderSingle",
-            test_helpers::new_order_single_with_empty_header(),
-        ),
-    ]
+#[rstest]
+#[case::heartbeat("Heartbeat", test_helpers::heartbeat_with_empty_header())]
+#[case::new_order_single("NewOrderSingle", test_helpers::new_order_single_with_empty_header())]
+fn fill_header_sets_empty_fields_and_increments_sender_counter(
+    #[case] case: &'static str,
+    #[case] mut msg: Box<Message>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 1, "{case}");
+    assert_eq!(msg.msg_seq_num(), 0, "{case}");
+    assert!(msg.sender_comp_id().is_empty(), "{case}");
+    assert!(msg.target_comp_id().is_empty(), "{case}");
+    assert_eq!(msg.sending_time(), UtcTimestamp::MIN_UTC, "{case}");
+
+    let precision = engine.session_settings().time_precision;
+    let before = Utc::now();
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    let after = Utc::now();
+
+    assert_eq!(msg.version(), Version::FIXT11, "{case}");
+    assert_eq!(msg.sender_comp_id(), fix_str!("SENDER"), "{case}");
+    assert_eq!(msg.target_comp_id(), fix_str!("TARGET"), "{case}");
+    assert_eq!(msg.msg_seq_num(), 1, "{case}");
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 2, "{case}");
+    assert_ne!(msg.sending_time(), UtcTimestamp::MIN_UTC, "{case}");
+
+    // Stamping truncates to the session precision, so apply the same
+    // truncation to the lower bound before comparing timestamps.
+    let lower = UtcTimestamp::with_precision(before, precision).timestamp();
+    let sending_time = msg.sending_time().timestamp();
+    assert!(
+        sending_time >= lower && sending_time <= after,
+        "{case}: SendingTime {sending_time} should be between {lower} and {after}"
+    );
+    assert_eq!(msg.sending_time().precision(), precision, "{case}");
 }
 
-#[test]
-fn fill_header_sets_empty_fields_and_increments_sender_counter() {
-    for (case, mut msg) in messages_with_empty_headers() {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        assert_eq!(storage.next_sender_msg_seq_num().get(), 1, "{case}");
-        assert_eq!(msg.msg_seq_num(), 0, "{case}");
-        assert!(msg.sender_comp_id().is_empty(), "{case}");
-        assert!(msg.target_comp_id().is_empty(), "{case}");
-        assert_eq!(msg.sending_time(), UtcTimestamp::MIN_UTC, "{case}");
-
-        let precision = engine.session_settings().time_precision;
-        let before = Utc::now();
-        engine.fill_header(&mut msg, &mut storage).unwrap();
-        let after = Utc::now();
-
-        assert_eq!(msg.version(), Version::FIXT11, "{case}");
-        assert_eq!(msg.sender_comp_id(), fix_str!("SENDER"), "{case}");
-        assert_eq!(msg.target_comp_id(), fix_str!("TARGET"), "{case}");
-        assert_eq!(msg.msg_seq_num(), 1, "{case}");
-        assert_eq!(storage.next_sender_msg_seq_num().get(), 2, "{case}");
-        assert_ne!(msg.sending_time(), UtcTimestamp::MIN_UTC, "{case}");
-
-        // Stamping truncates to the session precision, so apply the same
-        // truncation to the lower bound before comparing timestamps.
-        let lower = UtcTimestamp::with_precision(before, precision).timestamp();
-        let sending_time = msg.sending_time().timestamp();
-        assert!(
-            sending_time >= lower && sending_time <= after,
-            "{case}: SendingTime {sending_time} should be between {lower} and {after}"
-        );
-        assert_eq!(msg.sending_time().precision(), precision, "{case}");
-    }
+#[rstest]
+#[case::heartbeat("Heartbeat", test_helpers::heartbeat_with_empty_header())]
+#[case::new_order_single("NewOrderSingle", test_helpers::new_order_single_with_empty_header())]
+fn fill_header_preserves_preset_sending_time(
+    #[values(UtcTimestamp::now(TimePrecision::Nanos), UtcTimestamp::with_secs(DateTime::from_timestamp(1_700_000_000, 0).unwrap()))]
+    preset_time: UtcTimestamp,
+    #[case] case: &'static str,
+    #[case] mut msg: Box<Message>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    msg.set_sending_time(preset_time);
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    assert_eq!(msg.sending_time(), preset_time, "{case}: {preset_time:?}");
 }
 
-#[test]
-fn fill_header_preserves_preset_sending_time() {
-    for preset_time in [
-        UtcTimestamp::now(TimePrecision::Nanos),
-        UtcTimestamp::with_secs(DateTime::from_timestamp(1_700_000_000, 0).unwrap()),
-    ] {
-        for (case, mut msg) in messages_with_empty_headers() {
-            let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-            msg.set_sending_time(preset_time);
-            engine.fill_header(&mut msg, &mut storage).unwrap();
-            assert_eq!(msg.sending_time(), preset_time, "{case}: {preset_time:?}");
-        }
-    }
+#[rstest]
+#[case::heartbeat("Heartbeat", test_helpers::heartbeat_with_empty_header())]
+#[case::new_order_single("NewOrderSingle", test_helpers::new_order_single(42))]
+fn fill_header_preserves_preset_seq_num_without_incrementing_sender_counter(
+    #[case] case: &'static str,
+    #[case] mut msg: Box<Message>,
+) {
+    msg.set_msg_seq_num(42);
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    assert_eq!(msg.msg_seq_num(), 42, "{case}");
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    assert_eq!(msg.msg_seq_num(), 42, "{case}");
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 1, "{case}");
 }
 
-#[test]
-fn fill_header_preserves_preset_seq_num_without_incrementing_sender_counter() {
-    let mut heartbeat = test_helpers::heartbeat_with_empty_header();
-    heartbeat.set_msg_seq_num(42);
-    for (case, mut msg) in [
-        ("Heartbeat", heartbeat),
-        ("NewOrderSingle", test_helpers::new_order_single(42)),
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        assert_eq!(msg.msg_seq_num(), 42, "{case}");
-        engine.fill_header(&mut msg, &mut storage).unwrap();
-        assert_eq!(msg.msg_seq_num(), 42, "{case}");
-        assert_eq!(storage.next_sender_msg_seq_num().get(), 1, "{case}");
-    }
+#[rstest]
+#[case::heartbeat("Heartbeat", test_helpers::heartbeat_with_empty_header())]
+#[case::new_order_single("NewOrderSingle", test_helpers::new_order_single_with_empty_header())]
+fn fill_header_preserves_preset_comp_ids(
+    #[case] case: &'static str,
+    #[case] mut msg: Box<Message>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    msg.set_sender_comp_id(fix_str!("CUSTOM_SENDER").to_owned());
+    msg.set_target_comp_id(fix_str!("CUSTOM_TARGET").to_owned());
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    assert_eq!(msg.sender_comp_id(), fix_str!("CUSTOM_SENDER"), "{case}");
+    assert_eq!(msg.target_comp_id(), fix_str!("CUSTOM_TARGET"), "{case}");
 }
 
-#[test]
-fn fill_header_preserves_preset_comp_ids() {
-    for (case, mut msg) in messages_with_empty_headers() {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        msg.set_sender_comp_id(fix_str!("CUSTOM_SENDER").to_owned());
-        msg.set_target_comp_id(fix_str!("CUSTOM_TARGET").to_owned());
-        engine.fill_header(&mut msg, &mut storage).unwrap();
-        assert_eq!(msg.sender_comp_id(), fix_str!("CUSTOM_SENDER"), "{case}");
-        assert_eq!(msg.target_comp_id(), fix_str!("CUSTOM_TARGET"), "{case}");
-    }
-}
-
+#[rstest]
+#[case::heartbeat("Heartbeat", test_helpers::heartbeat_with_empty_header())]
+#[case::new_order_single("NewOrderSingle", test_helpers::new_order_single_with_empty_header())]
 #[tokio::test]
-async fn commit_send_serializes_to_store_and_produces_stored_output() {
-    for (case, mut msg) in messages_with_empty_headers() {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        engine.fill_header(&mut msg, &mut storage).unwrap();
-        let seq_num = msg.msg_seq_num();
-        let Ok(()) = engine.commit_send(msg, &mut storage) else {
-            panic!("{case}: commit_send must succeed");
-        };
+async fn commit_send_serializes_to_store_and_produces_stored_output(
+    #[case] case: &'static str,
+    #[case] mut msg: Box<Message>,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    let seq_num = msg.msg_seq_num();
+    let Ok(()) = engine.commit_send(msg, &mut storage) else {
+        panic!("{case}: commit_send must succeed");
+    };
 
-        let pending = engine.take_pending().expect("expected pending output");
-        assert_matches!(pending, PendingOutput::Stored(s) if s == nz_seq(seq_num), "{case}");
+    let pending = engine.take_pending().expect("expected pending output");
+    assert_matches!(pending, PendingOutput::Stored(s) if s == nz_seq(seq_num), "{case}");
 
-        let bytes = storage.fetch(nz_seq(seq_num), nz_seq(seq_num)).await;
-        assert!(
-            bytes.is_ok(),
-            "{case}: storage should have message at seq {seq_num}"
-        );
-    }
+    let bytes = storage.fetch(nz_seq(seq_num), nz_seq(seq_num)).await;
+    assert!(
+        bytes.is_ok(),
+        "{case}: storage should have message at seq {seq_num}"
+    );
 }
 
 #[tokio::test]
@@ -420,71 +416,69 @@ fn on_user_send_allocates_sequential_seq_nums() {
     assert_eq!(storage.next_sender_msg_seq_num().get(), 4);
 }
 
-#[test]
-fn sender_counter_failure_stops_before_serialization() {
-    for timing in [FailureTiming::Before, FailureTiming::After] {
-        let (mut engine, _) = EngineBuilder::new().logged_on().build();
-        let mut storage = FailingStorage::new();
-        storage.fail_on(StorageOp::SetSender, 1, timing);
-        let mut msg = test_helpers::heartbeat_with_empty_header();
-        assert!(engine.fill_header(&mut msg, &mut storage).is_err());
-        assert!(engine.has_fatal_error());
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::StorageError))
-        );
-        assert_eq!(storage.trace.borrow().serialized, 0);
-        assert!(engine.take_pending().is_none());
-        assert!(engine.fill_header(&mut msg, &mut storage).is_err());
-    }
+#[rstest]
+fn sender_counter_failure_stops_before_serialization(
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+) {
+    let (mut engine, _) = EngineBuilder::new().logged_on().build();
+    let mut storage = FailingStorage::new();
+    storage.fail_on(StorageOp::SetSender, 1, timing);
+    let mut msg = test_helpers::heartbeat_with_empty_header();
+    assert!(engine.fill_header(&mut msg, &mut storage).is_err());
+    assert!(engine.has_fatal_error());
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::StorageError))
+    );
+    assert_eq!(storage.trace.borrow().serialized, 0);
+    assert!(engine.take_pending().is_none());
+    assert!(engine.fill_header(&mut msg, &mut storage).is_err());
 }
 
-#[test]
-fn backend_store_failure_never_rolls_back_numbering() {
-    for timing in [FailureTiming::Before, FailureTiming::After] {
-        for archive_only in [false, true] {
-            let (mut engine, _) = EngineBuilder::new().logged_on().build();
-            let mut storage = FailingStorage::new();
-            let mut msg = test_helpers::heartbeat_with_empty_header();
-            assert!(engine.fill_header(&mut msg, &mut storage).unwrap());
-            storage.fail_on(StorageOp::Store, 1, timing);
-            let result = if archive_only {
-                engine.store_for_resend(msg, &mut storage)
-            } else {
-                engine.commit_send(msg, &mut storage)
-            };
-            assert_matches!(result, Err(SendFailure::Fatal(_)));
-            assert_eq!(storage.sender.get(), 2);
-            assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
-            assert!(engine.has_fatal_error());
-            assert!(engine.take_pending().is_none());
-        }
-    }
+#[rstest]
+fn backend_store_failure_never_rolls_back_numbering(
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+    #[values(false, true)] archive_only: bool,
+) {
+    let (mut engine, _) = EngineBuilder::new().logged_on().build();
+    let mut storage = FailingStorage::new();
+    let mut msg = test_helpers::heartbeat_with_empty_header();
+    assert!(engine.fill_header(&mut msg, &mut storage).unwrap());
+    storage.fail_on(StorageOp::Store, 1, timing);
+    let result = if archive_only {
+        engine.store_for_resend(msg, &mut storage)
+    } else {
+        engine.commit_send(msg, &mut storage)
+    };
+    assert_matches!(result, Err(SendFailure::Fatal(_)));
+    assert_eq!(storage.sender.get(), 2);
+    assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
+    assert!(engine.has_fatal_error());
+    assert!(engine.take_pending().is_none());
 }
 
-#[test]
-fn serialization_rollback_failure_is_fatal_with_or_without_history() {
-    for persist_messages in [false, true] {
-        for timing in [FailureTiming::Before, FailureTiming::After] {
-            let (mut engine, _) = EngineBuilder::new().max_message_size(limit(140)).build();
-            engine.session_settings_mut().persist_messages = persist_messages;
-            let mut storage = FailingStorage::new();
-            storage.max_message_size = 140;
-            let mut msg = test_helpers::new_order_single_with_empty_header();
-            engine.fill_header(&mut msg, &mut storage).unwrap();
-            storage.fail_on(StorageOp::SetSender, 1, timing);
-            assert_matches!(
-                engine.commit_send(msg, &mut storage),
-                Err(SendFailure::Fatal(_))
-            );
-            assert!(engine.has_fatal_error());
-            assert!(engine.take_pending().is_none());
-            assert_eq!(
-                storage.trace.borrow().calls.last(),
-                Some(&StorageOp::SetSender)
-            );
-        }
-    }
+#[rstest]
+fn serialization_rollback_failure_is_fatal_with_or_without_history(
+    #[values(false, true)] persist_messages: bool,
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+) {
+    let (mut engine, _) = EngineBuilder::new().max_message_size(limit(140)).build();
+    engine.session_settings_mut().persist_messages = persist_messages;
+    let mut storage = FailingStorage::new();
+    storage.max_message_size = 140;
+    let mut msg = test_helpers::new_order_single_with_empty_header();
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    storage.fail_on(StorageOp::SetSender, 1, timing);
+    assert_matches!(
+        engine.commit_send(msg, &mut storage),
+        Err(SendFailure::Fatal(_))
+    );
+    assert!(engine.has_fatal_error());
+    assert!(engine.take_pending().is_none());
+    assert_eq!(
+        storage.trace.borrow().calls.last(),
+        Some(&StorageOp::SetSender)
+    );
 }
 
 #[test]

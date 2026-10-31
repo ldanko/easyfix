@@ -16,11 +16,11 @@ use easyfix_core::{
     serializer::SerializeError,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{mpsc, oneshot},
-    task::{self, LocalSet},
-    time,
+    task, time,
 };
 
 use super::wire::{build_peer_logon, wire_bytes};
@@ -122,250 +122,243 @@ impl SessionHandler<Message> for RecordingHandler {
 
 /// The end callback waits for the test to observe EOF. This catches transport
 /// halves retained across an awaiting callback, as well as post-failure work.
-#[tokio::test]
-async fn fatal_storage_failures_close_transport_sender_and_notify_once() {
-    LocalSet::new()
-        .run_until(async {
-            for (op, nth) in [
-                (StorageOp::SetSender, 1),
-                (StorageOp::SetSender, 2),
-                (StorageOp::Store, 1),
-                (StorageOp::Store, 3),
-                (StorageOp::Fetch, 1),
-                (StorageOp::Fetch, 3),
-                (StorageOp::SetTarget, 1),
-            ] {
-                for timing in [FailureTiming::Before, FailureTiming::After] {
-                    let (engine, _) = EngineBuilder::new().build();
-                    let mut storage = FailingStorage::new();
-                    storage.fail_on(op, nth, timing);
-                    let storage_trace = storage.trace.clone();
-                    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-                    let mut handler = RecordingHandler::new(trace.clone());
-                    handler.staged = (0..4)
-                        .map(|_| test_helpers::new_order_single_with_empty_header())
-                        .collect();
-                    let (release, gate) = oneshot::channel();
-                    handler.end_gate = Some(gate);
-                    let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
-                    let live_sender = sender.clone();
-                    let (_control, control_rx) = mpsc::channel(4);
-                    let (server, mut peer) = io::duplex(65536);
-                    let (reader, writer) = io::split(server);
-                    let task = task::spawn_local(async move {
-                        session_loop(
-                            SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30))),
-                            InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
-                            writer,
-                            engine,
-                            &mut storage,
-                            handler,
-                            sender,
-                            app_rx,
-                            control_rx,
-                        )
-                        .await;
-                        storage
-                    });
-                    let mut bytes = Vec::new();
-                    time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
-                        .await
-                        .expect("transport must close before the end callback completes")
-                        .unwrap();
-                    assert!(storage_trace.borrow().failed, "{op:?} #{nth}, {timing:?}");
-                    assert_eq!(live_sender.backlog_len(), 0);
-                    assert_matches!(
-                        live_sender.send(test_helpers::new_order_single_with_empty_header()),
-                        Err(sender::SendError::Closed(_))
-                    );
-                    assert_eq!(
-                        trace.borrow().ended,
-                        [SessionEndSnapshot {
-                            context: EndContext::Closing(SessionEndReason::StorageError),
-                            termination: TerminationSnapshot::LocalClose,
-                            reset_unconfirmed: false
-                        }]
-                    );
-                    assert_eq!(trace.borrow().serialize_errors, 0);
-                    assert_eq!(trace.borrow().app_out, if nth == 3 { 2 } else { 0 });
-                    if op == StorageOp::SetSender && nth == 1 {
-                        assert_eq!(trace.borrow().admin_out, 0);
-                    }
-                    assert!(
-                        !bytes.windows(6).any(|v| v == b"\x0135=4\x01"),
-                        "failure must not generate GapFill"
-                    );
-                    release.send(()).unwrap();
-                    let storage = time::timeout(Duration::from_secs(2), task)
-                        .await
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(trace.borrow().ended.len(), 1);
-                    assert_eq!(storage.trace.borrow().calls.last(), Some(&op));
-                }
-            }
-        })
+#[rstest]
+#[case::set_sender_first(StorageOp::SetSender, 1)]
+#[case::set_sender_second(StorageOp::SetSender, 2)]
+#[case::store_first(StorageOp::Store, 1)]
+#[case::store_third(StorageOp::Store, 3)]
+#[case::fetch_first(StorageOp::Fetch, 1)]
+#[case::fetch_third(StorageOp::Fetch, 3)]
+#[case::set_target_first(StorageOp::SetTarget, 1)]
+#[tokio::test(flavor = "local")]
+async fn fatal_storage_failures_close_transport_sender_and_notify_once(
+    #[case] op: StorageOp,
+    #[case] nth: usize,
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+) {
+    let (engine, _) = EngineBuilder::new().build();
+    let mut storage = FailingStorage::new();
+    storage.fail_on(op, nth, timing);
+    let storage_trace = storage.trace.clone();
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    handler.staged = (0..4)
+        .map(|_| test_helpers::new_order_single_with_empty_header())
+        .collect();
+    let (release, gate) = oneshot::channel();
+    handler.end_gate = Some(gate);
+    let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
+    let live_sender = sender.clone();
+    let (_control, control_rx) = mpsc::channel(4);
+    let (server, mut peer) = io::duplex(65536);
+    let (reader, writer) = io::split(server);
+    let task = task::spawn_local(async move {
+        session_loop(
+            SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30))),
+            InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
+            writer,
+            engine,
+            &mut storage,
+            handler,
+            sender,
+            app_rx,
+            control_rx,
+        )
         .await;
+        storage
+    });
+    let mut bytes = Vec::new();
+    time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
+        .await
+        .expect("transport must close before the end callback completes")
+        .unwrap();
+    assert!(storage_trace.borrow().failed, "{op:?} #{nth}, {timing:?}");
+    assert_eq!(live_sender.backlog_len(), 0);
+    assert_matches!(
+        live_sender.send(test_helpers::new_order_single_with_empty_header()),
+        Err(sender::SendError::Closed(_))
+    );
+    assert_eq!(
+        trace.borrow().ended,
+        [SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::StorageError),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }]
+    );
+    assert_eq!(trace.borrow().serialize_errors, 0);
+    assert_eq!(trace.borrow().app_out, if nth == 3 { 2 } else { 0 });
+    if op == StorageOp::SetSender && nth == 1 {
+        assert_eq!(trace.borrow().admin_out, 0);
+    }
+    assert!(
+        !bytes.windows(6).any(|v| v == b"\x0135=4\x01"),
+        "failure must not generate GapFill"
+    );
+    release.send(()).unwrap();
+    let storage = time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(trace.borrow().ended.len(), 1);
+    assert_eq!(storage.trace.borrow().calls.last(), Some(&op));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn producer_number_collision_preserves_original_and_ends_task() {
-    LocalSet::new()
-        .run_until(async {
-            let (engine, _) = EngineBuilder::new().build();
-            let mut storage = FailingStorage::new();
-            let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-            let mut handler = RecordingHandler::new(trace.clone());
-            let mut collision = test_helpers::new_order_single_with_empty_header();
-            collision.set_msg_seq_num(1);
-            handler.staged = vec![
-                collision,
-                test_helpers::new_order_single_with_empty_header(),
-            ];
-            let (release, gate) = oneshot::channel();
-            handler.end_gate = Some(gate);
-            let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
-            let live_sender = sender.clone();
-            let (_control, control_rx) = mpsc::channel(4);
-            let (server, mut peer) = io::duplex(65536);
-            let (reader, writer) = io::split(server);
-            let task = task::spawn_local(async move {
-                session_loop(
-                    SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30))),
-                    InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
-                    writer,
-                    engine,
-                    &mut storage,
-                    handler,
-                    sender,
-                    app_rx,
-                    control_rx,
-                )
-                .await;
-                storage
-            });
-            let mut bytes = Vec::new();
-            time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
-                .await
-                .unwrap()
-                .unwrap();
-            release.send(()).unwrap();
-            let storage = task.await.unwrap();
-            assert_eq!(storage.records.len(), 1);
-            assert_eq!(storage.records[&nz_seq(1)], bytes);
-            assert_eq!(storage.sender.get(), 2);
-            assert_eq!(trace.borrow().app_out, 1);
-            assert_eq!(trace.borrow().serialize_errors, 0);
-            assert_eq!(
-                trace.borrow().ended,
-                [SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::StorageError),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }]
-            );
-            assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
-            assert_eq!(live_sender.backlog_len(), 0);
-            assert_matches!(
-                live_sender.send(test_helpers::new_order_single_with_empty_header()),
-                Err(sender::SendError::Closed(_))
-            );
-        })
+    let (engine, _) = EngineBuilder::new().build();
+    let mut storage = FailingStorage::new();
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    let mut collision = test_helpers::new_order_single_with_empty_header();
+    collision.set_msg_seq_num(1);
+    handler.staged = vec![
+        collision,
+        test_helpers::new_order_single_with_empty_header(),
+    ];
+    let (release, gate) = oneshot::channel();
+    handler.end_gate = Some(gate);
+    let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
+    let live_sender = sender.clone();
+    let (_control, control_rx) = mpsc::channel(4);
+    let (server, mut peer) = io::duplex(65536);
+    let (reader, writer) = io::split(server);
+    let task = task::spawn_local(async move {
+        session_loop(
+            SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30))),
+            InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
+            writer,
+            engine,
+            &mut storage,
+            handler,
+            sender,
+            app_rx,
+            control_rx,
+        )
         .await;
+        storage
+    });
+    let mut bytes = Vec::new();
+    time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    release.send(()).unwrap();
+    let storage = task.await.unwrap();
+    assert_eq!(storage.records.len(), 1);
+    assert_eq!(storage.records[&nz_seq(1)], bytes);
+    assert_eq!(storage.sender.get(), 2);
+    assert_eq!(trace.borrow().app_out, 1);
+    assert_eq!(trace.borrow().serialize_errors, 0);
+    assert_eq!(
+        trace.borrow().ended,
+        [SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::StorageError),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }]
+    );
+    assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
+    assert_eq!(live_sender.backlog_len(), 0);
+    assert_matches!(
+        live_sender.send(test_helpers::new_order_single_with_empty_header()),
+        Err(sender::SendError::Closed(_))
+    );
 }
 
+#[rstest]
 #[tokio::test]
-async fn no_history_sends_admin_and_app_but_never_calls_message_storage() {
-    for manages_admin in [false, true] {
-        for persist_messages in [false, true] {
-            let (mut engine, _) = EngineBuilder::new()
-                .logged_on()
-                .persist_messages(persist_messages)
-                .build();
-            engine.session_settings_mut().manages_admin_output = manages_admin;
-            let mut storage = FailingStorage::new();
-            if !persist_messages {
-                storage.fail_on(StorageOp::Store, 1, FailureTiming::Before);
-            }
-            let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-            let mut handler = RecordingHandler::new(trace.clone());
-            let (mut writer, reader) = io::duplex(65536);
-            engine.send_heartbeat(None);
-            drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
-                .await
-                .unwrap();
-            let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
-            tx.send(test_helpers::new_order_single_with_empty_header())
-                .unwrap();
-            tx.send(test_helpers::heartbeat(0, None)).unwrap();
-            drain_and_flush_app_sends(
-                &mut writer,
-                &mut storage,
-                &mut engine,
-                &mut handler,
-                &mut rx,
-            )
-            .await
-            .unwrap();
-            let bytes = wire_bytes(writer, reader).await;
-            let text = String::from_utf8(bytes).unwrap();
-            assert_eq!(
-                text.matches("\x0135=0\x01").count(),
-                usize::from(!manages_admin) + 1
-            );
-            assert_eq!(text.matches("\x0135=D\x01").count(), 1);
-            assert_eq!(trace.borrow().admin_out, 2);
-            assert_eq!(trace.borrow().app_out, 1);
-            assert_eq!(storage.sender.get(), 4);
-            if !persist_messages {
-                assert!(
-                    !storage
-                        .trace
-                        .borrow()
-                        .calls
-                        .iter()
-                        .any(|op| matches!(op, StorageOp::Store | StorageOp::Fetch))
-                );
-                assert!(storage.records.is_empty());
-            }
-        }
+async fn no_history_sends_admin_and_app_but_never_calls_message_storage(
+    #[values(false, true)] manages_admin: bool,
+    #[values(false, true)] persist_messages: bool,
+) {
+    let (mut engine, _) = EngineBuilder::new()
+        .logged_on()
+        .persist_messages(persist_messages)
+        .build();
+    engine.session_settings_mut().manages_admin_output = manages_admin;
+    let mut storage = FailingStorage::new();
+    if !persist_messages {
+        storage.fail_on(StorageOp::Store, 1, FailureTiming::Before);
     }
-}
-
-#[tokio::test]
-async fn new_message_serialization_errors_call_application_and_rollback_in_both_modes() {
-    for persist_messages in [false, true] {
-        let (mut engine, _) = EngineBuilder::new()
-            .logged_on()
-            .max_message_size(64.try_into().unwrap())
-            .persist_messages(persist_messages)
-            .build();
-        let mut storage = FailingStorage::new();
-        storage.max_message_size = 64;
-        let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-        let mut handler = RecordingHandler::new(trace.clone());
-        let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
-        tx.send(test_helpers::new_order_single_with_empty_header())
-            .unwrap();
-        let (mut writer, reader) = io::duplex(1024);
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    let (mut writer, reader) = io::duplex(65536);
+    engine.send_heartbeat(None);
+    drain_and_flush_admin_output(&mut writer, &mut storage, &mut engine, &mut handler)
+        .await
+        .unwrap();
+    let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
+    tx.send(test_helpers::new_order_single_with_empty_header())
+        .unwrap();
+    tx.send(test_helpers::heartbeat(0, None)).unwrap();
+    drain_and_flush_app_sends(
+        &mut writer,
+        &mut storage,
+        &mut engine,
+        &mut handler,
+        &mut rx,
+    )
+    .await
+    .unwrap();
+    let bytes = wire_bytes(writer, reader).await;
+    let text = String::from_utf8(bytes).unwrap();
+    assert_eq!(
+        text.matches("\x0135=0\x01").count(),
+        usize::from(!manages_admin) + 1
+    );
+    assert_eq!(text.matches("\x0135=D\x01").count(), 1);
+    assert_eq!(trace.borrow().admin_out, 2);
+    assert_eq!(trace.borrow().app_out, 1);
+    assert_eq!(storage.sender.get(), 4);
+    if !persist_messages {
         assert!(
-            !drain_and_flush_app_sends(
-                &mut writer,
-                &mut storage,
-                &mut engine,
-                &mut handler,
-                &mut rx
-            )
-            .await
-            .unwrap()
+            !storage
+                .trace
+                .borrow()
+                .calls
+                .iter()
+                .any(|op| matches!(op, StorageOp::Store | StorageOp::Fetch))
         );
-        assert_eq!(trace.borrow().serialize_errors, 1);
-        assert_eq!(trace.borrow().app_out, 1);
-        assert_eq!(storage.sender.get(), 1);
         assert!(storage.records.is_empty());
-        assert!(!engine.should_disconnect());
-        assert!(wire_bytes(writer, reader).await.is_empty());
     }
+}
+
+#[rstest]
+#[tokio::test]
+async fn new_message_serialization_errors_call_application_and_rollback_in_both_modes(
+    #[values(false, true)] persist_messages: bool,
+) {
+    let (mut engine, _) = EngineBuilder::new()
+        .logged_on()
+        .max_message_size(64.try_into().unwrap())
+        .persist_messages(persist_messages)
+        .build();
+    let mut storage = FailingStorage::new();
+    storage.max_message_size = 64;
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    let (tx, mut rx) = sender::channel(TimerBackend::Tokio);
+    tx.send(test_helpers::new_order_single_with_empty_header())
+        .unwrap();
+    let (mut writer, reader) = io::duplex(1024);
+    assert!(
+        !drain_and_flush_app_sends(
+            &mut writer,
+            &mut storage,
+            &mut engine,
+            &mut handler,
+            &mut rx
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(trace.borrow().serialize_errors, 1);
+    assert_eq!(trace.borrow().app_out, 1);
+    assert_eq!(storage.sender.get(), 1);
+    assert!(storage.records.is_empty());
+    assert!(!engine.should_disconnect());
+    assert!(wire_bytes(writer, reader).await.is_empty());
 }
 
 #[tokio::test]
@@ -446,83 +439,80 @@ impl AsyncWrite for BrokenWriter {
     }
 }
 
-#[tokio::test]
-async fn failure_during_final_drain_stops_and_closes_transport_before_callback() {
-    LocalSet::new()
-        .run_until(async {
-            for timing in [FailureTiming::Before, FailureTiming::After] {
-                let (engine, _) = EngineBuilder::new().build();
-                let mut storage = FailingStorage::new();
-                storage.fail_on(StorageOp::Store, 4, timing);
-                let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-                let mut handler = RecordingHandler::new(trace.clone());
-                let (release, gate) = oneshot::channel();
-                handler.end_gate = Some(gate);
-                let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
-                for _ in 0..5 {
-                    sender
-                        .send(test_helpers::new_order_single_with_empty_header())
-                        .unwrap();
-                }
-                let live_sender = sender.clone();
-                let (_control, control_rx) = mpsc::channel(4);
-                let (server, mut peer) = io::duplex(65536);
-                // InputStream owns the whole duplex transport: dropping it is
-                // necessary to let the peer see EOF, regardless of writer behavior.
-                let task = task::spawn_local(async move {
-                    session_loop(
-                        SessionOpening::SendLogon(SessionStart::Resume),
-                        InputStream::new(server, DEFAULT_MAX_MESSAGE_SIZE),
-                        BrokenWriter,
-                        engine,
-                        &mut storage,
-                        handler,
-                        sender,
-                        app_rx,
-                        control_rx,
-                    )
-                    .await;
-                    storage
-                });
-                let mut bytes = Vec::new();
-                time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(bytes.is_empty());
-                assert_eq!(
-                    trace.borrow().ended,
-                    [SessionEndSnapshot {
-                        context: EndContext::Logon,
-                        termination: TerminationSnapshot::IoError {
-                            operation: IoOperation::Write,
-                            kind: ErrorKind::BrokenPipe
-                        },
-                        reset_unconfirmed: false
-                    }]
-                );
-                assert_eq!(live_sender.backlog_len(), 0);
-                assert_matches!(
-                    live_sender.send(test_helpers::new_order_single_with_empty_header()),
-                    Err(sender::SendError::Closed(_))
-                );
-                release.send(()).unwrap();
-                let storage = task.await.unwrap();
-                assert!(storage.trace.borrow().failed);
-                assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
-                assert_eq!(
-                    storage.records.len(),
-                    if matches!(timing, FailureTiming::After) {
-                        4
-                    } else {
-                        3
-                    }
-                );
-                assert_eq!(trace.borrow().app_out, 3);
-                assert_eq!(trace.borrow().ended.len(), 1);
-            }
-        })
+#[rstest]
+#[tokio::test(flavor = "local")]
+async fn failure_during_final_drain_stops_and_closes_transport_before_callback(
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+) {
+    let (engine, _) = EngineBuilder::new().build();
+    let mut storage = FailingStorage::new();
+    storage.fail_on(StorageOp::Store, 4, timing);
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    let (release, gate) = oneshot::channel();
+    handler.end_gate = Some(gate);
+    let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
+    for _ in 0..5 {
+        sender
+            .send(test_helpers::new_order_single_with_empty_header())
+            .unwrap();
+    }
+    let live_sender = sender.clone();
+    let (_control, control_rx) = mpsc::channel(4);
+    let (server, mut peer) = io::duplex(65536);
+    // InputStream owns the whole duplex transport: dropping it is
+    // necessary to let the peer see EOF, regardless of writer behavior.
+    let task = task::spawn_local(async move {
+        session_loop(
+            SessionOpening::SendLogon(SessionStart::Resume),
+            InputStream::new(server, DEFAULT_MAX_MESSAGE_SIZE),
+            BrokenWriter,
+            engine,
+            &mut storage,
+            handler,
+            sender,
+            app_rx,
+            control_rx,
+        )
         .await;
+        storage
+    });
+    let mut bytes = Vec::new();
+    time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bytes.is_empty());
+    assert_eq!(
+        trace.borrow().ended,
+        [SessionEndSnapshot {
+            context: EndContext::Logon,
+            termination: TerminationSnapshot::IoError {
+                operation: IoOperation::Write,
+                kind: ErrorKind::BrokenPipe
+            },
+            reset_unconfirmed: false
+        }]
+    );
+    assert_eq!(live_sender.backlog_len(), 0);
+    assert_matches!(
+        live_sender.send(test_helpers::new_order_single_with_empty_header()),
+        Err(sender::SendError::Closed(_))
+    );
+    release.send(()).unwrap();
+    let storage = task.await.unwrap();
+    assert!(storage.trace.borrow().failed);
+    assert_eq!(storage.trace.borrow().calls.last(), Some(&StorageOp::Store));
+    assert_eq!(
+        storage.records.len(),
+        if matches!(timing, FailureTiming::After) {
+            4
+        } else {
+            3
+        }
+    );
+    assert_eq!(trace.borrow().app_out, 3);
+    assert_eq!(trace.borrow().ended.len(), 1);
 }
 
 #[tokio::test]
@@ -625,9 +615,9 @@ async fn gap_fill_policy_and_retransmission_preserve_original_record() {
     assert_eq!(trace.borrow().gap_fill_calls, 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn no_history_logon_recovery_resend_request_and_reconnect_keep_counters() {
-    time::timeout(Duration::from_secs(3), LocalSet::new().run_until(async {
+    time::timeout(Duration::from_secs(3), async {
         let mut storage = FailingStorage::new();
         storage.sender = nz_seq(5);
         storage.records.insert(nz_seq(2), b"old bytes must be ignored".to_vec());
@@ -674,182 +664,173 @@ async fn no_history_logon_recovery_resend_request_and_reconnect_keep_counters() 
             assert!(!storage.trace.borrow().calls.iter().any(|op| matches!(op, StorageOp::Store | StorageOp::Fetch | StorageOp::Reset)));
         }
         assert_eq!(storage.records[&nz_seq(2)], b"old bytes must be ignored");
-    })).await.expect("both connections finish without recovery timeout");
+    }).await.expect("both connections finish without recovery timeout");
 }
 
-#[tokio::test]
-async fn failures_after_incoming_callback_and_during_replay_stop_live_tasks() {
-    LocalSet::new()
-        .run_until(async {
-            for replay in [false, true] {
-                let (engine, _) = EngineBuilder::new().build();
-                let mut storage = FailingStorage::new();
-                storage.fail_on(
-                    if replay {
-                        StorageOp::Fetch
-                    } else {
-                        StorageOp::SetTarget
-                    },
-                    if replay { 5 } else { 2 },
-                    FailureTiming::After,
-                );
-                let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-                let mut handler = RecordingHandler::new(trace.clone());
-                if replay {
-                    handler.staged = (0..2)
-                        .map(|_| test_helpers::new_order_single_with_empty_header())
-                        .collect();
-                }
-                let (release, gate) = oneshot::channel();
-                handler.end_gate = Some(gate);
-                let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
-                let live_sender = sender.clone();
-                let (_control, control_rx) = mpsc::channel(4);
-                let (server, mut peer) = io::duplex(65536);
-                let (reader, writer) = io::split(server);
-                let task = task::spawn_local(async move {
-                    session_loop(
-                        SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30))),
-                        InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
-                        writer,
-                        engine,
-                        &mut storage,
-                        handler,
-                        sender,
-                        app_rx,
-                        control_rx,
-                    )
-                    .await;
-                    storage
-                });
-                let mut buffer = Vec::new();
-                for expected in 1..=if replay { 3 } else { 1 } {
-                    let msg = time::timeout(
-                        Duration::from_secs(2),
-                        test_helpers::read_one_message(&mut peer, &mut buffer),
-                    )
-                    .await
-                    .unwrap();
-                    assert_eq!(msg.msg_seq_num(), expected);
-                }
-                let input = if replay {
-                    test_helpers::resend_request(2, 2, 3)
-                } else {
-                    test_helpers::new_order_single(2)
-                };
-                peer.write_all(&test_helpers::serialize_message(&input))
-                    .await
-                    .unwrap();
-                time::timeout(Duration::from_secs(2), peer.read_to_end(&mut buffer))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                if replay {
-                    let resent = Message::from_bytes(&buffer).unwrap();
-                    assert_eq!(resent.msg_seq_num(), 2);
-                    assert_eq!(resent.poss_dup_flag(), Some(true));
-                } else {
-                    assert!(buffer.is_empty());
-                    assert_eq!(trace.borrow().app_in, 1);
-                }
-                assert_eq!(
-                    trace.borrow().ended,
-                    [SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::StorageError),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }]
-                );
-                assert_eq!(live_sender.backlog_len(), 0);
-                assert_matches!(
-                    live_sender.send(test_helpers::new_order_single_with_empty_header()),
-                    Err(sender::SendError::Closed(_))
-                );
-                release.send(()).unwrap();
-                let storage = task.await.unwrap();
-                assert!(storage.trace.borrow().failed);
-                assert_eq!(trace.borrow().ended.len(), 1);
-            }
-        })
+#[rstest]
+#[tokio::test(flavor = "local")]
+async fn failures_after_incoming_callback_and_during_replay_stop_live_tasks(
+    #[values(false, true)] replay: bool,
+) {
+    let (engine, _) = EngineBuilder::new().build();
+    let mut storage = FailingStorage::new();
+    storage.fail_on(
+        if replay {
+            StorageOp::Fetch
+        } else {
+            StorageOp::SetTarget
+        },
+        if replay { 5 } else { 2 },
+        FailureTiming::After,
+    );
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    if replay {
+        handler.staged = (0..2)
+            .map(|_| test_helpers::new_order_single_with_empty_header())
+            .collect();
+    }
+    let (release, gate) = oneshot::channel();
+    handler.end_gate = Some(gate);
+    let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
+    let live_sender = sender.clone();
+    let (_control, control_rx) = mpsc::channel(4);
+    let (server, mut peer) = io::duplex(65536);
+    let (reader, writer) = io::split(server);
+    let task = task::spawn_local(async move {
+        session_loop(
+            SessionOpening::FirstMessage(Ok(build_peer_logon(1, 30))),
+            InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
+            writer,
+            engine,
+            &mut storage,
+            handler,
+            sender,
+            app_rx,
+            control_rx,
+        )
         .await;
+        storage
+    });
+    let mut buffer = Vec::new();
+    for expected in 1..=if replay { 3 } else { 1 } {
+        let msg = time::timeout(
+            Duration::from_secs(2),
+            test_helpers::read_one_message(&mut peer, &mut buffer),
+        )
+        .await
+        .unwrap();
+        assert_eq!(msg.msg_seq_num(), expected);
+    }
+    let input = if replay {
+        test_helpers::resend_request(2, 2, 3)
+    } else {
+        test_helpers::new_order_single(2)
+    };
+    peer.write_all(&test_helpers::serialize_message(&input))
+        .await
+        .unwrap();
+    time::timeout(Duration::from_secs(2), peer.read_to_end(&mut buffer))
+        .await
+        .unwrap()
+        .unwrap();
+    if replay {
+        let resent = Message::from_bytes(&buffer).unwrap();
+        assert_eq!(resent.msg_seq_num(), 2);
+        assert_eq!(resent.poss_dup_flag(), Some(true));
+    } else {
+        assert!(buffer.is_empty());
+        assert_eq!(trace.borrow().app_in, 1);
+    }
+    assert_eq!(
+        trace.borrow().ended,
+        [SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::StorageError),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }]
+    );
+    assert_eq!(live_sender.backlog_len(), 0);
+    assert_matches!(
+        live_sender.send(test_helpers::new_order_single_with_empty_header()),
+        Err(sender::SendError::Closed(_))
+    );
+    release.send(()).unwrap();
+    let storage = task.await.unwrap();
+    assert!(storage.trace.borrow().failed);
+    assert_eq!(trace.borrow().ended.len(), 1);
 }
 
-#[tokio::test]
-async fn reset_storage_failures_finalize_even_with_unconfirmed_local_reset() {
-    LocalSet::new()
-        .run_until(async {
-            for peer_reset in [false, true] {
-                for fail_op in [StorageOp::Reset, StorageOp::Store] {
-                    for timing in [FailureTiming::Before, FailureTiming::After] {
-                        let (engine, _) =
-                            EngineBuilder::new().accept_reset_on_connect(true).build();
-                        let mut storage = FailingStorage::new();
-                        storage.sender = nz_seq(20);
-                        storage.target = nz_seq(30);
-                        storage.fail_on(fail_op, 1, timing);
-                        let trace = Rc::new(RefCell::new(HandlerTrace::default()));
-                        let mut handler = RecordingHandler::new(trace.clone());
-                        let (release, gate) = oneshot::channel();
-                        handler.end_gate = Some(gate);
-                        let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
-                        sender
-                            .send(test_helpers::new_order_single_with_empty_header())
-                            .unwrap();
-                        let live_sender = sender.clone();
-                        let (_control, control_rx) = mpsc::channel(4);
-                        let (server, mut peer) = io::duplex(65536);
-                        let (reader, writer) = io::split(server);
-                        let opening = if peer_reset {
-                            SessionOpening::FirstMessage(Ok(test_helpers::logon_with_options(
-                                1,
-                                fix_str!("TARGET"),
-                                fix_str!("SENDER"),
-                                30,
-                                Some(true),
-                                None,
-                            )))
-                        } else {
-                            SessionOpening::SendLogon(SessionStart::Reset)
-                        };
-                        let task = task::spawn_local(async move {
-                            session_loop(
-                                opening,
-                                InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
-                                writer,
-                                engine,
-                                &mut storage,
-                                handler,
-                                sender,
-                                app_rx,
-                                control_rx,
-                            )
-                            .await;
-                            storage
-                        });
-                        let mut bytes = Vec::new();
-                        time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
-                            .await
-                            .unwrap()
-                            .unwrap();
-                        assert!(bytes.is_empty());
-                        let expected = SessionEndSnapshot {
-                            reset_unconfirmed: !peer_reset && fail_op == StorageOp::Store,
-                            ..SessionEndSnapshot::closing(SessionEndReason::StorageError)
-                        };
-                        assert_eq!(trace.borrow().ended, [expected]);
-                        assert_eq!(live_sender.backlog_len(), 0);
-                        assert_matches!(
-                            live_sender.send(test_helpers::new_order_single_with_empty_header()),
-                            Err(sender::SendError::Closed(_))
-                        );
-                        release.send(()).unwrap();
-                        let storage = task.await.unwrap();
-                        assert!(storage.trace.borrow().failed);
-                        assert_eq!(storage.trace.borrow().calls.last(), Some(&fail_op));
-                        assert_eq!(trace.borrow().ended.len(), 1);
-                    }
-                }
-            }
-        })
+#[rstest]
+#[tokio::test(flavor = "local")]
+async fn reset_storage_failures_finalize_even_with_unconfirmed_local_reset(
+    #[values(false, true)] peer_reset: bool,
+    #[values(StorageOp::Reset, StorageOp::Store)] fail_op: StorageOp,
+    #[values(FailureTiming::Before, FailureTiming::After)] timing: FailureTiming,
+) {
+    let (engine, _) = EngineBuilder::new().accept_reset_on_connect(true).build();
+    let mut storage = FailingStorage::new();
+    storage.sender = nz_seq(20);
+    storage.target = nz_seq(30);
+    storage.fail_on(fail_op, 1, timing);
+    let trace = Rc::new(RefCell::new(HandlerTrace::default()));
+    let mut handler = RecordingHandler::new(trace.clone());
+    let (release, gate) = oneshot::channel();
+    handler.end_gate = Some(gate);
+    let (sender, app_rx) = sender::channel(TimerBackend::Tokio);
+    sender
+        .send(test_helpers::new_order_single_with_empty_header())
+        .unwrap();
+    let live_sender = sender.clone();
+    let (_control, control_rx) = mpsc::channel(4);
+    let (server, mut peer) = io::duplex(65536);
+    let (reader, writer) = io::split(server);
+    let opening = if peer_reset {
+        SessionOpening::FirstMessage(Ok(test_helpers::logon_with_options(
+            1,
+            fix_str!("TARGET"),
+            fix_str!("SENDER"),
+            30,
+            Some(true),
+            None,
+        )))
+    } else {
+        SessionOpening::SendLogon(SessionStart::Reset)
+    };
+    let task = task::spawn_local(async move {
+        session_loop(
+            opening,
+            InputStream::new(reader, DEFAULT_MAX_MESSAGE_SIZE),
+            writer,
+            engine,
+            &mut storage,
+            handler,
+            sender,
+            app_rx,
+            control_rx,
+        )
         .await;
+        storage
+    });
+    let mut bytes = Vec::new();
+    time::timeout(Duration::from_secs(2), peer.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(bytes.is_empty());
+    let expected = SessionEndSnapshot {
+        reset_unconfirmed: !peer_reset && fail_op == StorageOp::Store,
+        ..SessionEndSnapshot::closing(SessionEndReason::StorageError)
+    };
+    assert_eq!(trace.borrow().ended, [expected]);
+    assert_eq!(live_sender.backlog_len(), 0);
+    assert_matches!(
+        live_sender.send(test_helpers::new_order_single_with_empty_header()),
+        Err(sender::SendError::Closed(_))
+    );
+    release.send(()).unwrap();
+    let storage = task.await.unwrap();
+    assert!(storage.trace.borrow().failed);
+    assert_eq!(storage.trace.borrow().calls.last(), Some(&fail_op));
+    assert_eq!(trace.borrow().ended.len(), 1);
 }

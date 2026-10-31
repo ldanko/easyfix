@@ -24,3 +24,4 @@ syn = { workspace = true, features = ["full"] }
 [dev-dependencies]
 easyfix-macros = { workspace = true }
 easyfix-test-messages = { workspace = true }
+rstest = { workspace = true }

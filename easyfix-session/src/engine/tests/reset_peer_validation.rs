@@ -6,6 +6,7 @@ use easyfix_core::{
     fix_str,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 
 use super::{
     reset_peer_support::{assert_reset_refused, reset_test_session},
@@ -21,142 +22,149 @@ use crate::{
     test_helpers::{accept_input, as_admin, nz_seq, take_admin},
 };
 
+#[rstest]
 #[tokio::test]
-async fn peer_reset_with_invalid_tag_789_preserves_storage() {
-    for state in [
+async fn peer_reset_with_invalid_tag_789_preserves_storage(
+    #[values(
         LogonState::Idle,
         LogonState::Established,
         LogonState::ResetPending,
-        LogonState::ResetProbe,
-    ] {
-        for next_expected in [0, 2, 40] {
-            let (mut engine, mut storage, history) = peer_reset_test_session(state);
-            assert!(!engine.has_admin_output());
-            engine.session_settings.enable_next_expected_msg_seq_num = true;
-            let msg = test_helpers::logon_with_options(
-                1,
-                fix_str!("TARGET"),
-                fix_str!("SENDER"),
-                30,
-                Some(true),
-                Some(next_expected),
-            );
-            assert_matches!(
-                engine.process_input_without_callback(msg, &mut storage),
-                Ok(InputResult::Handled)
-            );
-            assert_eq!(
-                engine.session_end().map(|end| end.context),
-                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
-            );
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
-            assert_eq!(storage.next_target_msg_seq_num().get(), 40);
-            assert_eq!(
-                storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-                history.as_slice()
-            );
-            assert!(engine.pending_resends.is_empty());
-            assert!(!engine.state.local_reset_unconfirmed);
-            let mut logout = take_admin(&mut engine);
-            assert_msg_type(&logout, MsgTypeBase::Logout);
-            assert!(engine.take_admin_output().is_none());
-            assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
-            assert_eq!(logout.header.msg_seq_num, 40);
-            assert!(engine.commit_send(logout, &mut storage).is_ok());
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 41);
-            assert_eq!(storage.next_target_msg_seq_num().get(), 40);
-            assert_eq!(
-                storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-                history.as_slice()
-            );
-        }
-    }
-    for state in [
-        LogonState::Established,
-        LogonState::ResetPending,
-        LogonState::ResetProbe,
-    ] {
-        for heartbeat in [-1, 20] {
-            let (mut engine, mut storage, history) = peer_reset_test_session(state);
-            engine.session_settings.enable_next_expected_msg_seq_num = true;
-            let msg = test_helpers::logon_with_options(
-                1,
-                fix_str!("TARGET"),
-                fix_str!("SENDER"),
-                heartbeat,
-                Some(true),
-                Some(40),
-            );
-            assert_matches!(
-                engine.process_input_without_callback(msg, &mut storage),
-                Ok(InputResult::Handled)
-            );
-            let expected_text = if heartbeat < 0 {
-                let reject = take_admin(&mut engine);
-                assert_matches!(as_admin(&reject), AdminBase::Reject(reject)
-                if reject.ref_tag_id == Some(108)
-                && reject.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
-                "Invalid HeartBtInt(108)"
-            } else {
-                "Invalid HeartBtInt(108), expected value 30 seconds"
-            };
-            assert_reset_refused(&mut engine, &mut storage, &history, expected_text).await;
-        }
-    }
+        LogonState::ResetProbe
+    )]
+    state: LogonState,
+    #[values(0, 2, 40)] next_expected: u32,
+) {
+    let (mut engine, mut storage, history) = peer_reset_test_session(state);
+    assert!(!engine.has_admin_output());
+    engine.session_settings.enable_next_expected_msg_seq_num = true;
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        Some(true),
+        Some(next_expected),
+    );
+    assert_matches!(
+        engine.process_input_without_callback(msg, &mut storage),
+        Ok(InputResult::Handled)
+    );
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
+    );
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 40);
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
+    assert!(engine.pending_resends.is_empty());
+    assert!(!engine.state.local_reset_unconfirmed);
+    let mut logout = take_admin(&mut engine);
+    assert_msg_type(&logout, MsgTypeBase::Logout);
+    assert!(engine.take_admin_output().is_none());
+    assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
+    assert_eq!(logout.header.msg_seq_num, 40);
+    assert!(engine.commit_send(logout, &mut storage).is_ok());
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 41);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 40);
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
 }
 
+#[rstest]
 #[tokio::test]
-async fn peer_reset_tag_789_validation_preserves_accepted_forms() {
-    for state in [
+async fn peer_reset_invalid_heartbeat_precedes_invalid_tag_789(
+    #[values(
+        LogonState::Established,
+        LogonState::ResetPending,
+        LogonState::ResetProbe
+    )]
+    state: LogonState,
+    #[values(-1, 20)] heartbeat: i64,
+) {
+    let (mut engine, mut storage, history) = peer_reset_test_session(state);
+    engine.session_settings.enable_next_expected_msg_seq_num = true;
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        heartbeat,
+        Some(true),
+        Some(40),
+    );
+    assert_matches!(
+        engine.process_input_without_callback(msg, &mut storage),
+        Ok(InputResult::Handled)
+    );
+    let expected_text = if heartbeat < 0 {
+        let reject = take_admin(&mut engine);
+        assert_matches!(as_admin(&reject), AdminBase::Reject(reject)
+                if reject.ref_tag_id == Some(108)
+                && reject.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
+        "Invalid HeartBtInt(108)"
+    } else {
+        "Invalid HeartBtInt(108), expected value 30 seconds"
+    };
+    assert_reset_refused(&mut engine, &mut storage, &history, expected_text).await;
+}
+
+#[rstest]
+#[case::enabled_absent(true, None)]
+#[case::enabled_one(true, Some(1))]
+#[case::disabled_absent(false, None)]
+#[case::disabled_zero(false, Some(0))]
+#[case::disabled_two(false, Some(2))]
+#[case::disabled_high(false, Some(40))]
+#[tokio::test]
+async fn peer_reset_tag_789_validation_preserves_accepted_forms(
+    #[values(
         LogonState::Idle,
         LogonState::Established,
         LogonState::ResetPending,
-        LogonState::ResetProbe,
-    ] {
-        for enabled in [false, true] {
-            let variants: &[Option<SeqNum>] = if enabled {
-                &[None, Some(1)]
-            } else {
-                &[None, Some(0), Some(2), Some(40)]
-            };
-            for &next_expected in variants {
-                let (mut engine, mut storage, _) = peer_reset_test_session(state);
-                engine.session_settings.enable_next_expected_msg_seq_num = enabled;
-                let msg = test_helpers::logon_with_options(
-                    1,
-                    fix_str!("TARGET"),
-                    fix_str!("SENDER"),
-                    30,
-                    Some(true),
-                    next_expected,
-                );
-                assert_matches!(
-                    accept_input(&mut engine, msg, &mut storage),
-                    InputResult::Handled
-                );
-                assert!(engine.session_end().map(|end| end.context).is_none());
-                assert!(engine.is_logged_on());
-                assert_eq!(engine.state.logon_state, LogonState::Established);
-                assert_eq!(engine.reset_phase(), None);
-                assert!(engine.state.reset_probe_id.is_none());
-                assert!(engine.state.reset_barrier_ids.is_empty());
-                assert!(!engine.state.probe_stale);
-                assert!(!engine.state.local_reset_unconfirmed);
-                assert!(engine.pending_resends.is_empty());
-                assert!(storage.fetch(nz_seq(1), nz_seq(1)).await.is_err());
-                let mut ack = take_admin(&mut engine);
-                assert_matches!(as_admin(&ack), AdminBase::Logon(logon)
-                    if logon.reset_seq_num_flag == Some(true)
-                    && logon.next_expected_msg_seq_num == if enabled && next_expected.is_some() { Some(2) } else { None });
-                assert!(engine.fill_header(&mut ack, &mut storage).unwrap());
-                assert_eq!(ack.header.msg_seq_num, 1);
-                assert!(engine.commit_send(ack, &mut storage).is_ok());
-                assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
-                assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-                assert!(engine.take_admin_output().is_none());
-            }
-        }
-    }
+        LogonState::ResetProbe
+    )]
+    state: LogonState,
+    #[case] enabled: bool,
+    #[case] next_expected: Option<SeqNum>,
+) {
+    let (mut engine, mut storage, _) = peer_reset_test_session(state);
+    engine.session_settings.enable_next_expected_msg_seq_num = enabled;
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        Some(true),
+        next_expected,
+    );
+    assert_matches!(
+        accept_input(&mut engine, msg, &mut storage),
+        InputResult::Handled
+    );
+    assert!(engine.session_end().map(|end| end.context).is_none());
+    assert!(engine.is_logged_on());
+    assert_eq!(engine.state.logon_state, LogonState::Established);
+    assert_eq!(engine.reset_phase(), None);
+    assert!(engine.state.reset_probe_id.is_none());
+    assert!(engine.state.reset_barrier_ids.is_empty());
+    assert!(!engine.state.probe_stale);
+    assert!(!engine.state.local_reset_unconfirmed);
+    assert!(engine.pending_resends.is_empty());
+    assert!(storage.fetch(nz_seq(1), nz_seq(1)).await.is_err());
+    let mut ack = take_admin(&mut engine);
+    assert_matches!(as_admin(&ack), AdminBase::Logon(logon)
+            if logon.reset_seq_num_flag == Some(true)
+            && logon.next_expected_msg_seq_num == if enabled && next_expected.is_some() { Some(2) } else { None });
+    assert!(engine.fill_header(&mut ack, &mut storage).unwrap());
+    assert_eq!(ack.header.msg_seq_num, 1);
+    assert!(engine.commit_send(ack, &mut storage).is_ok());
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 2);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    assert!(engine.take_admin_output().is_none());
 }
 
 /// A reset Logon replay consumes only its original sequence number; it

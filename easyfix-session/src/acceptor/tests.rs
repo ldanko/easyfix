@@ -16,10 +16,11 @@ use std::{
 use easyfix_core::{base_messages::AdminBase, fix_str, version::Version};
 use easyfix_test_messages::Message;
 use futures_util::FutureExt;
+use rstest::rstest;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, DuplexStream},
     sync::Notify,
-    task::{self, JoinHandle, LocalSet},
+    task::{self, JoinHandle},
     time::{self, sleep, timeout},
 };
 
@@ -74,48 +75,42 @@ fn busywait_acceptor_runs_an_identified_session_without_a_tokio_runtime() {
 ///
 /// The session task must restore the storage to the registry on panic
 /// unwind, leaving the `SessionId` free to reconnect.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn session_task_panic_restores_storage_to_registry() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let inner = Rc::new(AcceptorInner::<Message, InMemoryStorage, _>::new(
-                AcceptorSettings::default(),
-                test_helpers::make_panic_handler,
-                TimerBackend::Tokio,
-            ));
+    let inner = Rc::new(AcceptorInner::<Message, InMemoryStorage, _>::new(
+        AcceptorSettings::default(),
+        test_helpers::make_panic_handler,
+        TimerBackend::Tokio,
+    ));
 
-            // Register the session the inbound Logon will resolve to. The
-            // peer's Logon carries sender=TARGET / target=SENDER, so
-            // `SessionId::from_inbound` yields (SENDER, TARGET).
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
+    // Register the session the inbound Logon will resolve to. The
+    // peer's Logon carries sender=TARGET / target=SENDER, so
+    // `SessionId::from_inbound` yields (SENDER, TARGET).
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
 
-            // Feed the session task a first (Logon) message; processing it
-            // fires `on_admin_msg_in`, which panics.
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let (handle, _client_io) =
-                spawn_first_message(inner.clone(), &test_helpers::serialize_message(&logon)).await;
+    // Feed the session task a first (Logon) message; processing it
+    // fires `on_admin_msg_in`, which panics.
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let (handle, _client_io) =
+        spawn_first_message(inner.clone(), &test_helpers::serialize_message(&logon)).await;
 
-            // The task must panic (the callback unwinds it).
-            let join = handle.await;
-            assert_matches!(
-                join,
-                Err(e) if e.is_panic(),
-                "session task should have panicked in the callback"
-            );
+    // The task must panic (the callback unwinds it).
+    let join = handle.await;
+    assert_matches!(
+        join,
+        Err(e) if e.is_panic(),
+        "session task should have panicked in the callback"
+    );
 
-            // The storage must have been returned to the registry, so the
-            // SessionId is free to reconnect (not bricked as a duplicate).
-            let sessions = inner.sessions.borrow();
-            let reg = sessions.get(&session_id).expect("session still registered");
-            assert!(
-                reg.storage.is_some(),
-                "storage must be restored to the registry after a panic, \
-                 otherwise the SessionId is permanently locked out"
-            );
-        })
-        .await;
+    // The storage must have been returned to the registry, so the
+    // SessionId is free to reconnect (not bricked as a duplicate).
+    let sessions = inner.sessions.borrow();
+    let reg = sessions.get(&session_id).expect("session still registered");
+    assert!(
+        reg.storage.is_some(),
+        "storage must be restored to the registry after a panic, \
+         otherwise the SessionId is permanently locked out"
+    );
 }
 
 fn recording_handler(
@@ -132,36 +127,31 @@ fn recording_handler(
 /// (e.g. to lock an account out after repeated bad credentials). The address
 /// must be available by the time the handler is built - before the inbound
 /// `Logon<A>` reaches `on_admin_msg_in`.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn make_handler_receives_peer_addr_in_session_context() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let seen = Rc::new(Cell::new(None));
-            let inner = Rc::new(AcceptorInner::<Message, InMemoryStorage, _>::new(
-                AcceptorSettings::default(),
-                recording_handler(seen.clone()),
-                TimerBackend::Tokio,
-            ));
-            register_default_session(&inner, Some(test_helpers::default_storage()));
+    let seen = Rc::new(Cell::new(None));
+    let inner = Rc::new(AcceptorInner::<Message, InMemoryStorage, _>::new(
+        AcceptorSettings::default(),
+        recording_handler(seen.clone()),
+        TimerBackend::Tokio,
+    ));
+    register_default_session(&inner, Some(test_helpers::default_storage()));
 
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let (handle, _client_io) =
-                spawn_first_message(inner, &test_helpers::serialize_message(&logon)).await;
-            // `PanicHandler` unwinds the task in `on_admin_msg_in`, which happens
-            // strictly after `make_handler` - so the join error also pins down the
-            // ordering: the address was recorded before the first message was
-            // surfaced to the handler.
-            let join = handle.await;
-            assert_matches!(join, Err(e) if e.is_panic());
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let (handle, _client_io) =
+        spawn_first_message(inner, &test_helpers::serialize_message(&logon)).await;
+    // `PanicHandler` unwinds the task in `on_admin_msg_in`, which happens
+    // strictly after `make_handler` - so the join error also pins down the
+    // ordering: the address was recorded before the first message was
+    // surfaced to the handler.
+    let join = handle.await;
+    assert_matches!(join, Err(e) if e.is_panic());
 
-            assert_eq!(
-                seen.get(),
-                Some(test_helpers::TEST_PEER_ADDR),
-                "acceptor must expose the connection's peer address to the factory"
-            );
-        })
-        .await;
+    assert_eq!(
+        seen.get(),
+        Some(test_helpers::TEST_PEER_ADDR),
+        "acceptor must expose the connection's peer address to the factory"
+    );
 }
 
 struct InitHandler(Rc<Cell<usize>>);
@@ -225,105 +215,101 @@ impl ConnectionObserver for InitErrorObserver {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn handler_init_failure_releases_session_before_reporting_and_allows_retry() {
-    LocalSet::new()
-        .run_until(async {
-            let callbacks = Rc::new(Cell::new(0));
-            let token = Rc::new(());
-            let attempts = Rc::new(Cell::new(0));
-            let id = test_helpers::default_session_id();
-            let make_handler = {
-                let callbacks = callbacks.clone();
-                let token = token.clone();
-                let attempts = attempts.clone();
-                let id = id.clone();
-                async move |ctx: &SessionContext<'_>| -> Result<InitHandler, Box<dyn StdError>> {
-                    task::yield_now().await;
-                    // Both the context and captured Rc values are borrowed across
-                    // the await; constructors need neither owned context nor Send.
-                    assert_eq!(ctx.session_id(), &id);
-                    assert_eq!(ctx.peer_addr(), Some(test_helpers::TEST_PEER_ADDR));
-                    let attempt = attempts.replace(attempts.get() + 1);
-                    if attempt == 0 {
-                        return Err(InitError {
-                            token: token.clone(),
-                            source: std_io::Error::from(std_io::ErrorKind::ConnectionRefused),
-                        }
-                        .into());
-                    }
-                    Ok(InitHandler(callbacks.clone()))
+    let callbacks = Rc::new(Cell::new(0));
+    let token = Rc::new(());
+    let attempts = Rc::new(Cell::new(0));
+    let id = test_helpers::default_session_id();
+    let make_handler = {
+        let callbacks = callbacks.clone();
+        let token = token.clone();
+        let attempts = attempts.clone();
+        let id = id.clone();
+        async move |ctx: &SessionContext<'_>| -> Result<InitHandler, Box<dyn StdError>> {
+            task::yield_now().await;
+            // Both the context and captured Rc values are borrowed across
+            // the await; constructors need neither owned context nor Send.
+            assert_eq!(ctx.session_id(), &id);
+            assert_eq!(ctx.peer_addr(), Some(test_helpers::TEST_PEER_ADDR));
+            let attempt = attempts.replace(attempts.get() + 1);
+            if attempt == 0 {
+                return Err(InitError {
+                    token: token.clone(),
+                    source: std_io::Error::from(std_io::ErrorKind::ConnectionRefused),
                 }
-            };
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
-            acceptor
-                .register_session(
-                    id.clone(),
-                    test_helpers::default_session_settings(),
-                    |_, size| {
-                        let mut storage = InMemoryStorage::new(size);
-                        storage.set_next_sender_msg_seq_num(nz_seq(7)).unwrap();
-                        storage.set_next_target_msg_seq_num(nz_seq(11)).unwrap();
-                        Ok(storage)
-                    },
-                )
-                .unwrap();
-            let weak = Rc::downgrade(&acceptor.inner);
-            let observer = Rc::new(InitErrorObserver {
-                id: id.clone(),
-                token,
-                reported: Cell::new(false),
-                reenter: Box::new(move || {
-                    let acceptor = Acceptor {
-                        inner: weak.upgrade().unwrap(),
-                    };
-                    let id = test_helpers::default_session_id();
-                    assert!(!acceptor.is_session_active(&id).unwrap());
-                    let storage = acceptor.remove_session(&id).unwrap();
-                    assert_eq!(storage.next_sender_msg_seq_num().get(), 7);
-                    assert_eq!(storage.next_target_msg_seq_num().get(), 11);
-                    acceptor
-                        .register_session(id, test_helpers::default_session_settings(), |_, _| {
-                            Ok(storage)
-                        })
-                        .unwrap();
-                }),
-            });
-            acceptor.set_connection_observer(observer.clone());
-            for attempt in 0..2 {
-                let logon = test_helpers::logon(11, fix_str!("TARGET"), fix_str!("SENDER"));
-                let (writer, mut peer) = io::duplex(8192);
-                timeout(
-                    Duration::from_secs(5),
-                    acceptor.session_task(
-                        std_io::Cursor::new(test_helpers::serialize_message(&logon)),
-                        writer,
-                        test_helpers::TEST_PEER_ADDR,
-                    ),
-                )
-                .await
-                .unwrap();
-                let mut wire = Vec::new();
-                timeout(Duration::from_secs(5), peer.read_to_end(&mut wire))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(observer.reported.get());
-                assert!(!acceptor.is_session_active(&id).unwrap());
-                if attempt == 0 {
-                    assert!(wire.is_empty());
-                    assert_eq!(callbacks.get(), 0);
-                } else {
-                    assert!(!wire.is_empty());
-                    assert!(callbacks.get() > 0);
-                }
+                .into());
             }
-            assert_eq!(attempts.get(), 2);
+            Ok(InitHandler(callbacks.clone()))
+        }
+    };
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
+    acceptor
+        .register_session(
+            id.clone(),
+            test_helpers::default_session_settings(),
+            |_, size| {
+                let mut storage = InMemoryStorage::new(size);
+                storage.set_next_sender_msg_seq_num(nz_seq(7)).unwrap();
+                storage.set_next_target_msg_seq_num(nz_seq(11)).unwrap();
+                Ok(storage)
+            },
+        )
+        .unwrap();
+    let weak = Rc::downgrade(&acceptor.inner);
+    let observer = Rc::new(InitErrorObserver {
+        id: id.clone(),
+        token,
+        reported: Cell::new(false),
+        reenter: Box::new(move || {
+            let acceptor = Acceptor {
+                inner: weak.upgrade().unwrap(),
+            };
+            let id = test_helpers::default_session_id();
+            assert!(!acceptor.is_session_active(&id).unwrap());
             let storage = acceptor.remove_session(&id).unwrap();
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 8);
-            assert_eq!(storage.next_target_msg_seq_num().get(), 12);
-        })
-        .await;
+            assert_eq!(storage.next_sender_msg_seq_num().get(), 7);
+            assert_eq!(storage.next_target_msg_seq_num().get(), 11);
+            acceptor
+                .register_session(id, test_helpers::default_session_settings(), |_, _| {
+                    Ok(storage)
+                })
+                .unwrap();
+        }),
+    });
+    acceptor.set_connection_observer(observer.clone());
+    for attempt in 0..2 {
+        let logon = test_helpers::logon(11, fix_str!("TARGET"), fix_str!("SENDER"));
+        let (writer, mut peer) = io::duplex(8192);
+        timeout(
+            Duration::from_secs(5),
+            acceptor.session_task(
+                std_io::Cursor::new(test_helpers::serialize_message(&logon)),
+                writer,
+                test_helpers::TEST_PEER_ADDR,
+            ),
+        )
+        .await
+        .unwrap();
+        let mut wire = Vec::new();
+        timeout(Duration::from_secs(5), peer.read_to_end(&mut wire))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(observer.reported.get());
+        assert!(!acceptor.is_session_active(&id).unwrap());
+        if attempt == 0 {
+            assert!(wire.is_empty());
+            assert_eq!(callbacks.get(), 0);
+        } else {
+            assert!(!wire.is_empty());
+            assert!(callbacks.get() > 0);
+        }
+    }
+    assert_eq!(attempts.get(), 2);
+    let storage = acceptor.remove_session(&id).unwrap();
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 8);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 12);
 }
 
 struct InitDropProbe(Rc<Cell<bool>>);
@@ -334,134 +320,129 @@ impl Drop for InitDropProbe {
     }
 }
 
-#[tokio::test]
-async fn pending_handler_init_is_cancelled_by_local_controls_shutdown_and_abort() {
-    #[derive(Clone, Copy, Debug)]
-    enum Stop {
-        Close,
-        Logout,
-        DisconnectShutdown,
-        LogoutShutdown,
-        GracefulShutdown,
-        Abort,
-    }
-    LocalSet::new()
-        .run_until(async {
-            for stop in [
-                Stop::Close,
-                Stop::Logout,
-                Stop::DisconnectShutdown,
-                Stop::LogoutShutdown,
-                Stop::GracefulShutdown,
-                Stop::Abort,
-            ] {
-                let entered = Rc::new(Notify::new());
-                let dropped = Rc::new(Cell::new(false));
-                let callbacks = Rc::new(Cell::new(0));
-                let make_handler = {
-                    let entered = entered.clone();
-                    let dropped = dropped.clone();
-                    let callbacks = callbacks.clone();
-                    let pending_once = Cell::new(true);
-                    async move |_: &SessionContext<'_>| -> Result<InitHandler, Box<dyn StdError>> {
-                        if pending_once.replace(false) {
-                            let _probe = InitDropProbe(dropped.clone());
-                            entered.notify_one();
-                            future::pending::<()>().await;
-                        }
-                        Ok(InitHandler(callbacks.clone()))
-                    }
-                };
-                let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
-                let id = test_helpers::default_session_id();
-                acceptor
-                    .register_session(
-                        id.clone(),
-                        test_helpers::default_session_settings(),
-                        |_, size| Ok(InMemoryStorage::new(size)),
-                    )
-                    .unwrap();
-                let observer = Rc::new(RecordingObserver::default());
-                acceptor.set_connection_observer(observer.clone());
-                let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-                let (writer, mut peer) = io::duplex(8192);
-                let handle = acceptor.run_session(
-                    std_io::Cursor::new(test_helpers::serialize_message(&logon)),
-                    writer,
-                    test_helpers::TEST_PEER_ADDR,
-                );
-                timeout(Duration::from_secs(5), entered.notified())
-                    .await
-                    .unwrap();
-                assert!(acceptor.is_session_active(&id).unwrap());
-                timeout(Duration::from_secs(5), async {
-                    match stop {
-                        Stop::Close => acceptor.close(&id).await.unwrap(),
-                        Stop::Logout => acceptor.logout(&id, None, None, false).await.unwrap(),
-                        Stop::DisconnectShutdown => {
-                            acceptor.shutdown(ShutdownMode::Disconnect).await
-                        }
-                        Stop::LogoutShutdown => {
-                            acceptor
-                                .shutdown(ShutdownMode::LogoutAndDisconnect {
-                                    session_status: None,
-                                    text: None,
-                                })
-                                .await
-                        }
-                        Stop::GracefulShutdown => {
-                            acceptor
-                                .shutdown(ShutdownMode::GracefulLogout {
-                                    session_status: None,
-                                    text: None,
-                                })
-                                .await
-                        }
-                        Stop::Abort => handle.abort(),
-                    }
-                    let result = handle.await;
-                    if matches!(stop, Stop::Abort) {
-                        assert!(result.unwrap_err().is_cancelled());
-                    } else {
-                        result.unwrap();
-                    }
-                })
-                .await
-                .unwrap();
-                assert!(dropped.get(), "initializer resource survived {stop:?}");
-                assert_eq!(callbacks.get(), 0);
-                assert!(!acceptor.is_session_active(&id).unwrap());
-                assert!(observer.summaries().is_empty());
-                let mut wire = Vec::new();
-                timeout(Duration::from_secs(5), peer.read_to_end(&mut wire))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(wire.is_empty());
-                if matches!(stop, Stop::Close | Stop::Logout | Stop::Abort) {
-                    timeout(
-                        Duration::from_secs(5),
-                        acceptor.session_task(
-                            std_io::Cursor::new(test_helpers::serialize_message(&logon)),
-                            io::sink(),
-                            test_helpers::TEST_PEER_ADDR,
-                        ),
-                    )
-                    .await
-                    .unwrap();
-                    assert!(callbacks.get() > 0);
-                }
-                let storage = acceptor.remove_session(&id).unwrap();
-                let expected = if matches!(stop, Stop::Close | Stop::Logout | Stop::Abort) {
-                    2
-                } else {
-                    1
-                };
-                assert_eq!(storage.next_sender_msg_seq_num().get(), expected);
-                assert_eq!(storage.next_target_msg_seq_num().get(), expected);
+#[derive(Clone, Copy, Debug)]
+enum InitStop {
+    Close,
+    Logout,
+    DisconnectShutdown,
+    LogoutShutdown,
+    GracefulShutdown,
+    Abort,
+}
+
+#[rstest]
+#[case::close(InitStop::Close)]
+#[case::logout(InitStop::Logout)]
+#[case::disconnect_shutdown(InitStop::DisconnectShutdown)]
+#[case::logout_shutdown(InitStop::LogoutShutdown)]
+#[case::graceful_shutdown(InitStop::GracefulShutdown)]
+#[case::abort(InitStop::Abort)]
+#[tokio::test(flavor = "local")]
+async fn pending_handler_init_is_cancelled_by_local_controls_shutdown_and_abort(
+    #[case] stop: InitStop,
+) {
+    let entered = Rc::new(Notify::new());
+    let dropped = Rc::new(Cell::new(false));
+    let callbacks = Rc::new(Cell::new(0));
+    let make_handler = {
+        let entered = entered.clone();
+        let dropped = dropped.clone();
+        let callbacks = callbacks.clone();
+        let pending_once = Cell::new(true);
+        async move |_: &SessionContext<'_>| -> Result<InitHandler, Box<dyn StdError>> {
+            if pending_once.replace(false) {
+                let _probe = InitDropProbe(dropped.clone());
+                entered.notify_one();
+                future::pending::<()>().await;
             }
-        })
-        .await;
+            Ok(InitHandler(callbacks.clone()))
+        }
+    };
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(make_handler);
+    let id = test_helpers::default_session_id();
+    acceptor
+        .register_session(
+            id.clone(),
+            test_helpers::default_session_settings(),
+            |_, size| Ok(InMemoryStorage::new(size)),
+        )
+        .unwrap();
+    let observer = Rc::new(RecordingObserver::default());
+    acceptor.set_connection_observer(observer.clone());
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let (writer, mut peer) = io::duplex(8192);
+    let handle = acceptor.run_session(
+        std_io::Cursor::new(test_helpers::serialize_message(&logon)),
+        writer,
+        test_helpers::TEST_PEER_ADDR,
+    );
+    timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    assert!(acceptor.is_session_active(&id).unwrap());
+    timeout(Duration::from_secs(5), async {
+        match stop {
+            InitStop::Close => acceptor.close(&id).await.unwrap(),
+            InitStop::Logout => acceptor.logout(&id, None, None, false).await.unwrap(),
+            InitStop::DisconnectShutdown => acceptor.shutdown(ShutdownMode::Disconnect).await,
+            InitStop::LogoutShutdown => {
+                acceptor
+                    .shutdown(ShutdownMode::LogoutAndDisconnect {
+                        session_status: None,
+                        text: None,
+                    })
+                    .await
+            }
+            InitStop::GracefulShutdown => {
+                acceptor
+                    .shutdown(ShutdownMode::GracefulLogout {
+                        session_status: None,
+                        text: None,
+                    })
+                    .await
+            }
+            InitStop::Abort => handle.abort(),
+        }
+        let result = handle.await;
+        if matches!(stop, InitStop::Abort) {
+            assert!(result.unwrap_err().is_cancelled());
+        } else {
+            result.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(dropped.get(), "initializer resource survived {stop:?}");
+    assert_eq!(callbacks.get(), 0);
+    assert!(!acceptor.is_session_active(&id).unwrap());
+    assert!(observer.summaries().is_empty());
+    let mut wire = Vec::new();
+    timeout(Duration::from_secs(5), peer.read_to_end(&mut wire))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(wire.is_empty());
+    if matches!(stop, InitStop::Close | InitStop::Logout | InitStop::Abort) {
+        timeout(
+            Duration::from_secs(5),
+            acceptor.session_task(
+                std_io::Cursor::new(test_helpers::serialize_message(&logon)),
+                io::sink(),
+                test_helpers::TEST_PEER_ADDR,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(callbacks.get() > 0);
+    }
+    let storage = acceptor.remove_session(&id).unwrap();
+    let expected = if matches!(stop, InitStop::Close | InitStop::Logout | InitStop::Abort) {
+        2
+    } else {
+        1
+    };
+    assert_eq!(storage.next_sender_msg_seq_num().get(), expected);
+    assert_eq!(storage.next_target_msg_seq_num().get(), expected);
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +458,7 @@ fn stub_acceptor() -> Acceptor<Message, InMemoryStorage, MakeStubHandler> {
     Acceptor::new(test_helpers::make_stub_handler)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn running_reset_requires_an_active_session_before_message_support() {
     let acceptor =
         Acceptor::<CountedResetMessage, InMemoryStorage, _>::new(test_helpers::make_stub_handler);
@@ -501,42 +482,40 @@ async fn running_reset_requires_an_active_session_before_message_support() {
 
 /// Each acceptance permission requires reset-flag support before storage or a
 /// registration is created; ordinary sessions can use a message type without it.
-#[test]
-fn reset_acceptance_requires_message_type_support() {
-    for on_connect in [false, true] {
-        for in_session in [false, true] {
-            let acceptor =
-                Acceptor::<CountedResetMessage, _, _>::new(test_helpers::make_stub_handler);
-            let builds = Cell::new(0);
-            let id = test_helpers::default_session_id();
-            let settings = SessionSettings {
-                accept_reset_on_connect: on_connect,
-                accept_reset_in_session: in_session,
-                ..SessionSettings::default()
-            };
-            let result = acceptor.register_session(id.clone(), settings.clone(), |_, max| {
-                builds.set(builds.get() + 1);
-                Ok(InMemoryStorage::new(max))
-            });
-            if on_connect || in_session {
-                assert_matches!(
-                    result,
-                    Err(AcceptorError::ResetSeqNumFlagNotSupportedInLogon)
-                );
-                assert_eq!(builds.get(), 0);
-                assert!(acceptor.inner.sessions.borrow().is_empty());
-            } else {
-                result.unwrap();
-                assert_eq!(builds.get(), 1);
-                assert!(!acceptor.inner.sessions.borrow()[&id].supports_seq_num_reset);
-            }
-            let supported = stub_acceptor();
-            supported
-                .register_session(id.clone(), settings, |_, max| Ok(InMemoryStorage::new(max)))
-                .unwrap();
-            assert!(supported.inner.sessions.borrow()[&id].supports_seq_num_reset);
-        }
+#[rstest]
+fn reset_acceptance_requires_message_type_support(
+    #[values(false, true)] on_connect: bool,
+    #[values(false, true)] in_session: bool,
+) {
+    let acceptor = Acceptor::<CountedResetMessage, _, _>::new(test_helpers::make_stub_handler);
+    let builds = Cell::new(0);
+    let id = test_helpers::default_session_id();
+    let settings = SessionSettings {
+        accept_reset_on_connect: on_connect,
+        accept_reset_in_session: in_session,
+        ..SessionSettings::default()
+    };
+    let result = acceptor.register_session(id.clone(), settings.clone(), |_, max| {
+        builds.set(builds.get() + 1);
+        Ok(InMemoryStorage::new(max))
+    });
+    if on_connect || in_session {
+        assert_matches!(
+            result,
+            Err(AcceptorError::ResetSeqNumFlagNotSupportedInLogon)
+        );
+        assert_eq!(builds.get(), 0);
+        assert!(acceptor.inner.sessions.borrow().is_empty());
+    } else {
+        result.unwrap();
+        assert_eq!(builds.get(), 1);
+        assert!(!acceptor.inner.sessions.borrow()[&id].supports_seq_num_reset);
     }
+    let supported = stub_acceptor();
+    supported
+        .register_session(id.clone(), settings, |_, max| Ok(InMemoryStorage::new(max)))
+        .unwrap();
+    assert!(supported.inner.sessions.borrow()[&id].supports_seq_num_reset);
 }
 
 /// A duplicate registration is rejected with `AlreadyRegistered` and, crucially,
@@ -713,7 +692,7 @@ fn acceptor_suspension_is_independent_of_session_suspension() {
 }
 
 /// `await_session_closed` on an unknown id returns `UnknownSession`.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn await_session_closed_unknown_returns_error() {
     let acceptor = stub_acceptor();
     assert_matches!(
@@ -726,7 +705,7 @@ async fn await_session_closed_unknown_returns_error() {
 
 /// `await_session_closed` on a registered-but-inactive session resolves
 /// immediately (it is already "closed enough" to remove).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn await_session_closed_inactive_resolves_immediately() {
     let acceptor = stub_acceptor();
     let session_id = test_helpers::default_session_id();
@@ -873,136 +852,109 @@ where
 /// The spec makes the Reject optional; this engine always sends it, and
 /// the test deliberately pins that choice (first frame is the Reject,
 /// NextNumOut advances by exactly two), not just the mandatory Logout.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn invalid_first_logon_from_registered_peer_is_answered_per_1sd() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let inner = stub_inner();
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
+    let inner = stub_inner();
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
 
-            let written =
-                run_first_message(inner.clone(), &test_helpers::invalid_logon_bytes()).await;
+    let written = run_first_message(inner.clone(), &test_helpers::invalid_logon_bytes()).await;
 
-            // Parse what went out: Reject, then Logout, then nothing.
-            let mut reader = &written[..];
-            let mut buf = Vec::new();
-            let reject = test_helpers::read_one_message(&mut reader, &mut buf).await;
-            assert_matches!(
-                test_helpers::as_admin(&reject),
-                AdminBase::Reject(reject) if reject.ref_seq_num == 1
-            );
-            let logout = test_helpers::read_one_message(&mut reader, &mut buf).await;
-            assert_matches!(
-                test_helpers::as_admin(&logout),
-                AdminBase::Logout(logout) if logout.text.is_some(),
-                "Logout must carry Text(58) referencing the error condition"
-            );
-            assert!(
-                reader.is_empty() && buf.is_empty(),
-                "no output after Logout"
-            );
+    // Parse what went out: Reject, then Logout, then nothing.
+    let mut reader = &written[..];
+    let mut buf = Vec::new();
+    let reject = test_helpers::read_one_message(&mut reader, &mut buf).await;
+    assert_matches!(
+        test_helpers::as_admin(&reject),
+        AdminBase::Reject(reject) if reject.ref_seq_num == 1
+    );
+    let logout = test_helpers::read_one_message(&mut reader, &mut buf).await;
+    assert_matches!(
+        test_helpers::as_admin(&logout),
+        AdminBase::Logout(logout) if logout.text.is_some(),
+        "Logout must carry Text(58) referencing the error condition"
+    );
+    assert!(
+        reader.is_empty() && buf.is_empty(),
+        "no output after Logout"
+    );
 
-            // The storage returned to the registry with the consumed
-            // outbound seq nums (Reject + Logout) and the advanced
-            // NextNumIn (the rejected in-sequence Logon).
-            let sessions = inner.sessions.borrow();
-            let reg = sessions.get(&session_id).expect("session registered");
-            let storage = reg.storage.as_ref().expect("storage returned");
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
-            assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-        })
-        .await;
+    // The storage returned to the registry with the consumed
+    // outbound seq nums (Reject + Logout) and the advanced
+    // NextNumIn (the rejected in-sequence Logon).
+    let sessions = inner.sessions.borrow();
+    let reg = sessions.get(&session_id).expect("session registered");
+    let storage = reg.storage.as_ref().expect("storage returned");
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
 }
 
 /// Scenario 1S(c): an invalid Logon whose recovered identity matches no
 /// registered session is dropped without sending anything - and reported
 /// with that identity, so the silence is the deliberate one.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn invalid_first_logon_from_unknown_peer_is_dropped_silently() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            // No session registered.
-            let written = run_first_message(inner, &test_helpers::invalid_logon_bytes()).await;
-            assert!(
-                written.is_empty(),
-                "1S(c): nothing may be sent to an unauthenticated peer"
-            );
-            let expected = format!("unknown:{}", test_helpers::default_session_id());
-            assert_eq!(observer.summaries(), vec![expected]);
-        })
-        .await;
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    // No session registered.
+    let written = run_first_message(inner, &test_helpers::invalid_logon_bytes()).await;
+    assert!(
+        written.is_empty(),
+        "1S(c): nothing may be sent to an unauthenticated peer"
+    );
+    let expected = format!("unknown:{}", test_helpers::default_session_id());
+    assert_eq!(observer.summaries(), vec![expected]);
 }
 
 /// Scenario 1S(b): an invalid Logon for a session whose connection is
 /// already active (storage taken) is dropped without sending anything, and
 /// reported as the duplicate it is - not as an unknown identity.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn invalid_first_logon_on_duplicate_connection_is_dropped_silently() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            register_default_session(&inner, None);
-            let written = run_first_message(inner, &test_helpers::invalid_logon_bytes()).await;
-            assert!(
-                written.is_empty(),
-                "1S(b): nothing may be sent on a duplicate connection"
-            );
-            let expected = format!("active:{}", test_helpers::default_session_id());
-            assert_eq!(observer.summaries(), vec![expected]);
-        })
-        .await;
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    register_default_session(&inner, None);
+    let written = run_first_message(inner, &test_helpers::invalid_logon_bytes()).await;
+    assert!(
+        written.is_empty(),
+        "1S(b): nothing may be sent on a duplicate connection"
+    );
+    let expected = format!("active:{}", test_helpers::default_session_id());
+    assert_eq!(observer.summaries(), vec![expected]);
 }
 
 /// Scenario 2(d)/2S: a garbled first message (framing failure - it cannot
 /// even be identified as a Logon) is dropped without sending anything, and
 /// reported without an identity, since none could be recovered.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn garbled_first_message_is_dropped_silently() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            register_default_session(&inner, Some(test_helpers::default_storage()));
-            let written = run_first_message(inner, b"this is not a FIX message").await;
-            assert!(written.is_empty(), "garbled input must be ignored");
-            assert_eq!(observer.summaries(), vec!["undecodable".to_owned()]);
-        })
-        .await;
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    register_default_session(&inner, Some(test_helpers::default_storage()));
+    let written = run_first_message(inner, b"this is not a FIX message").await;
+    assert!(written.is_empty(), "garbled input must be ignored");
+    assert_eq!(observer.summaries(), vec!["undecodable".to_owned()]);
 }
 
 /// A first message that fails decoding but is NOT a Logon falls outside
 /// Scenario 1S(d) - silent drop, reported without an identity: only an
 /// invalid Logon has one recovered.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn invalid_non_logon_first_message_is_dropped_silently() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            register_default_session(&inner, Some(test_helpers::default_storage()));
-            // Well-framed NewOrderSingle missing all required body tags.
-            let bytes = test_helpers::frame_message(
-                "FIXT.1.1",
-                "35=D|49=TARGET|56=SENDER|34=1|52=20260721-08:00:00.000|",
-            );
-            let written = run_first_message(inner, &bytes).await;
-            assert!(written.is_empty(), "only an invalid Logon is answered");
-            assert_eq!(observer.summaries(), vec!["undecodable".to_owned()]);
-        })
-        .await;
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    register_default_session(&inner, Some(test_helpers::default_storage()));
+    // Well-framed NewOrderSingle missing all required body tags.
+    let bytes = test_helpers::frame_message(
+        "FIXT.1.1",
+        "35=D|49=TARGET|56=SENDER|34=1|52=20260721-08:00:00.000|",
+    );
+    let written = run_first_message(inner, &bytes).await;
+    assert!(written.is_empty(), "only an invalid Logon is answered");
+    assert_eq!(observer.summaries(), vec!["undecodable".to_owned()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,83 +965,72 @@ async fn invalid_non_logon_first_message_is_dropped_silently() {
 /// identity - the signal a policy needs to tell CompID enumeration (many
 /// distinct unknown ids from one address) from a misconfigured counterparty
 /// (one id, repeated).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn unknown_session_is_reported_with_identity() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
 
-            // Nothing registered, so the Logon resolves to an unknown id.
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let bytes = test_helpers::serialize_message(&logon);
-            let written = run_first_message(inner, &bytes).await;
+    // Nothing registered, so the Logon resolves to an unknown id.
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let bytes = test_helpers::serialize_message(&logon);
+    let written = run_first_message(inner, &bytes).await;
 
-            assert!(
-                written.is_empty(),
-                "an unregistered identity must be dropped silently \
-                 (FIX Session Layer 4.6.4)"
-            );
-            let expected = format!("unknown:{}", test_helpers::default_session_id());
-            assert_eq!(observer.summaries(), vec![expected]);
-            assert_eq!(
-                observer.peer_addrs(),
-                vec![test_helpers::TEST_PEER_ADDR],
-                "the peer address must accompany the identity"
-            );
-        })
-        .await;
+    assert!(
+        written.is_empty(),
+        "an unregistered identity must be dropped silently \
+         (FIX Session Layer 4.6.4)"
+    );
+    let expected = format!("unknown:{}", test_helpers::default_session_id());
+    assert_eq!(observer.summaries(), vec![expected]);
+    assert_eq!(
+        observer.peer_addrs(),
+        vec![test_helpers::TEST_PEER_ADDR],
+        "the peer address must accompany the identity"
+    );
 }
 
 /// A suspended session refuses the connection the way an unknown or duplicate
 /// one is refused - nothing on the wire, storage untouched - and the observer
 /// is told it was the suspension, with the identity, so an operator can tell
 /// a gated reconfiguration from a stray peer.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn suspended_session_is_reported_with_identity() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
-            inner
-                .sessions
-                .borrow_mut()
-                .get_mut(&session_id)
-                .expect("registered")
-                .suspended = true;
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
+    inner
+        .sessions
+        .borrow_mut()
+        .get_mut(&session_id)
+        .expect("registered")
+        .suspended = true;
 
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let bytes = test_helpers::serialize_message(&logon);
-            let written = run_first_message(inner.clone(), &bytes).await;
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let bytes = test_helpers::serialize_message(&logon);
+    let written = run_first_message(inner.clone(), &bytes).await;
 
-            assert!(written.is_empty(), "a suspended session answers nothing");
-            assert_eq!(
-                observer.summaries(),
-                vec![format!("suspended:{session_id}")]
-            );
-            let sessions = inner.sessions.borrow();
-            let reg = sessions.get(&session_id).expect("still registered");
-            assert!(
-                reg.storage.is_some(),
-                "the refused connection must not have taken the storage"
-            );
-            assert_eq!(
-                reg.storage
-                    .as_ref()
-                    .expect("storage present")
-                    .next_target_msg_seq_num()
-                    .get(),
-                1,
-                "the refused Logon must not have been processed"
-            );
-        })
-        .await;
+    assert!(written.is_empty(), "a suspended session answers nothing");
+    assert_eq!(
+        observer.summaries(),
+        vec![format!("suspended:{session_id}")]
+    );
+    let sessions = inner.sessions.borrow();
+    let reg = sessions.get(&session_id).expect("still registered");
+    assert!(
+        reg.storage.is_some(),
+        "the refused connection must not have taken the storage"
+    );
+    assert_eq!(
+        reg.storage
+            .as_ref()
+            .expect("storage present")
+            .next_target_msg_seq_num()
+            .get(),
+        1,
+        "the refused Logon must not have been processed"
+    );
 }
 
 /// A suspended acceptor drops a connection before reading anything from it:
@@ -1097,62 +1038,56 @@ async fn suspended_session_is_reported_with_identity() {
 /// storage stays put), and the observer sees `AcceptorSuspended` without an
 /// identity. Once resumed, the same connection is read again - here far
 /// enough to resolve and report its identity.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn suspended_acceptor_drops_connections_before_reading_them() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let bytes = test_helpers::serialize_message(&logon);
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let bytes = test_helpers::serialize_message(&logon);
 
-            inner.suspended.set(true);
-            let written = run_first_message(inner.clone(), &bytes).await;
+    inner.suspended.set(true);
+    let written = run_first_message(inner.clone(), &bytes).await;
 
-            assert!(written.is_empty(), "a suspended acceptor answers nothing");
-            assert_eq!(observer.summaries(), vec!["acceptor_suspended".to_owned()]);
-            assert_eq!(observer.peer_addrs(), vec![test_helpers::TEST_PEER_ADDR]);
-            {
-                let sessions = inner.sessions.borrow();
-                let reg = sessions.get(&session_id).expect("still registered");
-                let storage = reg
-                    .storage
-                    .as_ref()
-                    .expect("the dropped connection must not have taken the storage");
-                assert_eq!(
-                    storage.next_target_msg_seq_num().get(),
-                    1,
-                    "the Logon must not have been read, let alone processed"
-                );
-            }
+    assert!(written.is_empty(), "a suspended acceptor answers nothing");
+    assert_eq!(observer.summaries(), vec!["acceptor_suspended".to_owned()]);
+    assert_eq!(observer.peer_addrs(), vec![test_helpers::TEST_PEER_ADDR]);
+    {
+        let sessions = inner.sessions.borrow();
+        let reg = sessions.get(&session_id).expect("still registered");
+        let storage = reg
+            .storage
+            .as_ref()
+            .expect("the dropped connection must not have taken the storage");
+        assert_eq!(
+            storage.next_target_msg_seq_num().get(),
+            1,
+            "the Logon must not have been read, let alone processed"
+        );
+    }
 
-            // Resumed: the connection is read. An unregistered identity keeps
-            // the task from running a session loop the test would then have
-            // to tear down.
-            inner.suspended.set(false);
-            let stranger = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("STRANGER"));
-            let written =
-                run_first_message(inner.clone(), &test_helpers::serialize_message(&stranger)).await;
-            assert!(written.is_empty());
-            let stranger_id = SessionId::new(
-                Version::FIXT11,
-                fix_str!("STRANGER").to_owned(),
-                fix_str!("TARGET").to_owned(),
-            );
-            assert_eq!(
-                observer.summaries(),
-                vec![
-                    "acceptor_suspended".to_owned(),
-                    format!("unknown:{stranger_id}")
-                ],
-                "after resume the first message is read and identified again"
-            );
-        })
-        .await;
+    // Resumed: the connection is read. An unregistered identity keeps
+    // the task from running a session loop the test would then have
+    // to tear down.
+    inner.suspended.set(false);
+    let stranger = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("STRANGER"));
+    let written =
+        run_first_message(inner.clone(), &test_helpers::serialize_message(&stranger)).await;
+    assert!(written.is_empty());
+    let stranger_id = SessionId::new(
+        Version::FIXT11,
+        fix_str!("STRANGER").to_owned(),
+        fix_str!("TARGET").to_owned(),
+    );
+    assert_eq!(
+        observer.summaries(),
+        vec![
+            "acceptor_suspended".to_owned(),
+            format!("unknown:{stranger_id}")
+        ],
+        "after resume the first message is read and identified again"
+    );
 }
 
 /// Scenario 2S: the first message must be a `Logon<A>`. `SessionId` is derived
@@ -1168,139 +1103,120 @@ async fn suspended_acceptor_drops_connections_before_reading_them() {
 /// observable by registering the session with its storage already taken: a
 /// lookup would report `SessionAlreadyActive`, so `not_logon` proves the stray
 /// Heartbeat never reached it.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn non_logon_first_message_is_dropped_without_taking_storage() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
 
-            let msg = test_helpers::sequence_reset(1, 4_000_000, false);
-            let bytes = test_helpers::serialize_message(&msg);
-            let written = run_first_message(inner.clone(), &bytes).await;
+    let msg = test_helpers::sequence_reset(1, 4_000_000, false);
+    let bytes = test_helpers::serialize_message(&msg);
+    let written = run_first_message(inner.clone(), &bytes).await;
 
-            assert!(
-                written.is_empty(),
-                "Scenario 2S: log an error and disconnect - nothing on the wire"
-            );
-            assert_eq!(observer.summaries(), vec!["not_logon".to_owned()]);
+    assert!(
+        written.is_empty(),
+        "Scenario 2S: log an error and disconnect - nothing on the wire"
+    );
+    assert_eq!(observer.summaries(), vec!["not_logon".to_owned()]);
 
-            {
-                let sessions = inner.sessions.borrow();
-                let storage = sessions
-                    .get(&session_id)
-                    .expect("registered")
-                    .storage
-                    .as_ref()
-                    .expect("storage must never leave the registry for a non-Logon");
-                assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-                assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
-            }
+    {
+        let sessions = inner.sessions.borrow();
+        let storage = sessions
+            .get(&session_id)
+            .expect("registered")
+            .storage
+            .as_ref()
+            .expect("storage must never leave the registry for a non-Logon");
+        assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+        assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
+    }
 
-            // `None` = the real peer is connected and holds the storage.
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            register_default_session(&inner, None);
+    // `None` = the real peer is connected and holds the storage.
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    register_default_session(&inner, None);
 
-            let written = run_first_message(inner, &test_helpers::heartbeat_bytes(1)).await;
+    let written = run_first_message(inner, &test_helpers::heartbeat_bytes(1)).await;
 
-            assert!(written.is_empty());
-            assert_eq!(observer.summaries(), vec!["not_logon".to_owned()]);
-        })
-        .await;
+    assert!(written.is_empty());
+    assert_eq!(observer.summaries(), vec!["not_logon".to_owned()]);
 }
 
 /// `max_first_message_size` is a limit, not a buffer hint: a first message
 /// that outgrows it is dropped without a reply and reported as such, and the
 /// registry is never consulted - the Logon names a registered session, yet
 /// its storage stays in place.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn oversized_first_message_is_dropped_silently() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let limit = NonZeroUsize::new(256).unwrap();
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = Rc::new(AcceptorInner::new(
-                AcceptorSettings {
-                    max_first_message_size: limit,
-                    ..AcceptorSettings::default()
-                },
-                test_helpers::make_stub_handler,
-                TimerBackend::Tokio,
-            ));
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
+    let limit = NonZeroUsize::new(256).unwrap();
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = Rc::new(AcceptorInner::new(
+        AcceptorSettings {
+            max_first_message_size: limit,
+            ..AcceptorSettings::default()
+        },
+        test_helpers::make_stub_handler,
+        TimerBackend::Tokio,
+    ));
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
 
-            // A Logon for the registered session, padded past the limit
-            // through Text(58).
-            let text = "x".repeat(600);
-            let logon = test_helpers::frame_message(
-                "FIXT.1.1",
-                &format!(
-                    "35=A|49=TARGET|56=SENDER|34=1|52=20260721-08:00:00.000|98=0|108=30|58={text}|"
-                ),
-            );
-            let written = run_first_message(inner.clone(), &logon).await;
+    // A Logon for the registered session, padded past the limit
+    // through Text(58).
+    let text = "x".repeat(600);
+    let logon = test_helpers::frame_message(
+        "FIXT.1.1",
+        &format!("35=A|49=TARGET|56=SENDER|34=1|52=20260721-08:00:00.000|98=0|108=30|58={text}|"),
+    );
+    let written = run_first_message(inner.clone(), &logon).await;
 
-            assert!(
-                written.is_empty(),
-                "an oversized first message must be dropped without a reply"
-            );
-            assert_eq!(observer.summaries(), vec!["too_large".to_owned()]);
-            assert!(
-                inner
-                    .sessions
-                    .borrow()
-                    .get(&session_id)
-                    .expect("registered")
-                    .storage
-                    .is_some(),
-                "the registry must not be consulted for a message that never completed"
-            );
-        })
-        .await;
+    assert!(
+        written.is_empty(),
+        "an oversized first message must be dropped without a reply"
+    );
+    assert_eq!(observer.summaries(), vec!["too_large".to_owned()]);
+    assert!(
+        inner
+            .sessions
+            .borrow()
+            .get(&session_id)
+            .expect("registered")
+            .storage
+            .is_some(),
+        "the registry must not be consulted for a message that never completed"
+    );
 }
 
 /// A peer that opens a connection and closes it without sending anything is
 /// reported too - it carries no identity, but repeated from one address it is
 /// the signature of a port scan (and, equally, of a load-balancer probe: the
 /// library reports, the application classifies).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn silent_peer_is_reported_as_closed_before_first_message() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
 
-            let (server_io, client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            // Close the client side without writing - the session task sees EOF
-            // rather than waiting out the logon timeout.
-            drop(client_io);
+    let (server_io, client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    // Close the client side without writing - the session task sees EOF
+    // rather than waiting out the logon timeout.
+    drop(client_io);
 
-            let guard = TaskGuard::new(inner.clone());
-            task::spawn_local(acceptor_session_task(
-                inner,
-                server_reader,
-                server_writer,
-                test_helpers::TEST_PEER_ADDR,
-                guard,
-            ))
-            .await
-            .expect("session task");
+    let guard = TaskGuard::new(inner.clone());
+    task::spawn_local(acceptor_session_task(
+        inner,
+        server_reader,
+        server_writer,
+        test_helpers::TEST_PEER_ADDR,
+        guard,
+    ))
+    .await
+    .expect("session task");
 
-            assert_eq!(observer.summaries(), vec!["closed".to_owned()]);
-        })
-        .await;
+    assert_eq!(observer.summaries(), vec!["closed".to_owned()]);
 }
 
 /// A peer that opens a connection and then says nothing is reported when
@@ -1309,37 +1225,32 @@ async fn silent_peer_is_reported_as_closed_before_first_message() {
 /// The paused clock jumps straight to the deadline, so the default 10 s
 /// budget costs nothing; the peer end is held open for the whole test, since
 /// an EOF would turn the termination into `PeerClose`.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn silent_peer_is_reported_as_a_logon_timeout() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
 
-            let (server_io, _client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
+    let (server_io, _client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
 
-            let guard = TaskGuard::new(inner.clone());
-            let task = task::spawn_local(acceptor_session_task(
-                inner,
-                server_reader,
-                server_writer,
-                test_helpers::TEST_PEER_ADDR,
-                guard,
-            ));
-            timeout(Duration::from_secs(60), task)
-                .await
-                .expect("the logon timeout must end the connection")
-                .expect("session task");
+    let guard = TaskGuard::new(inner.clone());
+    let task = task::spawn_local(acceptor_session_task(
+        inner,
+        server_reader,
+        server_writer,
+        test_helpers::TEST_PEER_ADDR,
+        guard,
+    ));
+    timeout(Duration::from_secs(60), task)
+        .await
+        .expect("the logon timeout must end the connection")
+        .expect("session task");
 
-            assert_eq!(observer.summaries(), vec!["timeout".to_owned()]);
-        })
-        .await;
+    assert_eq!(observer.summaries(), vec!["timeout".to_owned()]);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn acceptors_keep_independent_clocks_before_session_identification() {
     let settings = AcceptorSettings {
         auto_disconnect_after_no_logon_received: Duration::from_secs(3600),
@@ -1389,75 +1300,64 @@ async fn acceptors_keep_independent_clocks_before_session_identification() {
 
 /// A transport that fails before the first message is complete is reported
 /// with the first-message context and the original I/O error details.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn read_failure_before_first_message_is_reported_as_io_error() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
 
-            let (server_io, _client_io) = io::duplex(8192);
-            let (_server_reader, server_writer) = io::split(server_io);
+    let (server_io, _client_io) = io::duplex(8192);
+    let (_server_reader, server_writer) = io::split(server_io);
 
-            let guard = TaskGuard::new(inner.clone());
-            task::spawn_local(acceptor_session_task(
-                inner,
-                test_helpers::FailingReader,
-                server_writer,
-                test_helpers::TEST_PEER_ADDR,
-                guard,
-            ))
-            .await
-            .expect("session task");
+    let guard = TaskGuard::new(inner.clone());
+    task::spawn_local(acceptor_session_task(
+        inner,
+        test_helpers::FailingReader,
+        server_writer,
+        test_helpers::TEST_PEER_ADDR,
+        guard,
+    ))
+    .await
+    .expect("session task");
 
-            assert_eq!(
-                observer.summaries(),
-                vec!["io_error:ConnectionReset:connection reset".to_owned()]
-            );
-        })
-        .await;
+    assert_eq!(
+        observer.summaries(),
+        vec!["io_error:ConnectionReset:connection reset".to_owned()]
+    );
 }
 
 /// Connections torn down by the acceptor's own `shutdown` are NOT reported:
 /// the caller initiated the shutdown and already knows, so counting these
 /// would penalize well-behaved peers for our restart.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_teardown_is_not_reported() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let observer = Rc::new(RecordingObserver::default());
-            let inner = stub_inner();
-            *inner.connection_observer.borrow_mut() = Some(observer.clone());
-            let session_id =
-                register_default_session(&inner, Some(test_helpers::default_storage()));
-            // Already shut down when the connection arrives, so the task leaves
-            // at its first-message read without touching the registry.
-            inner.stopping.set(true);
+    let observer = Rc::new(RecordingObserver::default());
+    let inner = stub_inner();
+    *inner.connection_observer.borrow_mut() = Some(observer.clone());
+    let session_id = register_default_session(&inner, Some(test_helpers::default_storage()));
+    // Already shut down when the connection arrives, so the task leaves
+    // at its first-message read without touching the registry.
+    inner.stopping.set(true);
 
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let bytes = test_helpers::serialize_message(&logon);
-            run_first_message(inner.clone(), &bytes).await;
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let bytes = test_helpers::serialize_message(&logon);
+    run_first_message(inner.clone(), &bytes).await;
 
-            assert!(
-                observer.summaries().is_empty(),
-                "shutdown is the caller's own doing - not an observable drop"
-            );
-            let sessions = inner.sessions.borrow();
-            assert!(
-                sessions
-                    .get(&session_id)
-                    .expect("registered")
-                    .storage
-                    .is_some(),
-                "a connection dropped at shutdown must leave the session's \
-                 storage in the registry, or the SessionId is locked out of \
-                 the acceptor that replaces this one"
-            );
-        })
-        .await;
+    assert!(
+        observer.summaries().is_empty(),
+        "shutdown is the caller's own doing - not an observable drop"
+    );
+    let sessions = inner.sessions.borrow();
+    assert!(
+        sessions
+            .get(&session_id)
+            .expect("registered")
+            .storage
+            .is_some(),
+        "a connection dropped at shutdown must leave the session's \
+         storage in the registry, or the SessionId is locked out of \
+         the acceptor that replaces this one"
+    );
 }
 
 /// Observer holding an `Acceptor` handle, used to prove the callback may
@@ -1482,44 +1382,39 @@ impl ConnectionObserver for ReentrantObserver {
 /// of the reported drops are classified inside a live `sessions.borrow_mut()`,
 /// so the report must be deferred until that borrow is released - otherwise
 /// any observer touching the registry panics.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn observer_may_reenter_the_acceptor() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let acceptor = stub_acceptor();
-            let observer = Rc::new(ReentrantObserver {
-                acceptor: RefCell::new(Some(acceptor.clone())),
-                reentered: Cell::new(false),
-            });
-            acceptor.set_connection_observer(observer.clone());
+    let acceptor = stub_acceptor();
+    let observer = Rc::new(ReentrantObserver {
+        acceptor: RefCell::new(Some(acceptor.clone())),
+        reentered: Cell::new(false),
+    });
+    acceptor.set_connection_observer(observer.clone());
 
-            // Register, then suspend: the inbound Logon is classified as
-            // SessionSuspended - one of the in-borrow verdicts.
-            let session_id = test_helpers::default_session_id();
-            acceptor
-                .register_session(
-                    session_id.clone(),
-                    test_helpers::default_session_settings(),
-                    |_, max| Ok(InMemoryStorage::new(max)),
-                )
-                .expect("register");
-            acceptor.suspend_session(&session_id).expect("suspend");
+    // Register, then suspend: the inbound Logon is classified as
+    // SessionSuspended - one of the in-borrow verdicts.
+    let session_id = test_helpers::default_session_id();
+    acceptor
+        .register_session(
+            session_id.clone(),
+            test_helpers::default_session_settings(),
+            |_, max| Ok(InMemoryStorage::new(max)),
+        )
+        .expect("register");
+    acceptor.suspend_session(&session_id).expect("suspend");
 
-            let (server_io, mut client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let bytes = test_helpers::serialize_message(&logon);
-            client_io.write_all(&bytes).await.expect("write logon");
+    let (server_io, mut client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let logon = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let bytes = test_helpers::serialize_message(&logon);
+    client_io.write_all(&bytes).await.expect("write logon");
 
-            acceptor
-                .run_session(server_reader, server_writer, test_helpers::TEST_PEER_ADDR)
-                .await
-                .expect("session task must not panic re-entering the acceptor");
+    acceptor
+        .run_session(server_reader, server_writer, test_helpers::TEST_PEER_ADDR)
+        .await
+        .expect("session task must not panic re-entering the acceptor");
 
-            assert!(observer.reentered.get(), "observer was not called");
-        })
-        .await;
+    assert!(observer.reentered.get(), "observer was not called");
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,53 +1462,48 @@ impl Connection for FailingConnection {
 /// The paused clock makes the ordering deterministic: every wait auto-advances
 /// to the next armed timer, so the 1 ms ticker fires ten times inside each
 /// 10 ms backoff instead of racing it on a loaded runner.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn failing_accept_yields_between_attempts() {
     const FAILURES: usize = 4;
 
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let ticks = Rc::new(Cell::new(0));
-            let ticks_at_attempt = Rc::new(RefCell::new(Vec::new()));
+    let ticks = Rc::new(Cell::new(0));
+    let ticks_at_attempt = Rc::new(RefCell::new(Vec::new()));
 
-            let ticker_ticks = ticks.clone();
-            let ticker = task::spawn_local(async move {
-                loop {
-                    sleep(Duration::from_millis(1)).await;
-                    ticker_ticks.set(ticker_ticks.get() + 1);
-                }
-            });
+    let ticker_ticks = ticks.clone();
+    let ticker = task::spawn_local(async move {
+        loop {
+            sleep(Duration::from_millis(1)).await;
+            ticker_ticks.set(ticker_ticks.get() + 1);
+        }
+    });
 
-            let acceptor = stub_acceptor();
-            let listener = acceptor.start(FailingConnection {
-                failures: FAILURES,
-                ticks,
-                ticks_at_attempt: ticks_at_attempt.clone(),
-            });
+    let acceptor = stub_acceptor();
+    let listener = acceptor.start(FailingConnection {
+        failures: FAILURES,
+        ticks,
+        ticks_at_attempt: ticks_at_attempt.clone(),
+    });
 
-            // The listener parks on attempt FAILURES + 1, so waiting for the
-            // full sequence cannot outlast the backoff it is measuring. Polled
-            // on a timer, not with `yield_now`: the paused clock only advances
-            // while every task is idle, and a spinning waiter would hold it.
-            timeout(Duration::from_secs(5), async {
-                while ticks_at_attempt.borrow().len() <= FAILURES {
-                    sleep(Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .expect("listener never reached the parking attempt");
+    // The listener parks on attempt FAILURES + 1, so waiting for the
+    // full sequence cannot outlast the backoff it is measuring. Polled
+    // on a timer, not with `yield_now`: the paused clock only advances
+    // while every task is idle, and a spinning waiter would hold it.
+    timeout(Duration::from_secs(5), async {
+        while ticks_at_attempt.borrow().len() <= FAILURES {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("listener never reached the parking attempt");
 
-            listener.abort();
-            ticker.abort();
+    listener.abort();
+    ticker.abort();
 
-            let recorded = ticks_at_attempt.borrow().clone();
-            assert!(
-                recorded.windows(2).all(|w| w[1] > w[0]),
-                "listener starved the runtime between accept attempts: {recorded:?}"
-            );
-        })
-        .await;
+    let recorded = ticks_at_attempt.borrow().clone();
+    assert!(
+        recorded.windows(2).all(|w| w[1] > w[0]),
+        "listener starved the runtime between accept attempts: {recorded:?}"
+    );
 }
 
 /// A `FailingConnection` that parks on its first `accept()` - the shape of a
@@ -1634,30 +1524,25 @@ fn parked_connection() -> FailingConnection {
 /// Merely signalling the listener is not enough: with no active sessions
 /// `shutdown` has nothing to await, so it would return before the listener was
 /// ever polled - which is why the listener carries a [`TaskGuard`] of its own.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_ends_the_listener_before_returning() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let acceptor = stub_acceptor();
-            let listener = acceptor.start(parked_connection());
-            // Let the listener reach its parked `accept()`.
-            task::yield_now().await;
+    let acceptor = stub_acceptor();
+    let listener = acceptor.start(parked_connection());
+    // Let the listener reach its parked `accept()`.
+    task::yield_now().await;
 
-            timeout(
-                Duration::from_secs(1),
-                acceptor.shutdown(ShutdownMode::Disconnect),
-            )
-            .await
-            .expect("listener still parked in accept() after shutdown");
+    timeout(
+        Duration::from_secs(1),
+        acceptor.shutdown(ShutdownMode::Disconnect),
+    )
+    .await
+    .expect("listener still parked in accept() after shutdown");
 
-            assert!(
-                listener.is_finished(),
-                "shutdown returned with the listener still holding the address"
-            );
-            listener.await.expect("listener task");
-        })
-        .await;
+    assert!(
+        listener.is_finished(),
+        "shutdown returned with the listener still holding the address"
+    );
+    listener.await.expect("listener task");
 }
 
 /// `shutdown` must not wait out the Logon timeout on connections that have not
@@ -1670,34 +1555,28 @@ async fn shutdown_ends_the_listener_before_returning() {
 /// otherwise hold up even [`ShutdownMode::Disconnect`], documented as an
 /// immediate disconnect, for the whole `auto_disconnect_after_no_logon_received`
 /// (10s by default, and deployments configure far longer).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_does_not_wait_out_the_logon_timeout() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let acceptor = stub_acceptor();
-            // Held open for the whole test: on EOF the read would finish on its
-            // own and the connection would never reach the state under test.
-            let (server_io, _client_io) = io::duplex(8192);
-            let (server_reader, server_writer) = io::split(server_io);
-            let session =
-                acceptor.run_session(server_reader, server_writer, test_helpers::TEST_PEER_ADDR);
-            // Let the session task reach its first-message read.
-            task::yield_now().await;
+    let acceptor = stub_acceptor();
+    // Held open for the whole test: on EOF the read would finish on its
+    // own and the connection would never reach the state under test.
+    let (server_io, _client_io) = io::duplex(8192);
+    let (server_reader, server_writer) = io::split(server_io);
+    let session = acceptor.run_session(server_reader, server_writer, test_helpers::TEST_PEER_ADDR);
+    // Let the session task reach its first-message read.
+    task::yield_now().await;
 
-            timeout(
-                Duration::from_secs(1),
-                acceptor.shutdown(ShutdownMode::Disconnect),
-            )
-            .await
-            .expect("shutdown waited out the logon timeout");
+    timeout(
+        Duration::from_secs(1),
+        acceptor.shutdown(ShutdownMode::Disconnect),
+    )
+    .await
+    .expect("shutdown waited out the logon timeout");
 
-            // `_client_io` never sends EOF, so a session task that outlives
-            // `shutdown` would hang here rather than fail.
-            timeout(Duration::from_secs(1), session)
-                .await
-                .expect("session task outlived shutdown")
-                .expect("session task");
-        })
-        .await;
+    // `_client_io` never sends EOF, so a session task that outlives
+    // `shutdown` would hang here rather than fail.
+    timeout(Duration::from_secs(1), session)
+        .await
+        .expect("session task outlived shutdown")
+        .expect("session task");
 }

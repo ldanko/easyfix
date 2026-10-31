@@ -9,10 +9,11 @@ use easyfix_core::{
     serializer::SerializeError,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, DuplexStream},
     sync::{mpsc, mpsc::error::TryRecvError},
-    task::{self, JoinHandle, LocalSet},
+    task::{self, JoinHandle},
     time::timeout,
 };
 
@@ -173,307 +174,291 @@ impl Session {
     }
 }
 
-#[tokio::test]
-async fn validation_reports_original_message_and_cause_before_reject() {
-    LocalSet::new()
-        .run_until(async {
-            for (msg, error) in [
-                (
-                    test_helpers::resend_request(2, 0, 0),
-                    ValidationError::InvalidResendRange,
-                ),
-                (
-                    test_helpers::sequence_reset(2, 2, true),
-                    ValidationError::InvalidNewSeqNo { expected: 2 },
-                ),
-                (
-                    test_helpers::sequence_reset(2, 0, false),
-                    ValidationError::InvalidNewSeqNo { expected: 2 },
-                ),
-            ] {
-                let mut session =
-                    Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
-                session.handshake().await;
-                session.send(&msg).await;
-                assert_eq!(
-                    session.events.recv().await.unwrap(),
-                    Event::Validation(test_helpers::serialize_message(&msg), error.clone())
-                );
-                assert_eq!(
-                    session.events.recv().await.unwrap(),
-                    Event::AdminOut(MsgTypeBase::Reject.into())
-                );
-                let reply = session.read().await;
-                assert_matches!(reply.try_as_admin(), Some(AdminBase::Reject(reject))
-                    if reject.ref_tag_id == error.tag().map(Int::from)
-                        && reject.session_reject_reason == error.reject_reason());
-                session.stop().await;
-            }
-        })
-        .await;
+#[rstest]
+#[case::invalid_resend_range(
+    test_helpers::resend_request(2, 0, 0),
+    ValidationError::InvalidResendRange
+)]
+#[case::non_advancing_gap_fill(
+    test_helpers::sequence_reset(2, 2, true),
+    ValidationError::InvalidNewSeqNo { expected: 2 }
+)]
+#[case::zero_reset_seq_num(
+    test_helpers::sequence_reset(2, 0, false),
+    ValidationError::InvalidNewSeqNo { expected: 2 }
+)]
+#[tokio::test(flavor = "local")]
+async fn validation_reports_original_message_and_cause_before_reject(
+    #[case] msg: Box<Message>,
+    #[case] error: ValidationError,
+) {
+    let mut session = Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
+    session.handshake().await;
+    session.send(&msg).await;
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::Validation(test_helpers::serialize_message(&msg), error.clone())
+    );
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::Reject.into())
+    );
+    let reply = session.read().await;
+    assert_matches!(
+        reply.try_as_admin(),
+        Some(AdminBase::Reject(reject))
+            if reject.ref_tag_id == error.tag().map(Int::from)
+                && reject.session_reject_reason == error.reject_reason()
+    );
+    session.stop().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn invalid_first_logon_reports_error_before_logout_without_ready() {
-    LocalSet::new()
-        .run_until(async {
-            let logon = build_peer_logon(1, -1);
-            let original = test_helpers::serialize_message(&logon);
-            let mut session = Session::spawn(logon, test_helpers::default_storage());
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::Validation(original, ValidationError::InvalidHeartBtInt)
-            );
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminOut(MsgTypeBase::Reject.into())
-            );
-            assert_eq!(
-                SessionMessage::msg_type(&*session.read().await),
-                MsgTypeBase::Reject
-            );
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminOut(MsgTypeBase::Logout.into())
-            );
-            assert_eq!(
-                SessionMessage::msg_type(&*session.read().await),
-                MsgTypeBase::Logout
-            );
-            session
-                .finish(SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::InvalidLogonState),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false,
-                })
-                .await;
+    let logon = build_peer_logon(1, -1);
+    let original = test_helpers::serialize_message(&logon);
+    let mut session = Session::spawn(logon, test_helpers::default_storage());
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::Validation(original, ValidationError::InvalidHeartBtInt)
+    );
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::Reject.into())
+    );
+    assert_eq!(
+        SessionMessage::msg_type(&*session.read().await),
+        MsgTypeBase::Reject
+    );
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::Logout.into())
+    );
+    assert_eq!(
+        SessionMessage::msg_type(&*session.read().await),
+        MsgTypeBase::Logout
+    );
+    session
+        .finish(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false,
         })
         .await;
 }
 
-#[tokio::test]
-async fn queued_message_is_reported_only_when_it_becomes_due() {
-    LocalSet::new()
-        .run_until(async {
-            for invalid in [false, true] {
-                let mut session =
-                    Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
-                session.handshake().await;
-                let mut queued = test_helpers::new_order_single(3);
-                if invalid {
-                    queued.header.poss_dup_flag = Some(true);
-                }
-                session.send(&queued).await;
-                assert_matches!(
-                    session.read().await.try_as_admin(),
-                    Some(AdminBase::ResendRequest(rr))
-                        if rr.begin_seq_no == 2 && rr.end_seq_no == 2
-                );
-                assert_eq!(
-                    session.events.recv().await.unwrap(),
-                    Event::AdminOut(MsgTypeBase::ResendRequest.into())
-                );
-                assert_matches!(session.events.try_recv(), Err(TryRecvError::Empty));
+#[rstest]
+#[case::valid(false)]
+#[case::invalid(true)]
+#[tokio::test(flavor = "local")]
+async fn queued_message_is_reported_only_when_it_becomes_due(#[case] invalid: bool) {
+    let mut session = Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
+    session.handshake().await;
+    let mut queued = test_helpers::new_order_single(3);
+    if invalid {
+        queued.header.poss_dup_flag = Some(true);
+    }
+    session.send(&queued).await;
+    assert_matches!(
+        session.read().await.try_as_admin(),
+        Some(AdminBase::ResendRequest(rr))
+            if rr.begin_seq_no == 2 && rr.end_seq_no == 2
+    );
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::ResendRequest.into())
+    );
+    assert_matches!(session.events.try_recv(), Err(TryRecvError::Empty));
 
-                session.send(&test_helpers::heartbeat(2, None)).await;
-                assert_eq!(
-                    session.events.recv().await.unwrap(),
-                    Event::AdminIn(MsgTypeBase::Heartbeat.into(), 2)
-                );
-                if invalid {
-                    assert_eq!(
-                        session.events.recv().await.unwrap(),
-                        Event::Validation(
-                            test_helpers::serialize_message(&queued),
-                            ValidationError::MissingOrigSendingTime
-                        )
-                    );
-                    assert_eq!(
-                        session.events.recv().await.unwrap(),
-                        Event::AdminOut(MsgTypeBase::Reject.into())
-                    );
-                    assert_eq!(
-                        SessionMessage::msg_type(&*session.read().await),
-                        MsgTypeBase::Reject
-                    );
-                } else {
-                    assert_eq!(session.events.recv().await.unwrap(), Event::AppIn(3));
-                }
-                session.stop().await;
-            }
-        })
-        .await;
+    session.send(&test_helpers::heartbeat(2, None)).await;
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminIn(MsgTypeBase::Heartbeat.into(), 2)
+    );
+    if invalid {
+        assert_eq!(
+            session.events.recv().await.unwrap(),
+            Event::Validation(
+                test_helpers::serialize_message(&queued),
+                ValidationError::MissingOrigSendingTime
+            )
+        );
+        assert_eq!(
+            session.events.recv().await.unwrap(),
+            Event::AdminOut(MsgTypeBase::Reject.into())
+        );
+        assert_eq!(
+            SessionMessage::msg_type(&*session.read().await),
+            MsgTypeBase::Reject
+        );
+    } else {
+        assert_eq!(session.events.recv().await.unwrap(), Event::AppIn(3));
+    }
+    session.stop().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn invalid_resend_above_gap_reports_once_before_reject_and_recovery_request() {
-    LocalSet::new()
-        .run_until(async {
-            let mut session =
-                Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
-            session.handshake().await;
-            let invalid = test_helpers::resend_request(3, 0, 0);
-            session.send(&invalid).await;
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::Validation(
-                    test_helpers::serialize_message(&invalid),
-                    ValidationError::InvalidResendRange
-                )
-            );
-            for kind in [MsgTypeBase::Reject, MsgTypeBase::ResendRequest] {
-                assert_eq!(
-                    session.events.recv().await.unwrap(),
-                    Event::AdminOut(kind.into())
-                );
-                assert_eq!(SessionMessage::msg_type(&*session.read().await), kind);
-            }
+    let mut session = Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
+    session.handshake().await;
+    let invalid = test_helpers::resend_request(3, 0, 0);
+    session.send(&invalid).await;
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::Validation(
+            test_helpers::serialize_message(&invalid),
+            ValidationError::InvalidResendRange
+        )
+    );
+    for kind in [MsgTypeBase::Reject, MsgTypeBase::ResendRequest] {
+        assert_eq!(
+            session.events.recv().await.unwrap(),
+            Event::AdminOut(kind.into())
+        );
+        assert_eq!(SessionMessage::msg_type(&*session.read().await), kind);
+    }
 
-            session.send(&test_helpers::heartbeat(2, None)).await;
-            session
-                .send(&test_helpers::test_request(4, fix_str!("after-gap")))
-                .await;
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminIn(MsgTypeBase::Heartbeat.into(), 2)
-            );
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminIn(MsgTypeBase::TestRequest.into(), 4)
-            );
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminOut(MsgTypeBase::Heartbeat.into())
-            );
-            assert_matches!(
-                session.read().await.try_as_admin(),
-                Some(AdminBase::Heartbeat(hb))
-                    if hb.test_req_id.as_deref() == Some(fix_str!("after-gap"))
-            );
-            session.stop().await;
+    session.send(&test_helpers::heartbeat(2, None)).await;
+    session
+        .send(&test_helpers::test_request(4, fix_str!("after-gap")))
+        .await;
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminIn(MsgTypeBase::Heartbeat.into(), 2)
+    );
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminIn(MsgTypeBase::TestRequest.into(), 4)
+    );
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::Heartbeat.into())
+    );
+    assert_matches!(
+        session.read().await.try_as_admin(),
+        Some(AdminBase::Heartbeat(hb))
+            if hb.test_req_id.as_deref() == Some(fix_str!("after-gap"))
+    );
+    session.stop().await;
+}
+
+#[rstest]
+#[case::valid_body(false)]
+#[case::invalid_body(true)]
+#[tokio::test(flavor = "local")]
+async fn too_low_with_stale_time_sends_only_logout_even_when_body_is_invalid(
+    #[case] invalid_body: bool,
+) {
+    let mut session = Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
+    session.handshake().await;
+    let ord_type = if invalid_body { "244=97.2" } else { "1" };
+    let bytes = test_helpers::frame_message(
+        "FIXT.1.1",
+        &format!(
+            "35=D|49=TARGET|56=SENDER|34=1|52=20000101-00:00:00.000|\
+             11=ORD1|55=SYMBOL|54=1|60=20000101-00:00:00.000|38=10|40={ord_type}|"
+        ),
+    );
+    if invalid_body {
+        let error = Message::from_bytes(&bytes).unwrap_err();
+        assert!(error.header.is_some());
+        assert_matches!(
+            error.kind,
+            DeserializeErrorKind::Reject { tag: Some(40), reason, .. }
+                if reason == SessionRejectReasonBase::IncorrectDataFormatForValue
+        );
+    } else {
+        Message::from_bytes(&bytes).unwrap();
+    }
+    session.wire.write_all(&bytes).await.unwrap();
+
+    if !invalid_body {
+        assert_matches!(
+            session.events.recv().await.unwrap(),
+            Event::Validation(_, ValidationError::MsgSeqNumTooLow { expected: 2 })
+        );
+    }
+    // A body error superseded by the header verdict is not reported.
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::Logout.into())
+    );
+    let reply = session.read().await;
+    assert_matches!(
+        reply.try_as_admin(),
+        Some(AdminBase::Logout(logout))
+            if logout.session_status == Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into())
+    );
+    timeout(
+        Duration::from_secs(5),
+        session.wire.read_to_end(&mut session.buffer),
+    )
+    .await
+    .expect("session must close after Logout")
+    .unwrap();
+    assert!(session.buffer.is_empty(), "no additional protocol response");
+    session
+        .finish(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::MsgSeqNumTooLow),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false,
         })
         .await;
 }
 
-#[tokio::test]
-async fn too_low_with_stale_time_sends_only_logout_even_when_body_is_invalid() {
-    LocalSet::new()
-        .run_until(async {
-            for invalid_body in [false, true] {
-                let mut session =
-                    Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
-                session.handshake().await;
-                let ord_type = if invalid_body { "244=97.2" } else { "1" };
-                let bytes = test_helpers::frame_message(
-                    "FIXT.1.1",
-                    &format!(
-                        "35=D|49=TARGET|56=SENDER|34=1|52=20000101-00:00:00.000|\
-                         11=ORD1|55=SYMBOL|54=1|60=20000101-00:00:00.000|38=10|40={ord_type}|"
-                    ),
-                );
-                if invalid_body {
-                    let error = Message::from_bytes(&bytes).unwrap_err();
-                    assert!(error.header.is_some());
-                    assert_matches!(error.kind, DeserializeErrorKind::Reject { tag: Some(40), reason, .. }
-                        if reason == SessionRejectReasonBase::IncorrectDataFormatForValue);
-                } else {
-                    Message::from_bytes(&bytes).unwrap();
-                }
-                session.wire.write_all(&bytes).await.unwrap();
-
-                if !invalid_body {
-                    assert_matches!(
-                        session.events.recv().await.unwrap(),
-                        Event::Validation(_, ValidationError::MsgSeqNumTooLow { expected: 2 })
-                    );
-                }
-                // A body error superseded by the header verdict is not reported.
-                assert_eq!(
-                    session.events.recv().await.unwrap(),
-                    Event::AdminOut(MsgTypeBase::Logout.into())
-                );
-                let reply = session.read().await;
-                assert_matches!(reply.try_as_admin(), Some(AdminBase::Logout(logout))
-                    if logout.session_status == Some(SessionStatusBase::ReceivedMsgSeqNumTooLow.into()));
-                timeout(Duration::from_secs(5), session.wire.read_to_end(&mut session.buffer))
-                    .await
-                    .expect("session must close after Logout")
-                    .unwrap();
-                assert!(session.buffer.is_empty(), "no additional protocol response");
-                session
-                    .finish(SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::MsgSeqNumTooLow),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false,
-                    })
-                    .await;
-            }
-        })
-        .await;
-}
-
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn duplicate_and_deserialization_error_do_not_report_validation_error() {
-    LocalSet::new()
-        .run_until(async {
-            let mut session =
-                Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
-            session.handshake().await;
-            let mut duplicate = test_helpers::heartbeat(1, None);
-            duplicate.header.poss_dup_flag = Some(true);
-            duplicate.header.orig_sending_time = Some(duplicate.header.sending_time);
-            session.send(&duplicate).await;
-            session
-                .wire
-                .write_all(&build_order_missing_symbol_bytes(2))
-                .await
-                .unwrap();
-            assert_eq!(session.events.recv().await.unwrap(), Event::Deserialize);
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminOut(MsgTypeBase::Reject.into())
-            );
-            assert_eq!(
-                SessionMessage::msg_type(&*session.read().await),
-                MsgTypeBase::Reject
-            );
-            session.send(&test_helpers::heartbeat(3, None)).await;
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::AdminIn(MsgTypeBase::Heartbeat.into(), 3)
-            );
-            session.stop().await;
-        })
-        .await;
+    let mut session = Session::spawn(build_peer_logon(1, 30), test_helpers::default_storage());
+    session.handshake().await;
+    let mut duplicate = test_helpers::heartbeat(1, None);
+    duplicate.header.poss_dup_flag = Some(true);
+    duplicate.header.orig_sending_time = Some(duplicate.header.sending_time);
+    session.send(&duplicate).await;
+    session
+        .wire
+        .write_all(&build_order_missing_symbol_bytes(2))
+        .await
+        .unwrap();
+    assert_eq!(session.events.recv().await.unwrap(), Event::Deserialize);
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminOut(MsgTypeBase::Reject.into())
+    );
+    assert_eq!(
+        SessionMessage::msg_type(&*session.read().await),
+        MsgTypeBase::Reject
+    );
+    session.send(&test_helpers::heartbeat(3, None)).await;
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::AdminIn(MsgTypeBase::Heartbeat.into(), 3)
+    );
+    session.stop().await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn validation_error_is_reported_even_when_reaction_fails_in_storage() {
-    LocalSet::new()
-        .run_until(async {
-            let mut storage = FailingStorage::new();
-            storage.fail_on(StorageOp::SetTarget, 2, FailureTiming::Before);
-            let trace = storage.trace.clone();
-            let mut session = Session::spawn(build_peer_logon(1, 30), storage);
-            session.handshake().await;
-            let mut invalid = test_helpers::heartbeat(2, None);
-            invalid.header.poss_dup_flag = Some(true);
-            session.send(&invalid).await;
-            assert_eq!(
-                session.events.recv().await.unwrap(),
-                Event::Validation(
-                    test_helpers::serialize_message(&invalid),
-                    ValidationError::MissingOrigSendingTime
-                )
-            );
-            session
-                .finish(SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::StorageError),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false,
-                })
-                .await;
-            assert!(trace.borrow().failed);
+    let mut storage = FailingStorage::new();
+    storage.fail_on(StorageOp::SetTarget, 2, FailureTiming::Before);
+    let trace = storage.trace.clone();
+    let mut session = Session::spawn(build_peer_logon(1, 30), storage);
+    session.handshake().await;
+    let mut invalid = test_helpers::heartbeat(2, None);
+    invalid.header.poss_dup_flag = Some(true);
+    session.send(&invalid).await;
+    assert_eq!(
+        session.events.recv().await.unwrap(),
+        Event::Validation(
+            test_helpers::serialize_message(&invalid),
+            ValidationError::MissingOrigSendingTime
+        )
+    );
+    session
+        .finish(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::StorageError),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false,
         })
         .await;
+    assert!(trace.borrow().failed);
 }

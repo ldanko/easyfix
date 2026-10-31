@@ -2,11 +2,12 @@ use std::{assert_matches, borrow::Cow};
 
 use easyfix_core::{
     base_messages::{AdminBase, LogoutBase, MsgTypeBase, SessionStatusBase},
-    basic_types::FixString,
+    basic_types::{FixStr, FixString},
     fix_str,
     message::SessionMessage,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 use tokio::time::{Duration, advance};
 
 use super::{resend_support::assert_resend_request, support::assert_msg_type};
@@ -42,28 +43,28 @@ fn send_logout_with_text() {
 /// The same on `Logout<5>`, where losing the message costs more: Test Cases
 /// Scenario 1S(d) makes the Logout the mandatory half of the escalation after
 /// an invalid Logon, while the preceding Reject is optional.
-#[test]
-fn send_logout_omits_empty_text() {
-    for text in [
-        Cow::Borrowed(fix_str!("")),
-        Cow::Owned(FixString::default()),
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        engine.send_logout(None, Some(text));
-        let mut msg = take_admin(&mut engine);
-        let AdminBase::Logout(logout) = as_admin(&msg) else {
-            panic!("expected Logout");
-        };
-        assert_eq!(logout.text, None, "empty Text(58) must be omitted");
+#[rstest]
+fn send_logout_omits_empty_text(
+    #[values(Cow::Borrowed(fix_str!("")), Cow::Owned(FixString::default()))] text: Cow<
+        'static,
+        FixStr,
+    >,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.send_logout(None, Some(text));
+    let mut msg = take_admin(&mut engine);
+    let AdminBase::Logout(logout) = as_admin(&msg) else {
+        panic!("expected Logout");
+    };
+    assert_eq!(logout.text, None, "empty Text(58) must be omitted");
 
-        engine.fill_header(&mut msg, &mut storage).unwrap();
-        let bytes = test_helpers::serialize_message(&msg);
-        assert!(
-            !bytes.windows(4).any(|w| w == b"\x0158="),
-            "no Text(58) field may reach the wire: {:?}",
-            String::from_utf8_lossy(&bytes)
-        );
-    }
+    engine.fill_header(&mut msg, &mut storage).unwrap();
+    let bytes = test_helpers::serialize_message(&msg);
+    assert!(
+        !bytes.windows(4).any(|w| w == b"\x0158="),
+        "no Text(58) field may reach the wire: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
 }
 
 // --- Logout ---

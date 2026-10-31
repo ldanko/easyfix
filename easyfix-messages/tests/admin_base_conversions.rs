@@ -18,6 +18,7 @@ use easyfix_core::{
 };
 use easyfix_test_messages as messages;
 use messages::{Body, Heartbeat, Logon, Logout, Reject, ResendRequest, SequenceReset, TestRequest};
+use rstest::rstest;
 
 // ---------------------------------------------------------------------------
 // HeartbeatBase <-> Heartbeat
@@ -277,8 +278,13 @@ fn reject_incoming_full() {
     assert_eq!(base.text.as_deref(), Some(fix_str!("Missing required tag")));
 }
 
-#[test]
-fn custom_reject_reason_description_survives_base_conversion() {
+#[rstest]
+#[case::with_tag(Some(55), "CustomValidationFailed (tag=55)")]
+#[case::without_tag(None, "CustomValidationFailed")]
+fn custom_reject_reason_description_survives_base_conversion(
+    #[case] tag: Option<u16>,
+    #[case] expected: &str,
+) {
     let msg = Reject {
         ref_seq_num: 7,
         session_reject_reason: Some(messages::SessionRejectReason::CustomValidationFailed),
@@ -288,18 +294,13 @@ fn custom_reject_reason_description_survives_base_conversion() {
     let reason = base.session_reject_reason.unwrap();
     assert_eq!(reason.into_inner(), 100);
     assert_eq!(reason.to_string(), "CustomValidationFailed");
-    for (tag, expected) in [
-        (Some(55), "CustomValidationFailed (tag=55)"),
-        (None, "CustomValidationFailed"),
-    ] {
-        let error = DeserializeErrorKind::Reject {
-            msg_type: None,
-            seq_num: 7,
-            tag,
-            reason,
-        };
-        assert_eq!(error.to_string(), expected);
-    }
+    let error = DeserializeErrorKind::Reject {
+        msg_type: None,
+        seq_num: 7,
+        tag,
+        reason,
+    };
+    assert_eq!(error.to_string(), expected);
     let reconstructed = Reject::from(base);
     assert_eq!(
         reconstructed.session_reject_reason,

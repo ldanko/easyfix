@@ -12,6 +12,7 @@ use easyfix_core::{
 };
 use easyfix_test_messages::Message;
 use futures_util::{StreamExt, poll};
+use rstest::rstest;
 use tokio::{
     io::{AsyncWriteExt, DuplexStream, duplex},
     time::timeout,
@@ -164,25 +165,25 @@ async fn invalid_checksum_skips_the_frame_without_scanning_its_body() {
     assert!(stream.next().await.is_none());
 }
 
-#[test]
-fn garbled_resync_keeps_a_partial_message_start() {
-    for (input, kept) in [
-        (&b"ZZZZ8=FI"[..], &b"8=FI"[..]),
-        (b"ZZZZ8=F", b"8=F"),
-        (b"ZZZZ8=", b"8="),
-        (b"ZZZZ8", b"8"),
-        (b"ZZZZ", b""),
-        // A tail that is not a prefix of "8=FIX" is garbage like the rest.
-        (b"ZZ=FI", b""),
-        (b"ZZZFIX", b""),
-        // A complete needle already failed at offset 0 and, with nothing
-        // usable behind it, its partial echo at the end is all that stays.
-        (b"8=FIX\x00zz8=F", b"8=F"),
-    ] {
-        let mut buf = BytesMut::from(input);
-        process_garbled_data(&mut buf);
-        assert_eq!(&buf[..], kept, "input {input:?}");
-    }
+#[rstest]
+#[case::partial_fi(&b"ZZZZ8=FI"[..], &b"8=FI"[..])]
+#[case::partial_f(b"ZZZZ8=F", b"8=F")]
+#[case::partial_equals(b"ZZZZ8=", b"8=")]
+#[case::partial_tag(b"ZZZZ8", b"8")]
+#[case::no_prefix(b"ZZZZ", b"")]
+// A tail that is not a prefix of "8=FIX" is garbage like the rest.
+#[case::invalid_tail(b"ZZ=FI", b"")]
+#[case::missing_tag(b"ZZZFIX", b"")]
+// A complete needle already failed at offset 0 and, with nothing
+// usable behind it, its partial echo at the end is all that stays.
+#[case::failed_needle(b"8=FIX\x00zz8=F", b"8=F")]
+fn garbled_resync_keeps_a_partial_message_start(
+    #[case] input: &'static [u8],
+    #[case] kept: &'static [u8],
+) {
+    let mut buf = BytesMut::from(input);
+    process_garbled_data(&mut buf);
+    assert_eq!(&buf[..], kept, "input {input:?}");
 }
 
 // --- first_message ---

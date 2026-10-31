@@ -1,5 +1,7 @@
 use std::{assert_matches, str};
 
+use rstest::rstest;
+
 use super::{SerializeError, Serializer, max_body_len_digits};
 use crate::basic_types::{
     Country, Currency, Exchange, FixedOffset, Language, NaiveDate, NaiveTime, TimeZone, TzTimeOnly,
@@ -71,38 +73,36 @@ fn seq_num_zero_is_written_while_the_other_digit_types_still_reject_it() {
     );
 }
 
-#[test]
-fn utc_time_only_is_written_with_the_precision_it_carries() {
+#[rstest]
+#[case::seconds(UtcTimeOnly::with_secs, "03:04:05")]
+#[case::milliseconds(UtcTimeOnly::with_millis, "03:04:05.123")]
+#[case::microseconds(UtcTimeOnly::with_micros, "03:04:05.123456")]
+#[case::nanoseconds(UtcTimeOnly::with_nanos, "03:04:05.123456789")]
+fn utc_time_only_is_written_with_the_precision_it_carries(
+    #[case] make_value: fn(NaiveTime) -> UtcTimeOnly,
+    #[case] expected: &str,
+) {
     let time = NaiveTime::from_hms_nano_opt(3, 4, 5, 123_456_789).unwrap();
-    for (value, expected) in [
-        (UtcTimeOnly::with_secs(time), "03:04:05"),
-        (UtcTimeOnly::with_millis(time), "03:04:05.123"),
-        (UtcTimeOnly::with_micros(time), "03:04:05.123456"),
-        (UtcTimeOnly::with_nanos(time), "03:04:05.123456789"),
-    ] {
-        let written = serialize_value(|s| s.serialize_utc_time_only(&value));
-        assert_eq!(written, expected.as_bytes());
-    }
+    let value = make_value(time);
+    let written = serialize_value(|s| s.serialize_utc_time_only(&value));
+    assert_eq!(written, expected.as_bytes());
 }
 
-#[test]
-fn tz_timestamp_offsets_use_the_wire_form() {
+#[rstest]
+#[case::utc(0, "20060901-07:39:00Z")]
+#[case::positive_hour(3600, "20060901-07:39:00+01")]
+#[case::negative_hour(-3600, "20060901-07:39:00-01")]
+#[case::positive_minutes(5400, "20060901-07:39:00+01:30")]
+#[case::negative_minutes(-5400, "20060901-07:39:00-01:30")]
+fn tz_timestamp_offsets_use_the_wire_form(#[case] offset_secs: i32, #[case] expected: &str) {
     let naive = NaiveDate::from_ymd_opt(2006, 9, 1)
         .unwrap()
         .and_hms_opt(7, 39, 0)
         .unwrap();
-    for (offset_secs, expected) in [
-        (0, "20060901-07:39:00Z"),
-        (3600, "20060901-07:39:00+01"),
-        (-3600, "20060901-07:39:00-01"),
-        (5400, "20060901-07:39:00+01:30"),
-        (-5400, "20060901-07:39:00-01:30"),
-    ] {
-        let offset = FixedOffset::east_opt(offset_secs).unwrap();
-        let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
-        let written = serialize_value(|s| s.serialize_tz_timestamp(&value));
-        assert_eq!(written, expected.as_bytes());
-    }
+    let offset = FixedOffset::east_opt(offset_secs).unwrap();
+    let value = TzTimestamp::with_secs(offset.from_local_datetime(&naive).unwrap());
+    let written = serialize_value(|s| s.serialize_tz_timestamp(&value));
+    assert_eq!(written, expected.as_bytes());
 }
 
 #[test]
@@ -180,22 +180,20 @@ fn values_outside_the_wire_grammar_fail_instead_of_corrupting_the_message() {
     );
 }
 
-#[test]
-fn tz_time_only_is_written_with_the_precision_it_carries() {
+#[rstest]
+#[case::seconds(TzTimeOnly::with_secs, "07:39:00-05")]
+#[case::milliseconds(TzTimeOnly::with_millis, "07:39:00.123-05")]
+#[case::microseconds(TzTimeOnly::with_micros, "07:39:00.123456-05")]
+#[case::nanoseconds(TzTimeOnly::with_nanos, "07:39:00.123456789-05")]
+fn tz_time_only_is_written_with_the_precision_it_carries(
+    #[case] make_value: fn(NaiveTime, FixedOffset) -> TzTimeOnly,
+    #[case] expected: &str,
+) {
     let time = NaiveTime::from_hms_nano_opt(7, 39, 0, 123_456_789).unwrap();
     let offset = FixedOffset::east_opt(-18_000).unwrap();
-    for (value, expected) in [
-        (TzTimeOnly::with_secs(time, offset), "07:39:00-05"),
-        (TzTimeOnly::with_millis(time, offset), "07:39:00.123-05"),
-        (TzTimeOnly::with_micros(time, offset), "07:39:00.123456-05"),
-        (
-            TzTimeOnly::with_nanos(time, offset),
-            "07:39:00.123456789-05",
-        ),
-    ] {
-        let written = serialize_value(|s| s.serialize_tz_timeonly(&value));
-        assert_eq!(written, expected.as_bytes());
-    }
+    let value = make_value(time, offset);
+    let written = serialize_value(|s| s.serialize_tz_timeonly(&value));
+    assert_eq!(written, expected.as_bytes());
 }
 
 #[test]
@@ -233,23 +231,25 @@ fn body_len_is_patched_right_aligned_keeping_leading_zeros() {
     );
 }
 
-#[test]
-fn body_len_placeholder_width_follows_buffer_size() {
+#[rstest]
+#[case::two_digits(64usize, 2usize)]
+#[case::three_digits(500, 3)]
+#[case::four_digits(4096, 4)]
+#[case::five_digits(65536, 5)]
+fn body_len_placeholder_width_follows_buffer_size(#[case] buf_len: usize, #[case] digits: usize) {
     // The placeholder is sized from the buffer, not from the payload.
-    for (buf_len, digits) in [(64usize, 2usize), (500, 3), (4096, 4), (65536, 5)] {
-        let mut buf = vec![0u8; buf_len];
-        let len = frame(&mut buf, b"35=0\x01");
-        let msg = &buf[..len];
+    let mut buf = vec![0u8; buf_len];
+    let len = frame(&mut buf, b"35=0\x01");
+    let msg = &buf[..len];
 
-        assert_eq!(max_body_len_digits(buf_len), digits);
-        let body_len_field = &msg[BEGIN_STRING.len()..BEGIN_STRING.len() + digits + 3];
-        let expected = format!("9={:0width$}\x01", 5, width = digits);
-        assert_eq!(
-            body_len_field,
-            expected.as_bytes(),
-            "buffer of {buf_len} bytes"
-        );
-    }
+    assert_eq!(max_body_len_digits(buf_len), digits);
+    let body_len_field = &msg[BEGIN_STRING.len()..BEGIN_STRING.len() + digits + 3];
+    let expected = format!("9={:0width$}\x01", 5, width = digits);
+    assert_eq!(
+        body_len_field,
+        expected.as_bytes(),
+        "buffer of {buf_len} bytes"
+    );
 }
 
 #[test]

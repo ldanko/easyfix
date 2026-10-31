@@ -4,6 +4,7 @@ use std::{
 };
 
 use futures_util::FutureExt;
+use rstest::rstest;
 use tokio::time as tokio_time;
 
 use super::{Sleep, TimerBackend};
@@ -95,54 +96,57 @@ async fn sleep_until_takes_a_now_derived_instant() {
     assert_eq!(start.elapsed(), Duration::from_secs(2));
 }
 
+#[rstest]
 #[tokio::test(start_paused = true)]
-async fn overflowing_durations_keep_the_backend_clock() {
+async fn overflowing_durations_keep_the_backend_clock(
+    #[values(TimerBackend::Tokio, TimerBackend::Busywait)] backend: TimerBackend,
+) {
     tokio_time::advance(Duration::from_secs(3600)).await;
     let far_future_duration = Duration::from_secs(86400 * 365 * 30);
-    for backend in [TimerBackend::Tokio, TimerBackend::Busywait] {
-        let before = backend.now();
-        let mut sleep = backend.sleep(Duration::MAX);
-        assert!((&mut sleep).now_or_never().is_none());
 
-        // Busywait's construction fallback must not use the paused clock.
-        if let Sleep::Busywait(timer) = &sleep {
-            assert!(timer.wake_time >= before + far_future_duration);
-            assert!(timer.wake_time <= backend.now() + far_future_duration);
-        }
+    let before = backend.now();
+    let mut sleep = backend.sleep(Duration::MAX);
+    assert!((&mut sleep).now_or_never().is_none());
 
-        sleep.reset_after(Duration::MAX);
-        let deadline = match &sleep {
-            Sleep::Tokio(timer) => timer.deadline().into_std(),
-            Sleep::Busywait(timer) => timer.wake_time,
-        };
-        assert!(deadline >= before + far_future_duration);
-        assert!(deadline <= backend.now() + far_future_duration);
-        assert!((&mut sleep).now_or_never().is_none());
-
-        sleep.reset_after(Duration::ZERO);
-        sleep.await;
+    // Busywait's construction fallback must not use the paused clock.
+    if let Sleep::Busywait(timer) = &sleep {
+        assert!(timer.wake_time >= before + far_future_duration);
+        assert!(timer.wake_time <= backend.now() + far_future_duration);
     }
+
+    sleep.reset_after(Duration::MAX);
+    let deadline = match &sleep {
+        Sleep::Tokio(timer) => timer.deadline().into_std(),
+        Sleep::Busywait(timer) => timer.wake_time,
+    };
+    assert!(deadline >= before + far_future_duration);
+    assert!(deadline <= backend.now() + far_future_duration);
+    assert!((&mut sleep).now_or_never().is_none());
+
+    sleep.reset_after(Duration::ZERO);
+    sleep.await;
 }
 
+#[rstest]
 #[tokio::test(start_paused = true)]
-async fn timeout_completion_wins_over_an_expired_deadline() {
-    for backend in [TimerBackend::Tokio, TimerBackend::Busywait] {
-        assert_eq!(
-            backend
-                .timeout(Duration::ZERO, future::ready(7))
-                .await
-                .unwrap(),
-            7
-        );
+async fn timeout_completion_wins_over_an_expired_deadline(
+    #[values(TimerBackend::Tokio, TimerBackend::Busywait)] backend: TimerBackend,
+) {
+    assert_eq!(
         backend
-            .timeout(Duration::ZERO, future::pending::<()>())
+            .timeout(Duration::ZERO, future::ready(7))
             .await
-            .unwrap_err();
-        assert!(
-            backend
-                .timeout(Duration::MAX, future::pending::<()>())
-                .now_or_never()
-                .is_none()
-        );
-    }
+            .unwrap(),
+        7
+    );
+    backend
+        .timeout(Duration::ZERO, future::pending::<()>())
+        .await
+        .unwrap_err();
+    assert!(
+        backend
+            .timeout(Duration::MAX, future::pending::<()>())
+            .now_or_never()
+            .is_none()
+    );
 }

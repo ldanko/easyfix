@@ -5,6 +5,7 @@ use easyfix_core::{
     fix_str,
     message::{HeaderAccess, SessionMessage},
 };
+use rstest::rstest;
 
 use super::{
     resend_support::{assert_resend_request, drain_queued},
@@ -127,73 +128,74 @@ fn on_resend_request_too_low_logs_out_and_disconnects() {
 /// would put a gap-fill stamped `MsgSeqNum(34)=0` on the wire. An inverted
 /// range is none of the three forms Section 4.8.2 admits - unchecked it queues an
 /// empty range and the peer gets silence.
-#[test]
-fn on_resend_request_with_a_range_naming_no_message_rejects_before_callback() {
-    for (name, seq, begin, end) in [
-        ("zero begin", 1, 0, 0),
-        ("inverted range", 1, 10, 5),
-        ("zero begin above gap", 3, 0, 0),
-        ("inverted range above gap", 3, 10, 5),
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
+#[rstest]
+#[case("zero begin", 1, 0, 0)]
+#[case("inverted range", 1, 10, 5)]
+#[case("zero begin above gap", 3, 0, 0)]
+#[case("inverted range above gap", 3, 10, 5)]
+fn on_resend_request_with_a_range_naming_no_message_rejects_before_callback(
+    #[case] name: &'static str,
+    #[case] seq: u32,
+    #[case] begin: u32,
+    #[case] end: u32,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
 
-        let msg = test_helpers::resend_request(seq, begin, end);
-        let InputResult::ValidationError { msg, failure } =
-            engine.on_input(msg, &mut storage).unwrap()
-        else {
-            panic!("expected validation failure: {name}");
-        };
-        assert_eq!(failure.error, ValidationError::InvalidResendRange, "{name}");
-        assert_eq!(msg.header.msg_seq_num, seq, "{name}");
-        assert!(!engine.has_admin_output(), "{name}");
-        assert_eq!(engine.queued_count(), 0, "{name}");
+    let msg = test_helpers::resend_request(seq, begin, end);
+    let InputResult::ValidationError { msg, failure } = engine.on_input(msg, &mut storage).unwrap()
+    else {
+        panic!("expected validation failure: {name}");
+    };
+    assert_eq!(failure.error, ValidationError::InvalidResendRange, "{name}");
+    assert_eq!(msg.header.msg_seq_num, seq, "{name}");
+    assert!(!engine.has_admin_output(), "{name}");
+    assert_eq!(engine.queued_count(), 0, "{name}");
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1, "{name}");
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
+
+    let reject_msg = take_admin(&mut engine);
+    assert_msg_type(&reject_msg, MsgTypeBase::Reject);
+    let AdminBase::Reject(reject) = as_admin(&reject_msg) else {
+        panic!("expected Reject: {name}");
+    };
+    assert_eq!(
+        reject.session_reject_reason,
+        Some(SessionRejectReasonBase::ValueIsIncorrect.into()),
+        "{name}"
+    );
+    assert_eq!(reject.ref_tag_id, Some(7), "{name}: BeginSeqNo");
+    assert_eq!(reject.ref_seq_num, seq, "{name}");
+
+    assert!(!engine.has_pending_resends(), "{name}");
+    if seq == 1 {
+        // Scenario 14(e): an in-sequence Reject consumes the number.
+        assert_eq!(storage.next_target_msg_seq_num().get(), 2, "{name}");
+    } else {
         assert_eq!(storage.next_target_msg_seq_num().get(), 1, "{name}");
-        engine
-            .process_validation_failure(msg, failure, &mut storage)
-            .unwrap();
-
-        let reject_msg = take_admin(&mut engine);
-        assert_msg_type(&reject_msg, MsgTypeBase::Reject);
-        let AdminBase::Reject(reject) = as_admin(&reject_msg) else {
-            panic!("expected Reject: {name}");
-        };
-        assert_eq!(
-            reject.session_reject_reason,
-            Some(SessionRejectReasonBase::ValueIsIncorrect.into()),
+        assert_eq!(engine.queued_count(), 1, "{name}");
+        assert_resend_request(&mut engine, 1, 2);
+        for missing in 1..seq {
+            accept_input(
+                &mut engine,
+                test_helpers::heartbeat(missing, None),
+                &mut storage,
+            );
+        }
+        // The rejected request consumes its number after recovery,
+        // without another callback, Reject, or retransmission.
+        assert_matches!(
+            engine.next_queued_message(&mut storage),
+            Ok(Some(InputResult::Handled)),
             "{name}"
         );
-        assert_eq!(reject.ref_tag_id, Some(7), "{name}: BeginSeqNo");
-        assert_eq!(reject.ref_seq_num, seq, "{name}");
-
-        assert!(!engine.has_pending_resends(), "{name}");
-        if seq == 1 {
-            // Scenario 14(e): an in-sequence Reject consumes the number.
-            assert_eq!(storage.next_target_msg_seq_num().get(), 2, "{name}");
-        } else {
-            assert_eq!(storage.next_target_msg_seq_num().get(), 1, "{name}");
-            assert_eq!(engine.queued_count(), 1, "{name}");
-            assert_resend_request(&mut engine, 1, 2);
-            for missing in 1..seq {
-                accept_input(
-                    &mut engine,
-                    test_helpers::heartbeat(missing, None),
-                    &mut storage,
-                );
-            }
-            // The rejected request consumes its number after recovery,
-            // without another callback, Reject, or retransmission.
-            assert_matches!(
-                engine.next_queued_message(&mut storage),
-                Ok(Some(InputResult::Handled)),
-                "{name}"
-            );
-            assert_eq!(storage.next_target_msg_seq_num().get(), seq + 1, "{name}");
-            assert_eq!(engine.queued_count(), 0, "{name}");
-        }
-        assert!(engine.take_admin_output().is_none(), "{name}");
-        assert!(!engine.has_pending_resends(), "{name}");
+        assert_eq!(storage.next_target_msg_seq_num().get(), seq + 1, "{name}");
+        assert_eq!(engine.queued_count(), 0, "{name}");
     }
+    assert!(engine.take_admin_output().is_none(), "{name}");
+    assert!(!engine.has_pending_resends(), "{name}");
 }
 
 /// Boundary the range check must not swallow: `begin == end` requests a

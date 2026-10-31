@@ -7,6 +7,7 @@ use easyfix_core::{
     message::SessionMessage,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 
 use super::support::assert_msg_type;
 use crate::{
@@ -129,9 +130,9 @@ fn deserialize_undefined_version_is_garbled() {
 /// code the deserializer can produce. Which code a given wire defect maps to
 /// (Test Cases Scenario 14) is the codec's contract, pinned in
 /// `easyfix-messages`; nothing here exercises that choice.
-#[test]
-fn on_deserialize_error_reject_forwards_reason_and_increments_next_num_in() {
-    let reasons = [
+#[rstest]
+fn on_deserialize_error_reject_forwards_reason_and_increments_next_num_in(
+    #[values(
         SessionRejectReasonBase::InvalidTagNumber, // 14a, reason 0
         SessionRejectReasonBase::RequiredTagMissing, // 14b, reason 1
         SessionRejectReasonBase::TagNotDefinedForThisMessageType, // 14c, reason 2
@@ -143,41 +144,41 @@ fn on_deserialize_error_reject_forwards_reason_and_increments_next_num_in() {
         SessionRejectReasonBase::TagSpecifiedOutOfRequiredOrder, // 14g, reason 14
         SessionRejectReasonBase::RepeatingGroupFieldsOutOfOrder, // reason 15
         SessionRejectReasonBase::IncorrectNumInGroupCountForRepeatingGroup, // reason 16
-    ];
-    for reason in reasons {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
-        let error = DeserializeErrorKind::Reject {
-            msg_type: Some(fix_str!("D").to_owned()),
-            seq_num: 5,
-            tag: Some(44),
-            reason: reason.into(),
-        };
-        let result = engine
-            .on_deserialize_error(error.into(), &mut storage)
-            .unwrap();
-        // Reject: send Reject, return Error for app callback
-        assert_matches!(result, InputResult::Error(..));
-        let reject_msg = take_admin(&mut engine);
-        assert_msg_type(&reject_msg, MsgTypeBase::Reject);
-        let AdminBase::Reject(ref reject) = as_admin(&reject_msg) else {
-            panic!("expected Reject");
-        };
-        assert_eq!(reject.ref_seq_num, 5);
-        assert_eq!(
-            reject
-                .session_reject_reason
-                .expect("reject reason must be set"),
-            reason,
-            "reject reason must be forwarded verbatim ({reason:?})",
-        );
-        assert_eq!(
-            storage.next_target_msg_seq_num().get(),
-            6,
-            "NextNumIn must be incremented after in-sequence Reject ({reason:?})",
-        );
-        assert!(!engine.should_disconnect());
-    }
+    )]
+    reason: SessionRejectReasonBase,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
+    let error = DeserializeErrorKind::Reject {
+        msg_type: Some(fix_str!("D").to_owned()),
+        seq_num: 5,
+        tag: Some(44),
+        reason: reason.into(),
+    };
+    let result = engine
+        .on_deserialize_error(error.into(), &mut storage)
+        .unwrap();
+    // Reject: send Reject, return Error for app callback
+    assert_matches!(result, InputResult::Error(..));
+    let reject_msg = take_admin(&mut engine);
+    assert_msg_type(&reject_msg, MsgTypeBase::Reject);
+    let AdminBase::Reject(ref reject) = as_admin(&reject_msg) else {
+        panic!("expected Reject");
+    };
+    assert_eq!(reject.ref_seq_num, 5);
+    assert_eq!(
+        reject
+            .session_reject_reason
+            .expect("reject reason must be set"),
+        reason,
+        "reject reason must be forwarded verbatim ({reason:?})",
+    );
+    assert_eq!(
+        storage.next_target_msg_seq_num().get(),
+        6,
+        "NextNumIn must be incremented after in-sequence Reject ({reason:?})",
+    );
+    assert!(!engine.should_disconnect());
 }
 
 /// Test Cases Scenario 1S(d): an invalid Logon(35=A) received by an acceptor

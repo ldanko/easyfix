@@ -2,6 +2,7 @@ use std::{assert_matches, str::FromStr};
 
 use easyfix_core::fix_str;
 use quick_xml::de::from_str;
+use rstest::rstest;
 
 use super::*;
 
@@ -38,46 +39,110 @@ fn test_msg_type_methods() {
     assert_eq!(msg_type_double.to_string(), "AB");
 }
 
-#[test]
-fn parse_basic_types() {
+#[rstest]
+#[case::amt("<field name='AmtField' number='1' type='AMT'/>", BasicType::Amt)]
+#[case::boolean(
+    "<field name='BoolField' number='2' type='BOOLEAN'/>",
+    BasicType::Boolean
+)]
+#[case::char("<field name='CharField' number='3' type='CHAR'/>", BasicType::Char)]
+#[case::country(
+    "<field name='CountryField' number='4' type='COUNTRY'/>",
+    BasicType::Country
+)]
+#[case::currency(
+    "<field name='CurrencyField' number='5' type='CURRENCY'/>",
+    BasicType::Currency
+)]
+#[case::data("<field name='DataField' number='6' type='DATA'/>", BasicType::Data)]
+#[case::exchange(
+    "<field name='ExchangeField' number='7' type='EXCHANGE'/>",
+    BasicType::Exchange
+)]
+#[case::float("<field name='FloatField' number='8' type='FLOAT'/>", BasicType::Float)]
+#[case::int("<field name='IntField' number='9' type='INT'/>", BasicType::Int)]
+#[case::language(
+    "<field name='LanguageField' number='10' type='LANGUAGE'/>",
+    BasicType::Language
+)]
+#[case::length(
+    "<field name='LengthField' number='11' type='LENGTH'/>",
+    BasicType::Length
+)]
+#[case::local_mkt_date(
+    "<field name='LocalMktDateField' number='12' type='LOCALMKTDATE'/>",
+    BasicType::LocalMktDate
+)]
+#[case::month_year(
+    "<field name='MonthYearField' number='13' type='MONTHYEAR'/>",
+    BasicType::MonthYear
+)]
+#[case::multiple_char_value(
+    "<field name='MultipleCharValueField' number='14' type='MULTIPLECHARVALUE'/>",
+    BasicType::MultipleCharValue
+)]
+#[case::multiple_string_value(
+    "<field name='MultipleStringValueField' number='15' type='MULTIPLESTRINGVALUE'/>",
+    BasicType::MultipleStringValue
+)]
+#[case::num_in_group(
+    "<field name='NumInGroupField' number='16' type='NUMINGROUP'/>",
+    BasicType::NumInGroup
+)]
+#[case::percentage(
+    "<field name='PercentageField' number='17' type='PERCENTAGE'/>",
+    BasicType::Percentage
+)]
+#[case::price(
+    "<field name='PriceField' number='18' type='PRICE'/>",
+    BasicType::Price
+)]
+#[case::price_offset(
+    "<field name='PriceOffsetField' number='19' type='PRICEOFFSET'/>",
+    BasicType::PriceOffset
+)]
+#[case::qty("<field name='QtyField' number='20' type='QTY'/>", BasicType::Qty)]
+#[case::seq_num(
+    "<field name='SeqNumField' number='21' type='SEQNUM'/>",
+    BasicType::SeqNum
+)]
+#[case::string(
+    "<field name='StringField' number='22' type='STRING'/>",
+    BasicType::String
+)]
+#[case::tz_time_only(
+    "<field name='TzTimeOnlyField' number='23' type='TZTIMEONLY'/>",
+    BasicType::TzTimeOnly
+)]
+#[case::tz_timestamp(
+    "<field name='TzTimestampField' number='24' type='TZTIMESTAMP'/>",
+    BasicType::TzTimestamp
+)]
+#[case::utc_date_only(
+    "<field name='UtcDateOnlyField' number='25' type='UTCDATEONLY'/>",
+    BasicType::UtcDateOnly
+)]
+#[case::utc_time_only(
+    "<field name='UtcTimeOnlyField' number='26' type='UTCTIMEONLY'/>",
+    BasicType::UtcTimeOnly
+)]
+#[case::utc_timestamp(
+    "<field name='UtcTimestampField' number='27' type='UTCTIMESTAMP'/>",
+    BasicType::UtcTimestamp
+)]
+#[case::xml_data(
+    "<field name='XmlDataField' number='28' type='XMLDATA'/>",
+    BasicType::XmlData
+)]
+#[case::tenor(
+    "<field name='TenorField' number='29' type='TENOR'/>",
+    BasicType::Tenor
+)]
+fn parse_basic_types(#[case] xml: &str, #[case] expected_type: BasicType) {
     // Test parsing all defined basic types
-    #[rustfmt::skip]
-    let type_pairs = [
-        ("<field name='AmtField' number='1' type='AMT'/>", BasicType::Amt),
-        ("<field name='BoolField' number='2' type='BOOLEAN'/>", BasicType::Boolean),
-        ("<field name='CharField' number='3' type='CHAR'/>", BasicType::Char),
-        ("<field name='CountryField' number='4' type='COUNTRY'/>", BasicType::Country),
-        ("<field name='CurrencyField' number='5' type='CURRENCY'/>", BasicType::Currency),
-        ("<field name='DataField' number='6' type='DATA'/>", BasicType::Data),
-        ("<field name='ExchangeField' number='7' type='EXCHANGE'/>", BasicType::Exchange),
-        ("<field name='FloatField' number='8' type='FLOAT'/>", BasicType::Float),
-        ("<field name='IntField' number='9' type='INT'/>", BasicType::Int),
-        ("<field name='LanguageField' number='10' type='LANGUAGE'/>", BasicType::Language),
-        ("<field name='LengthField' number='11' type='LENGTH'/>", BasicType::Length),
-        ("<field name='LocalMktDateField' number='12' type='LOCALMKTDATE'/>", BasicType::LocalMktDate),
-        ("<field name='MonthYearField' number='13' type='MONTHYEAR'/>", BasicType::MonthYear),
-        ("<field name='MultipleCharValueField' number='14' type='MULTIPLECHARVALUE'/>", BasicType::MultipleCharValue),
-        ("<field name='MultipleStringValueField' number='15' type='MULTIPLESTRINGVALUE'/>", BasicType::MultipleStringValue),
-        ("<field name='NumInGroupField' number='16' type='NUMINGROUP'/>", BasicType::NumInGroup),
-        ("<field name='PercentageField' number='17' type='PERCENTAGE'/>", BasicType::Percentage),
-        ("<field name='PriceField' number='18' type='PRICE'/>", BasicType::Price),
-        ("<field name='PriceOffsetField' number='19' type='PRICEOFFSET'/>", BasicType::PriceOffset),
-        ("<field name='QtyField' number='20' type='QTY'/>", BasicType::Qty),
-        ("<field name='SeqNumField' number='21' type='SEQNUM'/>", BasicType::SeqNum),
-        ("<field name='StringField' number='22' type='STRING'/>", BasicType::String),
-        ("<field name='TzTimeOnlyField' number='23' type='TZTIMEONLY'/>", BasicType::TzTimeOnly),
-        ("<field name='TzTimestampField' number='24' type='TZTIMESTAMP'/>", BasicType::TzTimestamp),
-        ("<field name='UtcDateOnlyField' number='25' type='UTCDATEONLY'/>", BasicType::UtcDateOnly),
-        ("<field name='UtcTimeOnlyField' number='26' type='UTCTIMEONLY'/>", BasicType::UtcTimeOnly),
-        ("<field name='UtcTimestampField' number='27' type='UTCTIMESTAMP'/>", BasicType::UtcTimestamp),
-        ("<field name='XmlDataField' number='28' type='XMLDATA'/>", BasicType::XmlData),
-        ("<field name='TenorField' number='29' type='TENOR'/>", BasicType::Tenor),
-    ];
 
-    for (xml, expected_type) in type_pairs {
-        let field: Field = from_str(xml).unwrap_or_else(|_| panic!("Failed to parse: {xml}"));
-        assert_eq!(field.data_type, expected_type, "Type mismatch for: {xml}");
-    }
+    let field: Field = from_str(xml).unwrap_or_else(|_| panic!("Failed to parse: {xml}"));
+    assert_eq!(field.data_type, expected_type, "Type mismatch for: {xml}");
 }
 
 #[test]
@@ -246,26 +311,24 @@ fn reject_non_ascii_component_name() {
     );
 }
 
-#[test]
-fn test_required_flag_parsing() {
+#[rstest]
+#[case::upper_y("<field name='Test' required='Y'/>", true)]
+#[case::upper_yes("<field name='Test' required='YES'/>", true)]
+#[case::lower_y("<field name='Test' required='y'/>", true)]
+#[case::lower_yes("<field name='Test' required='yes'/>", true)]
+#[case::upper_n("<field name='Test' required='N'/>", false)]
+#[case::upper_no("<field name='Test' required='NO'/>", false)]
+#[case::lower_n("<field name='Test' required='n'/>", false)]
+#[case::lower_no("<field name='Test' required='no'/>", false)]
+fn test_required_flag_parsing(#[case] xml: &str, #[case] expected: bool) {
     // Test different formats of the required flag
-    let xml_variants = [
-        ("<field name='Test' required='Y'/>", true),
-        ("<field name='Test' required='YES'/>", true),
-        ("<field name='Test' required='y'/>", true),
-        ("<field name='Test' required='yes'/>", true),
-        ("<field name='Test' required='N'/>", false),
-        ("<field name='Test' required='NO'/>", false),
-        ("<field name='Test' required='n'/>", false),
-        ("<field name='Test' required='no'/>", false),
-    ];
 
-    for (xml, expected) in xml_variants {
-        let member: Member = from_str(xml).unwrap_or_else(|_| panic!("Failed to parse: {xml}"));
-        assert_matches!(member, Member::Field(r) if r.required == expected, "Required flag mismatch for: {}", xml);
-    }
+    let member: Member = from_str(xml).unwrap_or_else(|_| panic!("Failed to parse: {xml}"));
+    assert_matches!(member, Member::Field(r) if r.required == expected, "Required flag mismatch for: {}", xml);
+}
 
-    // Test invalid required flag
+#[test]
+fn invalid_required_flag_is_rejected() {
     let invalid_xml = "<field name='Test' required='MAYBE'/>";
     let result: Result<Member, _> = from_str(invalid_xml);
     assert!(result.is_err(), "Should fail with invalid required value");

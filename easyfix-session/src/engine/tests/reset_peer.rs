@@ -4,6 +4,7 @@ use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase},
     fix_str,
 };
+use rstest::rstest;
 use tokio::time::Duration;
 
 use super::{
@@ -67,154 +68,155 @@ fn on_logon_peer_reset_acknowledged_with_post_reset_tag_789() {
 }
 
 /// A fresh reset must start at one (FIX Session Layer Section 4.4.2).
+#[rstest]
 #[tokio::test]
-async fn on_logon_reset_with_msg_seq_num_other_than_one_is_refused() {
-    for established in [false, true] {
-        for seq in [0, 5, 40] {
-            let (mut engine, mut storage, history) = reset_test_session(established);
-            let msg = test_helpers::logon_with_options(
-                seq,
-                fix_str!("TARGET"),
-                fix_str!("SENDER"),
-                30,
-                Some(true),
-                None,
-            );
-            assert_matches!(
-                engine
-                    .process_input_without_callback(msg, &mut storage)
-                    .unwrap(),
-                InputResult::Handled
-            );
-            assert_reset_refused(
-                &mut engine,
-                &mut storage,
-                &history,
-                &format!("ResetSeqNumFlag=Y requires MsgSeqNum=1, got {seq}"),
-            )
-            .await;
-        }
-    }
+async fn on_logon_reset_with_msg_seq_num_other_than_one_is_refused(
+    #[values(false, true)] established: bool,
+    #[values(0, 5, 40)] seq: u32,
+) {
+    let (mut engine, mut storage, history) = reset_test_session(established);
+    let msg = test_helpers::logon_with_options(
+        seq,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        Some(true),
+        None,
+    );
+    assert_matches!(
+        engine
+            .process_input_without_callback(msg, &mut storage)
+            .unwrap(),
+        InputResult::Handled
+    );
+    assert_reset_refused(
+        &mut engine,
+        &mut storage,
+        &history,
+        &format!("ResetSeqNumFlag=Y requires MsgSeqNum=1, got {seq}"),
+    )
+    .await;
 }
 
+#[rstest]
 #[tokio::test]
-async fn on_logon_reset_refused_when_the_applicable_permission_is_disabled() {
-    for established in [false, true] {
-        let (mut engine, mut storage, history) = reset_test_session(established);
-        engine.session_settings.accept_reset_on_connect = established;
-        engine.session_settings.accept_reset_in_session = !established;
-        let msg = test_helpers::logon_with_options(
-            1,
-            fix_str!("TARGET"),
-            fix_str!("SENDER"),
-            30,
-            Some(true),
-            None,
-        );
-        assert_matches!(
-            engine
-                .process_input_without_callback(msg, &mut storage)
-                .unwrap(),
-            InputResult::Handled
-        );
-        let text = if established {
-            "Resetting the sequence number is not supported"
-        } else {
-            "Resetting the sequence number upon FIX connection establishment is not supported"
-        };
-        assert_reset_refused(&mut engine, &mut storage, &history, text).await;
-    }
+async fn on_logon_reset_refused_when_the_applicable_permission_is_disabled(
+    #[values(false, true)] established: bool,
+) {
+    let (mut engine, mut storage, history) = reset_test_session(established);
+    engine.session_settings.accept_reset_on_connect = established;
+    engine.session_settings.accept_reset_in_session = !established;
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        Some(true),
+        None,
+    );
+    assert_matches!(
+        engine
+            .process_input_without_callback(msg, &mut storage)
+            .unwrap(),
+        InputResult::Handled
+    );
+    let text = if established {
+        "Resetting the sequence number is not supported"
+    } else {
+        "Resetting the sequence number upon FIX connection establishment is not supported"
+    };
+    assert_reset_refused(&mut engine, &mut storage, &history, text).await;
 }
 
-#[test]
-fn on_logon_reset_acceptance_permissions_are_independent() {
-    for established in [false, true] {
-        let builder = EngineBuilder::new()
-            .accept_reset_on_connect(!established)
-            .accept_reset_in_session(established);
-        let (mut engine, mut storage) = if established {
-            builder.logged_on().build()
-        } else {
-            builder.build()
-        };
-        let msg = test_helpers::logon_with_options(
-            1,
-            fix_str!("TARGET"),
-            fix_str!("SENDER"),
-            30,
-            Some(true),
-            None,
-        );
-        assert_matches!(
-            accept_input(&mut engine, msg, &mut storage),
-            InputResult::Handled
-        );
-        assert!(engine.is_logged_on());
+#[rstest]
+fn on_logon_reset_acceptance_permissions_are_independent(#[values(false, true)] established: bool) {
+    let builder = EngineBuilder::new()
+        .accept_reset_on_connect(!established)
+        .accept_reset_in_session(established);
+    let (mut engine, mut storage) = if established {
+        builder.logged_on().build()
+    } else {
+        builder.build()
+    };
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        Some(true),
+        None,
+    );
+    assert_matches!(
+        accept_input(&mut engine, msg, &mut storage),
+        InputResult::Handled
+    );
+    assert!(engine.is_logged_on());
+    assert!(engine.session_end().map(|end| end.context).is_none());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logon);
+}
+
+#[rstest]
+#[tokio::test]
+async fn on_logon_reset_in_session_with_different_heart_bt_int_is_refused(
+    #[values(0, 20)] heartbeat: i64,
+) {
+    let (mut engine, mut storage, history) = reset_test_session(true);
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        heartbeat,
+        Some(true),
+        None,
+    );
+    assert_matches!(
+        engine.process_input_without_callback(msg, &mut storage),
+        Ok(InputResult::Handled)
+    );
+    assert_reset_refused(
+        &mut engine,
+        &mut storage,
+        &history,
+        "Invalid HeartBtInt(108), expected value 30 seconds",
+    )
+    .await;
+    assert_eq!(engine.heartbeat_interval(), Some(Duration::from_secs(30)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn on_logon_reset_in_session_with_heartbeats_disabled_refuses_nonzero(
+    #[values(0, 30)] heartbeat: i64,
+) {
+    let (mut engine, mut storage, history) = reset_test_session(true);
+    engine.state.heartbeat_interval = None;
+    let msg = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        heartbeat,
+        Some(true),
+        None,
+    );
+    assert_matches!(
+        accept_input(&mut engine, msg, &mut storage),
+        InputResult::Handled
+    );
+    if heartbeat == 0 {
         assert!(engine.session_end().map(|end| end.context).is_none());
-        assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logon);
-    }
-}
-
-#[tokio::test]
-async fn on_logon_reset_in_session_with_different_heart_bt_int_is_refused() {
-    for heartbeat in [0, 20] {
-        let (mut engine, mut storage, history) = reset_test_session(true);
-        let msg = test_helpers::logon_with_options(
-            1,
-            fix_str!("TARGET"),
-            fix_str!("SENDER"),
-            heartbeat,
-            Some(true),
-            None,
-        );
-        assert_matches!(
-            engine.process_input_without_callback(msg, &mut storage),
-            Ok(InputResult::Handled)
-        );
+        let ack = take_admin(&mut engine);
+        assert_matches!(as_admin(&ack), AdminBase::Logon(logon) if logon.heart_bt_int == 0);
+    } else {
         assert_reset_refused(
             &mut engine,
             &mut storage,
             &history,
-            "Invalid HeartBtInt(108), expected value 30 seconds",
+            "Invalid HeartBtInt(108)",
         )
         .await;
-        assert_eq!(engine.heartbeat_interval(), Some(Duration::from_secs(30)));
     }
-}
-
-#[tokio::test]
-async fn on_logon_reset_in_session_with_heartbeats_disabled_refuses_nonzero() {
-    for heartbeat in [0, 30] {
-        let (mut engine, mut storage, history) = reset_test_session(true);
-        engine.state.heartbeat_interval = None;
-        let msg = test_helpers::logon_with_options(
-            1,
-            fix_str!("TARGET"),
-            fix_str!("SENDER"),
-            heartbeat,
-            Some(true),
-            None,
-        );
-        assert_matches!(
-            accept_input(&mut engine, msg, &mut storage),
-            InputResult::Handled
-        );
-        if heartbeat == 0 {
-            assert!(engine.session_end().map(|end| end.context).is_none());
-            let ack = take_admin(&mut engine);
-            assert_matches!(as_admin(&ack), AdminBase::Logon(logon) if logon.heart_bt_int == 0);
-        } else {
-            assert_reset_refused(
-                &mut engine,
-                &mut storage,
-                &history,
-                "Invalid HeartBtInt(108)",
-            )
-            .await;
-        }
-        assert_eq!(engine.heartbeat_interval(), None);
-    }
+    assert_eq!(engine.heartbeat_interval(), None);
 }
 
 #[tokio::test]

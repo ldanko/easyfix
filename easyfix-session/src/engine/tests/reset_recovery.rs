@@ -8,6 +8,7 @@ use easyfix_core::{
     version::Version,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 
 use super::{
     resend_support::drain_queued,
@@ -121,139 +122,140 @@ fn running_reset_ready_waits_for_the_end_of_recovery_and_the_queued_input() {
     assert!(!engine.reset_ready(true, &storage));
 }
 
-#[test]
-fn running_reset_ready_accepts_gap_fills_and_completed_decoder_recovery() {
-    for broken in [false, true] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        storage.set_next_target_msg_seq_num(nz_seq(10)).unwrap();
-        engine.on_control(ControlMsg::ResetRunningSession);
-        if broken {
-            let mut error = broken_reset_response(Some(fix_str!("D")), 12, true);
-            if let DeserializeErrorKind::Reject { reason, .. } = &mut error.kind {
-                *reason = SessionRejectReasonBase::RequiredTagMissing.into();
-            }
-            engine.on_deserialize_error(error, &mut storage).unwrap();
-            assert!(engine.state.queue.is_empty());
-        } else {
-            accept_input(&mut engine, test_helpers::heartbeat(12, None), &mut storage);
+#[rstest]
+fn running_reset_ready_accepts_gap_fills_and_completed_decoder_recovery(
+    #[values(false, true)] broken: bool,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_target_msg_seq_num(nz_seq(10)).unwrap();
+    engine.on_control(ControlMsg::ResetRunningSession);
+    if broken {
+        let mut error = broken_reset_response(Some(fix_str!("D")), 12, true);
+        if let DeserializeErrorKind::Reject { reason, .. } = &mut error.kind {
+            *reason = SessionRejectReasonBase::RequiredTagMissing.into();
         }
-        let range = if broken { 10..=12 } else { 10..=11 };
-        assert_eq!(engine.state.resend_range, Some(range.clone()));
-        let request = commit_reset_admin(&mut engine, &mut storage);
-        assert_matches!(as_admin(&request), AdminBase::ResendRequest(rr)
-            if rr.begin_seq_no == 10 && rr.end_seq_no == *range.end());
-        if broken {
-            for seq in [10, 11] {
-                accept_input(
-                    &mut engine,
-                    test_helpers::heartbeat(seq, None),
-                    &mut storage,
-                );
-                assert!(!engine.reset_ready(true, &storage));
-            }
-            assert_eq!(storage.next_target_msg_seq_num().get(), 12);
-            let mut replay = test_helpers::heartbeat(12, None);
-            replay.header.poss_dup_flag = Some(true);
-            replay.header.orig_sending_time = Some(replay.header.sending_time);
-            accept_input(&mut engine, replay, &mut storage);
-        } else {
-            let mut gap = test_helpers::sequence_reset(10, 12, true);
-            gap.header.poss_dup_flag = Some(true);
-            gap.header.orig_sending_time = Some(gap.header.sending_time);
-            accept_input(&mut engine, gap, &mut storage);
-            assert_eq!(storage.next_target_msg_seq_num().get(), 12);
-            assert!(!engine.reset_ready(true, &storage));
-            drain_queued(&mut engine, &mut storage);
-        }
-        assert_eq!(storage.next_target_msg_seq_num().get(), 13);
+        engine.on_deserialize_error(error, &mut storage).unwrap();
         assert!(engine.state.queue.is_empty());
-        assert_eq!(engine.state.resend_range, Some(range));
-        assert!(engine.reset_ready(true, &storage));
+    } else {
+        accept_input(&mut engine, test_helpers::heartbeat(12, None), &mut storage);
     }
+    let range = if broken { 10..=12 } else { 10..=11 };
+    assert_eq!(engine.state.resend_range, Some(range.clone()));
+    let request = commit_reset_admin(&mut engine, &mut storage);
+    assert_matches!(as_admin(&request), AdminBase::ResendRequest(rr)
+            if rr.begin_seq_no == 10 && rr.end_seq_no == *range.end());
+    if broken {
+        for seq in [10, 11] {
+            accept_input(
+                &mut engine,
+                test_helpers::heartbeat(seq, None),
+                &mut storage,
+            );
+            assert!(!engine.reset_ready(true, &storage));
+        }
+        assert_eq!(storage.next_target_msg_seq_num().get(), 12);
+        let mut replay = test_helpers::heartbeat(12, None);
+        replay.header.poss_dup_flag = Some(true);
+        replay.header.orig_sending_time = Some(replay.header.sending_time);
+        accept_input(&mut engine, replay, &mut storage);
+    } else {
+        let mut gap = test_helpers::sequence_reset(10, 12, true);
+        gap.header.poss_dup_flag = Some(true);
+        gap.header.orig_sending_time = Some(gap.header.sending_time);
+        accept_input(&mut engine, gap, &mut storage);
+        assert_eq!(storage.next_target_msg_seq_num().get(), 12);
+        assert!(!engine.reset_ready(true, &storage));
+        drain_queued(&mut engine, &mut storage);
+    }
+    assert_eq!(storage.next_target_msg_seq_num().get(), 13);
+    assert!(engine.state.queue.is_empty());
+    assert_eq!(engine.state.resend_range, Some(range));
+    assert!(engine.reset_ready(true, &storage));
 }
 
+#[rstest]
 #[tokio::test]
-async fn running_reset_queued_probe_requires_a_fresh_answer_after_the_queue_drains() {
-    for extra in [false, true] {
-        let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
-        storage.set_next_sender_msg_seq_num(nz_seq(100)).unwrap();
-        storage.set_next_target_msg_seq_num(nz_seq(500)).unwrap();
-        let first = running_reset_probe(&mut engine, &mut storage);
-        let history = storage
-            .fetch(nz_seq(100), nz_seq(100))
-            .await
-            .unwrap()
-            .to_vec();
+async fn running_reset_queued_probe_requires_a_fresh_answer_after_the_queue_drains(
+    #[values(false, true)] extra: bool,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    storage.set_next_sender_msg_seq_num(nz_seq(100)).unwrap();
+    storage.set_next_target_msg_seq_num(nz_seq(500)).unwrap();
+    let first = running_reset_probe(&mut engine, &mut storage);
+    let history = storage
+        .fetch(nz_seq(100), nz_seq(100))
+        .await
+        .unwrap()
+        .to_vec();
+    accept_input(
+        &mut engine,
+        test_helpers::heartbeat(504, Some(first.clone())),
+        &mut storage,
+    );
+    while engine.has_admin_output() {
+        let _ = commit_reset_admin(&mut engine, &mut storage);
+    }
+    if extra {
         accept_input(
             &mut engine,
-            test_helpers::heartbeat(504, Some(first.clone())),
+            test_helpers::new_order_single(505),
             &mut storage,
         );
         while engine.has_admin_output() {
             let _ = commit_reset_admin(&mut engine, &mut storage);
         }
-        if extra {
-            accept_input(
-                &mut engine,
-                test_helpers::new_order_single(505),
-                &mut storage,
-            );
-            while engine.has_admin_output() {
-                let _ = commit_reset_admin(&mut engine, &mut storage);
-            }
-        }
-        accept_input(
-            &mut engine,
-            test_helpers::sequence_reset(500, 504, true),
-            &mut storage,
-        );
-        let sender = storage.next_sender_msg_seq_num();
-        if !extra {
-            engine.mark_probe_stale();
-        }
-        drain_queued(&mut engine, &mut storage);
-        assert_eq!(engine.reset_phase(), Some(ResetPhase::Pending));
-        assert_eq!(storage.next_target_msg_seq_num().get(), 505);
-        assert_eq!(storage.next_sender_msg_seq_num(), sender);
-        assert_eq!(
-            storage.fetch(nz_seq(100), nz_seq(100)).await.unwrap(),
-            history.as_slice()
-        );
-        assert!(!engine.state.local_reset_unconfirmed);
-        assert!(engine.state.reset_probe_id.is_none());
-        assert!(!engine.state.probe_stale);
-        assert!(!engine.has_admin_output());
-        if extra {
-            assert!(!engine.reset_ready(true, &storage));
-            let Some(InputResult::AppMsg(msg)) = engine.next_queued_message(&mut storage).unwrap()
-            else {
-                panic!("expected queued application input");
-            };
-            engine
-                .process_app_input(
-                    msg.header.msg_seq_num,
-                    SessionMessage::msg_type(&*msg),
-                    InputAction::Accept,
-                    &mut storage,
-                )
-                .unwrap();
-        }
-        assert!(engine.reset_ready(true, &storage));
-        engine.start_reset_probe();
-        let second = committed_reset_probe_id(&mut engine, &mut storage);
-        assert_ne!(first, second);
-        let target = storage.next_target_msg_seq_num().get();
-        accept_input(
-            &mut engine,
-            test_helpers::heartbeat(target, Some(second)),
-            &mut storage,
-        );
-        assert_eq!(engine.reset_phase(), Some(ResetPhase::Sent));
-        assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
-        assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-        assert!(storage.fetch(nz_seq(100), nz_seq(100)).await.is_err());
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logon);
     }
+    accept_input(
+        &mut engine,
+        test_helpers::sequence_reset(500, 504, true),
+        &mut storage,
+    );
+    let sender = storage.next_sender_msg_seq_num();
+    if !extra {
+        engine.mark_probe_stale();
+    }
+    drain_queued(&mut engine, &mut storage);
+    assert_eq!(engine.reset_phase(), Some(ResetPhase::Pending));
+    assert_eq!(storage.next_target_msg_seq_num().get(), 505);
+    assert_eq!(storage.next_sender_msg_seq_num(), sender);
+    assert_eq!(
+        storage.fetch(nz_seq(100), nz_seq(100)).await.unwrap(),
+        history.as_slice()
+    );
+    assert!(!engine.state.local_reset_unconfirmed);
+    assert!(engine.state.reset_probe_id.is_none());
+    assert!(!engine.state.probe_stale);
+    assert!(!engine.has_admin_output());
+    if extra {
+        assert!(!engine.reset_ready(true, &storage));
+        let Some(InputResult::AppMsg(msg)) = engine.next_queued_message(&mut storage).unwrap()
+        else {
+            panic!("expected queued application input");
+        };
+        engine
+            .process_app_input(
+                msg.header.msg_seq_num,
+                SessionMessage::msg_type(&*msg),
+                InputAction::Accept,
+                &mut storage,
+            )
+            .unwrap();
+    }
+    assert!(engine.reset_ready(true, &storage));
+    engine.start_reset_probe();
+    let second = committed_reset_probe_id(&mut engine, &mut storage);
+    assert_ne!(first, second);
+    let target = storage.next_target_msg_seq_num().get();
+    accept_input(
+        &mut engine,
+        test_helpers::heartbeat(target, Some(second)),
+        &mut storage,
+    );
+    assert_eq!(engine.reset_phase(), Some(ResetPhase::Sent));
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 1);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert!(storage.fetch(nz_seq(100), nz_seq(100)).await.is_err());
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logon);
 }
 
 #[test]

@@ -34,10 +34,11 @@ use easyfix_session::{
 };
 use easyfix_test_messages::{Body, Message};
 use futures_util::FutureExt;
+use rstest::rstest;
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf, split},
     sync::mpsc::{self, error::TryRecvError},
-    task::{JoinHandle, LocalSet, spawn_local, yield_now},
+    task::{JoinHandle, spawn_local, yield_now},
     time::{self, timeout},
 };
 
@@ -245,209 +246,429 @@ async fn connect_relay_pair(
     (acc_task, ini_task, acc, ini)
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn graceful_shutdown_during_a_reset_leaves_both_sides_consistent() {
-    LocalSet::new().run_until(async {
-        let mut pair = reset_pair();
-        let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 1).await;
-        pair.acceptor.request_running_session_reset(&acceptor_session_id()).await.unwrap();
-        let probe = acc.read().await; ini.send(&probe).await;
-        let answer = ini.read().await; acc.send(&answer).await;
-        assert_matches!((probe.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
-        let logon = acc.read().await;
-        assert_eq!(logon.msg_seq_num(), 1); assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-        ini.send(&logon).await;
-        let ack = ini.read().await;
-        assert_eq!(ack.msg_seq_num(), 1); assert_matches!(ack.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-        assert_snapshot_counts(&pair.acc_storage, 2, 1); assert_snapshot_counts(&pair.ini_storage, 2, 2);
-        let stopping = pair.acceptor.clone();
-        let shutdown = spawn_local(async move { stopping.shutdown(ShutdownMode::GracefulLogout { session_status: None, text: None }).await; });
-        let logout = acc.read().await;
-        assert_eq!(logout.msg_seq_num(), 2); assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(_)));
-        acc.send(&ack).await;
-        expect_admin(&mut pair.acc_events, MsgTypeBase::Heartbeat).await;
-        let callback = expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
-        assert_eq!(serialize_message(&callback), serialize_message(&ack));
-        assert_snapshot_counts(&pair.acc_storage, 3, 2);
-        ini.send(&logout).await;
-        let logout_ack = ini.read().await;
-        assert_eq!(logout_ack.msg_seq_num(), 2); assert_matches!(logout_ack.try_as_admin(), Some(AdminBase::Logout(_)));
-        acc.send(&logout_ack).await;
-        expect_admin(&mut pair.acc_events, MsgTypeBase::Logout).await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
-        shutdown.await.unwrap(); acc_task.await.unwrap();
-        ini.close_input().await;
-        expect_admin(&mut pair.ini_events, MsgTypeBase::TestRequest).await;
-        expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
-        expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
-        ini_task.await.unwrap().unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
-        assert_snapshot_counts(&pair.acc_storage, 3, 3); assert_snapshot_counts(&pair.ini_storage, 3, 3);
-        for (snapshot, first, second) in [(&pair.acc_storage, &logon, &logout), (&pair.ini_storage, &ack, &logout_ack)] {
-            let state = snapshot.borrow(); assert_eq!(state.messages.len(), 2);
-            assert_eq!(state.messages[&NonZeroSeqNum::new(1).unwrap()], serialize_message(first));
-            assert_eq!(state.messages[&NonZeroSeqNum::new(2).unwrap()], serialize_message(second));
-        }
-        let saved = pair.acceptor.remove_session(&acceptor_session_id()).unwrap();
-        let (events, received) = mpsc::unbounded_channel();
-        let mut pair = ResetPair {
-            acceptor: Acceptor::new(reset_handler(events, pair.refuse.clone())),
-            initiator: pair.initiator,
-            acc_events: received,
-            ini_events: pair.ini_events,
-            acc_storage: pair.acc_storage,
-            ini_storage: pair.ini_storage,
-            refuse: pair.refuse,
-        };
-        pair.acceptor.register_session(acceptor_session_id(), reset_settings(), |_, _| Ok(saved)).unwrap();
-        let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 3).await;
-        assert_snapshot_counts(&pair.acc_storage, 4, 4); assert_snapshot_counts(&pair.ini_storage, 4, 4);
-        pair.initiator.disconnect().await.unwrap();
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
-        ini_task.await.unwrap().unwrap(); acc.close_input().await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
-        acc_task.await.unwrap(); acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
-        assert!(pair.acc_events.try_recv().is_err()); assert!(pair.ini_events.try_recv().is_err());
-    }).await;
+    let mut pair = reset_pair();
+    let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 1).await;
+    pair.acceptor
+        .request_running_session_reset(&acceptor_session_id())
+        .await
+        .unwrap();
+    let probe = acc.read().await;
+    ini.send(&probe).await;
+    let answer = ini.read().await;
+    acc.send(&answer).await;
+    assert_matches!((probe.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
+    let logon = acc.read().await;
+    assert_eq!(logon.msg_seq_num(), 1);
+    assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    ini.send(&logon).await;
+    let ack = ini.read().await;
+    assert_eq!(ack.msg_seq_num(), 1);
+    assert_matches!(ack.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    assert_snapshot_counts(&pair.acc_storage, 2, 1);
+    assert_snapshot_counts(&pair.ini_storage, 2, 2);
+    let stopping = pair.acceptor.clone();
+    let shutdown = spawn_local(async move {
+        stopping
+            .shutdown(ShutdownMode::GracefulLogout {
+                session_status: None,
+                text: None,
+            })
+            .await;
+    });
+    let logout = acc.read().await;
+    assert_eq!(logout.msg_seq_num(), 2);
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(_)));
+    acc.send(&ack).await;
+    expect_admin(&mut pair.acc_events, MsgTypeBase::Heartbeat).await;
+    let callback = expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
+    assert_eq!(serialize_message(&callback), serialize_message(&ack));
+    assert_snapshot_counts(&pair.acc_storage, 3, 2);
+    ini.send(&logout).await;
+    let logout_ack = ini.read().await;
+    assert_eq!(logout_ack.msg_seq_num(), 2);
+    assert_matches!(logout_ack.try_as_admin(), Some(AdminBase::Logout(_)));
+    acc.send(&logout_ack).await;
+    expect_admin(&mut pair.acc_events, MsgTypeBase::Logout).await;
+    assert_matches!(
+        recv_event(&mut pair.acc_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::LocalLogout,
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    shutdown.await.unwrap();
+    acc_task.await.unwrap();
+    ini.close_input().await;
+    expect_admin(&mut pair.ini_events, MsgTypeBase::TestRequest).await;
+    expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
+    expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
+    assert_matches!(
+        recv_event(&mut pair.ini_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::RemoteLogout,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    ini_task.await.unwrap().unwrap();
+    acc.assert_closed_without_output().await;
+    ini.assert_closed_without_output().await;
+    assert_snapshot_counts(&pair.acc_storage, 3, 3);
+    assert_snapshot_counts(&pair.ini_storage, 3, 3);
+    for (snapshot, first, second) in [
+        (&pair.acc_storage, &logon, &logout),
+        (&pair.ini_storage, &ack, &logout_ack),
+    ] {
+        let state = snapshot.borrow();
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(
+            state.messages[&NonZeroSeqNum::new(1).unwrap()],
+            serialize_message(first)
+        );
+        assert_eq!(
+            state.messages[&NonZeroSeqNum::new(2).unwrap()],
+            serialize_message(second)
+        );
+    }
+    let saved = pair
+        .acceptor
+        .remove_session(&acceptor_session_id())
+        .unwrap();
+    let (events, received) = mpsc::unbounded_channel();
+    let mut pair = ResetPair {
+        acceptor: Acceptor::new(reset_handler(events, pair.refuse.clone())),
+        initiator: pair.initiator,
+        acc_events: received,
+        ini_events: pair.ini_events,
+        acc_storage: pair.acc_storage,
+        ini_storage: pair.ini_storage,
+        refuse: pair.refuse,
+    };
+    pair.acceptor
+        .register_session(acceptor_session_id(), reset_settings(), |_, _| Ok(saved))
+        .unwrap();
+    let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 3).await;
+    assert_snapshot_counts(&pair.acc_storage, 4, 4);
+    assert_snapshot_counts(&pair.ini_storage, 4, 4);
+    pair.initiator.disconnect().await.unwrap();
+    assert_matches!(
+        recv_event(&mut pair.ini_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    ini_task.await.unwrap().unwrap();
+    acc.close_input().await;
+    assert_matches!(
+        recv_event(&mut pair.acc_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Established,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    acc_task.await.unwrap();
+    acc.assert_closed_without_output().await;
+    ini.assert_closed_without_output().await;
+    assert!(pair.acc_events.try_recv().is_err());
+    assert!(pair.ini_events.try_recv().is_err());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn in_session_reset_refused_by_peer() {
-    LocalSet::new().run_until(async {
-        let mut pair = reset_pair();
-        let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 1).await;
-        pair.refuse.set(true);
-        pair.initiator.request_running_session_reset().await.unwrap();
-        let probe = ini.read().await; acc.send(&probe).await;
-        let answer = acc.read().await; ini.send(&answer).await;
-        assert_matches!((probe.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
-        let logon = ini.read().await;
-        assert_eq!(logon.msg_seq_num(), 1); assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-        acc.send(&logon).await;
-        let refusal = acc.read().await;
-        assert_eq!(refusal.msg_seq_num(), 3);
-        assert_matches!(refusal.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Peer rejected reset")));
-        ini.send(&refusal).await;
-        let logout_ack = ini.read().await;
-        assert_eq!(logout_ack.msg_seq_num(), 2); assert_matches!(logout_ack.try_as_admin(), Some(AdminBase::Logout(_)));
-        expect_admin(&mut pair.acc_events, MsgTypeBase::TestRequest).await;
-        expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
-        expect_admin(&mut pair.ini_events, MsgTypeBase::Heartbeat).await;
-        let callback = expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
-        assert_eq!(serialize_message(&callback), serialize_message(&refusal));
-        assert!(!ini_task.is_finished());
-        ini.close_input().await;
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: true }));
-        acc_task.await.unwrap(); ini_task.await.unwrap().unwrap();
-        acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
-        assert_snapshot_counts(&pair.ini_storage, 3, 2); assert_snapshot_counts(&pair.acc_storage, 4, 3);
-        let state = pair.ini_storage.borrow(); assert_eq!(state.messages.len(), 2);
-        assert_eq!(state.messages[&NonZeroSeqNum::new(1).unwrap()], serialize_message(&logon));
-        assert_eq!(state.messages[&NonZeroSeqNum::new(2).unwrap()], serialize_message(&logout_ack));
-        assert!(pair.acc_events.try_recv().is_err()); assert!(pair.ini_events.try_recv().is_err());
-    }).await;
+    let mut pair = reset_pair();
+    let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 1).await;
+    pair.refuse.set(true);
+    pair.initiator
+        .request_running_session_reset()
+        .await
+        .unwrap();
+    let probe = ini.read().await;
+    acc.send(&probe).await;
+    let answer = acc.read().await;
+    ini.send(&answer).await;
+    assert_matches!((probe.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
+    let logon = ini.read().await;
+    assert_eq!(logon.msg_seq_num(), 1);
+    assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    acc.send(&logon).await;
+    let refusal = acc.read().await;
+    assert_eq!(refusal.msg_seq_num(), 3);
+    assert_matches!(refusal.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Peer rejected reset")));
+    ini.send(&refusal).await;
+    let logout_ack = ini.read().await;
+    assert_eq!(logout_ack.msg_seq_num(), 2);
+    assert_matches!(logout_ack.try_as_admin(), Some(AdminBase::Logout(_)));
+    expect_admin(&mut pair.acc_events, MsgTypeBase::TestRequest).await;
+    expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
+    assert_matches!(
+        recv_event(&mut pair.acc_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    expect_admin(&mut pair.ini_events, MsgTypeBase::Heartbeat).await;
+    let callback = expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
+    assert_eq!(serialize_message(&callback), serialize_message(&refusal));
+    assert!(!ini_task.is_finished());
+    ini.close_input().await;
+    assert_matches!(
+        recv_event(&mut pair.ini_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::RemoteLogout,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: true
+            }
+        )
+    );
+    acc_task.await.unwrap();
+    ini_task.await.unwrap().unwrap();
+    acc.assert_closed_without_output().await;
+    ini.assert_closed_without_output().await;
+    assert_snapshot_counts(&pair.ini_storage, 3, 2);
+    assert_snapshot_counts(&pair.acc_storage, 4, 3);
+    let state = pair.ini_storage.borrow();
+    assert_eq!(state.messages.len(), 2);
+    assert_eq!(
+        state.messages[&NonZeroSeqNum::new(1).unwrap()],
+        serialize_message(&logon)
+    );
+    assert_eq!(
+        state.messages[&NonZeroSeqNum::new(2).unwrap()],
+        serialize_message(&logout_ack)
+    );
+    assert!(pair.acc_events.try_recv().is_err());
+    assert!(pair.ini_events.try_recv().is_err());
 }
 
 /// One intentional collision interleaving: the first reset request is held
 /// while the other engine sends its own probe, and its ACK is written before
 /// the failed requester's close is delivered. Other IO ordering can make
 /// the answering engine observe a transport error while answering the Logout.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn an_initiator_collision_can_end_with_an_unconfirmed_reset_failure() {
-    LocalSet::new().run_until(async {
-        let mut pair = reset_pair();
-        let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 1).await;
-        pair.acceptor.request_running_session_reset(&acceptor_session_id()).await.unwrap();
-        let probe_b = acc.read().await; ini.send(&probe_b).await;
-        let answer = ini.read().await; acc.send(&answer).await;
-        assert_matches!((probe_b.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
-        let logon_b = acc.read().await;
-        assert_eq!(logon_b.msg_seq_num(), 1); assert_matches!(logon_b.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-        assert_snapshot_counts(&pair.acc_storage, 2, 1); assert_snapshot_counts(&pair.ini_storage, 3, 3);
-        pair.initiator.request_running_session_reset().await.unwrap();
-        let probe_a = ini.read().await;
-        assert_eq!(probe_a.msg_seq_num(), 3); assert_matches!(probe_a.try_as_admin(), Some(AdminBase::TestRequest(_)));
-        assert_snapshot_counts(&pair.ini_storage, 4, 3);
-        acc.send(&probe_a).await;
-        let logout_b = acc.read().await;
-        assert_eq!(logout_b.msg_seq_num(), 2);
-        assert_matches!(logout_b.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Unexpected TestRequest(1) during sequence number reset")));
-        ini.send(&logon_b).await;
-        let ack_a = ini.read().await;
-        assert_eq!(ack_a.msg_seq_num(), 1); assert_matches!(ack_a.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-        assert_eq!(ack_a.sender_comp_id(), logon_b.target_comp_id()); assert_eq!(ack_a.target_comp_id(), logon_b.sender_comp_id());
-        assert_snapshot_counts(&pair.ini_storage, 2, 2);
-        ini.send(&logout_b).await;
-        let logout_ack_a = ini.read().await;
-        assert_eq!(logout_ack_a.msg_seq_num(), 2); assert_matches!(logout_ack_a.try_as_admin(), Some(AdminBase::Logout(_)));
-        expect_admin(&mut pair.ini_events, MsgTypeBase::TestRequest).await;
-        let ack_callback = expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
-        assert_eq!(serialize_message(&ack_callback), serialize_message(&logon_b));
-        expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
-        expect_admin(&mut pair.acc_events, MsgTypeBase::Heartbeat).await;
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
-        assert!(!ini_task.is_finished()); ini.close_input().await;
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
-        acc_task.await.unwrap(); ini_task.await.unwrap().unwrap();
-        acc.assert_closed_without_output().await; ini.assert_closed_without_output().await;
-        assert_snapshot_counts(&pair.acc_storage, 3, 1); assert_snapshot_counts(&pair.ini_storage, 3, 3);
-        for (snapshot, first, second) in [(&pair.acc_storage, &logon_b, &logout_b), (&pair.ini_storage, &ack_a, &logout_ack_a)] {
-            let state = snapshot.borrow(); assert_eq!(state.messages.len(), 2);
-            assert_eq!(state.messages[&NonZeroSeqNum::new(1).unwrap()], serialize_message(first));
-            assert_eq!(state.messages[&NonZeroSeqNum::new(2).unwrap()], serialize_message(second));
-        }
-        assert!(pair.acc_events.try_recv().is_err()); assert!(pair.ini_events.try_recv().is_err());
-    }).await;
+    let mut pair = reset_pair();
+    let (acc_task, ini_task, mut acc, mut ini) = connect_relay_pair(&mut pair, 1).await;
+    pair.acceptor
+        .request_running_session_reset(&acceptor_session_id())
+        .await
+        .unwrap();
+    let probe_b = acc.read().await;
+    ini.send(&probe_b).await;
+    let answer = ini.read().await;
+    acc.send(&answer).await;
+    assert_matches!((probe_b.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
+    let logon_b = acc.read().await;
+    assert_eq!(logon_b.msg_seq_num(), 1);
+    assert_matches!(logon_b.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    assert_snapshot_counts(&pair.acc_storage, 2, 1);
+    assert_snapshot_counts(&pair.ini_storage, 3, 3);
+    pair.initiator
+        .request_running_session_reset()
+        .await
+        .unwrap();
+    let probe_a = ini.read().await;
+    assert_eq!(probe_a.msg_seq_num(), 3);
+    assert_matches!(probe_a.try_as_admin(), Some(AdminBase::TestRequest(_)));
+    assert_snapshot_counts(&pair.ini_storage, 4, 3);
+    acc.send(&probe_a).await;
+    let logout_b = acc.read().await;
+    assert_eq!(logout_b.msg_seq_num(), 2);
+    assert_matches!(logout_b.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Unexpected TestRequest(1) during sequence number reset")));
+    ini.send(&logon_b).await;
+    let ack_a = ini.read().await;
+    assert_eq!(ack_a.msg_seq_num(), 1);
+    assert_matches!(ack_a.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    assert_eq!(ack_a.sender_comp_id(), logon_b.target_comp_id());
+    assert_eq!(ack_a.target_comp_id(), logon_b.sender_comp_id());
+    assert_snapshot_counts(&pair.ini_storage, 2, 2);
+    ini.send(&logout_b).await;
+    let logout_ack_a = ini.read().await;
+    assert_eq!(logout_ack_a.msg_seq_num(), 2);
+    assert_matches!(logout_ack_a.try_as_admin(), Some(AdminBase::Logout(_)));
+    expect_admin(&mut pair.ini_events, MsgTypeBase::TestRequest).await;
+    let ack_callback = expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
+    assert_eq!(
+        serialize_message(&ack_callback),
+        serialize_message(&logon_b)
+    );
+    expect_admin(&mut pair.ini_events, MsgTypeBase::Logout).await;
+    expect_admin(&mut pair.acc_events, MsgTypeBase::Heartbeat).await;
+    assert_matches!(
+        recv_event(&mut pair.acc_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: true
+            }
+        )
+    );
+    assert!(!ini_task.is_finished());
+    ini.close_input().await;
+    assert_matches!(
+        recv_event(&mut pair.ini_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::RemoteLogout,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    acc_task.await.unwrap();
+    ini_task.await.unwrap().unwrap();
+    acc.assert_closed_without_output().await;
+    ini.assert_closed_without_output().await;
+    assert_snapshot_counts(&pair.acc_storage, 3, 1);
+    assert_snapshot_counts(&pair.ini_storage, 3, 3);
+    for (snapshot, first, second) in [
+        (&pair.acc_storage, &logon_b, &logout_b),
+        (&pair.ini_storage, &ack_a, &logout_ack_a),
+    ] {
+        let state = snapshot.borrow();
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(
+            state.messages[&NonZeroSeqNum::new(1).unwrap()],
+            serialize_message(first)
+        );
+        assert_eq!(
+            state.messages[&NonZeroSeqNum::new(2).unwrap()],
+            serialize_message(second)
+        );
+    }
+    assert!(pair.acc_events.try_recv().is_err());
+    assert!(pair.ini_events.try_recv().is_err());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn in_session_reset_converges_both_engines() {
-    LocalSet::new().run_until(async {
-        let mut pair = reset_pair();
-        let (acc_wire, ini_wire) = io::duplex(65536);
-        let (acc_r, acc_w) = split(acc_wire); let (ini_r, ini_w) = split(ini_wire);
-        let acc_task = pair.acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
-        let ini_task = pair.initiator.run_session(ini_r, ini_w, None);
-        let TestEvent::SessionReady(_, ini_sender) = recv_event(&mut pair.ini_events).await else { panic!("expected sender"); };
-        expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
-        let TestEvent::SessionReady(_, acc_sender) = recv_event(&mut pair.acc_events).await else { panic!("expected sender"); };
-        expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
-        // The initiator sender remains the same across every running reset.
-        for from_acceptor in [true, false] {
-            if from_acceptor { pair.acceptor.request_running_session_reset(&acceptor_session_id()).await.unwrap(); }
-            else { pair.initiator.request_running_session_reset().await.unwrap(); }
-            let (requester_events, peer_events) = if from_acceptor { (&mut pair.acc_events, &mut pair.ini_events) } else { (&mut pair.ini_events, &mut pair.acc_events) };
-            let probe = expect_admin(peer_events, MsgTypeBase::TestRequest).await;
-            let answer = expect_admin(requester_events, MsgTypeBase::Heartbeat).await;
-            assert_matches!((probe.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
-            let request = expect_admin(peer_events, MsgTypeBase::Logon).await;
-            let ack = expect_admin(requester_events, MsgTypeBase::Logon).await;
-            for msg in [&request, &ack] {
-                assert_eq!(msg.msg_seq_num(), 1);
-                assert_matches!(msg.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true) && l.heart_bt_int == 0);
-            }
-            assert_eq!(request.sender_comp_id(), ack.target_comp_id()); assert_eq!(request.target_comp_id(), ack.sender_comp_id());
-            yield_now().await;
-            assert_snapshot_counts(&pair.acc_storage, 2, 2); assert_snapshot_counts(&pair.ini_storage, 2, 2);
-            acc_sender.send(new_order_single_with_empty_header()).unwrap(); ini_sender.send(new_order_single_with_empty_header()).unwrap();
-            for (events, sid) in [(&mut pair.acc_events, initiator_session_id()), (&mut pair.ini_events, acceptor_session_id())] {
-                let TestEvent::AppMsgIn(_, msg) = recv_event(events).await else { panic!("expected order after reset"); };
-                assert_eq!(msg.msg_seq_num(), 2); assert!(is_new_order_single(&msg));
-                assert_eq!(msg.sender_comp_id(), sid.sender_comp_id()); assert_eq!(msg.target_comp_id(), sid.target_comp_id());
-            }
-            assert_snapshot_counts(&pair.acc_storage, 3, 3); assert_snapshot_counts(&pair.ini_storage, 3, 3);
+    let mut pair = reset_pair();
+    let (acc_wire, ini_wire) = io::duplex(65536);
+    let (acc_r, acc_w) = split(acc_wire);
+    let (ini_r, ini_w) = split(ini_wire);
+    let acc_task = pair.acceptor.run_session(acc_r, acc_w, TEST_PEER_ADDR);
+    let ini_task = pair.initiator.run_session(ini_r, ini_w, None);
+    let TestEvent::SessionReady(_, ini_sender) = recv_event(&mut pair.ini_events).await else {
+        panic!("expected sender");
+    };
+    expect_admin(&mut pair.acc_events, MsgTypeBase::Logon).await;
+    let TestEvent::SessionReady(_, acc_sender) = recv_event(&mut pair.acc_events).await else {
+        panic!("expected sender");
+    };
+    expect_admin(&mut pair.ini_events, MsgTypeBase::Logon).await;
+    // The initiator sender remains the same across every running reset.
+    for from_acceptor in [true, false] {
+        if from_acceptor {
+            pair.acceptor
+                .request_running_session_reset(&acceptor_session_id())
+                .await
+                .unwrap();
+        } else {
+            pair.initiator
+                .request_running_session_reset()
+                .await
+                .unwrap();
         }
-        pair.initiator.disconnect().await.unwrap();
-        assert_matches!(recv_event(&mut pair.ini_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }));
-        assert_matches!(recv_event(&mut pair.acc_events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }));
-        ini_task.await.unwrap().unwrap(); acc_task.await.unwrap();
-        for snapshot in [&pair.acc_storage, &pair.ini_storage] {
-            let state = snapshot.borrow(); assert_eq!(state.messages.len(), 2);
-            let order = Message::from_bytes(&state.messages[&NonZeroSeqNum::new(2).unwrap()]).unwrap(); assert!(is_new_order_single(&order));
+        let (requester_events, peer_events) = if from_acceptor {
+            (&mut pair.acc_events, &mut pair.ini_events)
+        } else {
+            (&mut pair.ini_events, &mut pair.acc_events)
+        };
+        let probe = expect_admin(peer_events, MsgTypeBase::TestRequest).await;
+        let answer = expect_admin(requester_events, MsgTypeBase::Heartbeat).await;
+        assert_matches!((probe.try_as_admin(), answer.try_as_admin()), (Some(AdminBase::TestRequest(t)), Some(AdminBase::Heartbeat(h))) if h.test_req_id.as_deref() == Some(t.test_req_id.as_ref()));
+        let request = expect_admin(peer_events, MsgTypeBase::Logon).await;
+        let ack = expect_admin(requester_events, MsgTypeBase::Logon).await;
+        for msg in [&request, &ack] {
+            assert_eq!(msg.msg_seq_num(), 1);
+            assert_matches!(msg.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true) && l.heart_bt_int == 0);
         }
-        assert!(pair.acc_events.try_recv().is_err()); assert!(pair.ini_events.try_recv().is_err());
-    }).await;
+        assert_eq!(request.sender_comp_id(), ack.target_comp_id());
+        assert_eq!(request.target_comp_id(), ack.sender_comp_id());
+        yield_now().await;
+        assert_snapshot_counts(&pair.acc_storage, 2, 2);
+        assert_snapshot_counts(&pair.ini_storage, 2, 2);
+        acc_sender
+            .send(new_order_single_with_empty_header())
+            .unwrap();
+        ini_sender
+            .send(new_order_single_with_empty_header())
+            .unwrap();
+        for (events, sid) in [
+            (&mut pair.acc_events, initiator_session_id()),
+            (&mut pair.ini_events, acceptor_session_id()),
+        ] {
+            let TestEvent::AppMsgIn(_, msg) = recv_event(events).await else {
+                panic!("expected order after reset");
+            };
+            assert_eq!(msg.msg_seq_num(), 2);
+            assert!(is_new_order_single(&msg));
+            assert_eq!(msg.sender_comp_id(), sid.sender_comp_id());
+            assert_eq!(msg.target_comp_id(), sid.target_comp_id());
+        }
+        assert_snapshot_counts(&pair.acc_storage, 3, 3);
+        assert_snapshot_counts(&pair.ini_storage, 3, 3);
+    }
+    pair.initiator.disconnect().await.unwrap();
+    assert_matches!(
+        recv_event(&mut pair.ini_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    assert_matches!(
+        recv_event(&mut pair.acc_events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Established,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    ini_task.await.unwrap().unwrap();
+    acc_task.await.unwrap();
+    for snapshot in [&pair.acc_storage, &pair.ini_storage] {
+        let state = snapshot.borrow();
+        assert_eq!(state.messages.len(), 2);
+        let order = Message::from_bytes(&state.messages[&NonZeroSeqNum::new(2).unwrap()]).unwrap();
+        assert!(is_new_order_single(&order));
+    }
+    assert!(pair.acc_events.try_recv().is_err());
+    assert!(pair.ini_events.try_recv().is_err());
 }
 
 async fn echo_reset_probe(peer: &mut RawPeerSession, seq: SeqNum) {
@@ -467,112 +688,228 @@ async fn echo_reset_probe(peer: &mut RawPeerSession, seq: SeqNum) {
 /// A timer Heartbeat sent before the peer reads the reset Logon is legal
 /// ordinary traffic (Session Test Cases 4(a)). Its arrival in the reset
 /// window is a timing race; it does not imply a peer protocol violation.
-#[tokio::test(start_paused = true)]
-async fn unexpected_application_or_peer_timer_heartbeat_ends_the_reset_window() {
-    LocalSet::new().run_until(async {
-        for heartbeat in [false, true] {
-            let (events_tx, mut events) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
-            let sid = acceptor_session_id();
-            register_in_memory_session(&acceptor, sid.clone(), reset_settings());
-            let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
-            peer.logon(1, 0).await;
-            assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag.is_none()));
-            assert_matches!(recv_event(&mut events).await, TestEvent::SessionReady(..));
-            acceptor.request_running_session_reset(&sid).await.unwrap();
-            echo_reset_probe(&mut peer, 2).await;
-            let unexpected = if heartbeat {
-                Message::from_admin(peer_header(&peer.peer_sid, 501), AdminBase::Heartbeat(HeartbeatBase { test_req_id: None }))
-            } else {
-                let mut order = new_order_single_with_empty_header();
-                order.header = peer_header(&peer.peer_sid, 501).into(); *order
-            };
-            peer.write(&serialize_message(&unexpected)).await;
-            let logon = peer.read().await;
-            assert_eq!(logon.msg_seq_num(), 1);
-            assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-            let logout = peer.read().await;
-            assert_eq!(logout.msg_seq_num(), 2);
-            let expected = if heartbeat { fix_str!("Unexpected Heartbeat(0) during sequence number reset") } else { fix_str!("Unexpected MsgType(D) during sequence number reset") };
-            assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(expected));
-            assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(h)) if h.test_req_id.is_some()));
-            assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
-            assert!(peer.read_to_close().await.is_empty()); peer.handle.await.unwrap();
-            let mut storage = acceptor.remove_session(&sid).unwrap();
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 3); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-            assert_eq!(storage.fetch(NonZeroSeqNum::new(1).unwrap(), NonZeroSeqNum::new(1).unwrap()).await.unwrap(), serialize_message(&logon).as_slice());
-            assert_eq!(storage.fetch(NonZeroSeqNum::new(2).unwrap(), NonZeroSeqNum::new(2).unwrap()).await.unwrap(), serialize_message(&logout).as_slice());
-            assert!(events.try_recv().is_err());
-        }
-    }).await;
+#[rstest]
+#[case::application(false)]
+#[case::timer_heartbeat(true)]
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn unexpected_application_or_peer_timer_heartbeat_ends_the_reset_window(
+    #[case] heartbeat: bool,
+) {
+    let (events_tx, mut events) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
+    let sid = acceptor_session_id();
+    register_in_memory_session(&acceptor, sid.clone(), reset_settings());
+    let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
+    peer.logon(1, 0).await;
+    assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag.is_none()));
+    assert_matches!(recv_event(&mut events).await, TestEvent::SessionReady(..));
+    acceptor.request_running_session_reset(&sid).await.unwrap();
+    echo_reset_probe(&mut peer, 2).await;
+    let unexpected = if heartbeat {
+        Message::from_admin(
+            peer_header(&peer.peer_sid, 501),
+            AdminBase::Heartbeat(HeartbeatBase { test_req_id: None }),
+        )
+    } else {
+        let mut order = new_order_single_with_empty_header();
+        order.header = peer_header(&peer.peer_sid, 501).into();
+        *order
+    };
+    peer.write(&serialize_message(&unexpected)).await;
+    let logon = peer.read().await;
+    assert_eq!(logon.msg_seq_num(), 1);
+    assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    let logout = peer.read().await;
+    assert_eq!(logout.msg_seq_num(), 2);
+    let expected = if heartbeat {
+        fix_str!("Unexpected Heartbeat(0) during sequence number reset")
+    } else {
+        fix_str!("Unexpected MsgType(D) during sequence number reset")
+    };
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(expected));
+    assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(h)) if h.test_req_id.is_some()));
+    assert_matches!(
+        recv_event(&mut events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: true
+            }
+        )
+    );
+    assert!(peer.read_to_close().await.is_empty());
+    peer.handle.await.unwrap();
+    let mut storage = acceptor.remove_session(&sid).unwrap();
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert_eq!(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(1).unwrap(),
+                NonZeroSeqNum::new(1).unwrap()
+            )
+            .await
+            .unwrap(),
+        serialize_message(&logon).as_slice()
+    );
+    assert_eq!(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(2).unwrap(),
+                NonZeroSeqNum::new(2).unwrap()
+            )
+            .await
+            .unwrap(),
+        serialize_message(&logout).as_slice()
+    );
+    assert!(events.try_recv().is_err());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn acceptor_disconnect_shutdown_stores_sends_held_by_an_unconfirmed_reset() {
-    LocalSet::new().run_until(async {
-        let (events_tx, mut events) = mpsc::unbounded_channel();
-        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
-        let sid = acceptor_session_id();
-        register_in_memory_session(&acceptor, sid.clone(), reset_settings());
-        let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
-        peer.logon(1, 0).await;
-        assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Logon(_))));
-        let TestEvent::SessionReady(_, sender) = recv_event(&mut events).await else { panic!("expected sender"); };
-        acceptor.request_running_session_reset(&sid).await.unwrap();
-        echo_reset_probe(&mut peer, 2).await;
-        let logon = peer.read().await;
-        assert_eq!(logon.msg_seq_num(), 1);
-        assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
-        assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(_))));
-        sender.send(new_order_single_with_empty_header()).unwrap();
-        acceptor.shutdown(ShutdownMode::Disconnect).await;
-        assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: true }));
-        assert!(peer.read_to_close().await.is_empty()); peer.handle.await.unwrap();
-        let mut storage = acceptor.remove_session(&sid).unwrap();
-        assert_eq!(storage.next_sender_msg_seq_num().get(), 3); assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-        assert_eq!(storage.fetch(NonZeroSeqNum::new(1).unwrap(), NonZeroSeqNum::new(1).unwrap()).await.unwrap(), serialize_message(&logon).as_slice());
-        let order = Message::from_bytes(storage.fetch(NonZeroSeqNum::new(2).unwrap(), NonZeroSeqNum::new(2).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(order.msg_seq_num(), 2); assert!(is_new_order_single(&order));
-        assert_eq!(order.sender_comp_id(), sid.sender_comp_id()); assert_eq!(order.target_comp_id(), sid.target_comp_id());
-        assert!(storage.fetch(NonZeroSeqNum::new(3).unwrap(), NonZeroSeqNum::new(3).unwrap()).await.is_err());
-        assert!(events.try_recv().is_err());
-    }).await;
+    let (events_tx, mut events) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
+    let sid = acceptor_session_id();
+    register_in_memory_session(&acceptor, sid.clone(), reset_settings());
+    let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
+    peer.logon(1, 0).await;
+    assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Logon(_))));
+    let TestEvent::SessionReady(_, sender) = recv_event(&mut events).await else {
+        panic!("expected sender");
+    };
+    acceptor.request_running_session_reset(&sid).await.unwrap();
+    echo_reset_probe(&mut peer, 2).await;
+    let logon = peer.read().await;
+    assert_eq!(logon.msg_seq_num(), 1);
+    assert_matches!(logon.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag == Some(true));
+    assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(_))));
+    sender.send(new_order_single_with_empty_header()).unwrap();
+    acceptor.shutdown(ShutdownMode::Disconnect).await;
+    assert_matches!(
+        recv_event(&mut events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: true
+            }
+        )
+    );
+    assert!(peer.read_to_close().await.is_empty());
+    peer.handle.await.unwrap();
+    let mut storage = acceptor.remove_session(&sid).unwrap();
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 3);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert_eq!(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(1).unwrap(),
+                NonZeroSeqNum::new(1).unwrap()
+            )
+            .await
+            .unwrap(),
+        serialize_message(&logon).as_slice()
+    );
+    let order = Message::from_bytes(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(2).unwrap(),
+                NonZeroSeqNum::new(2).unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(order.msg_seq_num(), 2);
+    assert!(is_new_order_single(&order));
+    assert_eq!(order.sender_comp_id(), sid.sender_comp_id());
+    assert_eq!(order.target_comp_id(), sid.target_comp_id());
+    assert!(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(3).unwrap(),
+                NonZeroSeqNum::new(3).unwrap()
+            )
+            .await
+            .is_err()
+    );
+    assert!(events.try_recv().is_err());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn a_peer_without_matching_probe_ids_cannot_finish_a_reset() {
-    LocalSet::new().run_until(async {
-        let (events_tx, mut events) = mpsc::unbounded_channel();
-        let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
-        let sid = acceptor_session_id(); let mut settings = reset_settings();
-        settings.verify_test_request_id = false; settings.running_session_reset_timeout = Duration::from_secs(30);
-        register_in_memory_session(&acceptor, sid.clone(), settings);
-        let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
-        peer.logon(1, 0).await;
-        assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Logon(_))));
-        assert_matches!(recv_event(&mut events).await, TestEvent::SessionReady(..));
-        acceptor.request_running_session_reset(&sid).await.unwrap();
-        let probe = peer.read().await;
-        assert_eq!(probe.msg_seq_num(), 2);
-        assert_matches!(probe.try_as_admin(), Some(AdminBase::TestRequest(r)) if r.test_req_id.as_ref() != fix_str!("WRONG"));
-        for (seq, id) in [(2, None), (3, Some(fix_str!("WRONG")))] {
-            peer.write(&common::peer_heartbeat_bytes(&peer.peer_sid, seq, id)).await;
-            assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(h)) if h.test_req_id.as_deref() == id));
-            assert!(try_read_one_message(&mut peer.peer_r, &mut peer.peer_buf).now_or_never().is_none());
-        }
-        time::advance(Duration::from_secs(30)).await;
-        let logout = peer.read().await;
-        assert_eq!(logout.msg_seq_num(), 3);
-        assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
-        assert_matches!(recv_event(&mut events).await, TestEvent::SessionEnd(_, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::ResetPreparation)), termination: TerminationSnapshot::Timeout(TimeoutKind::ResetPreparation), reset_unconfirmed: false }));
-        assert!(peer.read_to_close().await.is_empty()); peer.handle.await.unwrap();
-        let mut storage = acceptor.remove_session(&sid).unwrap();
-        assert_eq!(storage.next_sender_msg_seq_num().get(), 4); assert_eq!(storage.next_target_msg_seq_num().get(), 4);
-        let original = Message::from_bytes(storage.fetch(NonZeroSeqNum::new(1).unwrap(), NonZeroSeqNum::new(1).unwrap()).await.unwrap()).unwrap();
-        assert_matches!(original.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag.is_none());
-        assert_eq!(storage.fetch(NonZeroSeqNum::new(2).unwrap(), NonZeroSeqNum::new(2).unwrap()).await.unwrap(), serialize_message(&probe).as_slice());
-        assert!(events.try_recv().is_err());
-    }).await;
+    let (events_tx, mut events) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
+    let sid = acceptor_session_id();
+    let mut settings = reset_settings();
+    settings.verify_test_request_id = false;
+    settings.running_session_reset_timeout = Duration::from_secs(30);
+    register_in_memory_session(&acceptor, sid.clone(), settings);
+    let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
+    peer.logon(1, 0).await;
+    assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Logon(_))));
+    assert_matches!(recv_event(&mut events).await, TestEvent::SessionReady(..));
+    acceptor.request_running_session_reset(&sid).await.unwrap();
+    let probe = peer.read().await;
+    assert_eq!(probe.msg_seq_num(), 2);
+    assert_matches!(probe.try_as_admin(), Some(AdminBase::TestRequest(r)) if r.test_req_id.as_ref() != fix_str!("WRONG"));
+    for (seq, id) in [(2, None), (3, Some(fix_str!("WRONG")))] {
+        peer.write(&common::peer_heartbeat_bytes(&peer.peer_sid, seq, id))
+            .await;
+        assert_matches!(recv_event(&mut events).await, TestEvent::AdminMsgIn(_, m) if matches!(m.try_as_admin(), Some(AdminBase::Heartbeat(h)) if h.test_req_id.as_deref() == id));
+        assert!(
+            try_read_one_message(&mut peer.peer_r, &mut peer.peer_buf)
+                .now_or_never()
+                .is_none()
+        );
+    }
+    time::advance(Duration::from_secs(30)).await;
+    let logout = peer.read().await;
+    assert_eq!(logout.msg_seq_num(), 3);
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(l)) if l.text.as_deref() == Some(fix_str!("Sequence number reset not acknowledged")));
+    assert_matches!(
+        recv_event(&mut events).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::Timeout(
+                    TimeoutKind::ResetPreparation
+                )),
+                termination: TerminationSnapshot::Timeout(TimeoutKind::ResetPreparation),
+                reset_unconfirmed: false
+            }
+        )
+    );
+    assert!(peer.read_to_close().await.is_empty());
+    peer.handle.await.unwrap();
+    let mut storage = acceptor.remove_session(&sid).unwrap();
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 4);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 4);
+    let original = Message::from_bytes(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(1).unwrap(),
+                NonZeroSeqNum::new(1).unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_matches!(original.try_as_admin(), Some(AdminBase::Logon(l)) if l.reset_seq_num_flag.is_none());
+    assert_eq!(
+        storage
+            .fetch(
+                NonZeroSeqNum::new(2).unwrap(),
+                NonZeroSeqNum::new(2).unwrap()
+            )
+            .await
+            .unwrap(),
+        serialize_message(&probe).as_slice()
+    );
+    assert!(events.try_recv().is_err());
 }
 
 /// Acceptor-side session id with configurable TargetCompID. Our comp is
@@ -817,92 +1154,81 @@ async fn wait_for_session_end_of(
 // Test 1: Logon -> message exchange -> logout
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn logon_message_exchange_logout() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            // Paired duplex streams: what server_stream writes, client_stream
-            // reads, and vice versa.
-            let (server_stream, client_stream) = io::duplex(8192);
-            let (server_r, server_w) = split(server_stream);
-            let (client_r, client_w) = split(client_stream);
+    // Paired duplex streams: what server_stream writes, client_stream
+    // reads, and vice versa.
+    let (server_stream, client_stream) = io::duplex(8192);
+    let (server_r, server_w) = split(server_stream);
+    let (client_r, client_w) = split(client_stream);
 
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
 
-            // Build Acceptor and register a single session.
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
+    // Build Acceptor and register a single session.
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
 
-            // Build Initiator with the mirrored session id.
-            let initiator = Initiator::<Message, InMemoryStorage, _>::new(
-                initiator_session_id(),
-                build_session_settings(30),
-                test_handler(ini_events_tx),
-                |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
-            )
-            .expect("initiator settings valid");
+    // Build Initiator with the mirrored session id.
+    let initiator = Initiator::<Message, InMemoryStorage, _>::new(
+        initiator_session_id(),
+        build_session_settings(30),
+        test_handler(ini_events_tx),
+        |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
+    )
+    .expect("initiator settings valid");
 
-            // Spawn both session tasks.
-            let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator.run_session(client_r, client_w, None);
+    // Spawn both session tasks.
+    let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
+    let ini_handle = initiator.run_session(client_r, client_w, None);
 
-            // Both sides should hit SessionReady after the Logon handshake
-            // completes.
-            let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
-            let _acc_sender = wait_for_session_ready(&mut acc_events_rx).await;
+    // Both sides should hit SessionReady after the Logon handshake
+    // completes.
+    let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
+    let _acc_sender = wait_for_session_ready(&mut acc_events_rx).await;
 
-            // Initiator stages a NewOrderSingle. `send` is synchronous and may
-            // be called from any context.
-            ini_sender
-                .send(new_order_single_with_empty_header())
-                .expect("sender.send");
+    // Initiator stages a NewOrderSingle. `send` is synchronous and may
+    // be called from any context.
+    ini_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
 
-            // Acceptor should observe an inbound app message that is a
-            // NewOrderSingle. Drain any admin events (e.g. Logon) first.
-            let event =
-                wait_until(&mut acc_events_rx, |e| matches!(e, TestEvent::AppMsgIn(..))).await;
-            assert_matches!(event, TestEvent::AppMsgIn(_, msg) if is_new_order_single(&msg));
+    // Acceptor should observe an inbound app message that is a
+    // NewOrderSingle. Drain any admin events (e.g. Logon) first.
+    let event = wait_until(&mut acc_events_rx, |e| matches!(e, TestEvent::AppMsgIn(..))).await;
+    assert_matches!(event, TestEvent::AppMsgIn(_, msg) if is_new_order_single(&msg));
 
-            // Initiator-originated graceful logout.
-            initiator.logout(None, None, false).await.expect("logout");
+    // Initiator-originated graceful logout.
+    initiator.logout(None, None, false).await.expect("logout");
 
-            // Both sides should fire SessionEnd. The initiator requested the
-            // logout; the acceptor observes it as a remote request.
-            let ini_reason = wait_for_session_end(&mut ini_events_rx).await;
-            let acc_reason = wait_for_session_end(&mut acc_events_rx).await;
+    // Both sides should fire SessionEnd. The initiator requested the
+    // logout; the acceptor observes it as a remote request.
+    let ini_reason = wait_for_session_end(&mut ini_events_rx).await;
+    let acc_reason = wait_for_session_end(&mut acc_events_rx).await;
 
-            assert_eq!(
-                ini_reason,
-                SessionEndSnapshot {
-                    context: EndContext::LocalLogout,
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            assert_eq!(
-                acc_reason,
-                SessionEndSnapshot {
-                    context: EndContext::RemoteLogout,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }
-            );
+    assert_eq!(
+        ini_reason,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        acc_reason,
+        SessionEndSnapshot {
+            context: EndContext::RemoteLogout,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
 
-            // Both tasks should complete cleanly (no panic).
-            acc_handle.await.expect("acceptor task");
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    // Both tasks should complete cleanly (no panic).
+    acc_handle.await.expect("acceptor task");
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -916,54 +1242,66 @@ async fn logon_message_exchange_logout() {
 /// was silently dropped and the peer saw a bare TCP close. Scenario 1S(d)
 /// mandates the Logout(35=5) with Text(58) be sent, then disconnect
 /// (FIX Session Layer §4.3.10).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn acceptor_rejected_first_logon_sends_logout_before_disconnect() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            let mut settings = build_session_settings(30);
-            settings.accept_reset_on_connect = false;
-            acceptor.register_session(acceptor_session_id(), settings, |_, max| {
-                let mut storage = InMemoryStorage::new(max);
-                storage.set_next_sender_msg_seq_num(40.try_into().unwrap()).unwrap();
-                storage.set_next_target_msg_seq_num(40.try_into().unwrap()).unwrap();
-                Ok(storage)
-            }).unwrap();
-            let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
-
-            // The acceptor refuses a reset using its persisted numbering.
-            let invalid_logon = peer_logon_reset_bytes(&peer.peer_sid, 1, 30);
-            peer.write(&invalid_logon).await;
-
-            // The peer must receive the mandated Logout, not a bare TCP close.
-            let msg = timeout(
-                TEST_TIMEOUT,
-                try_read_one_message(&mut peer.peer_r, &mut peer.peer_buf),
-            )
-            .await
-            .expect("timed out waiting for Logout")
-            .expect("acceptor closed the connection without sending Logout");
-            assert_eq!(
-                SessionMessage::msg_type(&*msg),
-                MsgTypeBase::Logout,
-                "rejected first Logon must be answered with a Logout(35=5)"
-            );
-            let AdminBase::Logout(ref logout) =
-                SessionMessage::try_as_admin(&*msg).expect("admin message")
-            else {
-                panic!("expected Logout");
-            };
-            assert_eq!(msg.header.msg_seq_num, 40);
-            assert_eq!(logout.text.as_deref(), Some(fix_str!("Resetting the sequence number upon FIX connection establishment is not supported")));
-
-            // Then the session ends with the logon-rejection reason.
-            let acc_reason = wait_for_session_end(&mut acc_events_rx).await;
-            assert_eq!(acc_reason, SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::InvalidLogonState), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false });
-            peer.handle.await.expect("acceptor task");
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    let mut settings = build_session_settings(30);
+    settings.accept_reset_on_connect = false;
+    acceptor
+        .register_session(acceptor_session_id(), settings, |_, max| {
+            let mut storage = InMemoryStorage::new(max);
+            storage
+                .set_next_sender_msg_seq_num(40.try_into().unwrap())
+                .unwrap();
+            storage
+                .set_next_target_msg_seq_num(40.try_into().unwrap())
+                .unwrap();
+            Ok(storage)
         })
-        .await;
+        .unwrap();
+    let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
+
+    // The acceptor refuses a reset using its persisted numbering.
+    let invalid_logon = peer_logon_reset_bytes(&peer.peer_sid, 1, 30);
+    peer.write(&invalid_logon).await;
+
+    // The peer must receive the mandated Logout, not a bare TCP close.
+    let msg = timeout(
+        TEST_TIMEOUT,
+        try_read_one_message(&mut peer.peer_r, &mut peer.peer_buf),
+    )
+    .await
+    .expect("timed out waiting for Logout")
+    .expect("acceptor closed the connection without sending Logout");
+    assert_eq!(
+        SessionMessage::msg_type(&*msg),
+        MsgTypeBase::Logout,
+        "rejected first Logon must be answered with a Logout(35=5)"
+    );
+    let AdminBase::Logout(ref logout) = SessionMessage::try_as_admin(&*msg).expect("admin message")
+    else {
+        panic!("expected Logout");
+    };
+    assert_eq!(msg.header.msg_seq_num, 40);
+    assert_eq!(
+        logout.text.as_deref(),
+        Some(fix_str!(
+            "Resetting the sequence number upon FIX connection establishment is not supported"
+        ))
+    );
+
+    // Then the session ends with the logon-rejection reason.
+    let acc_reason = wait_for_session_end(&mut acc_events_rx).await;
+    assert_eq!(
+        acc_reason,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::InvalidLogonState),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    peer.handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,63 +1413,59 @@ impl<F> RawPeerInitiator<F> {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn poss_resend_passes_through_send_and_application_callback() {
-    LocalSet::new()
-        .run_until(async {
-            let mut peer = spawn_initiator_with_raw_peer(8192, build_session_settings(30));
-            let sender = peer.peer_logon_handshake(30).await;
-            let order = new_order_single_with_empty_header();
+    let mut peer = spawn_initiator_with_raw_peer(8192, build_session_settings(30));
+    let sender = peer.peer_logon_handshake(30).await;
+    let order = new_order_single_with_empty_header();
 
-            // Section 4.9: application retries consume fresh sequence numbers.
-            // Scenario 19: only the application decides whether the repeated
-            // business ID is a duplicate. The session delivers every retry.
-            for (seq, poss_resend) in (2..).zip([None, Some(false), Some(true), Some(true)]) {
-                let mut outgoing = order.clone();
-                outgoing.header.poss_resend = poss_resend;
-                sender.send(outgoing).unwrap();
+    // Section 4.9: application retries consume fresh sequence numbers.
+    // Scenario 19: only the application decides whether the repeated
+    // business ID is a duplicate. The session delivers every retry.
+    for (seq, poss_resend) in (2..).zip([None, Some(false), Some(true), Some(true)]) {
+        let mut outgoing = order.clone();
+        outgoing.header.poss_resend = poss_resend;
+        sender.send(outgoing).unwrap();
 
-                let sent = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
-                assert_matches!(
-                    &*sent.body,
-                    Body::NewOrderSingle(order) if order.cl_ord_id == fix_str!("ORD001")
-                );
-                assert_eq!(sent.msg_seq_num(), seq);
-                assert_eq!(sent.header.poss_resend, poss_resend);
-                assert_eq!(sent.poss_dup_flag(), None);
-                assert_eq!(sent.orig_sending_time(), None);
+        let sent = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
+        assert_matches!(
+            &*sent.body,
+            Body::NewOrderSingle(order) if order.cl_ord_id == fix_str!("ORD001")
+        );
+        assert_eq!(sent.msg_seq_num(), seq);
+        assert_eq!(sent.header.poss_resend, poss_resend);
+        assert_eq!(sent.poss_dup_flag(), None);
+        assert_eq!(sent.orig_sending_time(), None);
 
-                let mut incoming = order.clone();
-                incoming.header = peer_header(&peer.peer_sid, seq).into();
-                incoming.header.poss_resend = poss_resend;
-                peer.peer_w
-                    .write_all(&serialize_message(&incoming))
-                    .await
-                    .unwrap();
+        let mut incoming = order.clone();
+        incoming.header = peer_header(&peer.peer_sid, seq).into();
+        incoming.header.poss_resend = poss_resend;
+        peer.peer_w
+            .write_all(&serialize_message(&incoming))
+            .await
+            .unwrap();
 
-                let event = wait_until(&mut peer.events_rx, |event| {
-                    matches!(event, TestEvent::AppMsgIn(..))
-                })
-                .await;
-                let TestEvent::AppMsgIn(_, received) = event else {
-                    unreachable!();
-                };
-                assert_matches!(
-                    &*received.body,
-                    Body::NewOrderSingle(order) if order.cl_ord_id == fix_str!("ORD001")
-                );
-                assert_eq!(received.msg_seq_num(), seq);
-                assert_eq!(received.header.poss_resend, poss_resend);
-            }
-
-            peer.initiator.disconnect().await.unwrap();
-            timeout(TEST_TIMEOUT, peer.handle)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+        let event = wait_until(&mut peer.events_rx, |event| {
+            matches!(event, TestEvent::AppMsgIn(..))
         })
         .await;
+        let TestEvent::AppMsgIn(_, received) = event else {
+            unreachable!();
+        };
+        assert_matches!(
+            &*received.body,
+            Body::NewOrderSingle(order) if order.cl_ord_id == fix_str!("ORD001")
+        );
+        assert_eq!(received.msg_seq_num(), seq);
+        assert_eq!(received.header.poss_resend, poss_resend);
+    }
+
+    peer.initiator.disconnect().await.unwrap();
+    timeout(TEST_TIMEOUT, peer.handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 /// Register `sid` on `acceptor` under `settings`, backed by an
@@ -1249,100 +1583,93 @@ async fn spawn_raw_peer_session(
     peer
 }
 
-#[tokio::test(start_paused = true)]
-async fn acceptor_logout_disconnect_closes_without_peer_response() {
-    LocalSet::new()
-        .run_until(async {
-            for already_sent in [false, true] {
-                let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-                let acceptor = Acceptor::new(test_handler(events_tx));
-                let mut peer =
-                    spawn_raw_peer_session(&acceptor, &mut events_rx, fix_str!("CLIENT")).await;
-                let text = Some(Cow::Borrowed(fix_str!("Closing session")));
-                if already_sent {
-                    acceptor
-                        .logout(&peer.sid, None, text.clone(), false)
-                        .await
-                        .unwrap();
-                    let logout = peer.read().await;
-                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
-                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
-                }
-                let started = time::Instant::now();
-                acceptor.logout(&peer.sid, None, text, true).await.unwrap();
-                if !already_sent {
-                    let logout = peer.read().await;
-                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
-                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
-                }
-                assert!(peer.read_to_close().await.is_empty());
-                assert_eq!(
-                    wait_for_session_end(&mut events_rx).await,
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                );
-                timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
-                assert_eq!(started.elapsed(), Duration::ZERO);
-            }
-        })
-        .await;
+#[rstest]
+#[case::new_logout(false)]
+#[case::already_sent(true)]
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn acceptor_logout_disconnect_closes_without_peer_response(#[case] already_sent: bool) {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::new(test_handler(events_tx));
+    let mut peer = spawn_raw_peer_session(&acceptor, &mut events_rx, fix_str!("CLIENT")).await;
+    let text = Some(Cow::Borrowed(fix_str!("Closing session")));
+    if already_sent {
+        acceptor
+            .logout(&peer.sid, None, text.clone(), false)
+            .await
+            .unwrap();
+        let logout = peer.read().await;
+        assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+        if logout.text.as_deref() == Some(fix_str!("Closing session")));
+    }
+    let started = time::Instant::now();
+    acceptor.logout(&peer.sid, None, text, true).await.unwrap();
+    if !already_sent {
+        let logout = peer.read().await;
+        assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+        if logout.text.as_deref() == Some(fix_str!("Closing session")));
+    }
+    assert!(peer.read_to_close().await.is_empty());
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    timeout(TEST_TIMEOUT, peer.handle).await.unwrap().unwrap();
+    assert_eq!(started.elapsed(), Duration::ZERO);
 }
 
-#[tokio::test(start_paused = true)]
-async fn initiator_logout_disconnect_closes_without_peer_response() {
-    LocalSet::new()
-        .run_until(async {
-            for already_sent in [false, true] {
-                let mut peer = spawn_initiator_with_raw_peer(8192, build_session_settings(30));
-                peer.peer_logon_handshake(30).await;
-                // SessionReady precedes the peer's Logon response on initiators.
-                wait_until(&mut peer.events_rx, |event| {
-                    is_admin_msg_in(event, MsgTypeBase::Logon)
-                })
-                .await;
-                let text = Some(Cow::Borrowed(fix_str!("Closing session")));
-                if already_sent {
-                    peer.initiator
-                        .logout(None, text.clone(), false)
-                        .await
-                        .unwrap();
-                    let logout = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
-                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
-                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
-                }
-                let started = time::Instant::now();
-                peer.initiator.logout(None, text, true).await.unwrap();
-                if !already_sent {
-                    let logout = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
-                    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
-                    if logout.text.as_deref() == Some(fix_str!("Closing session")));
-                }
-                let mut rest = mem::take(&mut peer.peer_buf);
-                timeout(TEST_TIMEOUT, peer.peer_r.read_to_end(&mut rest))
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(rest.is_empty());
-                assert_eq!(
-                    wait_for_session_end(&mut peer.events_rx).await,
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                );
-                timeout(TEST_TIMEOUT, peer.handle)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(started.elapsed(), Duration::ZERO);
-            }
-        })
-        .await;
+#[rstest]
+#[case::new_logout(false)]
+#[case::already_sent(true)]
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn initiator_logout_disconnect_closes_without_peer_response(#[case] already_sent: bool) {
+    let mut peer = spawn_initiator_with_raw_peer(8192, build_session_settings(30));
+    peer.peer_logon_handshake(30).await;
+    // SessionReady precedes the peer's Logon response on initiators.
+    wait_until(&mut peer.events_rx, |event| {
+        is_admin_msg_in(event, MsgTypeBase::Logon)
+    })
+    .await;
+    let text = Some(Cow::Borrowed(fix_str!("Closing session")));
+    if already_sent {
+        peer.initiator
+            .logout(None, text.clone(), false)
+            .await
+            .unwrap();
+        let logout = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
+        assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+        if logout.text.as_deref() == Some(fix_str!("Closing session")));
+    }
+    let started = time::Instant::now();
+    peer.initiator.logout(None, text, true).await.unwrap();
+    if !already_sent {
+        let logout = read_one_message(&mut peer.peer_r, &mut peer.peer_buf).await;
+        assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+        if logout.text.as_deref() == Some(fix_str!("Closing session")));
+    }
+    let mut rest = mem::take(&mut peer.peer_buf);
+    timeout(TEST_TIMEOUT, peer.peer_r.read_to_end(&mut rest))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rest.is_empty());
+    assert_eq!(
+        wait_for_session_end(&mut peer.events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    timeout(TEST_TIMEOUT, peer.handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(started.elapsed(), Duration::ZERO);
 }
 
 /// One initiator connection to a live acceptor: both session tasks and the
@@ -1385,88 +1712,83 @@ where
 // Test 2: Inbound ResendRequest covering a large stored range
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn resend_request_large_gap() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            // Generous buffer: 25 stored messages + 25 resends must fit without
-            // ever blocking the writer.
-            let mut p = spawn_initiator_with_raw_peer(65536, build_session_settings(30));
-            let ini_sender = p.peer_logon_handshake(30).await;
-            let RawPeerInitiator {
-                initiator,
-                handle: ini_handle,
-                events_rx: mut ini_events_rx,
-                mut peer_r,
-                mut peer_w,
-                peer_sid,
-                mut peer_buf,
-            } = p;
+    // Generous buffer: 25 stored messages + 25 resends must fit without
+    // ever blocking the writer.
+    let mut p = spawn_initiator_with_raw_peer(65536, build_session_settings(30));
+    let ini_sender = p.peer_logon_handshake(30).await;
+    let RawPeerInitiator {
+        initiator,
+        handle: ini_handle,
+        events_rx: mut ini_events_rx,
+        mut peer_r,
+        mut peer_w,
+        peer_sid,
+        mut peer_buf,
+    } = p;
 
-            // Initiator sends N NewOrderSingles (sender seq 2..=N+1).
-            const N: SeqNum = 25;
-            for _ in 0..N {
-                ini_sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("sender.send");
-            }
+    // Initiator sends N NewOrderSingles (sender seq 2..=N+1).
+    const N: SeqNum = 25;
+    for _ in 0..N {
+        ini_sender
+            .send(new_order_single_with_empty_header())
+            .expect("sender.send");
+    }
 
-            // Peer consumes all of them - first send, no PossDupFlag.
-            for expected in 2..=(N + 1) {
-                let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert!(
-                    is_new_order_single(&msg),
-                    "seq {expected} should be a NewOrderSingle on first send"
-                );
-                assert_eq!(msg.msg_seq_num(), expected);
-                assert_ne!(
-                    msg.poss_dup_flag(),
-                    Some(true),
-                    "first-send message at seq {expected} must not have PossDupFlag=Y"
-                );
-            }
+    // Peer consumes all of them - first send, no PossDupFlag.
+    for expected in 2..=(N + 1) {
+        let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+        assert!(
+            is_new_order_single(&msg),
+            "seq {expected} should be a NewOrderSingle on first send"
+        );
+        assert_eq!(msg.msg_seq_num(), expected);
+        assert_ne!(
+            msg.poss_dup_flag(),
+            Some(true),
+            "first-send message at seq {expected} must not have PossDupFlag=Y"
+        );
+    }
 
-            // Peer asks for a resend covering the full stored range.
-            peer_w
-                .write_all(&peer_resend_request_bytes(&peer_sid, 2, 2, N + 1))
-                .await
-                .expect("write resend request");
+    // Peer asks for a resend covering the full stored range.
+    peer_w
+        .write_all(&peer_resend_request_bytes(&peer_sid, 2, 2, N + 1))
+        .await
+        .expect("write resend request");
 
-            // Peer consumes the N resent messages. Each must carry
-            // PossDupFlag=Y and preserve the original sequence number.
-            for expected in 2..=(N + 1) {
-                let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert!(
-                    is_new_order_single(&msg),
-                    "resend at seq {expected} should be a NewOrderSingle, got {}",
-                    SessionMessage::name(&*msg)
-                );
-                assert_eq!(msg.msg_seq_num(), expected);
-                assert_eq!(
-                    msg.poss_dup_flag(),
-                    Some(true),
-                    "resend message at seq {expected} must have PossDupFlag=Y"
-                );
-            }
+    // Peer consumes the N resent messages. Each must carry
+    // PossDupFlag=Y and preserve the original sequence number.
+    for expected in 2..=(N + 1) {
+        let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+        assert!(
+            is_new_order_single(&msg),
+            "resend at seq {expected} should be a NewOrderSingle, got {}",
+            SessionMessage::name(&*msg)
+        );
+        assert_eq!(msg.msg_seq_num(), expected);
+        assert_eq!(
+            msg.poss_dup_flag(),
+            Some(true),
+            "resend message at seq {expected} must have PossDupFlag=Y"
+        );
+    }
 
-            // Clean teardown. Disconnect is simpler than a full Logout echo
-            // dance for the raw-peer case and doesn't require peer cooperation.
-            initiator.disconnect().await.expect("disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut ini_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    // Clean teardown. Disconnect is simpler than a full Logout echo
+    // dance for the raw-peer case and doesn't require peer cooperation.
+    initiator.disconnect().await.expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -1491,425 +1813,400 @@ async fn resend_request_large_gap() {
 ///
 /// The fix flushes any residual gap once the range is exhausted, on either
 /// exit.
-#[tokio::test]
-async fn resend_range_ending_on_gap_fill_flushes_trailing_gap() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            for resend_batch_size in [1, 3] {
-                let mut settings = build_session_settings(30);
-                settings.resend_batch_size = NonZeroUsize::new(resend_batch_size).unwrap();
-                let mut p = spawn_initiator_with_raw_peer(65536, settings);
-                let ini_sender = p.peer_logon_handshake(30).await;
-                let RawPeerInitiator {
-                    initiator,
-                    handle: ini_handle,
-                    events_rx: mut ini_events_rx,
-                    mut peer_r,
-                    mut peer_w,
-                    peer_sid,
-                    mut peer_buf,
-                } = p;
+#[rstest]
+#[case::batch_exhausted(1)]
+#[case::range_exhausted(3)]
+#[tokio::test(flavor = "local")]
+async fn resend_range_ending_on_gap_fill_flushes_trailing_gap(#[case] resend_batch_size: usize) {
+    let mut settings = build_session_settings(30);
+    settings.resend_batch_size = NonZeroUsize::new(resend_batch_size).unwrap();
+    let mut p = spawn_initiator_with_raw_peer(65536, settings);
+    let ini_sender = p.peer_logon_handshake(30).await;
+    let RawPeerInitiator {
+        initiator,
+        handle: ini_handle,
+        events_rx: mut ini_events_rx,
+        mut peer_r,
+        mut peer_w,
+        peer_sid,
+        mut peer_buf,
+    } = p;
 
-                // Initiator sends one app message (sender seq 2).
-                ini_sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("sender.send");
-                let nos = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert!(is_new_order_single(&nos));
-                assert_eq!(nos.msg_seq_num(), 2);
+    // Initiator sends one app message (sender seq 2).
+    ini_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
+    let nos = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert!(is_new_order_single(&nos));
+    assert_eq!(nos.msg_seq_num(), 2);
 
-                // Peer TestRequest (peer seq 2) -> initiator replies Heartbeat
-                // (sender seq 3), an admin message that is a gap-fill candidate
-                // and becomes the LAST slot of the resend range below.
-                peer_w
-                    .write_all(&peer_test_request_bytes(&peer_sid, 2, fix_str!("TR1")))
-                    .await
-                    .expect("write test request");
-                let hb = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert_eq!(SessionMessage::msg_type(&*hb), MsgTypeBase::Heartbeat);
-                assert_eq!(hb.msg_seq_num(), 3);
+    // Peer TestRequest (peer seq 2) -> initiator replies Heartbeat
+    // (sender seq 3), an admin message that is a gap-fill candidate
+    // and becomes the LAST slot of the resend range below.
+    peer_w
+        .write_all(&peer_test_request_bytes(&peer_sid, 2, fix_str!("TR1")))
+        .await
+        .expect("write test request");
+    let hb = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(SessionMessage::msg_type(&*hb), MsgTypeBase::Heartbeat);
+    assert_eq!(hb.msg_seq_num(), 3);
 
-                // Peer requests a resend of seq 2..=3 (peer seq 3). seq 2 is a
-                // real app resend; seq 3 (the Heartbeat) is a gap-fill
-                // candidate sitting at the range end - the trailing-gap-fill
-                // case.
-                peer_w
-                    .write_all(&peer_resend_request_bytes(&peer_sid, 3, 2, 3))
-                    .await
-                    .expect("write resend request");
+    // Peer requests a resend of seq 2..=3 (peer seq 3). seq 2 is a
+    // real app resend; seq 3 (the Heartbeat) is a gap-fill
+    // candidate sitting at the range end - the trailing-gap-fill
+    // case.
+    peer_w
+        .write_all(&peer_resend_request_bytes(&peer_sid, 3, 2, 3))
+        .await
+        .expect("write resend request");
 
-                // seq 2 comes back as a real NewOrderSingle resend
-                // (PossDupFlag=Y).
-                let resent = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert!(
-                    is_new_order_single(&resent),
-                    "seq 2 resend must be a NewOrderSingle (batch {resend_batch_size})"
-                );
-                assert_eq!(resent.msg_seq_num(), 2);
-                assert_eq!(resent.poss_dup_flag(), Some(true));
+    // seq 2 comes back as a real NewOrderSingle resend
+    // (PossDupFlag=Y).
+    let resent = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert!(
+        is_new_order_single(&resent),
+        "seq 2 resend must be a NewOrderSingle (batch {resend_batch_size})"
+    );
+    assert_eq!(resent.msg_seq_num(), 2);
+    assert_eq!(resent.poss_dup_flag(), Some(true));
 
-                // The trailing gap-fill for seq 3 must be flushed. Before the
-                // fix this read deadlocks - the gap-fill is orphaned in engine
-                // state and never written, so the peer waits forever.
-                let gap = timeout(TEST_TIMEOUT, read_one_message(&mut peer_r, &mut peer_buf))
-                    .await
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "trailing SequenceReset-GapFill must be sent (batch \
-                             {resend_batch_size})"
-                        )
-                    });
-                assert_eq!(
-                    SessionMessage::msg_type(&*gap),
-                    MsgTypeBase::SequenceReset,
-                    "trailing slot must be a SequenceReset-GapFill (batch {resend_batch_size})"
-                );
-                let AdminBase::SequenceReset(ref sr) =
-                    SessionMessage::try_as_admin(&*gap).expect("admin message")
-                else {
-                    panic!("expected SequenceReset");
-                };
-                assert_eq!(sr.gap_fill_flag, Some(true), "must be a GapFill (123=Y)");
-                assert_eq!(gap.msg_seq_num(), 3, "gap-fill begins at the skipped seq 3");
-                assert_eq!(sr.new_seq_no, 4, "NewSeqNo advances past the gap");
+    // The trailing gap-fill for seq 3 must be flushed. Before the
+    // fix this read deadlocks - the gap-fill is orphaned in engine
+    // state and never written, so the peer waits forever.
+    let gap = timeout(TEST_TIMEOUT, read_one_message(&mut peer_r, &mut peer_buf))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "trailing SequenceReset-GapFill must be sent (batch \
+                 {resend_batch_size})"
+            )
+        });
+    assert_eq!(
+        SessionMessage::msg_type(&*gap),
+        MsgTypeBase::SequenceReset,
+        "trailing slot must be a SequenceReset-GapFill (batch {resend_batch_size})"
+    );
+    let AdminBase::SequenceReset(ref sr) =
+        SessionMessage::try_as_admin(&*gap).expect("admin message")
+    else {
+        panic!("expected SequenceReset");
+    };
+    assert_eq!(sr.gap_fill_flag, Some(true), "must be a GapFill (123=Y)");
+    assert_eq!(gap.msg_seq_num(), 3, "gap-fill begins at the skipped seq 3");
+    assert_eq!(sr.new_seq_no, 4, "NewSeqNo advances past the gap");
 
-                initiator.disconnect().await.expect("disconnect");
-                assert_eq!(
-                    wait_for_session_end(&mut ini_events_rx).await,
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                );
-                ini_handle
-                    .await
-                    .expect("initiator task")
-                    .expect("handler initialization");
-            }
-        })
-        .await;
+    initiator.disconnect().await.expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
 // Test 3: SequenceReset-Reset advances target seq num
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn sequence_reset_advances_target_seq_num() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
-            let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
+    let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
 
-            // Peer drives the logon handshake; the acceptor answers with
-            // its Logon.
-            peer.logon(1, 30).await;
+    // Peer drives the logon handshake; the acceptor answers with
+    // its Logon.
+    peer.logon(1, 30).await;
 
-            // Waiting for SessionReady also drains the AdminMsgIn(Logon)
-            // that precedes it, so the next event the test waits on is
-            // unambiguously caused by the reset + heartbeat sequence below.
-            let _ = wait_for_session_ready(&mut acc_events_rx).await;
+    // Waiting for SessionReady also drains the AdminMsgIn(Logon)
+    // that precedes it, so the next event the test waits on is
+    // unambiguously caused by the reset + heartbeat sequence below.
+    let _ = wait_for_session_ready(&mut acc_events_rx).await;
 
-            // Peer sends SequenceReset-Reset: "reset your expected
-            // incoming seq num to 10". gap_fill_flag=None -> Reset form.
-            // The reset's own MsgSeqNum is 2 (next after Logon=1), but
-            // SequenceReset-Reset is explicitly exempt from the
-            // MsgSeqNum check in verify_header when gap_fill_flag=false.
-            let reset = peer_sequence_reset_bytes(
-                &peer.peer_sid,
-                /* seq */ 2,
-                /* new_seq_no */ 10,
-                /* gap_fill_flag */ None,
-            );
-            peer.write(&reset).await;
+    // Peer sends SequenceReset-Reset: "reset your expected
+    // incoming seq num to 10". gap_fill_flag=None -> Reset form.
+    // The reset's own MsgSeqNum is 2 (next after Logon=1), but
+    // SequenceReset-Reset is explicitly exempt from the
+    // MsgSeqNum check in verify_header when gap_fill_flag=false.
+    let reset = peer_sequence_reset_bytes(
+        &peer.peer_sid,
+        /* seq */ 2,
+        /* new_seq_no */ 10,
+        /* gap_fill_flag */ None,
+    );
+    peer.write(&reset).await;
 
-            // Peer sends a TestRequest at the *new* expected seq. The
-            // engine's `on_test_request` replies with an outbound
-            // Heartbeat carrying the matching `TestReqID` - this is the
-            // positive confirmation that the reset was honored.
-            //
-            // (Heartbeat / TestRequest are both `InputResult::Handled`
-            // by the engine, so no `AdminMsgIn` event fires on the
-            // acceptor side - we have to verify via the outbound
-            // response read from the peer stream.)
-            //
-            // If the reset had been ignored, the engine would see
-            // seq=10 as too-high (expected 2), queue the TestRequest,
-            // and emit a `ResendRequest` instead of the Heartbeat
-            // response. We assert on message type to distinguish the
-            // two outcomes cleanly.
-            let test_request = peer_test_request_bytes(&peer.peer_sid, 10, fix_str!("RESET1"));
-            peer.write(&test_request).await;
+    // Peer sends a TestRequest at the *new* expected seq. The
+    // engine's `on_test_request` replies with an outbound
+    // Heartbeat carrying the matching `TestReqID` - this is the
+    // positive confirmation that the reset was honored.
+    //
+    // (Heartbeat / TestRequest are both `InputResult::Handled`
+    // by the engine, so no `AdminMsgIn` event fires on the
+    // acceptor side - we have to verify via the outbound
+    // response read from the peer stream.)
+    //
+    // If the reset had been ignored, the engine would see
+    // seq=10 as too-high (expected 2), queue the TestRequest,
+    // and emit a `ResendRequest` instead of the Heartbeat
+    // response. We assert on message type to distinguish the
+    // two outcomes cleanly.
+    let test_request = peer_test_request_bytes(&peer.peer_sid, 10, fix_str!("RESET1"));
+    peer.write(&test_request).await;
 
-            let response = peer.read().await;
+    let response = peer.read().await;
+    assert_eq!(
+        SessionMessage::msg_type(&*response),
+        MsgTypeBase::Heartbeat,
+        "expected Heartbeat response after SequenceReset-Reset + TestRequest, \
+         got {} - this means the reset was NOT applied and the engine \
+         saw seq=10 as too-high",
+        SessionMessage::name(&*response)
+    );
+    match SessionMessage::try_as_admin(&*response) {
+        Some(AdminBase::Heartbeat(hb)) => {
             assert_eq!(
-                SessionMessage::msg_type(&*response),
-                MsgTypeBase::Heartbeat,
-                "expected Heartbeat response after SequenceReset-Reset + TestRequest, \
-                 got {} - this means the reset was NOT applied and the engine \
-                 saw seq=10 as too-high",
-                SessionMessage::name(&*response)
+                hb.test_req_id.as_deref(),
+                Some(fix_str!("RESET1")),
+                "Heartbeat response did not echo our TestReqID"
             );
-            match SessionMessage::try_as_admin(&*response) {
-                Some(AdminBase::Heartbeat(hb)) => {
-                    assert_eq!(
-                        hb.test_req_id.as_deref(),
-                        Some(fix_str!("RESET1")),
-                        "Heartbeat response did not echo our TestReqID"
-                    );
-                }
-                _ => unreachable!("already asserted this is a Heartbeat"),
-            }
+        }
+        _ => unreachable!("already asserted this is a Heartbeat"),
+    }
 
-            // Teardown.
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("acceptor disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            peer.handle.await.expect("acceptor task");
-        })
-        .await;
+    // Teardown.
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("acceptor disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    peer.handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
 // Test 4: Heartbeat timeout -> TestRequest -> grace period -> disconnect
 // ---------------------------------------------------------------------------
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn heartbeat_timeout_sends_test_request_and_disconnects() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            // Small heartbeat; with the fixture's grace limit of 1 only
-            // one TestRequest needs to go unanswered before the engine
-            // escalates to Logout. Keeps the read stream short.
-            register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(1));
-            let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    // Small heartbeat; with the fixture's grace limit of 1 only
+    // one TestRequest needs to go unanswered before the engine
+    // escalates to Logout. Keeps the read stream short.
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(1));
+    let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
 
-            // Logon handshake.
-            peer.logon(1, 1).await;
-            let _ = wait_for_session_ready(&mut acc_events_rx).await;
+    // Logon handshake.
+    peer.logon(1, 1).await;
+    let _ = wait_for_session_ready(&mut acc_events_rx).await;
 
-            // Peer goes silent. Step tokio time past output and input
-            // deadlines twice over - 3 s is comfortably past the
-            // expected Logout emission at t~2.4 s.
-            time::advance(Duration::from_millis(3000)).await;
+    // Peer goes silent. Step tokio time past output and input
+    // deadlines twice over - 3 s is comfortably past the
+    // expected Logout emission at t~2.4 s.
+    time::advance(Duration::from_millis(3000)).await;
 
-            // Read messages in order until we see the Logout; filter
-            // out Heartbeats (their exact count depends on the select
-            // interleaving under start_paused). Assert we saw a
-            // TestRequest on the way. Each read is bounded so a session
-            // that stops escalating fails here instead of hanging.
-            let mut saw_test_request = false;
-            loop {
-                let msg = peer.read().await;
-                let msg_type = SessionMessage::msg_type(&*msg);
-                if msg_type == MsgTypeBase::Heartbeat {
-                    continue;
-                } else if msg_type == MsgTypeBase::TestRequest {
-                    saw_test_request = true;
-                } else if msg_type == MsgTypeBase::Logout {
-                    break;
-                } else {
-                    panic!(
-                        "unexpected message on wire during heartbeat timeout: {}",
-                        SessionMessage::name(&*msg)
-                    );
-                }
-            }
-            assert!(
-                saw_test_request,
-                "expected at least one TestRequest before the Logout during grace period"
+    // Read messages in order until we see the Logout; filter
+    // out Heartbeats (their exact count depends on the select
+    // interleaving under start_paused). Assert we saw a
+    // TestRequest on the way. Each read is bounded so a session
+    // that stops escalating fails here instead of hanging.
+    let mut saw_test_request = false;
+    loop {
+        let msg = peer.read().await;
+        let msg_type = SessionMessage::msg_type(&*msg);
+        if msg_type == MsgTypeBase::Heartbeat {
+            continue;
+        } else if msg_type == MsgTypeBase::TestRequest {
+            saw_test_request = true;
+        } else if msg_type == MsgTypeBase::Logout {
+            break;
+        } else {
+            panic!(
+                "unexpected message on wire during heartbeat timeout: {}",
+                SessionMessage::name(&*msg)
             );
+        }
+    }
+    assert!(
+        saw_test_request,
+        "expected at least one TestRequest before the Logout during grace period"
+    );
 
-            // Session should terminate on its own - no teardown call needed.
-            let reason = wait_for_session_end(&mut acc_events_rx).await;
-            assert_eq!(
-                reason,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::HeartbeatTimeout),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            peer.handle.await.expect("acceptor task");
-        })
-        .await;
+    // Session should terminate on its own - no teardown call needed.
+    let reason = wait_for_session_end(&mut acc_events_rx).await;
+    assert_eq!(
+        reason,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::HeartbeatTimeout),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    peer.handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
 // Test 5: Multiple sessions on the same Acceptor are isolated
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn multiple_sessions_isolated() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let sid_a_acc = acceptor_session_id_for(fix_str!("TARGET_A"));
-            let sid_b_acc = acceptor_session_id_for(fix_str!("TARGET_B"));
+    let sid_a_acc = acceptor_session_id_for(fix_str!("TARGET_A"));
+    let sid_b_acc = acceptor_session_id_for(fix_str!("TARGET_B"));
 
-            // --- Acceptor with two registered sessions ---
-            let (acc_tx, mut acc_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_tx));
-            register_in_memory_session(&acceptor, sid_a_acc.clone(), build_session_settings(30));
-            register_in_memory_session(&acceptor, sid_b_acc.clone(), build_session_settings(30));
+    // --- Acceptor with two registered sessions ---
+    let (acc_tx, mut acc_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_tx));
+    register_in_memory_session(&acceptor, sid_a_acc.clone(), build_session_settings(30));
+    register_in_memory_session(&acceptor, sid_b_acc.clone(), build_session_settings(30));
 
-            // --- Initiator A ---
-            let (ini_a_stream, acc_a_stream) = io::duplex(8192);
-            let (acc_a_r, acc_a_w) = split(acc_a_stream);
-            let (ini_a_r, ini_a_w) = split(ini_a_stream);
-            let (ini_a_tx, mut ini_a_rx) = mpsc::unbounded_channel();
-            let initiator_a = Initiator::<Message, InMemoryStorage, _>::new(
-                initiator_session_id_for(fix_str!("TARGET_A")),
-                build_session_settings(30),
-                test_handler(ini_a_tx),
-                |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
-            )
-            .expect("initiator settings valid");
+    // --- Initiator A ---
+    let (ini_a_stream, acc_a_stream) = io::duplex(8192);
+    let (acc_a_r, acc_a_w) = split(acc_a_stream);
+    let (ini_a_r, ini_a_w) = split(ini_a_stream);
+    let (ini_a_tx, mut ini_a_rx) = mpsc::unbounded_channel();
+    let initiator_a = Initiator::<Message, InMemoryStorage, _>::new(
+        initiator_session_id_for(fix_str!("TARGET_A")),
+        build_session_settings(30),
+        test_handler(ini_a_tx),
+        |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
+    )
+    .expect("initiator settings valid");
 
-            // --- Initiator B ---
-            let (ini_b_stream, acc_b_stream) = io::duplex(8192);
-            let (acc_b_r, acc_b_w) = split(acc_b_stream);
-            let (ini_b_r, ini_b_w) = split(ini_b_stream);
-            let (ini_b_tx, mut ini_b_rx) = mpsc::unbounded_channel();
-            let initiator_b = Initiator::<Message, InMemoryStorage, _>::new(
-                initiator_session_id_for(fix_str!("TARGET_B")),
-                build_session_settings(30),
-                test_handler(ini_b_tx),
-                |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
-            )
-            .expect("initiator settings valid");
+    // --- Initiator B ---
+    let (ini_b_stream, acc_b_stream) = io::duplex(8192);
+    let (acc_b_r, acc_b_w) = split(acc_b_stream);
+    let (ini_b_r, ini_b_w) = split(ini_b_stream);
+    let (ini_b_tx, mut ini_b_rx) = mpsc::unbounded_channel();
+    let initiator_b = Initiator::<Message, InMemoryStorage, _>::new(
+        initiator_session_id_for(fix_str!("TARGET_B")),
+        build_session_settings(30),
+        test_handler(ini_b_tx),
+        |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
+    )
+    .expect("initiator settings valid");
 
-            // --- Spawn all four tasks ---
-            let acc_a_handle = acceptor.run_session(acc_a_r, acc_a_w, TEST_PEER_ADDR);
-            let acc_b_handle = acceptor.run_session(acc_b_r, acc_b_w, TEST_PEER_ADDR);
-            let ini_a_handle = initiator_a.run_session(ini_a_r, ini_a_w, None);
-            let ini_b_handle = initiator_b.run_session(ini_b_r, ini_b_w, None);
+    // --- Spawn all four tasks ---
+    let acc_a_handle = acceptor.run_session(acc_a_r, acc_a_w, TEST_PEER_ADDR);
+    let acc_b_handle = acceptor.run_session(acc_b_r, acc_b_w, TEST_PEER_ADDR);
+    let ini_a_handle = initiator_a.run_session(ini_a_r, ini_a_w, None);
+    let ini_b_handle = initiator_b.run_session(ini_b_r, ini_b_w, None);
 
-            // --- Wait for both sessions to be fully up, on both sides ---
-            let sender_a = wait_for_session_ready(&mut ini_a_rx).await;
-            let sender_b = wait_for_session_ready(&mut ini_b_rx).await;
-            let _ = wait_for_session_ready_of(&mut acc_rx, &sid_a_acc).await;
-            let _ = wait_for_session_ready_of(&mut acc_rx, &sid_b_acc).await;
+    // --- Wait for both sessions to be fully up, on both sides ---
+    let sender_a = wait_for_session_ready(&mut ini_a_rx).await;
+    let sender_b = wait_for_session_ready(&mut ini_b_rx).await;
+    let _ = wait_for_session_ready_of(&mut acc_rx, &sid_a_acc).await;
+    let _ = wait_for_session_ready_of(&mut acc_rx, &sid_b_acc).await;
 
-            // --- Each initiator sends one NewOrderSingle ---
-            sender_a
-                .send(new_order_single_with_empty_header())
-                .expect("sender A send");
-            sender_b
-                .send(new_order_single_with_empty_header())
-                .expect("sender B send");
+    // --- Each initiator sends one NewOrderSingle ---
+    sender_a
+        .send(new_order_single_with_empty_header())
+        .expect("sender A send");
+    sender_b
+        .send(new_order_single_with_empty_header())
+        .expect("sender B send");
 
-            // --- Verify routing: each AppMsgIn arrives on the matching session id ---
-            let mut seen_a = false;
-            let mut seen_b = false;
-            while !(seen_a && seen_b) {
-                let event = recv_event(&mut acc_rx).await;
-                if let TestEvent::AppMsgIn(sid, msg) = &event {
-                    assert!(
-                        is_new_order_single(msg),
-                        "unexpected non-NOS app message on session {sid}"
-                    );
-                    if *sid == sid_a_acc {
-                        assert!(!seen_a, "session A received a duplicate message");
-                        seen_a = true;
-                    } else if *sid == sid_b_acc {
-                        assert!(!seen_b, "session B received a duplicate message");
-                        seen_b = true;
-                    } else {
-                        panic!("AppMsgIn on unknown session: {sid}");
-                    }
-                }
+    // --- Verify routing: each AppMsgIn arrives on the matching session id ---
+    let mut seen_a = false;
+    let mut seen_b = false;
+    while !(seen_a && seen_b) {
+        let event = recv_event(&mut acc_rx).await;
+        if let TestEvent::AppMsgIn(sid, msg) = &event {
+            assert!(
+                is_new_order_single(msg),
+                "unexpected non-NOS app message on session {sid}"
+            );
+            if *sid == sid_a_acc {
+                assert!(!seen_a, "session A received a duplicate message");
+                seen_a = true;
+            } else if *sid == sid_b_acc {
+                assert!(!seen_b, "session B received a duplicate message");
+                seen_b = true;
+            } else {
+                panic!("AppMsgIn on unknown session: {sid}");
             }
+        }
+    }
 
-            // --- Disconnect session A only ---
-            initiator_a.disconnect().await.expect("disconnect A");
+    // --- Disconnect session A only ---
+    initiator_a.disconnect().await.expect("disconnect A");
 
-            // Both sides of session A should fire SessionEnd: the requesting
-            // side by decision, the other on the transport going away.
-            assert_eq!(
-                wait_for_session_end(&mut ini_a_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            assert_eq!(
-                wait_for_session_end_of(&mut acc_rx, &sid_a_acc).await,
-                SessionEndSnapshot {
-                    context: EndContext::Established,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_a_handle.await.expect("acceptor A task");
-            ini_a_handle
-                .await
-                .expect("initiator A task")
-                .expect("handler initialization");
+    // Both sides of session A should fire SessionEnd: the requesting
+    // side by decision, the other on the transport going away.
+    assert_eq!(
+        wait_for_session_end(&mut ini_a_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        wait_for_session_end_of(&mut acc_rx, &sid_a_acc).await,
+        SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_a_handle.await.expect("acceptor A task");
+    ini_a_handle
+        .await
+        .expect("initiator A task")
+        .expect("handler initialization");
 
-            // --- Verify session B is still fully functional ---
-            sender_b
-                .send(new_order_single_with_empty_header())
-                .expect("sender B second send");
-            let event = wait_until(
-                &mut acc_rx,
-                |e| matches!(e, TestEvent::AppMsgIn(sid, _) if *sid == sid_b_acc),
-            )
-            .await;
-            assert_matches!(
-                event,
-                TestEvent::AppMsgIn(sid, msg) if sid == sid_b_acc && is_new_order_single(&msg)
-            );
+    // --- Verify session B is still fully functional ---
+    sender_b
+        .send(new_order_single_with_empty_header())
+        .expect("sender B second send");
+    let event = wait_until(
+        &mut acc_rx,
+        |e| matches!(e, TestEvent::AppMsgIn(sid, _) if *sid == sid_b_acc),
+    )
+    .await;
+    assert_matches!(
+        event,
+        TestEvent::AppMsgIn(sid, msg) if sid == sid_b_acc && is_new_order_single(&msg)
+    );
 
-            // --- Teardown B ---
-            initiator_b.disconnect().await.expect("disconnect B");
-            assert_eq!(
-                wait_for_session_end(&mut ini_b_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            assert_eq!(
-                wait_for_session_end_of(&mut acc_rx, &sid_b_acc).await,
-                SessionEndSnapshot {
-                    context: EndContext::Established,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_b_handle.await.expect("acceptor B task");
-            ini_b_handle
-                .await
-                .expect("initiator B task")
-                .expect("handler initialization");
-        })
-        .await;
+    // --- Teardown B ---
+    initiator_b.disconnect().await.expect("disconnect B");
+    assert_eq!(
+        wait_for_session_end(&mut ini_b_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        wait_for_session_end_of(&mut acc_rx, &sid_b_acc).await,
+        SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_b_handle.await.expect("acceptor B task");
+    ini_b_handle
+        .await
+        .expect("initiator B task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -1922,88 +2219,83 @@ async fn multiple_sessions_isolated() {
 /// the TCP write side - here a deliberately tight 1024-byte duplex pipe that
 /// cannot hold all N serialized messages at once. The session task flushes as
 /// the peer drains, so all N arrive in order with no `PossDupFlag`.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn nonblocking_send_preserves_order_under_write_backpressure() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            // Intentionally tight: a 1024-byte duplex pipe cannot hold all N
-            // serialized NewOrderSingles (~100 B each) at once, so the
-            // session's `flush_output` blocks on the write side until the peer
-            // drains. `send` itself never blocks - it stages synchronously.
-            const N: SeqNum = 20;
+    // Intentionally tight: a 1024-byte duplex pipe cannot hold all N
+    // serialized NewOrderSingles (~100 B each) at once, so the
+    // session's `flush_output` blocks on the write side until the peer
+    // drains. `send` itself never blocks - it stages synchronously.
+    const N: SeqNum = 20;
 
-            let mut p = spawn_initiator_with_raw_peer(1024, build_session_settings(30));
-            let sender = p.peer_logon_handshake(30).await;
-            let RawPeerInitiator {
-                initiator,
-                handle: ini_handle,
-                events_rx: mut ini_events_rx,
-                mut peer_r,
-                peer_w: _peer_w,
-                peer_sid: _peer_sid,
-                mut peer_buf,
-            } = p;
+    let mut p = spawn_initiator_with_raw_peer(1024, build_session_settings(30));
+    let sender = p.peer_logon_handshake(30).await;
+    let RawPeerInitiator {
+        initiator,
+        handle: ini_handle,
+        events_rx: mut ini_events_rx,
+        mut peer_r,
+        peer_w: _peer_w,
+        peer_sid: _peer_sid,
+        mut peer_buf,
+    } = p;
 
-            // Stage all N synchronously - no awaits, no blocking. The 1024-byte
-            // pipe cannot absorb them all, so they back up in the staging queue
-            // and in `flush_output` until the peer reads below.
-            for _ in 0..N {
-                sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("sender.send");
-            }
-            assert_eq!(
-                sender.backlog_len(),
-                N as usize,
-                "send stages, nothing more"
-            );
+    // Stage all N synchronously - no awaits, no blocking. The 1024-byte
+    // pipe cannot absorb them all, so they back up in the staging queue
+    // and in `flush_output` until the peer reads below.
+    for _ in 0..N {
+        sender
+            .send(new_order_single_with_empty_header())
+            .expect("sender.send");
+    }
+    assert_eq!(
+        sender.backlog_len(),
+        N as usize,
+        "send stages, nothing more"
+    );
 
-            // Let the session task drain until the pipe fills and its write
-            // parks. Some of the burst must still be staged then - that is the
-            // backpressure this test is about; a pipe that swallowed the whole
-            // burst would leave nothing to order under it.
-            for _ in 0..(N as usize * 4) {
-                yield_now().await;
-            }
-            assert!(
-                sender.backlog_len() > 0,
-                "the write side must have parked before the burst drained"
-            );
+    // Let the session task drain until the pipe fills and its write
+    // parks. Some of the burst must still be staged then - that is the
+    // backpressure this test is about; a pipe that swallowed the whole
+    // burst would leave nothing to order under it.
+    for _ in 0..(N as usize * 4) {
+        yield_now().await;
+    }
+    assert!(
+        sender.backlog_len() > 0,
+        "the write side must have parked before the burst drained"
+    );
 
-            // Read N messages in order. Draining `peer_r` unblocks the
-            // session's write_all one message at a time.
-            for expected in 2..=(N + 1) {
-                let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
-                assert!(
-                    is_new_order_single(&msg),
-                    "seq {expected}: expected NewOrderSingle, got {}",
-                    SessionMessage::name(&*msg)
-                );
-                assert_eq!(msg.msg_seq_num(), expected);
-                assert_ne!(
-                    msg.poss_dup_flag(),
-                    Some(true),
-                    "first-send message at seq {expected} must not have PossDupFlag=Y"
-                );
-            }
+    // Read N messages in order. Draining `peer_r` unblocks the
+    // session's write_all one message at a time.
+    for expected in 2..=(N + 1) {
+        let msg = read_one_message(&mut peer_r, &mut peer_buf).await;
+        assert!(
+            is_new_order_single(&msg),
+            "seq {expected}: expected NewOrderSingle, got {}",
+            SessionMessage::name(&*msg)
+        );
+        assert_eq!(msg.msg_seq_num(), expected);
+        assert_ne!(
+            msg.poss_dup_flag(),
+            Some(true),
+            "first-send message at seq {expected} must not have PossDupFlag=Y"
+        );
+    }
 
-            // Teardown.
-            initiator.disconnect().await.expect("disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut ini_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    // Teardown.
+    initiator.disconnect().await.expect("disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -2016,55 +2308,50 @@ async fn nonblocking_send_preserves_order_under_write_backpressure() {
 /// burst; the cap check - run after each flush & admin drain, once logged on -
 /// then trips and evicts. The still-queued messages are drained to storage for
 /// resend on reconnect (continuity preserved).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn count_cap_evicts_slow_consumer() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            const CAP: usize = 3;
-            const N: SeqNum = 20;
+    const CAP: usize = 3;
+    const N: SeqNum = 20;
 
-            let mut session_settings = build_session_settings(30);
-            session_settings.max_outbound_queued_messages = Some(NonZeroUsize::new(CAP).unwrap());
+    let mut session_settings = build_session_settings(30);
+    session_settings.max_outbound_queued_messages = Some(NonZeroUsize::new(CAP).unwrap());
 
-            // Peer completes the logon handshake but then stops reading app
-            // messages - they pile up in the staging queue past the cap.
-            let mut p = spawn_initiator_with_raw_peer(8192, session_settings);
-            let sender = p.peer_logon_handshake(30).await;
-            let RawPeerInitiator {
-                initiator: _initiator,
-                handle: ini_handle,
-                events_rx: mut ini_events_rx,
-                peer_r: _peer_r,
-                peer_w: _peer_w,
-                peer_sid: _peer_sid,
-                peer_buf: _peer_buf,
-            } = p;
+    // Peer completes the logon handshake but then stops reading app
+    // messages - they pile up in the staging queue past the cap.
+    let mut p = spawn_initiator_with_raw_peer(8192, session_settings);
+    let sender = p.peer_logon_handshake(30).await;
+    let RawPeerInitiator {
+        initiator: _initiator,
+        handle: ini_handle,
+        events_rx: mut ini_events_rx,
+        peer_r: _peer_r,
+        peer_w: _peer_w,
+        peer_sid: _peer_sid,
+        peer_buf: _peer_buf,
+    } = p;
 
-            // Stage N >> CAP messages synchronously in one burst.
-            for _ in 0..N {
-                sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("sender.send");
-            }
+    // Stage N >> CAP messages synchronously in one burst.
+    for _ in 0..N {
+        sender
+            .send(new_order_single_with_empty_header())
+            .expect("sender.send");
+    }
 
-            // The session must hard-disconnect as a slow consumer.
-            let reason = wait_for_session_end(&mut ini_events_rx).await;
-            assert_eq!(
-                reason,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::SlowConsumer),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
+    // The session must hard-disconnect as a slow consumer.
+    let reason = wait_for_session_end(&mut ini_events_rx).await;
+    assert_eq!(
+        reason,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SlowConsumer),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
 
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -2082,65 +2369,60 @@ async fn count_cap_evicts_slow_consumer() {
 /// Real wall-clock timing (the staging `Instant` is `std::time::Instant`, so
 /// `start_paused` cannot age it). The margin (cap 100 ms vs a 300 ms wait) is
 /// wide and the staged head's age is fixed at enqueue time, so this is robust.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn lag_cap_evicts_slow_consumer() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            const N: SeqNum = 50;
-            let lag = Duration::from_millis(100);
+    const N: SeqNum = 50;
+    let lag = Duration::from_millis(100);
 
-            let mut session_settings = build_session_settings(30);
-            session_settings.max_outbound_lag = Some(lag);
+    let mut session_settings = build_session_settings(30);
+    session_settings.max_outbound_lag = Some(lag);
 
-            // Tight pipe: a 50-message burst (~140 B each) cannot fit, so the
-            // session flushes a few then blocks on the write side with the rest
-            // still staged and aging.
-            let mut p = spawn_initiator_with_raw_peer(512, session_settings);
-            let sender = p.peer_logon_handshake(30).await;
-            let RawPeerInitiator {
-                initiator: _initiator,
-                handle: ini_handle,
-                events_rx: mut ini_events_rx,
-                mut peer_r,
-                peer_w: _peer_w,
-                peer_sid: _peer_sid,
-                mut peer_buf,
-            } = p;
+    // Tight pipe: a 50-message burst (~140 B each) cannot fit, so the
+    // session flushes a few then blocks on the write side with the rest
+    // still staged and aging.
+    let mut p = spawn_initiator_with_raw_peer(512, session_settings);
+    let sender = p.peer_logon_handshake(30).await;
+    let RawPeerInitiator {
+        initiator: _initiator,
+        handle: ini_handle,
+        events_rx: mut ini_events_rx,
+        mut peer_r,
+        peer_w: _peer_w,
+        peer_sid: _peer_sid,
+        mut peer_buf,
+    } = p;
 
-            // Stage the whole burst at once. The session drains a few into the
-            // pipe and then blocks on `flush_output`; the head of the queue is
-            // now pinned at this enqueue instant.
-            for _ in 0..N {
-                sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("sender.send");
-            }
+    // Stage the whole burst at once. The session drains a few into the
+    // pipe and then blocks on `flush_output`; the head of the queue is
+    // now pinned at this enqueue instant.
+    for _ in 0..N {
+        sender
+            .send(new_order_single_with_empty_header())
+            .expect("sender.send");
+    }
 
-            // Let the head age well past the lag cap while the peer reads
-            // nothing (the session stays blocked on the full pipe).
-            time::sleep(Duration::from_millis(300)).await;
+    // Let the head age well past the lag cap while the peer reads
+    // nothing (the session stays blocked on the full pipe).
+    time::sleep(Duration::from_millis(300)).await;
 
-            // One read frees the pipe; the flush completes and the very next
-            // cap check sees an over-aged head and evicts.
-            let _ = read_one_message(&mut peer_r, &mut peer_buf).await;
+    // One read frees the pipe; the flush completes and the very next
+    // cap check sees an over-aged head and evicts.
+    let _ = read_one_message(&mut peer_r, &mut peer_buf).await;
 
-            let reason = wait_for_session_end(&mut ini_events_rx).await;
-            assert_eq!(
-                reason,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::SlowConsumer),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
+    let reason = wait_for_session_end(&mut ini_events_rx).await;
+    assert_eq!(
+        reason,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::SlowConsumer),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
 
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -2153,206 +2435,195 @@ async fn lag_cap_evicts_slow_consumer() {
 /// storage per session id), the peer recovers the whole backlog via a normal
 /// `ResendRequest`, with original sequence numbers and `PossDupFlag=Y`. This
 /// is the "no `send()`-accepted message is dropped" durability property.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn slow_consumer_eviction_recovers_backlog_on_reconnect() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            const CAP: usize = 3;
-            const K: SeqNum = 20;
+    const CAP: usize = 3;
+    const K: SeqNum = 20;
 
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let mut settings = build_session_settings(30);
-            settings.max_outbound_queued_messages = Some(NonZeroUsize::new(CAP).unwrap());
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let mut settings = build_session_settings(30);
+    settings.max_outbound_queued_messages = Some(NonZeroUsize::new(CAP).unwrap());
 
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(&acceptor, acceptor_session_id(), settings);
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), settings);
 
-            // --- Connection #1: logon, acceptor app stages K, peer never reads
-            //     them, count cap evicts, backlog drained to storage. ---
-            {
-                let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
-                // Peer (client) drives logon with seq 1.
-                peer.logon(1, 30).await;
+    // --- Connection #1: logon, acceptor app stages K, peer never reads
+    //     them, count cap evicts, backlog drained to storage. ---
+    {
+        let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
+        // Peer (client) drives logon with seq 1.
+        peer.logon(1, 30).await;
 
-                let sender = wait_for_session_ready(&mut acc_events_rx).await;
+        let sender = wait_for_session_ready(&mut acc_events_rx).await;
 
-                // Acceptor's app stages K app messages (seq 2..=K+1); the peer
-                // never reads them.
-                for _ in 0..K {
-                    sender
-                        .send(new_order_single_with_empty_header())
-                        .expect("acceptor app send");
-                }
+        // Acceptor's app stages K app messages (seq 2..=K+1); the peer
+        // never reads them.
+        for _ in 0..K {
+            sender
+                .send(new_order_single_with_empty_header())
+                .expect("acceptor app send");
+        }
 
-                let reason = wait_for_session_end(&mut acc_events_rx).await;
-                assert_eq!(
-                    reason,
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::SlowConsumer),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                );
-                peer.handle.await.expect("acceptor task #1");
-                // Storage (seq 2..=K+1 stored, next_sender = K+2) is returned to
-                // the registry when the task exits.
+        let reason = wait_for_session_end(&mut acc_events_rx).await;
+        assert_eq!(
+            reason,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::SlowConsumer),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
             }
+        );
+        peer.handle.await.expect("acceptor task #1");
+        // Storage (seq 2..=K+1 stored, next_sender = K+2) is returned to
+        // the registry when the task exits.
+    }
 
-            // --- Connection #2: reconnect, recover the drained backlog. ---
-            {
-                let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 65536);
-                // Peer continues its own seq counter: it sent seq 1 on conn #1,
-                // so its reconnect Logon is seq 2 (no ResetSeqNumFlag). The
-                // acceptor's sender counter persisted: its Logon response is
-                // seq K+2.
-                let logon_resp = peer.logon(2, 30).await;
-                assert_eq!(logon_resp.msg_seq_num(), K + 2);
+    // --- Connection #2: reconnect, recover the drained backlog. ---
+    {
+        let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 65536);
+        // Peer continues its own seq counter: it sent seq 1 on conn #1,
+        // so its reconnect Logon is seq 2 (no ResetSeqNumFlag). The
+        // acceptor's sender counter persisted: its Logon response is
+        // seq K+2.
+        let logon_resp = peer.logon(2, 30).await;
+        assert_eq!(logon_resp.msg_seq_num(), K + 2);
 
-                let _ = wait_for_session_ready(&mut acc_events_rx).await;
+        let _ = wait_for_session_ready(&mut acc_events_rx).await;
 
-                // Peer requests the evicted backlog (its next seq is 3).
-                let resend_request = peer_resend_request_bytes(&peer.peer_sid, 3, 2, K + 1);
-                peer.write(&resend_request).await;
+        // Peer requests the evicted backlog (its next seq is 3).
+        let resend_request = peer_resend_request_bytes(&peer.peer_sid, 3, 2, K + 1);
+        peer.write(&resend_request).await;
 
-                // Recover all K messages with original seq nums and PossDupFlag=Y.
-                for expected in 2..=(K + 1) {
-                    let msg = peer.read().await;
-                    assert!(
-                        is_new_order_single(&msg),
-                        "recovered seq {expected} should be a NewOrderSingle, got {}",
-                        SessionMessage::name(&*msg)
-                    );
-                    assert_eq!(msg.msg_seq_num(), expected);
-                    assert_eq!(
-                        msg.poss_dup_flag(),
-                        Some(true),
-                        "recovered message at seq {expected} must have PossDupFlag=Y"
-                    );
-                }
+        // Recover all K messages with original seq nums and PossDupFlag=Y.
+        for expected in 2..=(K + 1) {
+            let msg = peer.read().await;
+            assert!(
+                is_new_order_single(&msg),
+                "recovered seq {expected} should be a NewOrderSingle, got {}",
+                SessionMessage::name(&*msg)
+            );
+            assert_eq!(msg.msg_seq_num(), expected);
+            assert_eq!(
+                msg.poss_dup_flag(),
+                Some(true),
+                "recovered message at seq {expected} must have PossDupFlag=Y"
+            );
+        }
 
-                acceptor
-                    .disconnect(&acceptor_session_id())
-                    .await
-                    .expect("acceptor disconnect");
-                assert_eq!(
-                    wait_for_session_end(&mut acc_events_rx).await,
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                );
-                peer.handle.await.expect("acceptor task #2");
+        acceptor
+            .disconnect(&acceptor_session_id())
+            .await
+            .expect("acceptor disconnect");
+        assert_eq!(
+            wait_for_session_end(&mut acc_events_rx).await,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
             }
-        })
-        .await;
+        );
+        peer.handle.await.expect("acceptor task #2");
+    }
 }
 
 /// A peer that stops reading must not keep its session occupied indefinitely.
 /// Keep its transport open through a second Logon and recovery of the backlog.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn write_timeout_releases_session_for_reconnect_and_resend() {
-    LocalSet::new()
-        .run_until(async {
-            const COUNT: SeqNum = 20;
-            const PIPE_SIZE: usize = 512;
-            let write_timeout = Duration::from_secs(3);
-            let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
-            let sid = acceptor_session_id();
-            let mut settings = build_session_settings(1);
-            settings.write_timeout = write_timeout;
-            // Only the write timeout may release the blocked connection.
-            settings.max_outbound_queued_messages = None;
-            settings.max_outbound_lag = None;
-            register_in_memory_session(&acceptor, sid.clone(), settings);
+    const COUNT: SeqNum = 20;
+    const PIPE_SIZE: usize = 512;
+    let write_timeout = Duration::from_secs(3);
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(events_tx));
+    let sid = acceptor_session_id();
+    let mut settings = build_session_settings(1);
+    settings.write_timeout = write_timeout;
+    // Only the write timeout may release the blocked connection.
+    settings.max_outbound_queued_messages = None;
+    settings.max_outbound_lag = None;
+    register_in_memory_session(&acceptor, sid.clone(), settings);
 
-            let mut blocked_peer = connect_raw_peer(&acceptor, sid.clone(), PIPE_SIZE);
-            blocked_peer.logon(1, 1).await;
-            let sender = wait_for_session_ready(&mut events_rx).await;
-            let started = time::Instant::now();
-            for index in 0..COUNT {
-                let mut msg = new_order_single_with_empty_header();
-                let Body::NewOrderSingle(order) = &mut *msg.body else {
-                    unreachable!("order fixture");
-                };
-                order.cl_ord_id =
-                    FixString::from_ascii_lossy(format!("BLOCKED{index}").into_bytes());
-                sender.send(msg).expect("stage order before the timeout");
-            }
+    let mut blocked_peer = connect_raw_peer(&acceptor, sid.clone(), PIPE_SIZE);
+    blocked_peer.logon(1, 1).await;
+    let sender = wait_for_session_ready(&mut events_rx).await;
+    let started = time::Instant::now();
+    for index in 0..COUNT {
+        let mut msg = new_order_single_with_empty_header();
+        let Body::NewOrderSingle(order) = &mut *msg.body else {
+            unreachable!("order fixture");
+        };
+        order.cl_ord_id = FixString::from_ascii_lossy(format!("BLOCKED{index}").into_bytes());
+        sender.send(msg).expect("stage order before the timeout");
+    }
 
-            // No reads, shutdown or disconnect request on the first transport.
-            // The write stalls before heartbeat escalation can be processed.
-            assert_eq!(
-                wait_for_session_end(&mut events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Established,
-                    termination: TerminationSnapshot::IoError {
-                        operation: IoOperation::Write,
-                        kind: ErrorKind::TimedOut
-                    },
-                    reset_unconfirmed: false
-                }
-            );
-            timeout(TEST_TIMEOUT, acceptor.await_session_closed(&sid))
-                .await
-                .expect("write timeout must release the session")
-                .unwrap();
-            timeout(TEST_TIMEOUT, &mut blocked_peer.handle)
-                .await
-                .expect("blocked session task must finish")
-                .unwrap();
-            assert_eq!(started.elapsed(), write_timeout);
-            assert_eq!(sender.backlog_len(), 0);
-            assert_matches!(
-                sender.send(new_order_single_with_empty_header()),
-                Err(SendError::Closed(_))
-            );
+    // No reads, shutdown or disconnect request on the first transport.
+    // The write stalls before heartbeat escalation can be processed.
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::IoError {
+                operation: IoOperation::Write,
+                kind: ErrorKind::TimedOut
+            },
+            reset_unconfirmed: false
+        }
+    );
+    timeout(TEST_TIMEOUT, acceptor.await_session_closed(&sid))
+        .await
+        .expect("write timeout must release the session")
+        .unwrap();
+    timeout(TEST_TIMEOUT, &mut blocked_peer.handle)
+        .await
+        .expect("blocked session task must finish")
+        .unwrap();
+    assert_eq!(started.elapsed(), write_timeout);
+    assert_eq!(sender.backlog_len(), 0);
+    assert_matches!(
+        sender.send(new_order_single_with_empty_header()),
+        Err(SendError::Closed(_))
+    );
 
-            // The first peer is still open and unread. A successful Logon
-            // proves that neither the registry nor the storage is held by it.
-            let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
-            let logon = peer.logon(2, 1).await;
-            assert_eq!(logon.msg_seq_num(), COUNT + 2);
-            let _ = wait_for_session_ready(&mut events_rx).await;
-            peer.write(&peer_resend_request_bytes(&peer.peer_sid, 3, 2, COUNT + 1))
-                .await;
-
-            // Session Test Cases Scenario 8 / Session Layer Section 4.8.3:
-            // recover both the interrupted write and the still-staged orders.
-            for index in 0..COUNT {
-                let msg = peer.read().await;
-                assert_eq!(msg.msg_seq_num(), index + 2);
-                assert_eq!(msg.poss_dup_flag(), Some(true));
-                let Body::NewOrderSingle(order) = &*msg.body else {
-                    panic!("expected recovered order, got {msg:?}");
-                };
-                assert_eq!(
-                    order.cl_ord_id.as_bytes(),
-                    format!("BLOCKED{index}").as_bytes()
-                );
-            }
-
-            // Drain only after reconnect and resend have succeeded. A full
-            // pipe confirms backpressure; EOF confirms server-side closure.
-            assert_eq!(blocked_peer.read_to_close().await.len(), PIPE_SIZE);
-            acceptor.disconnect(&sid).await.unwrap();
-            assert_eq!(
-                wait_for_session_end(&mut events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            timeout(TEST_TIMEOUT, peer.handle)
-                .await
-                .expect("reconnected session task must finish")
-                .unwrap();
-        })
+    // The first peer is still open and unread. A successful Logon
+    // proves that neither the registry nor the storage is held by it.
+    let mut peer = connect_raw_peer(&acceptor, sid.clone(), 65536);
+    let logon = peer.logon(2, 1).await;
+    assert_eq!(logon.msg_seq_num(), COUNT + 2);
+    let _ = wait_for_session_ready(&mut events_rx).await;
+    peer.write(&peer_resend_request_bytes(&peer.peer_sid, 3, 2, COUNT + 1))
         .await;
+
+    // Session Test Cases Scenario 8 / Session Layer Section 4.8.3:
+    // recover both the interrupted write and the still-staged orders.
+    for index in 0..COUNT {
+        let msg = peer.read().await;
+        assert_eq!(msg.msg_seq_num(), index + 2);
+        assert_eq!(msg.poss_dup_flag(), Some(true));
+        let Body::NewOrderSingle(order) = &*msg.body else {
+            panic!("expected recovered order, got {msg:?}");
+        };
+        assert_eq!(
+            order.cl_ord_id.as_bytes(),
+            format!("BLOCKED{index}").as_bytes()
+        );
+    }
+
+    // Drain only after reconnect and resend have succeeded. A full
+    // pipe confirms backpressure; EOF confirms server-side closure.
+    assert_eq!(blocked_peer.read_to_close().await.len(), PIPE_SIZE);
+    acceptor.disconnect(&sid).await.unwrap();
+    assert_eq!(
+        wait_for_session_end(&mut events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    timeout(TEST_TIMEOUT, peer.handle)
+        .await
+        .expect("reconnected session task must finish")
+        .unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -2371,105 +2642,99 @@ async fn write_timeout_releases_session_for_reconnect_and_resend() {
 /// resend; the staged message must NOT have caused a `SlowConsumer` eviction
 /// (suppressed during the resend, then covered by the grace window as it
 /// drains), and must still be delivered as a normal first-send.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn lag_cap_suspended_during_resend_and_grace_window() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            const M: SeqNum = 6;
-            let lag = Duration::from_millis(200);
+    const M: SeqNum = 6;
+    let lag = Duration::from_millis(200);
 
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let mut settings = build_session_settings(30);
-            settings.max_outbound_lag = Some(lag);
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let mut settings = build_session_settings(30);
+    settings.max_outbound_lag = Some(lag);
 
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(&acceptor, acceptor_session_id(), settings);
-            // Tight pipe so the resend stalls on the write side while we let the
-            // staged-during-resend message age.
-            let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 512);
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), settings);
+    // Tight pipe so the resend stalls on the write side while we let the
+    // staged-during-resend message age.
+    let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 512);
 
-            // Logon (peer seq 1).
-            peer.logon(1, 30).await;
-            let sender = wait_for_session_ready(&mut acc_events_rx).await;
+    // Logon (peer seq 1).
+    peer.logon(1, 30).await;
+    let sender = wait_for_session_ready(&mut acc_events_rx).await;
 
-            // Acceptor app sends M messages (seq 2..=M+1); peer reads them all
-            // promptly so they are stored and do not age out the lag cap.
-            for _ in 0..M {
-                sender
-                    .send(new_order_single_with_empty_header())
-                    .expect("initial send");
-            }
-            for expected in 2..=(M + 1) {
-                let msg = peer.read().await;
-                assert_eq!(msg.msg_seq_num(), expected);
-            }
+    // Acceptor app sends M messages (seq 2..=M+1); peer reads them all
+    // promptly so they are stored and do not age out the lag cap.
+    for _ in 0..M {
+        sender
+            .send(new_order_single_with_empty_header())
+            .expect("initial send");
+    }
+    for expected in 2..=(M + 1) {
+        let msg = peer.read().await;
+        assert_eq!(msg.msg_seq_num(), expected);
+    }
 
-            // Peer requests a resend of the whole range (peer seq 2).
-            let resend_request = peer_resend_request_bytes(&peer.peer_sid, 2, 2, M + 1);
-            peer.write(&resend_request).await;
+    // Peer requests a resend of the whole range (peer seq 2).
+    let resend_request = peer_resend_request_bytes(&peer.peer_sid, 2, 2, M + 1);
+    peer.write(&resend_request).await;
 
-            // Read the first resent message - this confirms the resend is
-            // active (`active_resend` is set), so the message we stage next
-            // cannot be drained until the resend completes.
-            let first_resend = peer.read().await;
-            assert_eq!(first_resend.msg_seq_num(), 2);
-            assert_eq!(first_resend.poss_dup_flag(), Some(true));
+    // Read the first resent message - this confirms the resend is
+    // active (`active_resend` is set), so the message we stage next
+    // cannot be drained until the resend completes.
+    let first_resend = peer.read().await;
+    assert_eq!(first_resend.msg_seq_num(), 2);
+    assert_eq!(first_resend.poss_dup_flag(), Some(true));
 
-            // Stage one fresh message DURING the resend. It will be transmitted
-            // as seq M+2 once the resend clears.
-            sender
-                .send(new_order_single_with_empty_header())
-                .expect("stage during resend");
+    // Stage one fresh message DURING the resend. It will be transmitted
+    // as seq M+2 once the resend clears.
+    sender
+        .send(new_order_single_with_empty_header())
+        .expect("stage during resend");
 
-            // Let it age well past `max_outbound_lag` while the resend holds the
-            // drain arm and the tight pipe blocks further resend output. A bare
-            // `!resend_in_progress` suspension alone is not enough - the grace
-            // window must also cover the post-resend drain. On the paused clock
-            // the session task is parked on the full pipe, so this is an exact
-            // jump, not a race against the cap.
-            time::sleep(Duration::from_millis(450)).await;
+    // Let it age well past `max_outbound_lag` while the resend holds the
+    // drain arm and the tight pipe blocks further resend output. A bare
+    // `!resend_in_progress` suspension alone is not enough - the grace
+    // window must also cover the post-resend drain. On the paused clock
+    // the session task is parked on the full pipe, so this is an exact
+    // jump, not a race against the cap.
+    time::sleep(Duration::from_millis(450)).await;
 
-            // Drain the rest of the resend (seq 3..=M+1), all PossDup=Y. The
-            // reads are bounded: an evicted session closes the pipe, and a
-            // stalled one would otherwise hang the test instead of failing it.
-            for expected in 3..=(M + 1) {
-                let msg = peer.read().await;
-                assert_eq!(msg.msg_seq_num(), expected);
-                assert_eq!(msg.poss_dup_flag(), Some(true));
-            }
+    // Drain the rest of the resend (seq 3..=M+1), all PossDup=Y. The
+    // reads are bounded: an evicted session closes the pipe, and a
+    // stalled one would otherwise hang the test instead of failing it.
+    for expected in 3..=(M + 1) {
+        let msg = peer.read().await;
+        assert_eq!(msg.msg_seq_num(), expected);
+        assert_eq!(msg.poss_dup_flag(), Some(true));
+    }
 
-            // The staged-during-resend message must survive: delivered as a
-            // first-send (seq M+2, no PossDupFlag), proving it was neither
-            // evicted during the resend nor in the grace window after it.
-            let fresh = peer.read().await;
-            assert_eq!(fresh.msg_seq_num(), M + 2);
-            assert_ne!(
-                fresh.poss_dup_flag(),
-                Some(true),
-                "staged-during-resend message must go out as a first-send"
-            );
-            assert!(is_new_order_single(&fresh));
+    // The staged-during-resend message must survive: delivered as a
+    // first-send (seq M+2, no PossDupFlag), proving it was neither
+    // evicted during the resend nor in the grace window after it.
+    let fresh = peer.read().await;
+    assert_eq!(fresh.msg_seq_num(), M + 2);
+    assert_ne!(
+        fresh.poss_dup_flag(),
+        Some(true),
+        "staged-during-resend message must go out as a first-send"
+    );
+    assert!(is_new_order_single(&fresh));
 
-            // Clean teardown: the session ends on this request, not on a
-            // SlowConsumer eviction.
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("acceptor disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                },
-                "healthy peer must not be evicted during/after a resend"
-            );
-            peer.handle.await.expect("acceptor task");
-        })
-        .await;
+    // Clean teardown: the session ends on this request, not on a
+    // SlowConsumer eviction.
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("acceptor disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        },
+        "healthy peer must not be evicted during/after a resend"
+    );
+    peer.handle.await.expect("acceptor task");
 }
 
 // ---------------------------------------------------------------------------
@@ -2484,49 +2749,47 @@ async fn lag_cap_suspended_during_resend_and_grace_window() {
 /// which fails serialization (zero `SeqNum`), so the IO flush phase
 /// substituted a `SequenceReset(35=4)`-GapFill and the peer never saw the
 /// Logon at all.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn initiator_first_logon_emits_valid_next_expected_msg_seq_num_when_enabled() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut settings = build_session_settings(30);
-            settings.enable_next_expected_msg_seq_num = true;
+    let mut settings = build_session_settings(30);
+    settings.enable_next_expected_msg_seq_num = true;
 
-            let RawPeerInitiator {
-                initiator,
-                handle: ini_handle,
-                events_rx: _ini_events_rx,
-                mut peer_r,
-                peer_w: _peer_w,
-                peer_sid: _peer_sid,
-                mut peer_buf,
-            } = spawn_initiator_with_raw_peer(8192, settings);
+    let RawPeerInitiator {
+        initiator,
+        handle: ini_handle,
+        events_rx: _ini_events_rx,
+        mut peer_r,
+        peer_w: _peer_w,
+        peer_sid: _peer_sid,
+        mut peer_buf,
+    } = spawn_initiator_with_raw_peer(8192, settings);
 
-            // Read the first message the initiator emits - must be Logon.
-            let logon_req = read_one_message(&mut peer_r, &mut peer_buf).await;
-            assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
-            assert_eq!(logon_req.msg_seq_num(), 1);
+    // Read the first message the initiator emits - must be Logon.
+    let logon_req = read_one_message(&mut peer_r, &mut peer_buf).await;
+    assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
+    assert_eq!(logon_req.msg_seq_num(), 1);
 
-            let admin = SessionMessage::try_as_admin(&*logon_req).expect("admin payload");
-            let AdminBase::Logon(lg) = admin else {
-                panic!("expected Logon admin payload");
-            };
+    let admin = SessionMessage::try_as_admin(&*logon_req).expect("admin payload");
+    let AdminBase::Logon(lg) = admin else {
+        panic!("expected Logon admin payload");
+    };
 
-            // Tag 789 must equal storage's `next_target_msg_seq_num().get()`
-            // (1 on a fresh session) - and never the `Some(0)` sentinel.
-            let next_expected = lg
-                .next_expected_msg_seq_num
-                .expect("tag 789 must be present when enable_next_expected_msg_seq_num=true");
-            assert_eq!(
-                next_expected, 1,
-                "tag 789 on a fresh-session initiator Logon should equal next_target_msg_seq_num (1)"
-            );
+    // Tag 789 must equal storage's `next_target_msg_seq_num().get()`
+    // (1 on a fresh session) - and never the `Some(0)` sentinel.
+    let next_expected = lg
+        .next_expected_msg_seq_num
+        .expect("tag 789 must be present when enable_next_expected_msg_seq_num=true");
+    assert_eq!(
+        next_expected, 1,
+        "tag 789 on a fresh-session initiator Logon should equal next_target_msg_seq_num (1)"
+    );
 
-            // Tear down - drop peer end so the initiator's IO closes.
-            initiator.disconnect().await.expect("disconnect");
-            ini_handle.await.expect("initiator task").expect("handler initialization");
-        })
-        .await;
+    // Tear down - drop peer end so the initiator's IO closes.
+    initiator.disconnect().await.expect("disconnect");
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -2537,93 +2800,83 @@ async fn initiator_first_logon_emits_valid_next_expected_msg_seq_num_when_enable
 /// `close` -> `await_session_closed` path makes the storage recoverable. The
 /// recovered storage carries the live sequence counters (the basis of the
 /// reconfiguration flow).
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn remove_session_refused_while_active_then_recoverable_after_close() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (server_stream, client_stream) = io::duplex(8192);
-            let (server_r, server_w) = split(server_stream);
-            let (client_r, client_w) = split(client_stream);
+    let (server_stream, client_stream) = io::duplex(8192);
+    let (server_r, server_w) = split(server_stream);
+    let (client_r, client_w) = split(client_stream);
 
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
 
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
 
-            let initiator = Initiator::<Message, InMemoryStorage, _>::new(
-                initiator_session_id(),
-                build_session_settings(30),
-                test_handler(ini_events_tx),
-                |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
-            )
-            .expect("initiator settings valid");
+    let initiator = Initiator::<Message, InMemoryStorage, _>::new(
+        initiator_session_id(),
+        build_session_settings(30),
+        test_handler(ini_events_tx),
+        |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
+    )
+    .expect("initiator settings valid");
 
-            let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator.run_session(client_r, client_w, None);
+    let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
+    let ini_handle = initiator.run_session(client_r, client_w, None);
 
-            wait_for_session_ready(&mut ini_events_rx).await;
-            wait_for_session_ready(&mut acc_events_rx).await;
+    wait_for_session_ready(&mut ini_events_rx).await;
+    wait_for_session_ready(&mut acc_events_rx).await;
 
-            // The running task owns the storage - removal must be refused.
-            assert_matches!(
-                acceptor.remove_session(&acceptor_session_id()).map(|_| ()),
-                Err(AcceptorError::SessionActive)
-            );
+    // The running task owns the storage - removal must be refused.
+    assert_matches!(
+        acceptor.remove_session(&acceptor_session_id()).map(|_| ()),
+        Err(AcceptorError::SessionActive)
+    );
 
-            // Force-close and await full closure: the only point at which the
-            // storage is back in the registry and removable.
-            acceptor.close(&acceptor_session_id()).await.expect("close");
-            // `close` parks on the session's close signal, and the signal
-            // fires only after the registry entry is settled - so the very
-            // next call sees the session inactive, with nothing awaited in
-            // between that could mask an early wake-up.
-            assert_matches!(
-                acceptor.is_session_active(&acceptor_session_id()),
-                Ok(false),
-                "close must not resolve before the registry shows the session inactive"
-            );
+    // Force-close and await full closure: the only point at which the
+    // storage is back in the registry and removable.
+    acceptor.close(&acceptor_session_id()).await.expect("close");
+    // `close` parks on the session's close signal, and the signal
+    // fires only after the registry entry is settled - so the very
+    // next call sees the session inactive, with nothing awaited in
+    // between that could mask an early wake-up.
+    assert_matches!(
+        acceptor.is_session_active(&acceptor_session_id()),
+        Ok(false),
+        "close must not resolve before the registry shows the session inactive"
+    );
 
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            assert_eq!(
-                wait_for_session_end(&mut ini_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Established,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_handle.await.expect("acceptor task");
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 
-            let storage = acceptor
-                .remove_session(&acceptor_session_id())
-                .expect("remove after close");
-            // The one inbound message, the Logon, advanced the counter to 2,
-            // so the recovered storage carries the live session state.
-            assert_eq!(
-                storage.next_target_msg_seq_num().get(),
-                2,
-                "recovered storage must preserve the live sequence counters"
-            );
-        })
-        .await;
+    let storage = acceptor
+        .remove_session(&acceptor_session_id())
+        .expect("remove after close");
+    // The one inbound message, the Logon, advanced the counter to 2,
+    // so the recovered storage carries the live session state.
+    assert_eq!(
+        storage.next_target_msg_seq_num().get(),
+        2,
+        "recovered storage must preserve the live sequence counters"
+    );
 }
 
 /// Test Cases Scenario 9, the peer's disaster recovery: after losing its
@@ -2635,101 +2888,102 @@ async fn remove_session_refused_while_active_then_recoverable_after_close() {
 /// Logon, Session Layer §4.8.8), and the peer's request from 1 replays the
 /// old session's traffic - the Logon acknowledgement gap-filled, the orders as
 /// duplicates - after which the session is in step.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn peer_resynchronizes_after_losing_its_session_state() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
 
-            // --- Session 1: three orders go out (our seq 2..=4), then the
-            // peer's process dies, taking its counters with it. ---
-            let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
-            let logon_resp = peer.logon(1, 30).await;
-            assert_eq!(logon_resp.msg_seq_num(), 1);
-            let sender = wait_for_session_ready(&mut acc_events_rx).await;
-            for _ in 0..3 {
-                sender.send(new_order_single_with_empty_header()).expect("send");
-            }
-            for expected in 2..=4 {
-                let msg = peer.read().await;
-                assert_eq!(msg.msg_seq_num(), expected);
-            }
+    // --- Session 1: three orders go out (our seq 2..=4), then the
+    // peer's process dies, taking its counters with it. ---
+    let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
+    let logon_resp = peer.logon(1, 30).await;
+    assert_eq!(logon_resp.msg_seq_num(), 1);
+    let sender = wait_for_session_ready(&mut acc_events_rx).await;
+    for _ in 0..3 {
+        sender
+            .send(new_order_single_with_empty_header())
+            .expect("send");
+    }
+    for expected in 2..=4 {
+        let msg = peer.read().await;
+        assert_eq!(msg.msg_seq_num(), expected);
+    }
 
-            peer.peer_w.shutdown().await.expect("peer close");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }
-            );
-            peer.handle.await.expect("acceptor task 1");
+    peer.peer_w.shutdown().await.expect("peer close");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    peer.handle.await.expect("acceptor task 1");
 
-            // --- Session 2: the peer comes back numbering from 1000 and
-            // expecting 1. ---
-            let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
-            // The Logon is far ahead of the expected 2: answered (our seq 5,
-            // the counters survived the disconnect) and followed by a request
-            // for everything up to it.
-            let logon_resp = peer.logon(1000, 30).await;
-            assert_eq!(logon_resp.msg_seq_num(), 5);
-            let request = peer.read().await;
-            assert_matches!(
-                SessionMessage::try_as_admin(&*request),
-                Some(AdminBase::ResendRequest(rr)) if rr.begin_seq_no == 2 && rr.end_seq_no == 999
-            );
-            wait_for_session_ready(&mut acc_events_rx).await;
+    // --- Session 2: the peer comes back numbering from 1000 and
+    // expecting 1. ---
+    let mut peer = connect_raw_peer(&acceptor, acceptor_session_id(), 8192);
+    // The Logon is far ahead of the expected 2: answered (our seq 5,
+    // the counters survived the disconnect) and followed by a request
+    // for everything up to it.
+    let logon_resp = peer.logon(1000, 30).await;
+    assert_eq!(logon_resp.msg_seq_num(), 5);
+    let request = peer.read().await;
+    assert_matches!(
+        SessionMessage::try_as_admin(&*request),
+        Some(AdminBase::ResendRequest(rr)) if rr.begin_seq_no == 2 && rr.end_seq_no == 999
+    );
+    wait_for_session_ready(&mut acc_events_rx).await;
 
-            // Instead of a replay it does not have, the peer resets our
-            // NextNumIn past everything it will ever number...
-            let reset = peer_sequence_reset_bytes(&peer.peer_sid, 1001, 1002, Some(false));
-            peer.write(&reset).await;
-            // ...and asks for what it missed since its own counter went to 1.
-            let resend_request = peer_resend_request_bytes(&peer.peer_sid, 1002, 1, 4);
-            peer.write(&resend_request).await;
+    // Instead of a replay it does not have, the peer resets our
+    // NextNumIn past everything it will ever number...
+    let reset = peer_sequence_reset_bytes(&peer.peer_sid, 1001, 1002, Some(false));
+    peer.write(&reset).await;
+    // ...and asks for what it missed since its own counter went to 1.
+    let resend_request = peer_resend_request_bytes(&peer.peer_sid, 1002, 1, 4);
+    peer.write(&resend_request).await;
 
-            // Seq 1 was the old Logon acknowledgement - gap-filled; 2..=4 the
-            // orders, as duplicates.
-            let gap = peer.read().await;
-            assert_eq!(gap.msg_seq_num(), 1);
-            assert_eq!(gap.poss_dup_flag(), Some(true));
-            assert_matches!(
-                SessionMessage::try_as_admin(&*gap),
-                Some(AdminBase::SequenceReset(sr)) if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 2
-            );
-            for expected in 2..=4 {
-                let msg = peer.read().await;
-                assert_eq!(msg.msg_seq_num(), expected);
-                assert_eq!(msg.poss_dup_flag(), Some(true));
-                assert!(is_new_order_single(&msg));
-            }
+    // Seq 1 was the old Logon acknowledgement - gap-filled; 2..=4 the
+    // orders, as duplicates.
+    let gap = peer.read().await;
+    assert_eq!(gap.msg_seq_num(), 1);
+    assert_eq!(gap.poss_dup_flag(), Some(true));
+    assert_matches!(
+        SessionMessage::try_as_admin(&*gap),
+        Some(AdminBase::SequenceReset(sr)) if sr.gap_fill_flag == Some(true) && sr.new_seq_no == 2
+    );
+    for expected in 2..=4 {
+        let msg = peer.read().await;
+        assert_eq!(msg.msg_seq_num(), expected);
+        assert_eq!(msg.poss_dup_flag(), Some(true));
+        assert!(is_new_order_single(&msg));
+    }
 
-            // In step: the next peer message is in sequence and answered with
-            // the next number of ours after the two the handshake consumed.
-            let test_request = peer_test_request_bytes(&peer.peer_sid, 1003, fix_str!("sync"));
-            peer.write(&test_request).await;
-            let hb = peer.read().await;
-            assert_eq!(hb.msg_seq_num(), 7);
-            assert_matches!(
-                SessionMessage::try_as_admin(&*hb),
-                Some(AdminBase::Heartbeat(hb)) if hb.test_req_id.as_deref() == Some(fix_str!("sync"))
-            );
+    // In step: the next peer message is in sequence and answered with
+    // the next number of ours after the two the handshake consumed.
+    let test_request = peer_test_request_bytes(&peer.peer_sid, 1003, fix_str!("sync"));
+    peer.write(&test_request).await;
+    let hb = peer.read().await;
+    assert_eq!(hb.msg_seq_num(), 7);
+    assert_matches!(
+        SessionMessage::try_as_admin(&*hb),
+        Some(AdminBase::Heartbeat(hb)) if hb.test_req_id.as_deref() == Some(fix_str!("sync"))
+    );
 
-            acceptor
-                .disconnect(&acceptor_session_id())
-                .await
-                .expect("acceptor disconnect");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot { context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect), termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
-            );
-            peer.handle.await.expect("acceptor task 2");
-        })
-        .await;
+    acceptor
+        .disconnect(&acceptor_session_id())
+        .await
+        .expect("acceptor disconnect");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    peer.handle.await.expect("acceptor task 2");
 }
 
 /// A session task that panics in a user callback must not leave the session
@@ -2737,193 +2991,200 @@ async fn peer_resynchronizes_after_losing_its_session_state() {
 /// can reconnect (it recovers the message that caused the panic through the
 /// usual resend, FIX Session Layer §4.8), and a graceful Logout still works
 /// on the new connection.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn panicked_session_task_releases_the_session_for_reconnect() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
-            let armed = Rc::new(Cell::new(false));
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
+    let armed = Rc::new(Cell::new(false));
 
-            let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(panic_once_handler(test_handler(acc_events_tx), armed.clone()));
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
-            let initiator = Initiator::<Message, InMemoryStorage, _>::new(
-                initiator_session_id(),
-                build_session_settings(30),
-                test_handler(ini_events_tx),
-                |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
-            )
-            .expect("initiator settings valid");
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(panic_once_handler(
+        test_handler(acc_events_tx),
+        armed.clone(),
+    ));
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
+    let initiator = Initiator::<Message, InMemoryStorage, _>::new(
+        initiator_session_id(),
+        build_session_settings(30),
+        test_handler(ini_events_tx),
+        |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
+    )
+    .expect("initiator settings valid");
 
-            // --- Connection 1: the acceptor's app panics on the first order ---
-            let (server_stream, client_stream) = io::duplex(8192);
-            let (server_r, server_w) = split(server_stream);
-            let (client_r, client_w) = split(client_stream);
-            let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator.run_session(client_r, client_w, None);
-            let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
-            wait_for_session_ready(&mut acc_events_rx).await;
-            assert_matches!(acceptor.is_session_active(&acceptor_session_id()), Ok(true));
+    // --- Connection 1: the acceptor's app panics on the first order ---
+    let (server_stream, client_stream) = io::duplex(8192);
+    let (server_r, server_w) = split(server_stream);
+    let (client_r, client_w) = split(client_stream);
+    let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
+    let ini_handle = initiator.run_session(client_r, client_w, None);
+    let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
+    wait_for_session_ready(&mut acc_events_rx).await;
+    assert_matches!(acceptor.is_session_active(&acceptor_session_id()), Ok(true));
 
-            armed.set(true);
-            ini_sender
-                .send(new_order_single_with_empty_header())
-                .expect("sender.send");
+    armed.set(true);
+    ini_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
 
-            let join = timeout(TEST_TIMEOUT, acc_handle)
-                .await
-                .expect("acceptor task must end");
-            assert_matches!(join, Err(e) if e.is_panic(), "the callback unwinds the task");
-            assert!(!armed.get(), "the panic fired in on_app_msg_in");
+    let join = timeout(TEST_TIMEOUT, acc_handle)
+        .await
+        .expect("acceptor task must end");
+    assert_matches!(join, Err(e) if e.is_panic(), "the callback unwinds the task");
+    assert!(!armed.get(), "the panic fired in on_app_msg_in");
 
-            // The dead task cleaned up after itself: the session is inactive
-            // and its storage is back, so the id is free to reconnect.
-            timeout(TEST_TIMEOUT, acceptor.await_session_closed(&acceptor_session_id()))
-                .await
-                .expect("session must close after the panic")
-                .expect("registered session");
-            assert_matches!(acceptor.is_session_active(&acceptor_session_id()), Ok(false));
+    // The dead task cleaned up after itself: the session is inactive
+    // and its storage is back, so the id is free to reconnect.
+    timeout(
+        TEST_TIMEOUT,
+        acceptor.await_session_closed(&acceptor_session_id()),
+    )
+    .await
+    .expect("session must close after the panic")
+    .expect("registered session");
+    assert_matches!(
+        acceptor.is_session_active(&acceptor_session_id()),
+        Ok(false)
+    );
 
-            // The initiator saw the transport go away.
-            assert_eq!(
-                wait_for_session_end(&mut ini_events_rx).await,
-                SessionEndSnapshot { context: EndContext::Established, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }
-            );
-            ini_handle.await.expect("initiator task").expect("handler initialization");
+    // The initiator saw the transport go away.
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Established,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 
-            // --- Connection 2: reconnect, recover the order, log out ---
-            let (server_stream, client_stream) = io::duplex(8192);
-            let (server_r, server_w) = split(server_stream);
-            let (client_r, client_w) = split(client_stream);
-            let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator.run_session(client_r, client_w, None);
-            wait_for_session_ready(&mut ini_events_rx).await;
-            wait_for_session_ready(&mut acc_events_rx).await;
+    // --- Connection 2: reconnect, recover the order, log out ---
+    let (server_stream, client_stream) = io::duplex(8192);
+    let (server_r, server_w) = split(server_stream);
+    let (client_r, client_w) = split(client_stream);
+    let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
+    let ini_handle = initiator.run_session(client_r, client_w, None);
+    wait_for_session_ready(&mut ini_events_rx).await;
+    wait_for_session_ready(&mut acc_events_rx).await;
 
-            // The order never reached the application on connection 1 (the
-            // counter did not advance past it), so it comes back on resend.
-            let event =
-                wait_until(&mut acc_events_rx, |e| matches!(e, TestEvent::AppMsgIn(..))).await;
-            assert_matches!(
-                event,
-                TestEvent::AppMsgIn(_, msg) if is_new_order_single(&msg) && msg.poss_dup_flag() == Some(true)
-            );
+    // The order never reached the application on connection 1 (the
+    // counter did not advance past it), so it comes back on resend.
+    let event = wait_until(&mut acc_events_rx, |e| matches!(e, TestEvent::AppMsgIn(..))).await;
+    assert_matches!(
+        event,
+        TestEvent::AppMsgIn(_, msg) if is_new_order_single(&msg) && msg.poss_dup_flag() == Some(true)
+    );
 
-            acceptor
-                .logout(&acceptor_session_id(), None, None, false)
-                .await
-                .expect("logout");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot { context: EndContext::LocalLogout, termination: TerminationSnapshot::LocalClose, reset_unconfirmed: false }
-            );
-            assert_eq!(
-                wait_for_session_end(&mut ini_events_rx).await,
-                SessionEndSnapshot { context: EndContext::RemoteLogout, termination: TerminationSnapshot::PeerClose, reset_unconfirmed: false }
-            );
-            acc_handle.await.expect("acceptor task");
-            ini_handle.await.expect("initiator task").expect("handler initialization");
-        })
-        .await;
+    acceptor
+        .logout(&acceptor_session_id(), None, None, false)
+        .await
+        .expect("logout");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::RemoteLogout,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 /// A suspended session rejects new inbound connections (no `SessionReady`),
 /// and resuming it accepts them again.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn suspended_session_rejects_inbound_logon_until_resumed() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
 
-            // --- Connection #1: establish, then suspend and close. ---
-            let mut conn1 = connect_initiator(&acceptor);
-            wait_for_session_ready(&mut conn1.events_rx).await;
-            wait_for_session_ready(&mut acc_events_rx).await;
+    // --- Connection #1: establish, then suspend and close. ---
+    let mut conn1 = connect_initiator(&acceptor);
+    wait_for_session_ready(&mut conn1.events_rx).await;
+    wait_for_session_ready(&mut acc_events_rx).await;
 
-            acceptor
-                .suspend_session(&acceptor_session_id())
-                .expect("suspend");
-            acceptor.close(&acceptor_session_id()).await.expect("close");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            conn1.acc_handle.await.expect("acceptor task 1");
-            conn1
-                .ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
+    acceptor
+        .suspend_session(&acceptor_session_id())
+        .expect("suspend");
+    acceptor.close(&acceptor_session_id()).await.expect("close");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    conn1.acc_handle.await.expect("acceptor task 1");
+    conn1
+        .ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 
-            // Reset seq state so a fresh initiator can later log on cleanly once
-            // resumed (the rejected attempt below never reaches seq validation).
-            acceptor
-                .reset_session(&acceptor_session_id())
-                .expect("reset");
+    // Reset seq state so a fresh initiator can later log on cleanly once
+    // resumed (the rejected attempt below never reaches seq validation).
+    acceptor
+        .reset_session(&acceptor_session_id())
+        .expect("reset");
 
-            // --- Connection #2: while suspended -> rejected (no SessionReady). ---
-            let conn2 = connect_initiator(&acceptor);
+    // --- Connection #2: while suspended -> rejected (no SessionReady). ---
+    let conn2 = connect_initiator(&acceptor);
 
-            // The acceptor drops the suspended connection before building the
-            // application, so its task finishes without any SessionReady.
-            timeout(TEST_TIMEOUT, conn2.acc_handle)
-                .await
-                .expect("rejected acceptor task should finish")
-                .expect("acceptor task 2");
-            assert_matches!(
-                acc_events_rx.try_recv(),
-                Err(TryRecvError::Empty),
-                "a suspended session must not emit SessionReady"
-            );
-            conn2
-                .ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
+    // The acceptor drops the suspended connection before building the
+    // application, so its task finishes without any SessionReady.
+    timeout(TEST_TIMEOUT, conn2.acc_handle)
+        .await
+        .expect("rejected acceptor task should finish")
+        .expect("acceptor task 2");
+    assert_matches!(
+        acc_events_rx.try_recv(),
+        Err(TryRecvError::Empty),
+        "a suspended session must not emit SessionReady"
+    );
+    conn2
+        .ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 
-            // --- Connection #3: after resume -> accepted. ---
-            acceptor
-                .resume_session(&acceptor_session_id())
-                .expect("resume");
-            let mut conn3 = connect_initiator(&acceptor);
-            wait_for_session_ready(&mut conn3.events_rx).await;
-            wait_for_session_ready(&mut acc_events_rx).await;
+    // --- Connection #3: after resume -> accepted. ---
+    acceptor
+        .resume_session(&acceptor_session_id())
+        .expect("resume");
+    let mut conn3 = connect_initiator(&acceptor);
+    wait_for_session_ready(&mut conn3.events_rx).await;
+    wait_for_session_ready(&mut acc_events_rx).await;
 
-            // Clean up.
-            acceptor.close(&acceptor_session_id()).await.expect("close");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            conn3.acc_handle.await.expect("acceptor task 3");
-            conn3
-                .ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    // Clean up.
+    acceptor.close(&acceptor_session_id()).await.expect("close");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    conn3.acc_handle.await.expect("acceptor task 3");
+    conn3
+        .ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -2940,50 +3201,45 @@ async fn suspended_session_rejects_inbound_logon_until_resumed() {
 /// parks the session task forever - holding the initiator's storage, so every
 /// later `connect()` is refused as `SessionActive`, and never running
 /// `on_session_end`, so the application cannot even observe it.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn initiator_gives_up_on_an_unanswered_logon() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut settings = build_session_settings(30);
-            settings.heartbeat_interval = None;
-            settings.auto_disconnect_after_no_logon_response = Duration::from_millis(50);
+    let mut settings = build_session_settings(30);
+    settings.heartbeat_interval = None;
+    settings.auto_disconnect_after_no_logon_response = Duration::from_millis(50);
 
-            let mut p = spawn_initiator_with_raw_peer(65536, settings);
+    let mut p = spawn_initiator_with_raw_peer(65536, settings);
 
-            // Read the Logon request but never answer it.
-            let logon_req = timeout(
-                TEST_TIMEOUT,
-                read_one_message(&mut p.peer_r, &mut p.peer_buf),
-            )
-            .await
-            .expect("Logon request");
-            assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
+    // Read the Logon request but never answer it.
+    let logon_req = timeout(
+        TEST_TIMEOUT,
+        read_one_message(&mut p.peer_r, &mut p.peer_buf),
+    )
+    .await
+    .expect("Logon request");
+    assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
 
-            let reason = wait_for_session_end(&mut p.events_rx).await;
-            assert_eq!(
-                reason,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
-                    termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
-                    reset_unconfirmed: false
-                }
-            );
+    let reason = wait_for_session_end(&mut p.events_rx).await;
+    assert_eq!(
+        reason,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
+            termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
+            reset_unconfirmed: false
+        }
+    );
 
-            // Nothing follows the Logon on the wire: an unestablished session
-            // has no Logout to send, and no TestRequest or Heartbeat may
-            // overtake a Logon the peer might not have seen (Scenario 2S).
-            assert_matches!(
-                try_read_one_message(&mut p.peer_r, &mut p.peer_buf).await,
-                None
-            );
+    // Nothing follows the Logon on the wire: an unestablished session
+    // has no Logout to send, and no TestRequest or Heartbeat may
+    // overtake a Logon the peer might not have seen (Scenario 2S).
+    assert_matches!(
+        try_read_one_message(&mut p.peer_r, &mut p.peer_buf).await,
+        None
+    );
 
-            p.handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    p.handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 /// No keep-alive traffic may reach the wire before the handshake completes,
@@ -2995,56 +3251,51 @@ async fn initiator_gives_up_on_an_unanswered_logon() {
 /// The paused clock auto-advances to the earliest armed timer, so the session
 /// jumps straight to its 3s Logon deadline - past the 1s heartbeat interval and
 /// the 1.2s input timeout that would otherwise have fired twice over.
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "local", start_paused = true)]
 async fn no_keep_alive_traffic_before_the_logon_response() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut settings = build_session_settings(1);
-            settings.auto_disconnect_after_no_logon_response = Duration::from_secs(3);
+    let mut settings = build_session_settings(1);
+    settings.auto_disconnect_after_no_logon_response = Duration::from_secs(3);
 
-            let mut p = spawn_initiator_with_raw_peer(65536, settings);
+    let mut p = spawn_initiator_with_raw_peer(65536, settings);
 
-            let logon_req = timeout(
-                TEST_TIMEOUT,
-                read_one_message(&mut p.peer_r, &mut p.peer_buf),
-            )
-            .await
-            .expect("Logon request");
-            assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
+    let logon_req = timeout(
+        TEST_TIMEOUT,
+        read_one_message(&mut p.peer_r, &mut p.peer_buf),
+    )
+    .await
+    .expect("Logon request");
+    assert_eq!(SessionMessage::msg_type(&*logon_req), MsgTypeBase::Logon);
 
-            // Read before checking the event: with nothing to read this
-            // returns only at the EOF the Logon deadline produces, so a leaked
-            // Heartbeat or TestRequest is reported as itself rather than as a
-            // missing session-end event. The guard is what keeps a regression
-            // that arms no deadline at all a failure rather than a hang - the
-            // paused clock would otherwise have nothing to advance to.
-            let leaked = timeout(
-                TEST_TIMEOUT,
-                try_read_one_message(&mut p.peer_r, &mut p.peer_buf),
-            )
-            .await
-            .expect("session task parked with no deadline armed");
-            assert_matches!(
-                leaked,
-                None,
-                "keep-alive traffic leaked out before the session was established"
-            );
-            assert_eq!(
-                wait_for_session_end(&mut p.events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
-                    termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
-                    reset_unconfirmed: false
-                }
-            );
+    // Read before checking the event: with nothing to read this
+    // returns only at the EOF the Logon deadline produces, so a leaked
+    // Heartbeat or TestRequest is reported as itself rather than as a
+    // missing session-end event. The guard is what keeps a regression
+    // that arms no deadline at all a failure rather than a hang - the
+    // paused clock would otherwise have nothing to advance to.
+    let leaked = timeout(
+        TEST_TIMEOUT,
+        try_read_one_message(&mut p.peer_r, &mut p.peer_buf),
+    )
+    .await
+    .expect("session task parked with no deadline armed");
+    assert_matches!(
+        leaked,
+        None,
+        "keep-alive traffic leaked out before the session was established"
+    );
+    assert_eq!(
+        wait_for_session_end(&mut p.events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::Logon)),
+            termination: TerminationSnapshot::Timeout(TimeoutKind::Logon),
+            reset_unconfirmed: false
+        }
+    );
 
-            p.handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    p.handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -3059,112 +3310,102 @@ async fn no_keep_alive_traffic_before_the_logon_response() {
 /// The live session is not disturbed: it stays active and carries an order
 /// afterwards in sequence, with no recovery. Driven through two real
 /// connections on the public API, rather than by pre-emptying the registry.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn duplicate_connection_for_a_live_session_is_dropped_without_disturbing_it() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
-            let observer = Rc::new(RecordingObserver::default());
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let (ini_events_tx, mut ini_events_rx) = mpsc::unbounded_channel();
+    let observer = Rc::new(RecordingObserver::default());
 
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            acceptor.set_connection_observer(observer.clone());
-            register_in_memory_session(
-                &acceptor,
-                acceptor_session_id(),
-                build_session_settings(30),
-            );
-            let initiator = Initiator::<Message, InMemoryStorage, _>::new(
-                initiator_session_id(),
-                build_session_settings(30),
-                test_handler(ini_events_tx),
-                |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
-            )
-            .expect("initiator settings valid");
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    acceptor.set_connection_observer(observer.clone());
+    register_in_memory_session(&acceptor, acceptor_session_id(), build_session_settings(30));
+    let initiator = Initiator::<Message, InMemoryStorage, _>::new(
+        initiator_session_id(),
+        build_session_settings(30),
+        test_handler(ini_events_tx),
+        |_id, max_message_size| Ok(InMemoryStorage::new(max_message_size)),
+    )
+    .expect("initiator settings valid");
 
-            // --- Connection 1: the live session ---
-            let (server_stream, client_stream) = io::duplex(8192);
-            let (server_r, server_w) = split(server_stream);
-            let (client_r, client_w) = split(client_stream);
-            let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
-            let ini_handle = initiator.run_session(client_r, client_w, None);
-            let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
-            wait_for_session_ready(&mut acc_events_rx).await;
+    // --- Connection 1: the live session ---
+    let (server_stream, client_stream) = io::duplex(8192);
+    let (server_r, server_w) = split(server_stream);
+    let (client_r, client_w) = split(client_stream);
+    let acc_handle = acceptor.run_session(server_r, server_w, TEST_PEER_ADDR);
+    let ini_handle = initiator.run_session(client_r, client_w, None);
+    let ini_sender = wait_for_session_ready(&mut ini_events_rx).await;
+    wait_for_session_ready(&mut acc_events_rx).await;
 
-            // --- Connection 2: the same identity again, from a raw peer ---
-            let (dup_stream, mut dup_peer) = io::duplex(8192);
-            let (dup_r, dup_w) = split(dup_stream);
-            let dup_handle = acceptor.run_session(dup_r, dup_w, TEST_PEER_ADDR);
-            dup_peer
-                .write_all(&peer_logon_bytes(
-                    &acceptor_session_id().reverse_route(),
-                    1,
-                    30,
-                ))
-                .await
-                .expect("write duplicate logon");
+    // --- Connection 2: the same identity again, from a raw peer ---
+    let (dup_stream, mut dup_peer) = io::duplex(8192);
+    let (dup_r, dup_w) = split(dup_stream);
+    let dup_handle = acceptor.run_session(dup_r, dup_w, TEST_PEER_ADDR);
+    dup_peer
+        .write_all(&peer_logon_bytes(
+            &acceptor_session_id().reverse_route(),
+            1,
+            30,
+        ))
+        .await
+        .expect("write duplicate logon");
 
-            timeout(TEST_TIMEOUT, dup_handle)
-                .await
-                .expect("the duplicate connection must be dropped")
-                .expect("duplicate connection task");
-            let mut written = Vec::new();
-            timeout(TEST_TIMEOUT, dup_peer.read_to_end(&mut written))
-                .await
-                .expect("the duplicate connection must be closed")
-                .expect("read");
-            assert!(
-                written.is_empty(),
-                "1S(b): nothing may be sent on a duplicate connection"
-            );
-            assert_eq!(
-                observer.summaries(),
-                vec![format!("active:{}", acceptor_session_id())]
-            );
+    timeout(TEST_TIMEOUT, dup_handle)
+        .await
+        .expect("the duplicate connection must be dropped")
+        .expect("duplicate connection task");
+    let mut written = Vec::new();
+    timeout(TEST_TIMEOUT, dup_peer.read_to_end(&mut written))
+        .await
+        .expect("the duplicate connection must be closed")
+        .expect("read");
+    assert!(
+        written.is_empty(),
+        "1S(b): nothing may be sent on a duplicate connection"
+    );
+    assert_eq!(
+        observer.summaries(),
+        vec![format!("active:{}", acceptor_session_id())]
+    );
 
-            // --- The live session is untouched ---
-            assert_matches!(acceptor.is_session_active(&acceptor_session_id()), Ok(true));
-            ini_sender
-                .send(new_order_single_with_empty_header())
-                .expect("sender.send");
-            // The very next acceptor event is the order itself - not a
-            // SessionEnd, and not a message recovered on resend.
-            let event = recv_event(&mut acc_events_rx).await;
-            assert_matches!(
-                event,
-                TestEvent::AppMsgIn(_, msg)
-                    if is_new_order_single(&msg) && msg.poss_dup_flag() != Some(true)
-            );
+    // --- The live session is untouched ---
+    assert_matches!(acceptor.is_session_active(&acceptor_session_id()), Ok(true));
+    ini_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
+    // The very next acceptor event is the order itself - not a
+    // SessionEnd, and not a message recovered on resend.
+    let event = recv_event(&mut acc_events_rx).await;
+    assert_matches!(
+        event,
+        TestEvent::AppMsgIn(_, msg)
+            if is_new_order_single(&msg) && msg.poss_dup_flag() != Some(true)
+    );
 
-            acceptor
-                .logout(&acceptor_session_id(), None, None, false)
-                .await
-                .expect("logout");
-            assert_eq!(
-                wait_for_session_end(&mut acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::LocalLogout,
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            assert_eq!(
-                wait_for_session_end(&mut ini_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::RemoteLogout,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }
-            );
-            acc_handle.await.expect("acceptor task");
-            ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    acceptor
+        .logout(&acceptor_session_id(), None, None, false)
+        .await
+        .expect("logout");
+    assert_eq!(
+        wait_for_session_end(&mut acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        wait_for_session_end(&mut ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::RemoteLogout,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    acc_handle.await.expect("acceptor task");
+    ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 // ---------------------------------------------------------------------------
@@ -3191,67 +3432,55 @@ async fn collect_session_ends(
 /// waiting on peers that were never asked anything. On return the registry
 /// is settled - the sessions are removable at once, which is what a
 /// supervisor replacing the acceptor needs.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            let mut a =
-                spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
-            let mut b =
-                spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_B")).await;
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    let mut a = spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
+    let mut b = spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_B")).await;
 
-            timeout(TEST_TIMEOUT, acceptor.shutdown(ShutdownMode::Disconnect))
-                .await
-                .expect("shutdown must not wait on peers it never addressed");
+    timeout(TEST_TIMEOUT, acceptor.shutdown(ShutdownMode::Disconnect))
+        .await
+        .expect("shutdown must not wait on peers it never addressed");
 
-            for sid in [&a.sid, &b.sid] {
-                acceptor
-                    .remove_session(sid)
-                    .expect("every session is back in the registry when shutdown returns");
-            }
+    for sid in [&a.sid, &b.sid] {
+        acceptor
+            .remove_session(sid)
+            .expect("every session is back in the registry when shutdown returns");
+    }
 
-            let mut ends = collect_session_ends(&mut acc_events_rx, 2).await;
-            ends.sort_by_key(|(sid, _)| sid.to_string());
-            assert_eq!(
-                ends,
-                vec![
-                    (
-                        a.sid.clone(),
-                        SessionEndSnapshot {
-                            context: EndContext::Closing(
-                                SessionEndReason::ApplicationForcedDisconnect
-                            ),
-                            termination: TerminationSnapshot::LocalClose,
-                            reset_unconfirmed: false
-                        }
-                    ),
-                    (
-                        b.sid.clone(),
-                        SessionEndSnapshot {
-                            context: EndContext::Closing(
-                                SessionEndReason::ApplicationForcedDisconnect
-                            ),
-                            termination: TerminationSnapshot::LocalClose,
-                            reset_unconfirmed: false
-                        }
-                    ),
-                ]
-            );
+    let mut ends = collect_session_ends(&mut acc_events_rx, 2).await;
+    ends.sort_by_key(|(sid, _)| sid.to_string());
+    assert_eq!(
+        ends,
+        vec![
+            (
+                a.sid.clone(),
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            ),
+            (
+                b.sid.clone(),
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            ),
+        ]
+    );
 
-            for peer in [&mut a, &mut b] {
-                assert!(
-                    peer.read_to_close().await.is_empty(),
-                    "Disconnect sends nothing - not even a Logout"
-                );
-            }
-            a.handle.await.expect("session task A");
-            b.handle.await.expect("session task B");
-        })
-        .await;
+    for peer in [&mut a, &mut b] {
+        assert!(
+            peer.read_to_close().await.is_empty(),
+            "Disconnect sends nothing - not even a Logout"
+        );
+    }
+    a.handle.await.expect("session task A");
+    b.handle.await.expect("session task B");
 }
 
 /// `ShutdownMode::LogoutAndDisconnect` puts a Logout - with the caller's
@@ -3259,80 +3488,68 @@ async fn shutdown_disconnect_drops_every_live_session_without_a_farewell() {
 /// an answer: the peers here never reply, and `shutdown` still returns. The
 /// sessions end as `ApplicationForcedDisconnect`, since the application
 /// requested closure without completing the logout exchange.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            let mut a =
-                spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
-            let mut b =
-                spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_B")).await;
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    let mut a = spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
+    let mut b = spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_B")).await;
 
-            timeout(
-                TEST_TIMEOUT,
-                acceptor.shutdown(ShutdownMode::LogoutAndDisconnect {
-                    session_status: None,
-                    text: Some(Cow::Borrowed(fix_str!("maintenance"))),
-                }),
-            )
-            .await
-            .expect("shutdown must not wait for a Logout response");
+    timeout(
+        TEST_TIMEOUT,
+        acceptor.shutdown(ShutdownMode::LogoutAndDisconnect {
+            session_status: None,
+            text: Some(Cow::Borrowed(fix_str!("maintenance"))),
+        }),
+    )
+    .await
+    .expect("shutdown must not wait for a Logout response");
 
-            for sid in [&a.sid, &b.sid] {
-                acceptor
-                    .remove_session(sid)
-                    .expect("every session is back in the registry when shutdown returns");
-            }
+    for sid in [&a.sid, &b.sid] {
+        acceptor
+            .remove_session(sid)
+            .expect("every session is back in the registry when shutdown returns");
+    }
 
-            for peer in [&mut a, &mut b] {
-                let logout = peer.read().await;
-                let AdminBase::Logout(ref logout) =
-                    SessionMessage::try_as_admin(&*logout).expect("admin message")
-                else {
-                    panic!("expected Logout on {}", peer.sid);
-                };
-                assert_eq!(logout.text.as_deref(), Some(fix_str!("maintenance")));
-                assert!(
-                    peer.read_to_close().await.is_empty(),
-                    "nothing follows the Logout"
-                );
-            }
+    for peer in [&mut a, &mut b] {
+        let logout = peer.read().await;
+        let AdminBase::Logout(ref logout) =
+            SessionMessage::try_as_admin(&*logout).expect("admin message")
+        else {
+            panic!("expected Logout on {}", peer.sid);
+        };
+        assert_eq!(logout.text.as_deref(), Some(fix_str!("maintenance")));
+        assert!(
+            peer.read_to_close().await.is_empty(),
+            "nothing follows the Logout"
+        );
+    }
 
-            let mut ends = collect_session_ends(&mut acc_events_rx, 2).await;
-            ends.sort_by_key(|(sid, _)| sid.to_string());
-            assert_eq!(
-                ends,
-                vec![
-                    (
-                        a.sid.clone(),
-                        SessionEndSnapshot {
-                            context: EndContext::Closing(
-                                SessionEndReason::ApplicationForcedDisconnect
-                            ),
-                            termination: TerminationSnapshot::LocalClose,
-                            reset_unconfirmed: false
-                        }
-                    ),
-                    (
-                        b.sid.clone(),
-                        SessionEndSnapshot {
-                            context: EndContext::Closing(
-                                SessionEndReason::ApplicationForcedDisconnect
-                            ),
-                            termination: TerminationSnapshot::LocalClose,
-                            reset_unconfirmed: false
-                        }
-                    ),
-                ]
-            );
-            a.handle.await.expect("session task A");
-            b.handle.await.expect("session task B");
-        })
-        .await;
+    let mut ends = collect_session_ends(&mut acc_events_rx, 2).await;
+    ends.sort_by_key(|(sid, _)| sid.to_string());
+    assert_eq!(
+        ends,
+        vec![
+            (
+                a.sid.clone(),
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            ),
+            (
+                b.sid.clone(),
+                SessionEndSnapshot {
+                    context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                    termination: TerminationSnapshot::LocalClose,
+                    reset_unconfirmed: false
+                }
+            ),
+        ]
+    );
+    a.handle.await.expect("session task A");
+    b.handle.await.expect("session task B");
 }
 
 /// `ShutdownMode::GracefulLogout` is the FIX logout exchange on every live
@@ -3340,104 +3557,96 @@ async fn shutdown_logout_and_disconnect_sends_logout_then_closes_without_waiting
 /// `shutdown` stays pending until each has answered - it is still waiting
 /// with one response in and one outstanding - after which the sessions end
 /// with `LocalLogout` and `LocalClose`, after completing our requested exchange.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn shutdown_graceful_logout_waits_for_every_peers_logout_response() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
-            let acceptor =
-                Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
-            let mut a =
-                spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
-            let mut b =
-                spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_B")).await;
+    let (acc_events_tx, mut acc_events_rx) = mpsc::unbounded_channel();
+    let acceptor = Acceptor::<Message, InMemoryStorage, _>::new(test_handler(acc_events_tx));
+    let mut a = spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_A")).await;
+    let mut b = spawn_raw_peer_session(&acceptor, &mut acc_events_rx, fix_str!("TARGET_B")).await;
 
-            let shutdown = spawn_local({
-                let acceptor = acceptor.clone();
-                async move {
-                    acceptor
-                        .shutdown(ShutdownMode::GracefulLogout {
-                            session_status: None,
-                            text: Some(Cow::Borrowed(fix_str!("end of day"))),
-                        })
-                        .await;
-                }
-            });
+    let shutdown = spawn_local({
+        let acceptor = acceptor.clone();
+        async move {
+            acceptor
+                .shutdown(ShutdownMode::GracefulLogout {
+                    session_status: None,
+                    text: Some(Cow::Borrowed(fix_str!("end of day"))),
+                })
+                .await;
+        }
+    });
 
-            for peer in [&mut a, &mut b] {
-                let logout = peer.read().await;
-                let AdminBase::Logout(ref logout) =
-                    SessionMessage::try_as_admin(&*logout).expect("admin message")
-                else {
-                    panic!("expected Logout on {}", peer.sid);
-                };
-                assert_eq!(logout.text.as_deref(), Some(fix_str!("end of day")));
-            }
-            // Both Logouts are on the wire and nobody has answered: the
-            // shutdown is waiting.
-            for _ in 0..4 {
-                yield_now().await;
-            }
-            assert!(
-                !shutdown.is_finished(),
-                "graceful shutdown must wait for the Logout responses"
-            );
+    for peer in [&mut a, &mut b] {
+        let logout = peer.read().await;
+        let AdminBase::Logout(ref logout) =
+            SessionMessage::try_as_admin(&*logout).expect("admin message")
+        else {
+            panic!("expected Logout on {}", peer.sid);
+        };
+        assert_eq!(logout.text.as_deref(), Some(fix_str!("end of day")));
+    }
+    // Both Logouts are on the wire and nobody has answered: the
+    // shutdown is waiting.
+    for _ in 0..4 {
+        yield_now().await;
+    }
+    assert!(
+        !shutdown.is_finished(),
+        "graceful shutdown must wait for the Logout responses"
+    );
 
-            // Peer A answers; B is still outstanding, so the wait goes on.
-            a.peer_w
-                .write_all(&peer_logout_bytes(&a.peer_sid, 2))
-                .await
-                .expect("write logout response A");
-            assert_eq!(
-                wait_for_session_end_of(&mut acc_events_rx, &a.sid).await,
-                SessionEndSnapshot {
-                    context: EndContext::LocalLogout,
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            for _ in 0..4 {
-                yield_now().await;
-            }
-            assert!(
-                !shutdown.is_finished(),
-                "graceful shutdown must wait for every session, not just the first"
-            );
+    // Peer A answers; B is still outstanding, so the wait goes on.
+    a.peer_w
+        .write_all(&peer_logout_bytes(&a.peer_sid, 2))
+        .await
+        .expect("write logout response A");
+    assert_eq!(
+        wait_for_session_end_of(&mut acc_events_rx, &a.sid).await,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    for _ in 0..4 {
+        yield_now().await;
+    }
+    assert!(
+        !shutdown.is_finished(),
+        "graceful shutdown must wait for every session, not just the first"
+    );
 
-            // Peer B answers; now the shutdown can complete.
-            b.peer_w
-                .write_all(&peer_logout_bytes(&b.peer_sid, 2))
-                .await
-                .expect("write logout response B");
-            assert_eq!(
-                wait_for_session_end_of(&mut acc_events_rx, &b.sid).await,
-                SessionEndSnapshot {
-                    context: EndContext::LocalLogout,
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            timeout(TEST_TIMEOUT, shutdown)
-                .await
-                .expect("shutdown must return once every peer has answered")
-                .expect("shutdown task");
+    // Peer B answers; now the shutdown can complete.
+    b.peer_w
+        .write_all(&peer_logout_bytes(&b.peer_sid, 2))
+        .await
+        .expect("write logout response B");
+    assert_eq!(
+        wait_for_session_end_of(&mut acc_events_rx, &b.sid).await,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    timeout(TEST_TIMEOUT, shutdown)
+        .await
+        .expect("shutdown must return once every peer has answered")
+        .expect("shutdown task");
 
-            for sid in [&a.sid, &b.sid] {
-                acceptor
-                    .remove_session(sid)
-                    .expect("every session is back in the registry when shutdown returns");
-            }
-            for peer in [&mut a, &mut b] {
-                assert!(
-                    peer.read_to_close().await.is_empty(),
-                    "nothing follows the completed logout exchange"
-                );
-            }
-            a.handle.await.expect("session task A");
-            b.handle.await.expect("session task B");
-        })
-        .await;
+    for sid in [&a.sid, &b.sid] {
+        acceptor
+            .remove_session(sid)
+            .expect("every session is back in the registry when shutdown returns");
+    }
+    for peer in [&mut a, &mut b] {
+        assert!(
+            peer.read_to_close().await.is_empty(),
+            "nothing follows the completed logout exchange"
+        );
+    }
+    a.handle.await.expect("session task A");
+    b.handle.await.expect("session task B");
 }
 
 // ---------------------------------------------------------------------------
@@ -3577,170 +3786,155 @@ async fn spawn_action_pair()
 /// farewell: the acceptor ends as `ApplicationForcedDisconnect`, and the
 /// peer's very next event is the transport going away - no Logout in
 /// between.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn application_disconnect_drops_the_transport_without_a_farewell() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut p = spawn_action_pair().await;
-            p.acc_action.set(HandlerAction::Disconnect);
+    let mut p = spawn_action_pair().await;
+    p.acc_action.set(HandlerAction::Disconnect);
 
-            p.ini_sender
-                .send(new_order_single_with_empty_header())
-                .expect("sender.send");
+    p.ini_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
 
-            assert_matches!(
-                recv_event(&mut p.acc_events_rx).await,
-                TestEvent::AppMsgIn(..)
-            );
-            assert_matches!(
-                recv_event(&mut p.acc_events_rx).await,
-                TestEvent::SessionEnd(
-                    _,
-                    SessionEndSnapshot {
-                        context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                )
-            );
-            assert_matches!(
-                recv_event(&mut p.ini_events_rx).await,
-                TestEvent::SessionEnd(
-                    _,
-                    SessionEndSnapshot {
-                        context: EndContext::Established,
-                        termination: TerminationSnapshot::PeerClose,
-                        reset_unconfirmed: false
-                    }
-                ),
-                "the peer must see the transport close, with no Logout before it"
-            );
-            p.acc_handle.await.expect("acceptor task");
-            p.ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    assert_matches!(
+        recv_event(&mut p.acc_events_rx).await,
+        TestEvent::AppMsgIn(..)
+    );
+    assert_matches!(
+        recv_event(&mut p.acc_events_rx).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Closing(SessionEndReason::ApplicationForcedDisconnect),
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    assert_matches!(
+        recv_event(&mut p.ini_events_rx).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::Established,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: false
+            }
+        ),
+        "the peer must see the transport close, with no Logout before it"
+    );
+    p.acc_handle.await.expect("acceptor task");
+    p.ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 /// `InputAction::Logout { disconnect: false }` from a callback runs the full
 /// logout exchange (Session Layer §4.6): the peer receives the Logout and
 /// answers it, and only then does the connection close - the acceptor as the
 /// requesting side, the initiator as the one asked.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn application_logout_without_disconnect_completes_the_logout_exchange() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut p = spawn_action_pair().await;
-            p.acc_action.set(HandlerAction::LogoutAndWait);
+    let mut p = spawn_action_pair().await;
+    p.acc_action.set(HandlerAction::LogoutAndWait);
 
-            p.ini_sender
-                .send(new_order_single_with_empty_header())
-                .expect("sender.send");
+    p.ini_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
 
-            assert_matches!(
-                recv_event(&mut p.acc_events_rx).await,
-                TestEvent::AppMsgIn(..)
-            );
-            let event = recv_event(&mut p.ini_events_rx).await;
-            assert!(is_admin_msg_in(&event, MsgTypeBase::Logout), "{event:?}");
-            assert_matches!(
-                recv_event(&mut p.ini_events_rx).await,
-                TestEvent::SessionEnd(
-                    _,
-                    SessionEndSnapshot {
-                        context: EndContext::RemoteLogout,
-                        termination: TerminationSnapshot::PeerClose,
-                        reset_unconfirmed: false
-                    }
-                )
-            );
-            // The peer's response is in sequence - the refused order's
-            // number was consumed - so it reaches the application as the
-            // Logout it is, and only then does the session end.
-            let event = recv_event(&mut p.acc_events_rx).await;
-            assert!(is_admin_msg_in(&event, MsgTypeBase::Logout), "{event:?}");
-            assert_matches!(
-                recv_event(&mut p.acc_events_rx).await,
-                TestEvent::SessionEnd(
-                    _,
-                    SessionEndSnapshot {
-                        context: EndContext::LocalLogout,
-                        termination: TerminationSnapshot::LocalClose,
-                        reset_unconfirmed: false
-                    }
-                )
-            );
-            p.acc_handle.await.expect("acceptor task");
-            p.ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    assert_matches!(
+        recv_event(&mut p.acc_events_rx).await,
+        TestEvent::AppMsgIn(..)
+    );
+    let event = recv_event(&mut p.ini_events_rx).await;
+    assert!(is_admin_msg_in(&event, MsgTypeBase::Logout), "{event:?}");
+    assert_matches!(
+        recv_event(&mut p.ini_events_rx).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::RemoteLogout,
+                termination: TerminationSnapshot::PeerClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    // The peer's response is in sequence - the refused order's
+    // number was consumed - so it reaches the application as the
+    // Logout it is, and only then does the session end.
+    let event = recv_event(&mut p.acc_events_rx).await;
+    assert!(is_admin_msg_in(&event, MsgTypeBase::Logout), "{event:?}");
+    assert_matches!(
+        recv_event(&mut p.acc_events_rx).await,
+        TestEvent::SessionEnd(
+            _,
+            SessionEndSnapshot {
+                context: EndContext::LocalLogout,
+                termination: TerminationSnapshot::LocalClose,
+                reset_unconfirmed: false
+            }
+        )
+    );
+    p.acc_handle.await.expect("acceptor task");
+    p.ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }
 
 /// The initiator's application is not a passive party: an
 /// `InputAction::Reject` from its callback reaches the acceptor as a
 /// `Reject<3>`, and the session stays up on both sides.
-#[tokio::test]
+#[tokio::test(flavor = "local")]
 async fn initiator_application_reject_reaches_the_acceptor() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let mut p = spawn_action_pair().await;
-            p.ini_action.set(HandlerAction::Reject);
+    let mut p = spawn_action_pair().await;
+    p.ini_action.set(HandlerAction::Reject);
 
-            p.acc_sender
-                .send(new_order_single_with_empty_header())
-                .expect("sender.send");
+    p.acc_sender
+        .send(new_order_single_with_empty_header())
+        .expect("sender.send");
 
-            assert_matches!(
-                recv_event(&mut p.ini_events_rx).await,
-                TestEvent::AppMsgIn(..)
-            );
-            // The Reject carries what the callback put in it.
-            let event = recv_event(&mut p.acc_events_rx).await;
-            let TestEvent::AdminMsgIn(_, msg) = event else {
-                panic!("expected AdminMsgIn, got {event:?}");
-            };
-            assert_matches!(
-                SessionMessage::try_as_admin(&*msg),
-                Some(AdminBase::Reject(reject))
-                    if reject.session_reject_reason
-                        == Some(SessionRejectReasonBase::ValueIsIncorrect.into())
-                        && reject.text.as_deref() == Some(fix_str!("not today"))
-            );
+    assert_matches!(
+        recv_event(&mut p.ini_events_rx).await,
+        TestEvent::AppMsgIn(..)
+    );
+    // The Reject carries what the callback put in it.
+    let event = recv_event(&mut p.acc_events_rx).await;
+    let TestEvent::AdminMsgIn(_, msg) = event else {
+        panic!("expected AdminMsgIn, got {event:?}");
+    };
+    assert_matches!(
+        SessionMessage::try_as_admin(&*msg),
+        Some(AdminBase::Reject(reject))
+            if reject.session_reject_reason
+                == Some(SessionRejectReasonBase::ValueIsIncorrect.into())
+                && reject.text.as_deref() == Some(fix_str!("not today"))
+    );
 
-            // Still up: the acceptor's logout exchange runs to completion.
-            p.acceptor
-                .logout(&acceptor_session_id(), None, None, false)
-                .await
-                .expect("logout");
-            assert_eq!(
-                wait_for_session_end(&mut p.acc_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::LocalLogout,
-                    termination: TerminationSnapshot::LocalClose,
-                    reset_unconfirmed: false
-                }
-            );
-            assert_eq!(
-                wait_for_session_end(&mut p.ini_events_rx).await,
-                SessionEndSnapshot {
-                    context: EndContext::RemoteLogout,
-                    termination: TerminationSnapshot::PeerClose,
-                    reset_unconfirmed: false
-                }
-            );
-            p.acc_handle.await.expect("acceptor task");
-            p.ini_handle
-                .await
-                .expect("initiator task")
-                .expect("handler initialization");
-        })
-        .await;
+    // Still up: the acceptor's logout exchange runs to completion.
+    p.acceptor
+        .logout(&acceptor_session_id(), None, None, false)
+        .await
+        .expect("logout");
+    assert_eq!(
+        wait_for_session_end(&mut p.acc_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::LocalLogout,
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        }
+    );
+    assert_eq!(
+        wait_for_session_end(&mut p.ini_events_rx).await,
+        SessionEndSnapshot {
+            context: EndContext::RemoteLogout,
+            termination: TerminationSnapshot::PeerClose,
+            reset_unconfirmed: false
+        }
+    );
+    p.acc_handle.await.expect("acceptor task");
+    p.ini_handle
+        .await
+        .expect("initiator task")
+        .expect("handler initialization");
 }

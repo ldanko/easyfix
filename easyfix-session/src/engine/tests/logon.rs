@@ -10,6 +10,7 @@ use easyfix_core::{
     message::SessionMessage,
 };
 use easyfix_test_messages::Message;
+use rstest::rstest;
 use tokio::time::Duration;
 
 use super::{
@@ -39,350 +40,312 @@ fn send_logon_request_produces_logon_and_sets_logon_sent() {
     assert!(!engine.is_logged_on());
 }
 
-#[test]
-fn unsupported_encrypt_method_logs_out_before_application_input() {
-    for initiator in [false, true] {
-        for method in ["1", "2", "3", "4", "5", "6"] {
-            let (mut engine, mut storage) = EngineBuilder::new().build();
-            if initiator {
-                engine
-                    .send_logon_request(&mut storage, SessionStart::Resume)
-                    .unwrap();
-                let _ = take_admin(&mut engine);
-            }
-            let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, false);
-            let msg = Message::from_raw_message(raw_message(&bytes).unwrap().1).unwrap();
-            let InputResult::ValidationError { msg, failure } =
-                engine.on_input(msg, &mut storage).unwrap()
-            else {
-                panic!("expected validation failure: {method}");
-            };
-            assert_eq!(failure.error, ValidationError::UnsupportedEncryptMethod);
-            assert!(!engine.has_admin_output());
-            assert!(!engine.should_disconnect());
-            assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-            engine
-                .process_validation_failure(msg, failure, &mut storage)
-                .unwrap();
-            assert_eq!(
-                engine.session_end().map(|end| end.context),
-                Some(EndContext::Closing(SessionEndReason::InvalidLogonState)),
-                "{method}"
-            );
-            assert!(!engine.is_logged_on());
-            assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-            let logout = take_admin(&mut engine);
-            let expected =
-                format!("Unsupported EncryptMethod(98) value {method}; only 0 is supported");
-            assert_matches!(as_admin(&logout), AdminBase::Logout(l)
-                if l.text.as_deref().is_some_and(|text| text.as_utf8() == expected));
-            assert!(engine.take_admin_output().is_none());
-        }
+#[rstest]
+fn unsupported_encrypt_method_logs_out_before_application_input(
+    #[values(false, true)] initiator: bool,
+    #[values("1", "2", "3", "4", "5", "6")] method: &'static str,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().build();
+    if initiator {
+        engine
+            .send_logon_request(&mut storage, SessionStart::Resume)
+            .unwrap();
+        let _ = take_admin(&mut engine);
     }
+    let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, false);
+    let msg = Message::from_raw_message(raw_message(&bytes).unwrap().1).unwrap();
+    let InputResult::ValidationError { msg, failure } = engine.on_input(msg, &mut storage).unwrap()
+    else {
+        panic!("expected validation failure: {method}");
+    };
+    assert_eq!(failure.error, ValidationError::UnsupportedEncryptMethod);
+    assert!(!engine.has_admin_output());
+    assert!(!engine.should_disconnect());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState)),
+        "{method}"
+    );
+    assert!(!engine.is_logged_on());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    let logout = take_admin(&mut engine);
+    let expected = format!("Unsupported EncryptMethod(98) value {method}; only 0 is supported");
+    assert_matches!(as_admin(&logout), AdminBase::Logout(l)
+            if l.text.as_deref().is_some_and(|text| text.as_utf8() == expected));
+    assert!(engine.take_admin_output().is_none());
 }
 
-#[test]
-fn invalid_encrypt_method_keeps_parser_reasons() {
-    for (method, expected) in [
-        ("99", SessionRejectReasonBase::ValueIsIncorrect),
-        ("-1", SessionRejectReasonBase::ValueIsIncorrect),
-        (
-            "9223372036854775808",
-            SessionRejectReasonBase::ValueIsIncorrect,
-        ),
-        ("abc", SessionRejectReasonBase::IncorrectDataFormatForValue),
-        ("", SessionRejectReasonBase::TagSpecifiedWithoutAValue),
-        ("0|98=0", SessionRejectReasonBase::TagAppearsMoreThanOnce),
-    ] {
-        let (mut engine, mut storage) = EngineBuilder::new().build();
-        let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, false);
-        let error = Message::from_raw_message(raw_message(&bytes).unwrap().1).unwrap_err();
-        engine.on_deserialize_error(error, &mut storage).unwrap();
-        let reject = take_admin(&mut engine);
-        assert_matches!(as_admin(&reject), AdminBase::Reject(r)
+#[rstest]
+#[case("99", SessionRejectReasonBase::ValueIsIncorrect)]
+#[case("-1", SessionRejectReasonBase::ValueIsIncorrect)]
+#[case("9223372036854775808", SessionRejectReasonBase::ValueIsIncorrect)]
+#[case("abc", SessionRejectReasonBase::IncorrectDataFormatForValue)]
+#[case("", SessionRejectReasonBase::TagSpecifiedWithoutAValue)]
+#[case("0|98=0", SessionRejectReasonBase::TagAppearsMoreThanOnce)]
+fn invalid_encrypt_method_keeps_parser_reasons(
+    #[case] method: &'static str,
+    #[case] expected: SessionRejectReasonBase,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().build();
+    let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, false);
+    let error = Message::from_raw_message(raw_message(&bytes).unwrap().1).unwrap_err();
+    engine.on_deserialize_error(error, &mut storage).unwrap();
+    let reject = take_admin(&mut engine);
+    assert_matches!(as_admin(&reject), AdminBase::Reject(r)
             if r.session_reject_reason == Some(expected.into()) && r.ref_tag_id == Some(98)
                 && r.ref_seq_num == 1 && r.ref_msg_type.as_deref() == Some(fix_str!("A")));
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
-        assert!(engine.take_admin_output().is_none());
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
-        );
-        assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-    }
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    assert!(engine.take_admin_output().is_none());
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
+    );
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
 }
 
-#[test]
-fn logon_validation_reports_typed_failure_before_reacting() {
-    for (expected, builder, seq, heartbeat, reset, next_expected, initiator) in [
-        (
-            ValidationError::InvalidHeartBtInt,
-            EngineBuilder::new(),
-            1,
-            -1,
-            None,
-            None,
-            false,
-        ),
-        (
-            ValidationError::HeartBtIntMismatch { expected: 30 },
-            EngineBuilder::new()
-                .logged_on()
-                .accept_reset_in_session(true),
-            1,
-            20,
-            Some(true),
-            None,
-            false,
-        ),
-        (
-            ValidationError::InvalidNextExpectedMsgSeqNum { next_sender: 1 },
-            EngineBuilder::new().enable_next_expected_msg_seq_num(),
-            1,
-            30,
-            None,
-            Some(0),
-            false,
-        ),
-        (
-            ValidationError::InvalidResetSequenceNumber,
-            EngineBuilder::new().accept_reset_on_connect(true),
-            2,
-            30,
-            Some(true),
-            None,
-            false,
-        ),
-        (
-            ValidationError::UnsolicitedReset,
-            EngineBuilder::new(),
-            1,
-            30,
-            Some(true),
-            None,
-            true,
-        ),
-        (
-            ValidationError::ResetNotAllowedOnConnect,
-            EngineBuilder::new().accept_reset_on_connect(false),
-            1,
-            30,
-            Some(true),
-            None,
-            false,
-        ),
-        (
-            ValidationError::ResetNotAllowedInSession,
-            EngineBuilder::new()
-                .logged_on()
-                .accept_reset_in_session(false),
-            1,
-            30,
-            Some(true),
-            None,
-            false,
-        ),
-    ] {
-        let (mut engine, mut storage) = builder.build();
-        if initiator {
+#[rstest]
+#[case(ValidationError::InvalidHeartBtInt, EngineBuilder::new(), 1, -1, None, None, false)]
+#[case(
+    ValidationError::HeartBtIntMismatch { expected: 30 },
+    EngineBuilder::new()
+        .logged_on()
+        .accept_reset_in_session(true),
+    1,
+    20,
+    Some(true),
+    None,
+    false,
+)]
+#[case(ValidationError::InvalidNextExpectedMsgSeqNum { next_sender: 1 }, EngineBuilder::new().enable_next_expected_msg_seq_num(), 1, 30, None, Some(0), false)]
+#[case(ValidationError::InvalidResetSequenceNumber, EngineBuilder::new().accept_reset_on_connect(true), 2, 30, Some(true), None, false)]
+#[case(
+    ValidationError::UnsolicitedReset,
+    EngineBuilder::new(),
+    1,
+    30,
+    Some(true),
+    None,
+    true
+)]
+#[case(ValidationError::ResetNotAllowedOnConnect, EngineBuilder::new().accept_reset_on_connect(false), 1, 30, Some(true), None, false)]
+#[case(
+    ValidationError::ResetNotAllowedInSession,
+    EngineBuilder::new()
+        .logged_on()
+        .accept_reset_in_session(false),
+    1,
+    30,
+    Some(true),
+    None,
+    false,
+)]
+fn logon_validation_reports_typed_failure_before_reacting(
+    #[case] expected: ValidationError,
+    #[case] builder: EngineBuilder,
+    #[case] seq: u32,
+    #[case] heartbeat: i64,
+    #[case] reset: Option<bool>,
+    #[case] next_expected: Option<u32>,
+    #[case] initiator: bool,
+) {
+    let (mut engine, mut storage) = builder.build();
+    if initiator {
+        engine
+            .send_logon_request(&mut storage, SessionStart::Resume)
+            .unwrap();
+        let _ = take_admin(&mut engine);
+    }
+    let before = engine.state.logon_state;
+    let msg = test_helpers::logon_with_options(
+        seq,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        heartbeat,
+        reset,
+        next_expected,
+    );
+    let InputResult::ValidationError { msg, failure } = engine.on_input(msg, &mut storage).unwrap()
+    else {
+        panic!("expected validation failure: {expected:?}");
+    };
+    assert_eq!(failure.error, expected);
+    assert_eq!(msg.header.msg_seq_num, seq);
+    assert_eq!(engine.state.logon_state, before);
+    assert!(!engine.has_admin_output());
+    assert!(!engine.should_disconnect());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
+    assert!(engine.should_disconnect(), "{expected:?}");
+    assert!(engine.has_admin_output(), "{expected:?}");
+}
+
+#[rstest]
+fn invalid_encrypt_method_does_not_override_header_verdict(
+    #[values("1", "99")] method: &'static str,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().build();
+    storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
+    let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, false);
+    match Message::from_raw_message(raw_message(&bytes).unwrap().1) {
+        Ok(msg) => {
             engine
-                .send_logon_request(&mut storage, SessionStart::Resume)
+                .process_input_without_callback(msg, &mut storage)
                 .unwrap();
-            let _ = take_admin(&mut engine);
         }
-        let before = engine.state.logon_state;
-        let msg = test_helpers::logon_with_options(
-            seq,
-            fix_str!("TARGET"),
-            fix_str!("SENDER"),
-            heartbeat,
-            reset,
-            next_expected,
-        );
-        let InputResult::ValidationError { msg, failure } =
-            engine.on_input(msg, &mut storage).unwrap()
-        else {
-            panic!("expected validation failure: {expected:?}");
-        };
-        assert_eq!(failure.error, expected);
-        assert_eq!(msg.header.msg_seq_num, seq);
-        assert_eq!(engine.state.logon_state, before);
-        assert!(!engine.has_admin_output());
-        assert!(!engine.should_disconnect());
-        assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-        engine
-            .process_validation_failure(msg, failure, &mut storage)
-            .unwrap();
-        assert!(engine.should_disconnect(), "{expected:?}");
-        assert!(engine.has_admin_output(), "{expected:?}");
+        Err(error) => {
+            engine.on_deserialize_error(error, &mut storage).unwrap();
+        }
     }
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
+    );
+    assert_eq!(storage.next_target_msg_seq_num().get(), 5);
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    assert!(engine.take_admin_output().is_none());
 }
 
-#[test]
-fn invalid_encrypt_method_does_not_override_header_verdict() {
-    for method in ["1", "99"] {
-        let (mut engine, mut storage) = EngineBuilder::new().build();
-        storage.set_next_target_msg_seq_num(nz_seq(5)).unwrap();
-        let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, false);
-        match Message::from_raw_message(raw_message(&bytes).unwrap().1) {
-            Ok(msg) => {
-                engine
-                    .process_input_without_callback(msg, &mut storage)
-                    .unwrap();
-            }
-            Err(error) => {
-                engine.on_deserialize_error(error, &mut storage).unwrap();
-            }
-        }
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::MsgSeqNumTooLow))
-        );
-        assert_eq!(storage.next_target_msg_seq_num().get(), 5);
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
-        assert!(engine.take_admin_output().is_none());
-    }
-}
-
+#[rstest]
 #[tokio::test]
-async fn unsupported_encrypt_method_reset_preserves_history() {
-    for running in [false, true] {
-        for method in ["1", "99"] {
-            let builder = EngineBuilder::new()
-                .accept_reset_on_connect(true)
-                .accept_reset_in_session(true);
-            let (mut engine, mut storage) = if running {
-                builder.logged_on().build()
-            } else {
-                builder.build()
-            };
-            let history = test_helpers::commit_heartbeat(&mut engine, &mut storage);
-            let _ = engine.take_pending();
-            storage.set_next_sender_msg_seq_num(nz_seq(40)).unwrap();
-            let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, true);
-            match Message::from_raw_message(raw_message(&bytes).unwrap().1) {
-                Ok(msg) => {
-                    engine
-                        .process_input_without_callback(msg, &mut storage)
-                        .unwrap();
-                }
-                Err(error) => {
-                    engine.on_deserialize_error(error, &mut storage).unwrap();
-                }
-            }
-            assert_eq!(
-                engine.session_end().map(|end| end.context),
-                Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
-            );
-            assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
-            assert_eq!(
-                storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-                history.as_slice()
-            );
-            if running && method == "99" {
-                // A failed body cannot establish ResetSeqNumFlag=Y. The
-                // existing logon-state gate wins before the body verdict.
-                assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-                assert!(engine.take_admin_output().is_none());
-                continue;
-            }
-            assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-            if method == "99" {
-                let reject = take_admin(&mut engine);
-                assert_matches!(as_admin(&reject), AdminBase::Reject(r)
-                    if r.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
-            }
-            assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
-            assert!(engine.take_admin_output().is_none());
+async fn unsupported_encrypt_method_reset_preserves_history(
+    #[values(false, true)] running: bool,
+    #[values("1", "99")] method: &'static str,
+) {
+    let builder = EngineBuilder::new()
+        .accept_reset_on_connect(true)
+        .accept_reset_in_session(true);
+    let (mut engine, mut storage) = if running {
+        builder.logged_on().build()
+    } else {
+        builder.build()
+    };
+    let history = test_helpers::commit_heartbeat(&mut engine, &mut storage);
+    let _ = engine.take_pending();
+    storage.set_next_sender_msg_seq_num(nz_seq(40)).unwrap();
+    let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, true);
+    match Message::from_raw_message(raw_message(&bytes).unwrap().1) {
+        Ok(msg) => {
+            engine
+                .process_input_without_callback(msg, &mut storage)
+                .unwrap();
+        }
+        Err(error) => {
+            engine.on_deserialize_error(error, &mut storage).unwrap();
         }
     }
-}
-
-#[test]
-fn unsupported_encrypt_method_respects_reset_acknowledgement_boundary() {
-    for method in ["1", "99"] {
-        let (mut engine, mut storage) = reset_waiting_engine(false);
-        let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, true);
-        match Message::from_raw_message(raw_message(&bytes).unwrap().1) {
-            Ok(msg) => {
-                engine
-                    .process_input_without_callback(msg, &mut storage)
-                    .unwrap();
-            }
-            Err(error) => {
-                engine.on_deserialize_error(error, &mut storage).unwrap();
-            }
-        }
-        // Only a decoded, valid acknowledgement confirms the previous reset.
-        let confirmed = method == "1";
-        assert_eq!(engine.state.local_reset_unconfirmed, !confirmed);
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
-        );
-        assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
-        assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-        if !confirmed {
-            let reject = take_admin(&mut engine);
-            assert_matches!(as_admin(&reject), AdminBase::Reject(r)
-                if r.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
-        }
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
-        assert!(engine.take_admin_output().is_none());
-    }
-}
-
-#[test]
-fn reset_ack_validation_preserves_error_precedence_across_confirmation() {
-    for (next_expected, expected, confirmed) in [
-        (0, ValidationError::InvalidHeartBtInt, true),
-        (
-            40,
-            ValidationError::InvalidNextExpectedMsgSeqNum { next_sender: 2 },
-            false,
-        ),
-    ] {
-        let (mut engine, mut storage) = reset_waiting_engine(false);
-        engine.session_settings.enable_next_expected_msg_seq_num = true;
-        // Both fields are invalid. A too-high 789 prevents confirmation;
-        // zero is a body error, so the earlier heartbeat check wins after it.
-        let ack = test_helpers::logon_with_options(
-            1,
-            fix_str!("TARGET"),
-            fix_str!("SENDER"),
-            -1,
-            Some(true),
-            Some(next_expected),
-        );
-        let InputResult::ValidationError { msg, failure } =
-            engine.on_input(ack, &mut storage).unwrap()
-        else {
-            panic!("expected validation failure for tag 789 = {next_expected}");
-        };
-        assert_eq!(failure.error, expected);
-        assert_eq!(engine.state.local_reset_unconfirmed, !confirmed);
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
+    );
+    assert_eq!(storage.next_sender_msg_seq_num().get(), 40);
+    assert_eq!(
+        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+        history.as_slice()
+    );
+    if running && method == "99" {
+        // A failed body cannot establish ResetSeqNumFlag=Y. The
+        // existing logon-state gate wins before the body verdict.
         assert_eq!(storage.next_target_msg_seq_num().get(), 1);
-        assert!(!engine.should_disconnect());
-        assert!(!engine.has_admin_output());
-
-        engine
-            .process_validation_failure(msg, failure, &mut storage)
-            .unwrap();
-        assert_eq!(
-            engine.session_end().map(|end| end.context),
-            Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
-        );
-        assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
-        assert_eq!(
-            storage.next_target_msg_seq_num().get(),
-            if confirmed { 2 } else { 1 }
-        );
-        if confirmed {
-            assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Reject);
-        }
-        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
-        assert!(!engine.has_admin_output());
+        assert!(engine.take_admin_output().is_none());
+        return;
     }
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    if method == "99" {
+        let reject = take_admin(&mut engine);
+        assert_matches!(as_admin(&reject), AdminBase::Reject(r)
+                if r.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
+    }
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    assert!(engine.take_admin_output().is_none());
+}
+
+#[rstest]
+fn unsupported_encrypt_method_respects_reset_acknowledgement_boundary(
+    #[values("1", "99")] method: &'static str,
+) {
+    let (mut engine, mut storage) = reset_waiting_engine(false);
+    let bytes = test_helpers::logon_bytes_with_encrypt_method(1, method, true);
+    match Message::from_raw_message(raw_message(&bytes).unwrap().1) {
+        Ok(msg) => {
+            engine
+                .process_input_without_callback(msg, &mut storage)
+                .unwrap();
+        }
+        Err(error) => {
+            engine.on_deserialize_error(error, &mut storage).unwrap();
+        }
+    }
+    // Only a decoded, valid acknowledgement confirms the previous reset.
+    let confirmed = method == "1";
+    assert_eq!(engine.state.local_reset_unconfirmed, !confirmed);
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
+    );
+    assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    if !confirmed {
+        let reject = take_admin(&mut engine);
+        assert_matches!(as_admin(&reject), AdminBase::Reject(r)
+                if r.session_reject_reason == Some(SessionRejectReasonBase::ValueIsIncorrect.into()));
+    }
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    assert!(engine.take_admin_output().is_none());
+}
+
+#[rstest]
+#[case(0, ValidationError::InvalidHeartBtInt, true)]
+#[case(40, ValidationError::InvalidNextExpectedMsgSeqNum { next_sender: 2 }, false)]
+fn reset_ack_validation_preserves_error_precedence_across_confirmation(
+    #[case] next_expected: u32,
+    #[case] expected: ValidationError,
+    #[case] confirmed: bool,
+) {
+    let (mut engine, mut storage) = reset_waiting_engine(false);
+    engine.session_settings.enable_next_expected_msg_seq_num = true;
+    // Both fields are invalid. A too-high 789 prevents confirmation;
+    // zero is a body error, so the earlier heartbeat check wins after it.
+    let ack = test_helpers::logon_with_options(
+        1,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        -1,
+        Some(true),
+        Some(next_expected),
+    );
+    let InputResult::ValidationError { msg, failure } = engine.on_input(ack, &mut storage).unwrap()
+    else {
+        panic!("expected validation failure for tag 789 = {next_expected}");
+    };
+    assert_eq!(failure.error, expected);
+    assert_eq!(engine.state.local_reset_unconfirmed, !confirmed);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert!(!engine.should_disconnect());
+    assert!(!engine.has_admin_output());
+
+    engine
+        .process_validation_failure(msg, failure, &mut storage)
+        .unwrap();
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(SessionEndReason::InvalidLogonState))
+    );
+    assert_eq!(engine.session_end().unwrap().reset_unconfirmed, !confirmed);
+    assert_eq!(
+        storage.next_target_msg_seq_num().get(),
+        if confirmed { 2 } else { 1 }
+    );
+    if confirmed {
+        assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Reject);
+    }
+    assert_msg_type(&take_admin(&mut engine), MsgTypeBase::Logout);
+    assert!(!engine.has_admin_output());
 }
 
 #[test]
@@ -892,195 +855,201 @@ fn app_rejected_logon_increments_next_num_in() {
     assert_eq!(storage.next_target_msg_seq_num().get(), 2);
 }
 
+#[rstest]
+#[case::expected_sequence(0, false)]
+#[case::above_sequence(3, false)]
+#[case::reset(0, true)]
 #[tokio::test]
-async fn refused_logons_can_preserve_incoming_sequence_and_history() {
-    for send_logout in [false, true] {
-        for next_target in [1, 40] {
-            for (seq_num, reset) in [(next_target, false), (next_target + 3, false), (1, true)] {
-                let (mut engine, mut storage) = EngineBuilder::new().build();
-                let history = test_helpers::commit_heartbeat(&mut engine, &mut storage);
-                let _ = engine.take_pending();
-                storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
-                storage
-                    .set_next_target_msg_seq_num(nz_seq(next_target))
-                    .unwrap();
+async fn refused_logons_can_preserve_incoming_sequence_and_history(
+    #[values(false, true)] send_logout: bool,
+    #[values(1, 40)] next_target: u32,
+    #[case] seq_offset: u32,
+    #[case] reset: bool,
+) {
+    let seq_num = if reset { 1 } else { next_target + seq_offset };
+    let (mut engine, mut storage) = EngineBuilder::new().build();
+    let history = test_helpers::commit_heartbeat(&mut engine, &mut storage);
+    let _ = engine.take_pending();
+    storage.set_next_sender_msg_seq_num(nz_seq(20)).unwrap();
+    storage
+        .set_next_target_msg_seq_num(nz_seq(next_target))
+        .unwrap();
 
-                for attempt in 1..=3 {
-                    let (mut engine, _) =
-                        EngineBuilder::new().accept_reset_on_connect(true).build();
-                    engine.session_settings.preserve_seq_num_on_logon_refusal = true;
-                    let msg = test_helpers::logon_with_options(
-                        seq_num,
-                        fix_str!("TARGET"),
-                        fix_str!("SENDER"),
-                        30,
-                        Some(reset),
-                        None,
-                    );
-                    let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap()
-                    else {
-                        panic!("expected Logon callback");
-                    };
-                    let action = if send_logout {
-                        InputAction::Logout {
-                            session_status: None,
-                            text: Some(Cow::Borrowed(fix_str!("Logon refused"))),
-                            disconnect: true,
-                        }
-                    } else {
-                        InputAction::Disconnect
-                    };
-                    assert_matches!(
-                        engine
-                            .process_admin_input(msg, action, &mut storage)
-                            .unwrap(),
-                        InputResult::Handled
-                    );
-                    assert_eq!(
-                        engine.session_end().map(|end| end.context),
-                        Some(EndContext::Closing(
-                            SessionEndReason::ApplicationForcedDisconnect
-                        ))
-                    );
-                    assert!(!engine.is_logged_on());
-                    if send_logout {
-                        let mut logout = take_admin(&mut engine);
-                        assert_msg_type(&logout, MsgTypeBase::Logout);
-                        assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
-                        assert_eq!(logout.header.msg_seq_num, 20 + attempt - 1);
-                        engine.commit_send(logout, &mut storage).unwrap();
-                        assert!(engine.take_pending().is_some());
-                    }
-                    assert!(engine.take_admin_output().is_none());
-                    assert!(engine.take_pending().is_none());
-                    assert_eq!(storage.next_target_msg_seq_num().get(), next_target);
-                    assert_eq!(
-                        storage.next_sender_msg_seq_num().get(),
-                        if send_logout { 20 + attempt } else { 20 }
-                    );
-                    assert_eq!(
-                        storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
-                        history.as_slice()
-                    );
-                }
-
-                let (mut engine, _) = EngineBuilder::new().build();
-                accept_input(
-                    &mut engine,
-                    test_helpers::logon(next_target, fix_str!("TARGET"), fix_str!("SENDER")),
-                    &mut storage,
-                );
-                assert!(engine.is_logged_on());
-                assert!(!engine.should_disconnect());
-                assert_eq!(storage.next_target_msg_seq_num().get(), next_target + 1);
-                let mut logon = take_admin(&mut engine);
-                assert_msg_type(&logon, MsgTypeBase::Logon);
-                assert!(engine.fill_header(&mut logon, &mut storage).unwrap());
-                assert_eq!(logon.header.msg_seq_num, if send_logout { 23 } else { 20 });
-                engine.commit_send(logon, &mut storage).unwrap();
-                assert!(engine.take_admin_output().is_none());
-            }
-        }
-    }
-}
-
-#[test]
-fn logon_refusal_consumes_only_the_expected_incoming_sequence_by_default() {
-    for next_target in [1, 40] {
-        for (seq_num, reset) in [(next_target, false), (next_target + 3, false), (1, true)] {
-            for action in [
-                InputAction::Disconnect,
-                InputAction::Logout {
-                    session_status: None,
-                    text: None,
-                    disconnect: true,
-                },
-            ] {
-                let (mut engine, mut storage) =
-                    EngineBuilder::new().accept_reset_on_connect(true).build();
-                storage
-                    .set_next_target_msg_seq_num(nz_seq(next_target))
-                    .unwrap();
-                let msg = test_helpers::logon_with_options(
-                    seq_num,
-                    fix_str!("TARGET"),
-                    fix_str!("SENDER"),
-                    30,
-                    Some(reset),
-                    None,
-                );
-                let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
-                    panic!("expected Logon callback");
-                };
-                engine
-                    .process_admin_input(msg, action, &mut storage)
-                    .unwrap();
-                assert_eq!(
-                    storage.next_target_msg_seq_num().get(),
-                    if seq_num == next_target {
-                        next_target + 1
-                    } else {
-                        next_target
-                    }
-                );
-                assert_eq!(
-                    engine.session_end().map(|end| end.context),
-                    Some(EndContext::Closing(
-                        SessionEndReason::ApplicationForcedDisconnect
-                    ))
-                );
-                assert!(!engine.is_logged_on());
-            }
-        }
-    }
-}
-
-#[test]
-fn nonterminal_logon_refusals_consume_sequence_regardless_of_policy() {
-    for preserve in [false, true] {
-        for action in [
-            InputAction::Reject {
-                reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
-                text: None,
-                tag: None,
-            },
+    for attempt in 1..=3 {
+        let (mut engine, _) = EngineBuilder::new().accept_reset_on_connect(true).build();
+        engine.session_settings.preserve_seq_num_on_logon_refusal = true;
+        let msg = test_helpers::logon_with_options(
+            seq_num,
+            fix_str!("TARGET"),
+            fix_str!("SENDER"),
+            30,
+            Some(reset),
+            None,
+        );
+        let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
+            panic!("expected Logon callback");
+        };
+        let action = if send_logout {
             InputAction::Logout {
                 session_status: None,
-                text: None,
-                disconnect: false,
-            },
-        ] {
-            let (mut engine, mut storage) = EngineBuilder::new().build();
-            engine.session_settings.preserve_seq_num_on_logon_refusal = preserve;
-            let msg = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
-            let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
-                panic!("expected Logon callback");
-            };
-            let waiting_for_logout = matches!(action, InputAction::Logout { .. });
+                text: Some(Cow::Borrowed(fix_str!("Logon refused"))),
+                disconnect: true,
+            }
+        } else {
+            InputAction::Disconnect
+        };
+        assert_matches!(
             engine
                 .process_admin_input(msg, action, &mut storage)
-                .unwrap();
-            assert_eq!(storage.next_target_msg_seq_num().get(), 2);
-            assert!(!engine.should_disconnect());
-            assert_msg_type(
-                &take_admin(&mut engine),
-                if waiting_for_logout {
-                    MsgTypeBase::Logout
-                } else {
-                    MsgTypeBase::Reject
-                },
-            );
-            if waiting_for_logout {
-                accept_input(&mut engine, test_helpers::logout(2), &mut storage);
-                assert_eq!(storage.next_target_msg_seq_num().get(), 3);
-                assert_eq!(
-                    engine.session_end().map(|end| end.context),
-                    Some(EndContext::LocalLogout)
-                );
-            }
-            assert!(engine.take_admin_output().is_none());
+                .unwrap(),
+            InputResult::Handled
+        );
+        assert_eq!(
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::Closing(
+                SessionEndReason::ApplicationForcedDisconnect
+            ))
+        );
+        assert!(!engine.is_logged_on());
+        if send_logout {
+            let mut logout = take_admin(&mut engine);
+            assert_msg_type(&logout, MsgTypeBase::Logout);
+            assert!(engine.fill_header(&mut logout, &mut storage).unwrap());
+            assert_eq!(logout.header.msg_seq_num, 20 + attempt - 1);
+            engine.commit_send(logout, &mut storage).unwrap();
+            assert!(engine.take_pending().is_some());
         }
+        assert!(engine.take_admin_output().is_none());
+        assert!(engine.take_pending().is_none());
+        assert_eq!(storage.next_target_msg_seq_num().get(), next_target);
+        assert_eq!(
+            storage.next_sender_msg_seq_num().get(),
+            if send_logout { 20 + attempt } else { 20 }
+        );
+        assert_eq!(
+            storage.fetch(nz_seq(1), nz_seq(1)).await.unwrap(),
+            history.as_slice()
+        );
     }
+
+    let (mut engine, _) = EngineBuilder::new().build();
+    accept_input(
+        &mut engine,
+        test_helpers::logon(next_target, fix_str!("TARGET"), fix_str!("SENDER")),
+        &mut storage,
+    );
+    assert!(engine.is_logged_on());
+    assert!(!engine.should_disconnect());
+    assert_eq!(storage.next_target_msg_seq_num().get(), next_target + 1);
+    let mut logon = take_admin(&mut engine);
+    assert_msg_type(&logon, MsgTypeBase::Logon);
+    assert!(engine.fill_header(&mut logon, &mut storage).unwrap());
+    assert_eq!(logon.header.msg_seq_num, if send_logout { 23 } else { 20 });
+    engine.commit_send(logon, &mut storage).unwrap();
+    assert!(engine.take_admin_output().is_none());
+}
+
+#[rstest]
+#[case::expected_sequence(0, false)]
+#[case::above_sequence(3, false)]
+#[case::reset(0, true)]
+fn logon_refusal_consumes_only_the_expected_incoming_sequence_by_default(
+    #[values(1, 40)] next_target: u32,
+    #[case] seq_offset: u32,
+    #[case] reset: bool,
+    #[values(
+        InputAction::Disconnect,
+        InputAction::Logout {
+            session_status: None,
+            text: None,
+            disconnect: true,
+        },
+    )]
+    action: InputAction,
+) {
+    let seq_num = if reset { 1 } else { next_target + seq_offset };
+
+    let (mut engine, mut storage) = EngineBuilder::new().accept_reset_on_connect(true).build();
+    storage
+        .set_next_target_msg_seq_num(nz_seq(next_target))
+        .unwrap();
+    let msg = test_helpers::logon_with_options(
+        seq_num,
+        fix_str!("TARGET"),
+        fix_str!("SENDER"),
+        30,
+        Some(reset),
+        None,
+    );
+    let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
+        panic!("expected Logon callback");
+    };
+    engine
+        .process_admin_input(msg, action, &mut storage)
+        .unwrap();
+    assert_eq!(
+        storage.next_target_msg_seq_num().get(),
+        if seq_num == next_target {
+            next_target + 1
+        } else {
+            next_target
+        }
+    );
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::ApplicationForcedDisconnect
+        ))
+    );
+    assert!(!engine.is_logged_on());
+}
+
+#[rstest]
+fn nonterminal_logon_refusals_consume_sequence_regardless_of_policy(
+    #[values(false, true)] preserve: bool,
+    #[values(
+        InputAction::Reject {
+            reason: SessionRejectReasonBase::ValueIsIncorrect.into(),
+            text: None,
+            tag: None,
+        },
+        InputAction::Logout {
+            session_status: None,
+            text: None,
+            disconnect: false,
+        },
+    )]
+    action: InputAction,
+) {
+    let (mut engine, mut storage) = EngineBuilder::new().build();
+    engine.session_settings.preserve_seq_num_on_logon_refusal = preserve;
+    let msg = test_helpers::logon(1, fix_str!("TARGET"), fix_str!("SENDER"));
+    let InputResult::AdminMsg(msg) = engine.on_input(msg, &mut storage).unwrap() else {
+        panic!("expected Logon callback");
+    };
+    let waiting_for_logout = matches!(action, InputAction::Logout { .. });
+    engine
+        .process_admin_input(msg, action, &mut storage)
+        .unwrap();
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    assert!(!engine.should_disconnect());
+    assert_msg_type(
+        &take_admin(&mut engine),
+        if waiting_for_logout {
+            MsgTypeBase::Logout
+        } else {
+            MsgTypeBase::Reject
+        },
+    );
+    if waiting_for_logout {
+        accept_input(&mut engine, test_helpers::logout(2), &mut storage);
+        assert_eq!(storage.next_target_msg_seq_num().get(), 3);
+        assert_eq!(
+            engine.session_end().map(|end| end.context),
+            Some(EndContext::LocalLogout)
+        );
+    }
+    assert!(engine.take_admin_output().is_none());
 }
 
 /// An initiator that has sent its Logon and receives a Logon-ack with a

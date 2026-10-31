@@ -23,4 +23,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 easyfix-test-messages = { workspace = true }
+rstest = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "sync", "time", "macros", "rt", "test-util"] }
