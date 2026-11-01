@@ -40,6 +40,40 @@ use crate::{
 };
 
 #[test]
+fn connection_log_guard_outlives_both_transport_halves() {
+    use std::rc::Weak;
+
+    use tracing::Span;
+
+    use super::{ConnectionLog, LoggedTransport};
+
+    struct Probe(Weak<ConnectionLog>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            assert!(
+                self.0.upgrade().is_some(),
+                "transport must drop before the log guard"
+            );
+        }
+    }
+
+    let log = Rc::new(ConnectionLog { span: Span::none() });
+    let weak = Rc::downgrade(&log);
+    let reader = LoggedTransport {
+        inner: Probe(weak.clone()),
+        _log: log.clone(),
+    };
+    let writer = LoggedTransport {
+        inner: Probe(weak.clone()),
+        _log: log,
+    };
+    drop(writer);
+    assert!(weak.upgrade().is_some());
+    drop(reader);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
 fn busywait_acceptor_runs_an_identified_session_without_a_tokio_runtime() {
     let acceptor = Acceptor::<Message, InMemoryStorage, _>::with_busywait_timers(
         AcceptorSettings::default(),

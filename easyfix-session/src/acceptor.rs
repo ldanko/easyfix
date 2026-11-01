@@ -15,7 +15,9 @@ use std::{
     io,
     marker::PhantomData,
     net::SocketAddr,
+    pin::Pin,
     rc::Rc,
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -25,12 +27,12 @@ use easyfix_core::{
     message::{DeserializeError, SessionMessage},
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpListener,
     sync::{Notify, mpsc},
     task::{JoinHandle, spawn_local},
 };
-use tracing::{Instrument, error, info, info_span, warn};
+use tracing::{Instrument, Span, error, info, info_span, warn};
 
 use crate::{
     application::{IoOperation, SessionContext, SessionHandler, Termination, TimeoutKind},
@@ -1223,6 +1225,65 @@ async fn listener_task<M, S, F, H, C>(
 // Session task
 // ---------------------------------------------------------------------------
 
+struct ConnectionLog {
+    span: Span,
+}
+
+impl Drop for ConnectionLog {
+    fn drop(&mut self) {
+        self.span.in_scope(|| info!("Connection closed"));
+    }
+}
+
+// Both halves share the log guard. Field order makes each transport half
+// drop before its guard reference; the last half logs the close, even when
+// the session future is cancelled before its first poll. Session callbacks
+// can outlive the transport, so a task-level guard would log too late.
+struct LoggedTransport<T> {
+    inner: T,
+    _log: Rc<ConnectionLog>,
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for LoggedTransport<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for LoggedTransport<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+    }
+}
+
 /// Build the instrumented session task future without spawning it.
 ///
 /// The [`TaskGuard`] is constructed here - so `active_count` is already
@@ -1244,6 +1305,16 @@ where
 {
     let guard = TaskGuard::new(inner.clone());
     let span = info_span!("connection", %peer_addr);
+    span.in_scope(|| info!("New connection"));
+    let log = Rc::new(ConnectionLog { span: span.clone() });
+    let reader = LoggedTransport {
+        inner: reader,
+        _log: log.clone(),
+    };
+    let writer = LoggedTransport {
+        inner: writer,
+        _log: log,
+    };
     acceptor_session_task(inner, reader, writer, peer_addr, guard).instrument(span)
 }
 
