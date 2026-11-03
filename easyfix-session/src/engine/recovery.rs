@@ -1,18 +1,19 @@
 //! Incoming gap recovery and outgoing retransmission.
 
-use std::{borrow::Cow, mem, ops::RangeInclusive};
+use std::{borrow::Cow, mem, ops::RangeInclusive, time::Instant};
 
 use easyfix_core::{
     base_messages::{AdminBase, HeaderBase, MsgTypeBase, ResendRequestBase, SequenceResetBase},
-    basic_types::{NonZeroSeqNum, SeqNum, TimePrecision, UtcTimestamp},
+    basic_types::{FixString, NonZeroSeqNum, SeqNum, TimePrecision, UtcTimestamp},
     message::{MsgCat, SessionMessage},
 };
 use tracing::{debug, error, info, warn};
 
 use super::{
-    FatalError, HandlerResult, InputResult, PendingOutput, SessionEngine, ValidationResult,
+    FatalError, HandlerResult, InboundRecovery, InputResult, PendingOutput, SessionEngine,
+    ValidationResult,
 };
-use crate::{messages_storage::MessagesStorage, session_id::SessionId};
+use crate::{application::TimeoutKind, messages_storage::MessagesStorage, session_id::SessionId};
 
 /// Build the `SequenceReset`-GapFill message serialized by both the
 /// runtime scratch path and the registration-time size probe
@@ -95,11 +96,77 @@ pub(crate) fn validate_gap_fill_fits<M: SessionMessage>(
 }
 
 impl<M: SessionMessage> SessionEngine<M> {
+    // FIX Session Layer 4.5.2 recommends detecting endless garbled replay.
+    // Measure sequence progress: traffic beyond the gap, even a fresh request
+    // for a wider range, must not extend the wait for the missing message.
+    pub(super) fn track_inbound_recovery(&mut self, next_expected: SeqNum) {
+        if self
+            .state
+            .resend_range
+            .as_ref()
+            .is_none_or(|range| next_expected > *range.end())
+        {
+            self.state.inbound_recovery = None;
+        } else if self
+            .state
+            .inbound_recovery
+            .as_ref()
+            .is_none_or(|recovery| next_expected > recovery.next_expected)
+        {
+            self.state.inbound_recovery = Some(InboundRecovery {
+                next_expected,
+                progressed_at: self.timer_backend.now(),
+            });
+        }
+    }
+
+    pub(crate) fn inbound_recovery_deadline(&self) -> Option<Instant> {
+        if self.should_leave_loop() {
+            return None;
+        }
+        self.state
+            .inbound_recovery
+            .as_ref()?
+            .progressed_at
+            .checked_add(self.session_settings.inbound_recovery_timeout)
+    }
+
+    pub(crate) fn check_inbound_recovery_timeout(&mut self) {
+        if self
+            .inbound_recovery_deadline()
+            .is_some_and(|at| self.timer_backend.now() >= at)
+            && let Some(recovery) = &self.state.inbound_recovery
+        {
+            let expected = recovery.next_expected;
+            warn!(
+                expected,
+                "Inbound recovery made no progress before its deadline"
+            );
+            let text = FixString::from_ascii_lossy(
+                format!("Inbound recovery timeout, expecting MsgSeqNum {expected}").into_bytes(),
+            );
+            self.push_logout(None, Some(Cow::Owned(text)));
+            self.end_timeout(TimeoutKind::InboundRecovery);
+        }
+    }
+
     pub(super) fn inbound_recovery_finished<S: MessagesStorage>(&self, storage: &S) -> bool {
         self.state
             .resend_range
             .as_ref()
             .is_none_or(|range| storage.next_target_msg_seq_num().get() > *range.end())
+    }
+
+    // Completing one range may expose another gap among messages already
+    // parked. Request it now: the peer need not send any further fresh input.
+    pub(crate) fn request_next_queued_gap(&mut self, storage: &impl MessagesStorage) {
+        if !self.should_leave_loop()
+            && self.inbound_recovery_finished(storage)
+            && let Some(seq) = self.lowest_queued_seq_num()
+            && seq > storage.next_target_msg_seq_num().get()
+        {
+            self.request_resend(seq, storage);
+        }
     }
 
     pub(crate) fn has_pending_resends(&self) -> bool {
@@ -191,6 +258,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         self.pending_resends.clear();
         self.gap_fill_range = None;
         self.state.resend_range = None;
+        self.state.inbound_recovery = None;
 
         // Parked messages were received and are now lost to the application.
         // The peer was supposed to close its gaps before resetting (4.4.2
@@ -268,6 +336,7 @@ impl<M: SessionMessage> SessionEngine<M> {
             && begin_seq_no > *range.end()
         {
             self.state.resend_range = None;
+            self.state.inbound_recovery = None;
         }
 
         // Suppress only a request fully covered by the still-outstanding
@@ -287,7 +356,15 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
 
         self.send_resend_request(begin_seq_no, end_seq_no);
-        self.state.resend_range = Some(begin_seq_no..=end_seq_no);
+        // A redundant, shorter request must not erase the still-missing tail
+        // of an earlier drop-and-request range whose messages were not queued.
+        let outstanding_end = self
+            .state
+            .resend_range
+            .as_ref()
+            .map_or(end_seq_no, |range| end_seq_no.max(*range.end()));
+        self.state.resend_range = Some(begin_seq_no..=outstanding_end);
+        self.track_inbound_recovery(begin_seq_no);
     }
 
     pub(super) fn on_resend_request<S: MessagesStorage>(
@@ -379,6 +456,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                     self.fail_storage("set_next_target_msg_seq_num", &error)
                 })?;
             self.discard_queued_below(raised_target.get());
+            self.track_inbound_recovery(raised_target.get());
         } else {
             // Reset (123=N) with NewSeqNo == NextNumIn: accept, warning only.
             warn!("SequenceReset-Reset with NewSeqNo({new_seq_no}) == NextNumIn; accepting");

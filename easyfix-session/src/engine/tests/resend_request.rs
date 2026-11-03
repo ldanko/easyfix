@@ -1,4 +1,4 @@
-use std::assert_matches;
+use std::{assert_matches, num::NonZeroUsize, time::Duration};
 
 use easyfix_core::{
     base_messages::{AdminBase, MsgTypeBase, SessionRejectReasonBase},
@@ -6,13 +6,16 @@ use easyfix_core::{
     message::{HeaderAccess, SessionMessage},
 };
 use rstest::rstest;
+use tokio::time;
 
 use super::{
     resend_support::{assert_resend_request, drain_queued},
     support::assert_msg_type,
 };
 use crate::{
-    application::{EndContext, InputAction, SessionEndReason, ValidationError},
+    application::{
+        EndContext, InputAction, SessionEndReason, Termination, TimeoutKind, ValidationError,
+    },
     engine::InputResult,
     initiator::SessionStart,
     messages_storage::MessagesStorage,
@@ -305,6 +308,104 @@ fn covered_gap_request_repeats_with_send_redundant_resend_requests() {
     assert_eq!(engine.queued_count(), 2);
 }
 
+#[rstest]
+fn inbound_queue_limit_is_optional(#[values(false, true)] limited: bool) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    assert!(
+        engine
+            .session_settings
+            .max_inbound_queued_messages
+            .is_none()
+    );
+    if limited {
+        engine.session_settings.max_inbound_queued_messages = NonZeroUsize::new(100);
+    }
+    for seq in 2..=101 {
+        accept_input(
+            &mut engine,
+            test_helpers::heartbeat(seq, None),
+            &mut storage,
+        );
+    }
+    assert_eq!(engine.queued_count(), 100);
+    assert!(!engine.should_disconnect());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert_resend_request(&mut engine, 1, 1);
+    assert!(!engine.has_admin_output());
+
+    accept_input(
+        &mut engine,
+        test_helpers::heartbeat(102, None),
+        &mut storage,
+    );
+
+    if !limited {
+        assert_eq!(engine.queued_count(), 101);
+        assert!(engine.has_queued_message(102));
+        assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+        assert!(!engine.should_disconnect());
+        assert!(!engine.has_admin_output());
+        return;
+    }
+
+    assert_eq!(engine.queued_count(), 100);
+    assert!(!engine.has_queued_message(102));
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert_eq!(
+        engine.session_end().map(|end| end.context),
+        Some(EndContext::Closing(
+            SessionEndReason::InboundQueueLimitExceeded
+        ))
+    );
+    let logout = take_admin(&mut engine);
+    assert_matches!(as_admin(&logout), AdminBase::Logout(logout)
+    if logout.text.as_deref() == Some(fix_str!(
+        "Inbound queue limit 100 exceeded, expecting MsgSeqNum 1"
+    )));
+    assert!(!engine.has_admin_output(), "only one farewell Logout");
+}
+
+#[test]
+fn inbound_queue_at_limit_replaces_an_existing_sequence_number() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.session_settings.max_inbound_queued_messages = NonZeroUsize::new(1);
+    accept_input(&mut engine, test_helpers::heartbeat(2, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 1);
+
+    accept_input(
+        &mut engine,
+        test_helpers::heartbeat(2, Some(fix_str!("replacement").to_owned())),
+        &mut storage,
+    );
+
+    assert_eq!(engine.queued_count(), 1);
+    assert!(!engine.should_disconnect());
+    assert!(!engine.has_admin_output());
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    let queued = &engine.state.queue[&2];
+    assert_matches!(as_admin(queued), AdminBase::Heartbeat(heartbeat)
+        if heartbeat.test_req_id.as_deref() == Some(fix_str!("replacement")));
+}
+
+#[test]
+fn inbound_queue_capacity_is_released_after_gap_recovery() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.session_settings.max_inbound_queued_messages = NonZeroUsize::new(1);
+    accept_input(&mut engine, test_helpers::heartbeat(2, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 1);
+    accept_input(&mut engine, test_helpers::heartbeat(1, None), &mut storage);
+    drain_queued(&mut engine, &mut storage);
+    assert_eq!(engine.queued_count(), 0);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 3);
+
+    accept_input(&mut engine, test_helpers::heartbeat(4, None), &mut storage);
+
+    assert_eq!(engine.queued_count(), 1);
+    assert!(!engine.should_disconnect());
+    assert_resend_request(&mut engine, 3, 3);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 3);
+}
+
 /// Drop-and-request for an unparseable too-high message extends the
 /// request THROUGH its seq num even when a parseable message is already
 /// parked in the queue - the clamp to the lowest parked message applies
@@ -521,4 +622,224 @@ fn next_queued_message_multi_drain() {
 
     // Queue is empty now
     assert!(engine.next_queued_message(&mut storage).unwrap().is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_budget_follows_progress_and_restarts_for_a_new_gap() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    let start = engine.timer_backend().now();
+    accept_input(&mut engine, test_helpers::heartbeat(5, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 4);
+    assert_eq!(
+        engine.inbound_recovery_deadline(),
+        Some(start + Duration::from_secs(30))
+    );
+
+    time::advance(Duration::from_secs(20)).await;
+    accept_input(&mut engine, test_helpers::heartbeat(1, None), &mut storage);
+    assert_eq!(
+        engine.inbound_recovery_deadline(),
+        Some(start + Duration::from_secs(50))
+    );
+
+    time::advance(Duration::from_secs(20)).await;
+    engine.check_inbound_recovery_timeout();
+    assert!(
+        !engine.should_disconnect(),
+        "progress permits recovery longer than 30s"
+    );
+    accept_input(
+        &mut engine,
+        test_helpers::sequence_reset(2, 4, true),
+        &mut storage,
+    );
+    assert_eq!(
+        engine.inbound_recovery_deadline(),
+        Some(start + Duration::from_secs(70))
+    );
+
+    time::advance(Duration::from_secs(20)).await;
+    accept_input(&mut engine, test_helpers::heartbeat(4, None), &mut storage);
+    drain_queued(&mut engine, &mut storage);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 6);
+    assert!(engine.inbound_recovery_deadline().is_none());
+    time::advance(Duration::from_secs(60)).await;
+    engine.check_inbound_recovery_timeout();
+    assert!(!engine.should_disconnect());
+
+    accept_input(&mut engine, test_helpers::heartbeat(7, None), &mut storage);
+    assert_resend_request(&mut engine, 6, 6);
+    assert_eq!(
+        engine.inbound_recovery_deadline(),
+        Some(start + Duration::from_secs(150))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn widening_a_recovery_range_does_not_renew_its_budget() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.session_settings.inbound_recovery_timeout = Duration::from_secs(5);
+    accept_input(&mut engine, test_helpers::heartbeat(3, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 2);
+    let deadline = engine.inbound_recovery_deadline().unwrap();
+    time::advance(Duration::from_secs(4)).await;
+    let error = test_helpers::body_reject_error(
+        fix_str!("D"),
+        test_helpers::inbound_header(9),
+        Some(44),
+        SessionRejectReasonBase::ValueIsIncorrect,
+    );
+    engine.on_deserialize_error(error, &mut storage).unwrap();
+    assert_resend_request(&mut engine, 1, 9);
+    assert_eq!(engine.inbound_recovery_deadline(), Some(deadline));
+    engine.check_inbound_recovery_timeout();
+    assert!(!engine.should_disconnect());
+    time::advance(Duration::from_secs(1)).await;
+    engine.check_inbound_recovery_timeout();
+    engine.check_inbound_recovery_timeout();
+    assert_eq!(storage.next_target_msg_seq_num().get(), 1);
+    assert_matches!(as_admin(&take_admin(&mut engine)), AdminBase::Logout(_));
+    assert!(
+        !engine.has_admin_output(),
+        "timeout sends only one farewell"
+    );
+    let end = engine.take_session_end();
+    assert_eq!(
+        end.context,
+        EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::InboundRecovery))
+    );
+    assert_matches!(
+        end.termination,
+        Termination::Timeout(TimeoutKind::InboundRecovery)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn implicit_recovery_via_789_has_a_deadline_without_a_resend_request() {
+    let (mut engine, mut storage) = EngineBuilder::new()
+        .enable_next_expected_msg_seq_num()
+        .build();
+    engine
+        .send_logon_request(&mut storage, SessionStart::Resume)
+        .unwrap();
+    take_admin(&mut engine);
+    let start = engine.timer_backend().now();
+    accept_input(
+        &mut engine,
+        test_helpers::logon(5, fix_str!("TARGET"), fix_str!("SENDER")),
+        &mut storage,
+    );
+    assert!(!engine.has_admin_output());
+    assert_eq!(
+        engine.inbound_recovery_deadline(),
+        Some(start + Duration::from_secs(30))
+    );
+    time::advance(Duration::from_secs(30)).await;
+    engine.check_inbound_recovery_timeout();
+    assert!(engine.should_disconnect());
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn peer_reset_clears_recovery_deadline(#[values(false, true)] logon_reset: bool) {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    engine.session_settings.accept_reset_in_session = true;
+    accept_input(&mut engine, test_helpers::heartbeat(5, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 4);
+    assert!(engine.inbound_recovery_deadline().is_some());
+    time::advance(Duration::from_secs(20)).await;
+    let msg = if logon_reset {
+        test_helpers::logon_with_options(
+            1,
+            fix_str!("TARGET"),
+            fix_str!("SENDER"),
+            30,
+            Some(true),
+            None,
+        )
+    } else {
+        test_helpers::sequence_reset(1, 6, false)
+    };
+    accept_input(&mut engine, msg, &mut storage);
+    assert!(engine.inbound_recovery_deadline().is_none());
+    time::advance(Duration::from_secs(30)).await;
+    engine.check_inbound_recovery_timeout();
+    assert!(!engine.should_disconnect());
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovering_one_gap_requests_and_times_the_next_parked_gap() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    accept_input(&mut engine, test_helpers::heartbeat(3, None), &mut storage);
+    accept_input(&mut engine, test_helpers::heartbeat(5, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 2);
+    time::advance(Duration::from_secs(20)).await;
+    accept_input(&mut engine, test_helpers::heartbeat(1, None), &mut storage);
+    accept_input(&mut engine, test_helpers::heartbeat(2, None), &mut storage);
+    drain_queued(&mut engine, &mut storage);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 4);
+    engine.request_next_queued_gap(&storage);
+    assert_resend_request(&mut engine, 4, 4);
+    assert!(engine.inbound_recovery_deadline().is_some());
+    time::advance(Duration::from_secs(30)).await;
+    engine.check_inbound_recovery_timeout();
+    assert!(engine.should_disconnect());
+}
+
+#[tokio::test(start_paused = true)]
+async fn shorter_redundant_request_keeps_the_unreceived_tail_under_timeout() {
+    let (mut engine, mut storage) = EngineBuilder::new()
+        .send_redundant_resend_requests(true)
+        .logged_on()
+        .build();
+    let error = test_helpers::body_reject_error(
+        fix_str!("D"),
+        test_helpers::inbound_header(5),
+        Some(44),
+        SessionRejectReasonBase::ValueIsIncorrect,
+    );
+    engine.on_deserialize_error(error, &mut storage).unwrap();
+    assert_resend_request(&mut engine, 1, 5);
+    accept_input(&mut engine, test_helpers::heartbeat(3, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 2);
+    accept_input(&mut engine, test_helpers::heartbeat(1, None), &mut storage);
+    accept_input(&mut engine, test_helpers::heartbeat(2, None), &mut storage);
+    drain_queued(&mut engine, &mut storage);
+    engine.request_next_queued_gap(&storage);
+    assert_eq!(storage.next_target_msg_seq_num().get(), 4);
+    assert!(
+        engine.inbound_recovery_deadline().is_some(),
+        "4..5 still outstanding"
+    );
+    time::advance(Duration::from_secs(30)).await;
+    engine.check_inbound_recovery_timeout();
+    assert!(engine.should_disconnect());
+}
+
+#[test]
+fn disconnect_after_queued_input_does_not_request_the_next_gap() {
+    let (mut engine, mut storage) = EngineBuilder::new().logged_on().build();
+    accept_input(&mut engine, test_helpers::new_order_single(3), &mut storage);
+    accept_input(&mut engine, test_helpers::heartbeat(5, None), &mut storage);
+    assert_resend_request(&mut engine, 1, 2);
+    accept_input(&mut engine, test_helpers::heartbeat(1, None), &mut storage);
+    accept_input(&mut engine, test_helpers::heartbeat(2, None), &mut storage);
+    let Some(InputResult::AppMsg(msg)) = engine.next_queued_message(&mut storage).unwrap() else {
+        panic!("expected queued application message");
+    };
+    engine
+        .process_app_input(
+            3,
+            SessionMessage::msg_type(&*msg),
+            InputAction::Disconnect,
+            &mut storage,
+        )
+        .unwrap();
+    engine.request_next_queued_gap(&storage);
+    assert!(engine.should_disconnect());
+    assert!(
+        !engine.has_admin_output(),
+        "Disconnect must not produce a response"
+    );
+    assert!(engine.inbound_recovery_deadline().is_none());
 }

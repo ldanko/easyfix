@@ -18,6 +18,7 @@ pub(super) enum TimerEvent {
     Logon,
     Logout,
     Reset,
+    InboundRecovery,
 }
 
 /// Timers for the running session. Synchronize them before waiting and report
@@ -32,6 +33,8 @@ pub(super) struct SessionTimers {
     logout: Option<Sleep>,
     grace: Option<Sleep>,
     reset: ResetTimeout,
+    recovery: Option<Sleep>,
+    recovery_at: Option<Instant>,
 }
 
 impl SessionTimers {
@@ -47,6 +50,8 @@ impl SessionTimers {
             logout: None,
             grace: None,
             reset: ResetTimeout::default(),
+            recovery: None,
+            recovery_at: None,
         }
     }
 
@@ -55,6 +60,11 @@ impl SessionTimers {
     pub(super) fn sync<M: SessionMessage>(&mut self, engine: &SessionEngine<M>) {
         sync_deadline(&mut self.logout, engine.logout_deadline(), self.time);
         sync_deadline(&mut self.logon, engine.logon_deadline(), self.time);
+        let recovery_at = engine.inbound_recovery_deadline();
+        if self.recovery_at != recovery_at {
+            self.recovery = recovery_at.map(|at| self.time.sleep_until(at));
+            self.recovery_at = recovery_at;
+        }
 
         // Start the keep-alive clocks at establishment. During the handshake
         // only the logon deadline bounds the wait.
@@ -112,7 +122,10 @@ impl SessionTimers {
                 reset_after(&mut self.grace, self.input_timeout);
             }
             TimerEvent::Output => self.on_output_written(),
-            TimerEvent::Logon | TimerEvent::Logout | TimerEvent::Reset => {}
+            TimerEvent::Logon
+            | TimerEvent::Logout
+            | TimerEvent::Reset
+            | TimerEvent::InboundRecovery => {}
         }
     }
 
@@ -129,6 +142,7 @@ impl SessionTimers {
             () = elapsed(&mut self.logout) => TimerEvent::Logout,
             () = elapsed(&mut self.logon) => TimerEvent::Logon,
             () = elapsed(&mut self.reset.deadline) => TimerEvent::Reset,
+            () = elapsed(&mut self.recovery) => TimerEvent::InboundRecovery,
         }
     }
 }

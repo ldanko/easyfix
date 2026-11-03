@@ -203,6 +203,26 @@ impl<M: SessionMessage> SessionEngine<M> {
     /// Park the original message and request the preceding sequence gap.
     fn enqueue_input<S: MessagesStorage>(&mut self, msg: Box<M>, storage: &mut S) {
         let seq = msg.msg_seq_num();
+        if let Some(limit) = self.session_settings.max_inbound_queued_messages
+            && self.state.queue.len() >= limit.get()
+            && !self.state.queue.contains_key(&seq)
+        {
+            let limit = limit.get();
+            let expected = storage.next_target_msg_seq_num().get();
+            warn!(
+                limit,
+                expected,
+                received = seq,
+                "inbound recovery queue limit exceeded, logging out"
+            );
+            let text = FixString::from_ascii_lossy(
+                format!("Inbound queue limit {limit} exceeded, expecting MsgSeqNum {expected}")
+                    .into_bytes(),
+            );
+            self.push_logout(None, Some(Cow::Owned(text)));
+            self.begin_disconnect(SessionEndReason::InboundQueueLimitExceeded);
+            return;
+        }
         // Most types are re-dispatched through `on_input` once the gap is
         // filled. Logon and ResendRequest were processed or deliberately
         // ignored at receipt; `next_queued_message` recognizes them by type

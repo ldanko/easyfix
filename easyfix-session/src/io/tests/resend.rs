@@ -1,21 +1,247 @@
-use std::ops::RangeInclusive;
+use std::{assert_matches, ops::RangeInclusive, time::Duration};
 
 use easyfix_core::{
-    base_messages::MsgTypeBase,
+    base_messages::{AdminBase, MsgTypeBase},
     basic_types::SeqNum,
     deserializer::raw_message,
+    fix_str,
     message::{HeaderAccess, MsgCat, SessionMessage},
 };
 use easyfix_test_messages::Message;
-use tokio::io;
+use rstest::rstest;
+use tokio::{
+    io,
+    io::{AsyncReadExt, AsyncWriteExt},
+    time,
+};
 
-use super::wire::wire_bytes;
+use super::{
+    harness::TestEvent, reset_peer::running_reset_peer, reset_transport::gated_reset_peer,
+    wire::wire_bytes,
+};
 use crate::{
+    application::{EndContext, SessionEndReason, TimeoutKind},
     io::{flush_output, process_one_resend},
     messages_storage::MessagesStorage,
     test_helpers,
-    test_helpers::{EngineBuilder, nz_seq},
+    test_helpers::{EngineBuilder, SessionEndSnapshot, TerminationSnapshot, nz_seq},
 };
+
+#[rstest]
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn stalled_inbound_recovery_times_out_despite_garbled_replays_and_new_messages(
+    #[values(false, true)] redundant_requests: bool,
+    #[values(false, true)] heartbeats_enabled: bool,
+) {
+    let mut settings = test_helpers::default_session_settings();
+    settings.send_redundant_resend_requests = redundant_requests;
+    settings.heartbeat_interval = heartbeats_enabled.then(|| 60.try_into().unwrap());
+    let mut peer = running_reset_peer(settings).await;
+    let start = time::Instant::now();
+
+    let mut replay = test_helpers::heartbeat(2, None);
+    replay.header.poss_dup_flag = Some(true);
+    replay.header.orig_sending_time = Some(replay.header.sending_time);
+    let mut garbled = test_helpers::serialize_message(&replay);
+    let checksum_digit = garbled.len() - 2;
+    garbled[checksum_digit] = if garbled[checksum_digit] == b'0' {
+        b'1'
+    } else {
+        b'0'
+    };
+    let mut batch = garbled.clone();
+    batch.extend_from_slice(&test_helpers::heartbeat_bytes(3));
+    peer.wire.write_all(&batch).await.unwrap();
+    let request = peer.read().await;
+    assert_matches!(request.try_as_admin(), Some(AdminBase::ResendRequest(r))
+        if r.begin_seq_no == 2 && r.end_seq_no == 2);
+
+    for (seconds, seq) in [(10, 4), (20, 5)] {
+        time::sleep_until(start + Duration::from_secs(seconds)).await;
+        let mut batch = garbled.clone();
+        batch.extend_from_slice(&test_helpers::heartbeat_bytes(seq));
+        peer.wire.write_all(&batch).await.unwrap();
+        if redundant_requests {
+            let request = peer.read().await;
+            assert_matches!(request.try_as_admin(), Some(AdminBase::ResendRequest(r))
+                if r.begin_seq_no == 2 && r.end_seq_no == 2);
+        }
+        // Let every ready input frame drain before the paused clock advances.
+        time::sleep(Duration::from_millis(1)).await;
+        peer.assert_silent();
+        assert!(!peer.task.is_finished());
+        assert!(peer.events.try_recv().is_err());
+    }
+
+    time::sleep_until(start + Duration::from_secs(30)).await;
+    let logout = peer.read().await;
+    assert_eq!(start.elapsed(), Duration::from_secs(30));
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+    if logout.text.as_deref() == Some(fix_str!(
+        "Inbound recovery timeout, expecting MsgSeqNum 2"
+    )));
+    assert_matches!(
+        peer.events.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::InboundRecovery)),
+            termination: TerminationSnapshot::Timeout(TimeoutKind::InboundRecovery),
+            reset_unconfirmed: false
+        })
+    );
+    let storage = peer.task.await.unwrap();
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    assert!(peer.buffer.is_empty());
+    let mut trailing = Vec::new();
+    peer.wire.read_to_end(&mut trailing).await.unwrap();
+    assert!(trailing.is_empty());
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn inbound_queue_overflow_sends_logout_without_consuming_the_gap() {
+    let mut settings = test_helpers::default_session_settings();
+    settings.heartbeat_interval = None;
+    settings.max_inbound_queued_messages = Some(2.try_into().unwrap());
+    let mut peer = running_reset_peer(settings).await;
+    let start = time::Instant::now();
+
+    let mut batch = test_helpers::heartbeat_bytes(3);
+    batch.extend_from_slice(&test_helpers::heartbeat_bytes(4));
+    peer.wire.write_all(&batch).await.unwrap();
+    let request = peer.read().await;
+    assert_matches!(request.try_as_admin(), Some(AdminBase::ResendRequest(r))
+        if r.begin_seq_no == 2 && r.end_seq_no == 2);
+    peer.send(&test_helpers::heartbeat(5, None)).await;
+
+    let logout = peer.read().await;
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+    if logout.text.as_deref() == Some(fix_str!(
+        "Inbound queue limit 2 exceeded, expecting MsgSeqNum 2"
+    )));
+    assert_matches!(
+        peer.events.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::InboundQueueLimitExceeded),
+            termination: TerminationSnapshot::LocalClose,
+            reset_unconfirmed: false
+        })
+    );
+    let storage = peer.task.await.unwrap();
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    assert!(peer.buffer.is_empty());
+    let mut trailing = Vec::new();
+    peer.wire.read_to_end(&mut trailing).await.unwrap();
+    assert!(trailing.is_empty());
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn inbound_recovery_timeout_stops_outgoing_replay_between_batches() {
+    let mut settings = test_helpers::default_session_settings();
+    settings.heartbeat_interval = None;
+    settings.write_timeout = Duration::from_secs(60);
+    let (mut peer, mut gate) = gated_reset_peer(settings).await;
+    for seq in 2..=3 {
+        peer.sender
+            .send(test_helpers::new_order_single_with_empty_header())
+            .unwrap();
+        assert_eq!(peer.read().await.msg_seq_num(), seq);
+    }
+    peer.send(&test_helpers::heartbeat(4, None)).await;
+    let request = peer.read().await;
+    assert_matches!(request.try_as_admin(), Some(AdminBase::ResendRequest(r))
+        if r.begin_seq_no == 2 && r.end_seq_no == 3);
+
+    // The peer's too-high ResendRequest starts outgoing replay without
+    // advancing NextNumIn. Hold its first write past the recovery deadline.
+    gate.armed.set(true);
+    peer.send(&test_helpers::resend_request(5, 2, 3)).await;
+    let pending = Message::from_bytes(&gate.entered.recv().await.unwrap()).unwrap();
+    assert_eq!(pending.msg_seq_num(), 2);
+    assert_eq!(pending.poss_dup_flag(), Some(true));
+    assert_eq!(pending.msg_cat(), MsgCat::App);
+    time::advance(Duration::from_secs(31)).await;
+    assert!(!peer.task.is_finished(), "in-flight IO is not cancelled");
+    gate.armed.set(false);
+    gate.release.send(Ok(())).unwrap();
+
+    let replay = peer.read().await;
+    assert_eq!(replay.msg_seq_num(), 2);
+    assert_eq!(replay.poss_dup_flag(), Some(true));
+    // The next replay batch would send seq 3. Expiry must be checked
+    // before that batch, even though active replay bypasses event select.
+    let logout = peer.read().await;
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+    if logout.text.as_deref() == Some(fix_str!(
+        "Inbound recovery timeout, expecting MsgSeqNum 2"
+    )));
+    assert_matches!(
+        peer.events.recv().await.unwrap(),
+        TestEvent::AdminMsgIn(MsgTypeBase::ResendRequest)
+    );
+    assert_matches!(
+        peer.events.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::InboundRecovery)),
+            termination: TerminationSnapshot::Timeout(TimeoutKind::InboundRecovery),
+            reset_unconfirmed: false
+        })
+    );
+    let storage = peer.task.await.unwrap();
+    assert_eq!(storage.next_target_msg_seq_num().get(), 2);
+    assert!(peer.buffer.is_empty());
+    let mut trailing = Vec::new();
+    peer.wire.read_to_end(&mut trailing).await.unwrap();
+    assert!(trailing.is_empty());
+}
+
+#[tokio::test(flavor = "local", start_paused = true)]
+async fn recovering_one_gap_requests_the_next_queued_gap_without_new_input() {
+    let mut settings = test_helpers::default_session_settings();
+    settings.heartbeat_interval = None;
+    let mut peer = running_reset_peer(settings).await;
+    let mut batch = test_helpers::heartbeat_bytes(4);
+    batch.extend_from_slice(&test_helpers::heartbeat_bytes(6));
+    peer.wire.write_all(&batch).await.unwrap();
+    let request = peer.read().await;
+    assert_matches!(request.try_as_admin(), Some(AdminBase::ResendRequest(r))
+        if r.begin_seq_no == 2 && r.end_seq_no == 3);
+
+    let mut recovered = test_helpers::heartbeat_bytes(2);
+    recovered.extend_from_slice(&test_helpers::heartbeat_bytes(3));
+    peer.wire.write_all(&recovered).await.unwrap();
+    // Once 2 and 3 close the first gap, the queued 4 is processed. The
+    // queued 6 must expose the next gap without another read from the peer.
+    let request = peer.read().await;
+    assert_matches!(request.try_as_admin(), Some(AdminBase::ResendRequest(r))
+        if r.begin_seq_no == 5 && r.end_seq_no == 5);
+    for _ in 2..=4 {
+        assert_matches!(
+            peer.events.recv().await.unwrap(),
+            TestEvent::AdminMsgIn(MsgTypeBase::Heartbeat)
+        );
+    }
+
+    time::advance(Duration::from_secs(30)).await;
+    let logout = peer.read().await;
+    assert_matches!(logout.try_as_admin(), Some(AdminBase::Logout(logout))
+    if logout.text.as_deref() == Some(fix_str!(
+        "Inbound recovery timeout, expecting MsgSeqNum 5"
+    )));
+    assert_matches!(
+        peer.events.recv().await.unwrap(),
+        TestEvent::SessionEnd(SessionEndSnapshot {
+            context: EndContext::Closing(SessionEndReason::Timeout(TimeoutKind::InboundRecovery)),
+            termination: TerminationSnapshot::Timeout(TimeoutKind::InboundRecovery),
+            reset_unconfirmed: false
+        })
+    );
+    let storage = peer.task.await.unwrap();
+    assert_eq!(storage.next_target_msg_seq_num().get(), 5);
+    assert!(peer.buffer.is_empty());
+    let mut trailing = Vec::new();
+    peer.wire.read_to_end(&mut trailing).await.unwrap();
+    assert!(trailing.is_empty());
+}
 
 /// `process_one_resend` must produce at most one [`PendingOutput::Transient`]
 /// per call so the shared `engine.scratch` buffer is drained before the

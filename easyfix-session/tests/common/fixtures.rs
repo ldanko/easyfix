@@ -153,6 +153,8 @@ pub fn build_session_settings(heartbeat_secs: u16) -> SessionSettings {
         write_timeout: Duration::from_secs(30),
         max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
         send_redundant_resend_requests: false,
+        inbound_recovery_timeout: Duration::from_secs(30),
+        max_inbound_queued_messages: None,
         check_comp_id: true,
         max_latency: Some(Duration::from_secs(120)),
         time_precision: TimePrecision::Millis,

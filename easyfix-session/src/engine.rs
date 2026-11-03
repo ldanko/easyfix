@@ -170,6 +170,11 @@ pub(crate) enum ResetPhase {
     Sent,
 }
 
+struct InboundRecovery {
+    next_expected: SeqNum,
+    progressed_at: Instant,
+}
+
 /// Internal session state.
 struct SessionState<M> {
     /// Logon-protocol lifecycle position. See [`LogonState`] for the
@@ -217,6 +222,7 @@ struct SessionState<M> {
     /// Range of sequence numbers we've requested the peer to resend
     /// (via ResendRequest). Used for suppression of redundant requests.
     resend_range: Option<RangeInclusive<SeqNum>>,
+    inbound_recovery: Option<InboundRecovery>,
     /// Messages received out of sequence, held until the gap is filled.
     /// Keyed by MsgSeqNum for retrieval by sequence number.
     queue: BTreeMap<SeqNum, Box<M>>,
@@ -248,6 +254,7 @@ impl<M> SessionState<M> {
             next_expected_msg_seq_num: None,
             heartbeat_interval: None,
             resend_range: None,
+            inbound_recovery: None,
             queue: BTreeMap::new(),
             last_fill: HeaderFill::default(),
             started_at,
@@ -517,6 +524,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 error!(%seq_num, %next, "Failed to advance incoming sequence number");
                 self.fail_storage("set_next_target_msg_seq_num", &error)
             })?;
+            self.track_inbound_recovery(next.get());
         }
         Ok(())
     }

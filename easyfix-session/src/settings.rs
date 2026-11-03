@@ -211,6 +211,23 @@ pub struct SessionSettings {
     /// `true`, always send a fresh `ResendRequest<2>` for each detected gap.
     pub send_redundant_resend_requests: bool,
 
+    /// Maximum time without advancing the expected incoming sequence number
+    /// during gap recovery. Defaults to 30 seconds, independently of heartbeats.
+    /// Expiry sends a farewell Logout and closes the connection with
+    /// `SessionEndReason::Timeout(TimeoutKind::InboundRecovery)`.
+    ///
+    /// Higher-numbered messages and repeated resend requests do not renew the
+    /// budget. A duration the clock cannot represent means no limit. Ongoing
+    /// IO and application callbacks are not cancelled.
+    pub inbound_recovery_timeout: Duration,
+
+    /// Maximum number of distinct out-of-order messages held for gap recovery.
+    /// `None` (the default) means unlimited. Receiving another distinct message
+    /// at capacity sends a farewell Logout and closes with
+    /// `SessionEndReason::InboundQueueLimitExceeded`.
+    /// Incoming sequence numbers and stored history are preserved.
+    pub max_inbound_queued_messages: Option<NonZeroUsize>,
+
     /// If `true`, validate that incoming `SenderCompID<49>` and
     /// `TargetCompID<56>` match the session identity. Mismatches reject the
     /// message with `CompIDProblem` and force a Logout.
@@ -394,8 +411,8 @@ pub struct SessionSettings {
 }
 
 /// Library defaults: 30s heartbeat, 30s write timeout, CompID validation on,
-/// peer seq-num reset refused, 4 KiB max message size, no outbound backlog
-/// caps.
+/// peer seq-num reset refused, 4 KiB max message size, 30s inbound recovery
+/// timeout, no inbound queue or outbound backlog caps.
 impl Default for SessionSettings {
     fn default() -> SessionSettings {
         SessionSettings {
@@ -406,6 +423,8 @@ impl Default for SessionSettings {
             write_timeout: Duration::from_secs(30),
             max_message_size: const { NonZeroLength::new(4096).unwrap() },
             send_redundant_resend_requests: false,
+            inbound_recovery_timeout: Duration::from_secs(30),
+            max_inbound_queued_messages: None,
             check_comp_id: true,
             max_latency: Some(Duration::from_secs(120)),
             time_precision: TimePrecision::Millis,

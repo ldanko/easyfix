@@ -268,6 +268,7 @@ impl<M: SessionMessage> SessionEngine<M> {
         }
         self.state.queue.clear();
         self.state.resend_range = None;
+        self.state.inbound_recovery = None;
         self.state.local_reset_unconfirmed = false;
         Ok(())
     }
@@ -501,6 +502,7 @@ impl<M: SessionMessage> SessionEngine<M> {
                 // this Logon, and an open-ended range would keep suppressing
                 // requests for later gaps after this one is recovered.
                 self.state.resend_range = Some(next_expected.get()..=msg_seq_num.saturating_sub(1));
+                self.track_inbound_recovery(next_target);
                 self.state.next_expected_msg_seq_num = None;
                 info!("Required resend will be suppressed as we are setting tag 789");
             }

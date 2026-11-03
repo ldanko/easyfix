@@ -12,8 +12,42 @@ use crate::{
         ControlMsg,
         time::{Sleep, TimerBackend},
     },
-    test_helpers::EngineBuilder,
+    test_helpers,
+    test_helpers::{EngineBuilder, accept_input},
 };
+
+#[tokio::test(start_paused = true)]
+async fn recovery_timer_rearms_on_progress_and_disarms_after_gap_fill() {
+    let (mut engine, mut storage) = EngineBuilder::new()
+        .heartbeat_interval(None)
+        .logged_on()
+        .build();
+    let mut timers = SessionTimers::new(engine.heartbeat_interval(), engine.timer_backend());
+    let start = time::Instant::now();
+    accept_input(&mut engine, test_helpers::heartbeat(4, None), &mut storage);
+    timers.sync(&engine);
+    assert!(timers.next_event().now_or_never().is_none());
+    time::advance(Duration::from_secs(20)).await;
+    accept_input(&mut engine, test_helpers::heartbeat(1, None), &mut storage);
+    timers.sync(&engine);
+    time::advance(Duration::from_secs(10)).await;
+    assert!(
+        timers.next_event().now_or_never().is_none(),
+        "old deadline was replaced"
+    );
+    assert_matches!(timers.next_event().await, TimerEvent::InboundRecovery);
+    assert_eq!(start.elapsed(), Duration::from_secs(50));
+
+    // Exercise timer synchronization independently of timeout dispatch.
+    accept_input(
+        &mut engine,
+        test_helpers::sequence_reset(2, 4, true),
+        &mut storage,
+    );
+    timers.sync(&engine);
+    time::advance(Duration::from_secs(60)).await;
+    assert!(timers.next_event().now_or_never().is_none());
+}
 
 #[tokio::test(start_paused = true)]
 async fn busywait_engine_and_timers_share_the_wall_clock() {

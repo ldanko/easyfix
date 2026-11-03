@@ -72,15 +72,16 @@ pub(crate) async fn initialize_handler<H>(
     }
 }
 
-/// Expire the reset budget before doing more ordinary work. Returns whether
-/// the loop must finish, including an engine decision made before this check.
-fn check_reset_timeout<M: SessionMessage>(
+/// Expire recovery and reset budgets before doing more ordinary work. Returns
+/// whether the loop must finish, including an earlier engine decision.
+fn check_session_timeouts<M: SessionMessage>(
     timers: &mut SessionTimers,
     engine: &mut SessionEngine<M>,
 ) -> bool {
     if !engine.should_leave_loop() && timers.sync_reset_and_check(engine) {
         engine.on_reset_timeout();
     }
+    engine.check_inbound_recovery_timeout();
     engine.should_leave_loop()
 }
 
@@ -440,6 +441,7 @@ where
     // a handler already sent.
     engine.end_session_if_reset_ack_number_consumed(storage);
     engine.end_session_if_target_numbering_exhausted(storage);
+    engine.request_next_queued_gap(storage);
     Ok(())
 }
 
@@ -740,7 +742,7 @@ async fn run_session_loop<M, R, W, S, H>(
         if engine.has_fatal_error() {
             break 'session;
         }
-        check_reset_timeout(&mut timers, engine);
+        check_session_timeouts(&mut timers, engine);
         let mut any_bytes_written = false;
         // Track whether the event-select app-send arm fired this iteration, to
         // scope the single-threaded fairness yield (after the select! block)
@@ -827,7 +829,7 @@ async fn run_session_loop<M, R, W, S, H>(
                 break 'session;
             }
         }
-        if check_reset_timeout(&mut timers, engine) {
+        if check_session_timeouts(&mut timers, engine) {
             continue 'session;
         }
 
@@ -925,7 +927,7 @@ async fn run_session_loop<M, R, W, S, H>(
                     }
                 }
             }
-            if check_reset_timeout(&mut timers, engine) {
+            if check_session_timeouts(&mut timers, engine) {
                 continue 'session;
             }
         }
@@ -946,7 +948,7 @@ async fn run_session_loop<M, R, W, S, H>(
         // not lost: `next_target` did not advance past them, so the peer
         // resends them after reconnect.
         for _ in 0..queued_batch_size {
-            if check_reset_timeout(&mut timers, engine) {
+            if check_session_timeouts(&mut timers, engine) {
                 continue 'session;
             }
             // A gap-closing input may have requested a replay that the loop
@@ -975,7 +977,7 @@ async fn run_session_loop<M, R, W, S, H>(
             {
                 break 'session;
             }
-            if check_reset_timeout(&mut timers, engine) {
+            if check_session_timeouts(&mut timers, engine) {
                 continue 'session;
             }
         }
@@ -998,7 +1000,7 @@ async fn run_session_loop<M, R, W, S, H>(
         if active_resend.is_none() {
             active_resend = engine.take_pending_resend();
         }
-        if check_reset_timeout(&mut timers, engine) {
+        if check_session_timeouts(&mut timers, engine) {
             continue 'session;
         }
         if engine.reset_ready(active_resend.is_none(), storage) {
@@ -1009,7 +1011,7 @@ async fn run_session_loop<M, R, W, S, H>(
         // --- Control check (non-blocking, highest priority) ---
         if let Ok(msg) = control_rx.try_recv() {
             engine.on_control(msg);
-            check_reset_timeout(&mut timers, engine);
+            check_session_timeouts(&mut timers, engine);
             continue;
         }
 
@@ -1055,7 +1057,7 @@ async fn run_session_loop<M, R, W, S, H>(
 
         // --- Event select ---
         // Fair select for all other events
-        if check_reset_timeout(&mut timers, engine) {
+        if check_session_timeouts(&mut timers, engine) {
             continue 'session;
         }
         tokio::select! {
@@ -1078,7 +1080,7 @@ async fn run_session_loop<M, R, W, S, H>(
                 }
                 match event {
                     Some(InputEvent::Message(msg)) => {
-                        if check_reset_timeout(&mut timers, engine) {
+                        if check_session_timeouts(&mut timers, engine) {
                             continue 'session;
                         }
                         let result = match engine.on_input(msg, storage) {
@@ -1088,10 +1090,10 @@ async fn run_session_loop<M, R, W, S, H>(
                         if dispatch_input_result(result, engine, storage, handler).await.is_err() {
                             break 'session;
                         }
-                        check_reset_timeout(&mut timers, engine);
+                        check_session_timeouts(&mut timers, engine);
                     }
                     Some(InputEvent::DeserializeError(error)) => {
-                        if check_reset_timeout(&mut timers, engine) {
+                        if check_session_timeouts(&mut timers, engine) {
                             continue 'session;
                         }
                         let result = match engine.on_deserialize_error(error, storage) {
@@ -1101,7 +1103,7 @@ async fn run_session_loop<M, R, W, S, H>(
                         if dispatch_input_result(result, engine, storage, handler).await.is_err() {
                             break 'session;
                         }
-                        check_reset_timeout(&mut timers, engine);
+                        check_session_timeouts(&mut timers, engine);
                     }
                     Some(InputEvent::TooLarge { frame_len }) => {
                         // The farewell Logout is staged here and written by
@@ -1134,8 +1136,8 @@ async fn run_session_loop<M, R, W, S, H>(
                         warn!("no Logon response from peer, disconnecting");
                         engine.on_logon_timeout();
                     }
-                    TimerEvent::Reset => {
-                        check_reset_timeout(&mut timers, engine);
+                    TimerEvent::Reset | TimerEvent::InboundRecovery => {
+                        check_session_timeouts(&mut timers, engine);
                     }
                 }
                 timers.on_timeout(event);
@@ -1166,7 +1168,7 @@ async fn run_session_loop<M, R, W, S, H>(
 
             Some(msg) = control_rx.recv() => {
                 engine.on_control(msg);
-                check_reset_timeout(&mut timers, engine);
+                check_session_timeouts(&mut timers, engine);
             }
         }
 

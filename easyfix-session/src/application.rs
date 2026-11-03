@@ -331,6 +331,8 @@ pub enum IoOperation {
 /// The protocol wait whose budget expired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimeoutKind {
+    /// Gap recovery made no progress in the expected incoming sequence number.
+    InboundRecovery,
     /// Waiting for the first inbound message or for a Logon acknowledgement.
     Logon,
     /// Waiting for an acknowledgement of our Logout.
@@ -344,6 +346,10 @@ pub enum TimeoutKind {
 /// Why the session decided to end its connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionEndReason {
+    /// A new out-of-order message would exceed the inbound queue limit.
+    /// The session sends a farewell Logout and disconnects without advancing
+    /// its expected incoming sequence number or clearing stored history.
+    InboundQueueLimitExceeded,
     /// A protocol wait expired. The cause remains visible if flushing the
     /// final output fails after that decision.
     Timeout(TimeoutKind),
