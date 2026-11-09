@@ -1504,8 +1504,11 @@ impl<'de> Deserializer<'de> {
                     let (_, rest) = unsafe { buf.split_at_unchecked(i + 1) };
                     self.buf = rest;
                     let scale = scale.unwrap_or(0);
-                    // TODO: Limit scale (28 or more panics!)
-                    return Ok(Decimal::new(if negative { -num } else { num }, scale));
+                    return Decimal::try_new(if negative { -num } else { num }, scale).map_err(
+                        |_| {
+                            self.reject(self.current_tag, SessionRejectReasonBase::ValueIsIncorrect)
+                        },
+                    );
                 }
                 _ => {
                     return Err(self.reject(

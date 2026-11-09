@@ -745,6 +745,32 @@ fn deserialize_price_ok(#[case] input: &[u8], #[case] value: Price) {
     assert_eq!(deserializer.buf, b"\x00");
 }
 
+#[rstest]
+#[case::zero(0)]
+#[case::nonzero(1)]
+fn deserialize_float_max_scale(#[case] last_digit: i64) {
+    let input = format!("0.{}{last_digit}\x01\x00", "0".repeat(27));
+    let mut deserializer = deserializer(input.as_bytes());
+    let value = deserializer.deserialize_float().unwrap();
+    assert_eq!(value, Price::new(last_digit, 28));
+    assert_eq!(value.scale(), 28);
+    assert_eq!(deserializer.buf, b"\x00");
+}
+
+#[rstest]
+#[case::zero(0)]
+#[case::nonzero(1)]
+fn deserialize_float_scale_out_of_range(#[case] last_digit: i64) {
+    let input = format!("0.{}{last_digit}\x01", "0".repeat(28));
+    let mut deserializer = deserializer(input.as_bytes());
+    deserializer.current_tag = Some(44);
+    assert_matches!(
+        deserializer.deserialize_float(),
+        Err(DeserializeErrorKind::Reject { tag: Some(44), reason, .. })
+            if reason == SessionRejectReasonField::from(SessionRejectReasonBase::ValueIsIncorrect)
+    );
+}
+
 #[test]
 fn deserialize_tenor_days() {
     let input = b"D5\x01\x00";
