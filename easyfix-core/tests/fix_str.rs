@@ -53,8 +53,8 @@ fn reexport_without_direct_easyfix_dependency() {
     )
     .unwrap();
 
-    // A separate manifest is essential: trybuild inherits this crate's direct
-    // easyfix-core dependency, which would hide the original lookup failure.
+    // A separate manifest is essential: trybuild makes easyfix-core available
+    // directly, which would hide the original lookup failure.
     let output = Command::new(env!("CARGO"))
         .args(["run", "--offline", "--quiet", "-p", "fix-str-consumer"])
         .arg("--manifest-path")

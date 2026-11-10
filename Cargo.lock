@@ -214,6 +214,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "trybuild",
 ]
 
 [[package]]
@@ -232,10 +233,8 @@ dependencies = [
 name = "easyfix-macros"
 version = "0.20.0"
 dependencies = [
- "easyfix-core",
  "quote",
  "syn 3.0.9",
- "trybuild",
 ]
 
 [[package]]

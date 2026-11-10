@@ -16,7 +16,3 @@ proc-macro = true
 [dependencies]
 quote = { workspace = true }
 syn = { workspace = true }
-
-[dev-dependencies]
-easyfix-core = { workspace = true }
-trybuild = "1.0"
