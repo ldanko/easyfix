@@ -33,7 +33,7 @@ easyfix-dictionary = { version = "0.20.0", path = "easyfix-dictionary" }
 easyfix-macros = { version = "0.20.0", path = "easyfix-macros" }
 easyfix-messages = { version = "0.20.0", path = "easyfix-messages" }
 easyfix-session = { version = "0.20.0", path = "easyfix-session" }
-easyfix-test-messages = { version = "0.1.0", path = "easyfix-test-messages" }
+easyfix-test-messages = { path = "easyfix-test-messages" }
 futures-util = "0.3.34"
 itoa = "1.0.18"
 memchr = "2.8.3"
